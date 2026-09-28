@@ -35,6 +35,7 @@ fn translate_with_session(input: Value, session_id: Option<&str>) -> Value {
         ResponsesFlavor::OpenAi,
         false,
         session_id,
+        true,
     )
     .unwrap()
 }
@@ -57,8 +58,8 @@ fn parsed_value_entry_point_matches_byte_wrapper_across_flavors() {
 
     for flavor in [ResponsesFlavor::OpenAi, ResponsesFlavor::Chatgpt] {
         assert_eq!(
-            translate_request_value(&request, &route, flavor, false, None),
-            translate_request(&body, &route, flavor, false, None).unwrap(),
+            translate_request_value(&request, &route, flavor, false, None, true),
+            translate_request(&body, &route, flavor, false, None, true).unwrap(),
             "parsed and byte entry points diverged for {flavor:?}"
         );
     }
@@ -143,6 +144,7 @@ fn omits_max_output_tokens_for_chatgpt_backend() {
         ResponsesFlavor::Chatgpt,
         false,
         None,
+        true,
     )
     .unwrap();
 
@@ -569,7 +571,7 @@ fn translates_tools_and_tool_choice_variants() {
 
 fn translate_with_flavor(input: Value, flavor: ResponsesFlavor) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
-    translate_request(&body, &route("gpt-5.2-codex"), flavor, false, None).unwrap()
+    translate_request(&body, &route("gpt-5.2-codex"), flavor, false, None, true).unwrap()
 }
 
 #[test]
@@ -893,7 +895,7 @@ fn maps_thinking_and_route_override_to_effort() {
     route.effort = Some("xhigh".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.2-codex-low", "messages": []})).unwrap();
     let override_effort =
-        translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None).unwrap();
+        translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None, true).unwrap();
     assert_eq!(override_effort["reasoning"]["effort"], "xhigh");
 }
 
@@ -915,7 +917,7 @@ fn emits_configured_service_tier_on_the_wire() {
     let mut route = route("gpt-5.6-sol");
     route.service_tier = Some("priority".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None, true).unwrap();
     assert_eq!(out["service_tier"], json!("priority"));
 }
 
@@ -926,7 +928,8 @@ fn emits_configured_service_tier_on_chatgpt_flavor() {
     let mut route = route("gpt-5.6-sol");
     route.service_tier = Some("flex".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::Chatgpt, false, None).unwrap();
+    let out =
+        translate_request(&body, &route, ResponsesFlavor::Chatgpt, false, None, true).unwrap();
     assert_eq!(out["service_tier"], json!("flex"));
 }
 
@@ -939,7 +942,7 @@ fn emits_both_effort_and_service_tier_when_both_are_configured() {
     route.effort = Some("xhigh".to_string());
     route.service_tier = Some("priority".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None, true).unwrap();
     assert_eq!(out["reasoning"]["effort"], json!("xhigh"));
     assert_eq!(out["service_tier"], json!("priority"));
 }
@@ -956,7 +959,7 @@ fn route_service_tier_default_sentinel_never_reaches_the_wire() {
     let mut route = route("gpt-5.6-sol");
     route.service_tier = Some("default".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None, true).unwrap();
     assert!(out.get("service_tier").is_none());
 }
 
@@ -989,6 +992,7 @@ fn xai_omits_reasoning_and_text_without_configured_effort() {
         ResponsesFlavor::Xai,
         false,
         None,
+        true,
     )
     .unwrap();
 
@@ -1019,7 +1023,7 @@ fn xai_never_emits_service_tier_even_when_configured() {
     }))
     .unwrap();
 
-    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false, None).unwrap();
+    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false, None, true).unwrap();
 
     assert!(actual.get("service_tier").is_none());
 }
@@ -1038,7 +1042,8 @@ fn grok_never_emits_service_tier_even_when_configured() {
     }))
     .unwrap();
 
-    let actual = translate_request(&body, &route, ResponsesFlavor::Grok, false, None).unwrap();
+    let actual =
+        translate_request(&body, &route, ResponsesFlavor::Grok, false, None, true).unwrap();
 
     assert!(actual.get("service_tier").is_none());
 }
@@ -1060,6 +1065,7 @@ fn xai_honors_explicit_client_effort_without_route_config() {
         ResponsesFlavor::Xai,
         false,
         None,
+        true,
     )
     .unwrap();
 
@@ -1079,6 +1085,7 @@ fn xai_honors_explicit_client_effort_without_route_config() {
         ResponsesFlavor::Xai,
         false,
         None,
+        true,
     )
     .unwrap();
     assert!(actual.get("reasoning").is_none());
@@ -1092,7 +1099,7 @@ fn xai_sends_reasoning_without_summary_when_effort_configured() {
     route.effort = Some("high".to_string());
     let body = serde_json::to_vec(&json!({"model": "grok-4.5", "messages": []})).unwrap();
 
-    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false, None).unwrap();
+    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false, None, true).unwrap();
 
     assert_eq!(actual["reasoning"], json!({"effort": "high"}));
 }
@@ -1111,6 +1118,7 @@ fn xai_includes_encrypted_reasoning_only_when_thinking_enabled() {
         ResponsesFlavor::Xai,
         false,
         None,
+        true,
     )
     .unwrap();
 
@@ -1127,6 +1135,7 @@ fn xai_includes_encrypted_reasoning_only_when_thinking_enabled() {
         ResponsesFlavor::Xai,
         false,
         None,
+        true,
     )
     .unwrap();
     assert!(actual.get("include").is_none());
@@ -2619,6 +2628,7 @@ fn native_translate(input: Value) -> Value {
         ResponsesFlavor::Chatgpt,
         true,
         None,
+        true,
     )
     .unwrap()
 }
@@ -2637,6 +2647,7 @@ fn translate_with_production_gate(model: &str, input: Value) -> Value {
         ResponsesFlavor::Chatgpt,
         production_native_for(model),
         None,
+        true,
     )
     .unwrap()
 }

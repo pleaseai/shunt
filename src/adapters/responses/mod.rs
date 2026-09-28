@@ -183,16 +183,14 @@ async fn forward(
     response_bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request_json = body.json();
-    // The effective conversation id (see `ResponsesAdapter::forward`, where
-    // the pool key was already derived): the inbound session header when
-    // present, else the `metadata.user_id` session — the id the upstream
-    // session-id headers AND the body prompt_cache_key must carry. A
-    // metadata-only client still gets the affinity headers, without which the
-    // backend caches nothing (measured 2026-09-20). The account-pool sticky
-    // key follows the effective id, so sessionless turns pin per conversation
-    // instead of rotating (the inbound endpoint's sticky-key rationale).
-    let session_id = session_id
-        .or_else(|| crate::model::responses_request::effective_session_id(request_json, None));
+    // The effective conversation id (see `ResponsesAdapter::forward`, which
+    // derived it — header first, else the `metadata.user_id` session — from
+    // this same body): the id the upstream session-id headers AND the body
+    // prompt_cache_key must carry. A metadata-only client still gets the
+    // affinity headers, without which the backend caches nothing (measured
+    // 2026-09-20). The account-pool sticky key follows the effective id, so
+    // sessionless turns pin per conversation instead of rotating (the inbound
+    // endpoint's sticky-key rationale).
     let client_wants_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -281,6 +279,7 @@ async fn forward(
         flavor,
         tool_search_native,
         session_id.as_deref(),
+        body.is_client_turn(),
     ));
     tracing::debug!(
         provider = %route.provider,
@@ -578,6 +577,7 @@ pub(crate) async fn chain_attempt(
         flavor,
         tool_search_native,
         session_id.as_deref(),
+        body.is_client_turn(),
     ));
     let auth = state
         .config

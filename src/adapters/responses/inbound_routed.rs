@@ -123,9 +123,11 @@ fn routed_request(
     let request = apply_credential(request, credential);
     // Stock OpenAI is the one api-key routed upstream that derives prompt-cache
     // affinity from the codex session headers, so generate them here (the
-    // allowlist never forwarded the client's own) and nowhere else.
+    // allowlist never forwards them verbatim) and nowhere else — with the
+    // client's own thread-derived ids passed through where the CLI sent them,
+    // since those are identities shunt cannot recompute.
     if api_key && state.config.is_openai_backend(&route.provider) {
-        session_affinity_headers(request, session_id, None, 0)
+        session_affinity_headers(request, session_id, None, 0, Some(client_headers))
     } else {
         request
     }
@@ -331,7 +333,6 @@ mod tests {
         client.insert("x-api-key", "client-api-key".parse().unwrap());
         client.insert("originator", "codex_cli_rs".parse().unwrap());
         client.insert("session-id", "client-session".parse().unwrap());
-        client.insert("x-codex-window-id", "client-window".parse().unwrap());
 
         let request = built(routed_request(
             &state(),
@@ -344,8 +345,10 @@ mod tests {
             Some("sess-routed"),
         ));
 
-        // Generated from the threaded effective id, never the client's own
-        // headers (which carried `session-id: client-session`).
+        // The client sent none of the three thread-derived ids, so all four
+        // affinity headers generate from the threaded effective id — never the
+        // client's own `session-id: client-session`. (The pass-through case —
+        // the client DID send its thread-derived ids — is the F7 test above.)
         assert_eq!(request.headers().get("session-id").unwrap(), "sess-routed");
         assert_eq!(request.headers().get("thread-id").unwrap(), "sess-routed");
         assert_eq!(
@@ -364,6 +367,96 @@ mod tests {
         );
         assert!(request.headers().get("x-api-key").is_none());
         assert!(request.headers().get("originator").is_none());
+    }
+
+    /// The client's own thread-derived codex ids pass through to the stock
+    /// OpenAI api-key arm when the CLI sent them (F7): a child thread's
+    /// `thread-id`, its request id, and its real window id are identities
+    /// shunt cannot recompute — regenerating them from the session id alone
+    /// collapsed a child thread onto its parent's cache namespace. Only the
+    /// three thread-derived ids pass; `session-id` stays the threaded
+    /// effective id, which is what the body's `prompt_cache_key` carries.
+    #[test]
+    fn the_routed_api_key_arm_passes_the_clients_codex_identity_through() {
+        let mut client = HeaderMap::new();
+        client.insert(
+            "thread-id",
+            "0f9c7b2e-4d51-7000-8000-1a2b3c4d5e6f::agent-7"
+                .parse()
+                .unwrap(),
+        );
+        client.insert(
+            "x-client-request-id",
+            "0f9c7b2e-4d51-7000-8000-1a2b3c4d5e6f::agent-7"
+                .parse()
+                .unwrap(),
+        );
+        client.insert(
+            "x-codex-window-id",
+            "0f9c7b2e-4d51-7000-8000-1a2b3c4d5e6f::agent-7:1"
+                .parse()
+                .unwrap(),
+        );
+
+        let request = built(routed_request(
+            &state(),
+            &route("openai"),
+            Credential::ApiKey {
+                value: "openai-key".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            },
+            &client,
+            Some("sess-routed"),
+        ));
+
+        assert_eq!(
+            request.headers().get("thread-id").unwrap(),
+            "0f9c7b2e-4d51-7000-8000-1a2b3c4d5e6f::agent-7"
+        );
+        assert_eq!(
+            request.headers().get("x-client-request-id").unwrap(),
+            "0f9c7b2e-4d51-7000-8000-1a2b3c4d5e6f::agent-7"
+        );
+        assert_eq!(
+            request.headers().get("x-codex-window-id").unwrap(),
+            "0f9c7b2e-4d51-7000-8000-1a2b3c4d5e6f::agent-7:1"
+        );
+        // `session-id` is the one header shunt still generates: its value must
+        // equal the body's prompt_cache_key, which derives from the threaded
+        // effective id.
+        assert_eq!(request.headers().get("session-id").unwrap(), "sess-routed");
+    }
+
+    /// A partially-sent set passes through per header: the missing ones are
+    /// still generated, so a CLI that predates one of the ids loses nothing.
+    #[test]
+    fn the_routed_api_key_arm_generates_only_the_absent_identity_headers() {
+        let mut client = HeaderMap::new();
+        client.insert(
+            "x-codex-window-id",
+            "0f9c7b2e-4d51-7000-8000-1a2b3c4d5e6f:1".parse().unwrap(),
+        );
+
+        let request = built(routed_request(
+            &state(),
+            &route("openai"),
+            Credential::ApiKey {
+                value: "openai-key".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            },
+            &client,
+            Some("sess-routed"),
+        ));
+
+        assert_eq!(
+            request.headers().get("x-codex-window-id").unwrap(),
+            "0f9c7b2e-4d51-7000-8000-1a2b3c4d5e6f:1"
+        );
+        assert_eq!(request.headers().get("thread-id").unwrap(), "sess-routed");
+        assert_eq!(
+            request.headers().get("x-client-request-id").unwrap(),
+            "sess-routed"
+        );
     }
 
     #[test]

@@ -115,6 +115,7 @@ pub fn translate_request(
     flavor: ResponsesFlavor,
     tool_search_native: bool,
     session_id: Option<&str>,
+    client_turn: bool,
 ) -> Result<Value, serde_json::Error> {
     let request: Value = serde_json::from_slice(body)?;
     Ok(translate_request_value(
@@ -123,6 +124,7 @@ pub fn translate_request(
         flavor,
         tool_search_native,
         session_id,
+        client_turn,
     ))
 }
 
@@ -132,6 +134,7 @@ pub fn translate_request_value(
     flavor: ResponsesFlavor,
     tool_search_native: bool,
     session_id: Option<&str>,
+    client_turn: bool,
 ) -> Value {
     let tool_search = ToolSearchContext::from_request(request, tool_search_native);
     let mut out = Map::new();
@@ -255,10 +258,15 @@ pub fn translate_request_value(
     }
     // With store:false the Responses backend forgets each turn's reasoning, so ask
     // for the encrypted reasoning blob and echo it back next turn (see input_items).
-    // The Codex CLI sends this unconditionally on the ChatGPT/Codex backend; the
-    // other flavors keep it gated on extended thinking, which is what lets Claude
-    // Code round-trip the thinking blocks that carry the blob (see model/responses.rs).
-    if thinking_enabled(request) || flavor == ResponsesFlavor::Chatgpt {
+    // The Codex CLI sends this unconditionally on the ChatGPT/Codex backend, so a
+    // CLIENT turn to that flavor forces it regardless of thinking (mirroring what
+    // the client itself sends); the other flavors keep it gated on extended
+    // thinking, which is what lets Claude Code round-trip the thinking blocks that
+    // carry the blob (see model/responses.rs). An INTERNAL call (judge,
+    // classifier, advisor — a body nobody marked as the client's turn) never
+    // forces it: its reply is parsed once and discarded, so the encrypted blobs
+    // would only inflate the reply against `judge_max_response_bytes`.
+    if thinking_enabled(request) || (flavor == ResponsesFlavor::Chatgpt && client_turn) {
         out.insert(
             "include".to_string(),
             json!(["reasoning.encrypted_content"]),
@@ -1096,6 +1104,47 @@ fn effort(request: &Value, route: &Route) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// F9's other half: a CLIENT turn to the chatgpt flavor keeps the
+    /// encrypted-reasoning include (the force exists to mirror what the Codex
+    /// CLI itself sends), and flipping the mark off drops it — the same
+    /// translation, discriminated only by the body's origin.
+    #[test]
+    fn a_client_turn_to_the_chatgpt_flavor_keeps_the_encrypted_reasoning_include() {
+        let request = serde_json::json!({
+            "model": "gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+        let route = crate::routing::Route {
+            provider: "codex".to_string(),
+            adapter: crate::routing::AdapterKind::Responses,
+            model: "gpt-5.2-codex".to_string(),
+            upstream_model: "gpt-5.2-codex".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+        let client = translate_request_value(
+            &request,
+            &route,
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+            true,
+        );
+        assert_eq!(
+            client["include"],
+            serde_json::json!(["reasoning.encrypted_content"])
+        );
+        let internal = translate_request_value(
+            &request,
+            &route,
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+            false,
+        );
+        assert!(internal.get("include").is_none());
+    }
+
     use serde_json::json;
 
     use super::{
@@ -1164,6 +1213,7 @@ mod tests {
             ResponsesFlavor::Chatgpt,
             false,
             None,
+            true,
         );
 
         assert_eq!(out["text"]["format"]["type"], "json_schema");
@@ -1186,7 +1236,7 @@ mod tests {
         });
 
         for flavor in [ResponsesFlavor::Xai, ResponsesFlavor::Grok] {
-            let out = translate_request_value(&request, &codex_route(), flavor, false, None);
+            let out = translate_request_value(&request, &codex_route(), flavor, false, None, true);
             assert!(out.get("text").is_none(), "flavor={flavor:?}");
         }
     }
@@ -1207,6 +1257,7 @@ mod tests {
                 ResponsesFlavor::Chatgpt,
                 false,
                 None,
+                true,
             );
             assert!(
                 out["text"].get("format").is_none(),

@@ -197,8 +197,17 @@ pub(crate) fn codex_delegation(headers: &HeaderMap, session_id: &str) -> Option<
 /// the window id's identity part) carry the child's too. `window` is the
 /// conversation's compaction window — the same counter the websocket
 /// handshake reads — so both transports carry the same `{thread}:{window}`.
-/// Sent only when a session id is available: a fabricated value is worse than
-/// omitting them. Each caller picks its own upstream gate (the ChatGPT
+///
+/// `client_ids` passes the caller's OWN codex identity headers through
+/// (routed `[server.codex_endpoint]` turns, where the client is the Codex CLI
+/// itself): for each of `thread-id`, `x-client-request-id` and
+/// `x-codex-window-id`, a header the client sent replaces the generated
+/// value — a child thread's ids and its real window are identities shunt
+/// cannot recompute. The values arrive as hyper-parsed `HeaderValues`, so
+/// they are valid header text by construction; `session-id` is never
+/// overridden, because its value must equal the body's `prompt_cache_key`.
+/// Sent only when a session id is available: a fabricated value is worse
+/// than omitting them. Each caller picks its own upstream gate (the ChatGPT
 /// backend, or the stock OpenAI host for api-key) and its own `accept`
 /// header.
 pub(super) fn session_affinity_headers(
@@ -206,6 +215,7 @@ pub(super) fn session_affinity_headers(
     session_id: Option<&str>,
     delegation: Option<&CodexDelegation>,
     window: u64,
+    client_ids: Option<&HeaderMap>,
 ) -> reqwest::RequestBuilder {
     match session_id.filter(|session_id| !session_id.is_empty()) {
         Some(session_id) => {
@@ -214,24 +224,37 @@ pub(super) fn session_affinity_headers(
             // turn, the session's otherwise.
             let thread_id =
                 delegation.map_or(session_id, |delegation| delegation.thread_id.as_str());
+            let client =
+                |name: &'static str| client_ids.and_then(|headers| headers.get(name)).cloned();
             let mut request = match delegation {
                 Some(delegation) => request
                     .header("x-codex-parent-thread-id", &delegation.parent_thread_id)
                     .header("x-openai-subagent", &delegation.subagent),
                 None => request,
             };
-            request = request
-                .header("session-id", session_id)
-                .header("thread-id", thread_id)
-                .header("x-client-request-id", thread_id)
-                .header("x-codex-window-id", format!("{thread_id}:{window}"));
+            request = request.header("session-id", session_id);
+            request = match client("thread-id") {
+                Some(value) => request.header("thread-id", value),
+                None => request.header("thread-id", thread_id),
+            };
+            request = match client("x-client-request-id") {
+                Some(value) => request.header("x-client-request-id", value),
+                None => request.header("x-client-request-id", thread_id),
+            };
+            request = match client("x-codex-window-id") {
+                Some(value) => request.header("x-codex-window-id", value),
+                None => request.header("x-codex-window-id", format!("{thread_id}:{window}")),
+            };
             request
         }
         None => request,
     }
 }
 
-/// Redirect policy for the shared Responses HTTP client: a request chain that
+/// Redirect policy for the shared Responses HTTP client — the process-wide
+/// client, so this governs every request shunt sends through it: Responses
+/// turns, the codex usage/wham polls, model discovery, and the admin surface's
+/// upstream calls alike. A request chain that
 /// started on a host that receives the generated codex identity headers —
 /// stock OpenAI on the api-key arm, the ChatGPT backend on the subscription
 /// OAuth arm — must not carry them across hosts (reqwest strips only
@@ -297,7 +320,7 @@ pub(super) fn request_builder(
             if state.config.is_openai_backend(&route.provider) {
                 // Stock OpenAI gets the four affinity headers and nothing more:
                 // the subagent markers are a codex-backend shape.
-                request = session_affinity_headers(request, session_id, None, window);
+                request = session_affinity_headers(request, session_id, None, window, None);
             }
         }
         Credential::ChatGptOAuth {
@@ -321,7 +344,7 @@ pub(super) fn request_builder(
             if session_id.is_some_and(|session_id| !session_id.is_empty()) {
                 request = request.header("accept", "text/event-stream");
             }
-            request = session_affinity_headers(request, session_id, delegation, window);
+            request = session_affinity_headers(request, session_id, delegation, window, None);
         }
         // xAI subscription OAuth: the subscription bearer plus the Grok-CLI
         // identity headers the CLI chat proxy expects (no ChatGPT/Codex
@@ -572,6 +595,7 @@ mod tests {
             ResponsesFlavor::Chatgpt,
             false,
             Some("session-123"),
+            true,
         )
         .unwrap();
         assert_eq!(translated["prompt_cache_key"], "session-123");
@@ -590,6 +614,7 @@ mod tests {
             ResponsesFlavor::Chatgpt,
             false,
             None,
+            true,
         )
         .unwrap();
         assert_eq!(translated["prompt_cache_key"], "meta_sess");
@@ -614,6 +639,7 @@ mod tests {
             ResponsesFlavor::Chatgpt,
             false,
             None,
+            true,
         )
         .unwrap();
         assert_eq!(translated["prompt_cache_key"], derived);

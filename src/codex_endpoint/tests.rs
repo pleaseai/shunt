@@ -311,7 +311,7 @@ async fn routed_stock_openai_api_key_generates_the_affinity_headers() {
         .and(header("session-id", "sess-routed"))
         .and(header("thread-id", "sess-routed"))
         .and(header("x-client-request-id", "sess-routed"))
-        .and(header("x-codex-window-id", "sess-routed:0"))
+        .and(header("x-codex-window-id", "client-window"))
         .and(HeaderAbsent("x-api-key"))
         .and(HeaderAbsent("originator"))
         .and(AcceptNotEventStream)
@@ -345,7 +345,9 @@ async fn routed_stock_openai_api_key_generates_the_affinity_headers() {
         .unwrap();
     let state = AppState::new(config, http_client).unwrap();
 
-    // The caller's own headers: stripped by the allowlist, never forwarded.
+    // The caller's own headers: the three thread-derived codex ids pass
+    // through (F7 — the client's real thread identity), everything else is
+    // stripped by the allowlist and the credential/affinity set is generated.
     let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json".parse().unwrap());
     headers.insert("session-id", "client-session".parse().unwrap());

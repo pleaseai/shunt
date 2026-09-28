@@ -58,6 +58,12 @@ pub(crate) struct RequestBody {
     raw: Vec<u8>,
     json: Arc<Value>,
     compaction: CompactionMark,
+    /// Whether this body is the client's own turn: armed by the proxy entry,
+    /// left false by every internal call that builds its own body (judge,
+    /// classifier, and advisor consults). The Responses translation reads it
+    /// to scope chatgpt-flavor defaults that exist to mirror what the client
+    /// itself sends.
+    client_turn: bool,
 }
 
 struct TopLevelValueVisitor;
@@ -181,6 +187,7 @@ impl RequestBody {
             raw,
             json: Arc::new(json),
             compaction: CompactionMark::default(),
+            client_turn: false,
         })
     }
 
@@ -203,6 +210,18 @@ impl RequestBody {
     /// A handle sharing the request's one-shot compaction mark.
     pub(crate) fn compaction_mark(&self) -> CompactionMark {
         self.compaction.clone()
+    }
+
+    /// Mark the body as the client's own turn (called once per inbound
+    /// request, beside the compaction arming). Internal calls that build
+    /// their own bodies stay unmarked.
+    pub(crate) fn mark_client_turn(&mut self) {
+        self.client_turn = true;
+    }
+
+    /// Whether this body is the client's own turn.
+    pub(crate) fn is_client_turn(&self) -> bool {
+        self.client_turn
     }
 
     pub(crate) fn into_raw(self) -> Vec<u8> {

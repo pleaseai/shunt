@@ -71,6 +71,11 @@ pub(super) async fn forward(
     // Judge and advisor calls build their own body, so they never see the
     // mark at all; `judge_headers` also drops the header they would clone.
     body.set_compaction_mark(crate::adapters::responses::compact_marked(headers));
+    // The same boundary marks the body as the client's own turn: the
+    // Responses translation scopes its chatgpt-flavor defaults (the
+    // encrypted-reasoning `include`) to client turns, so an internal call to
+    // a chatgpt target never requests reasoning blobs it cannot round-trip.
+    body.mark_client_turn();
     // Claude Code's auto mode asks the API to classify the session's own tool
     // uses server-side (`safeguards` + the `dangerous-tool-use-…` beta). Only
     // api.anthropic.com answers it, and a completed response carrying no

@@ -594,6 +594,171 @@ mod caller_attribution {
     }
 }
 
+/// F9: the round-0 include force keys on the chatgpt flavor alone, so a judge
+/// or classifier consult to a chatgpt-flavor target requests encrypted
+/// reasoning it never round-trips — and the blobs count against
+/// `judge_max_response_bytes`. The discriminator between an internal call and
+/// a client turn is the request body's origin: consults build fresh bodies,
+/// while a client's turn is armed by the proxy entry — so the internal call
+/// must send NO `include`.
+///
+/// The judge target here is the built-in codex provider (chatgpt flavor) on a
+/// mock, so the consult's dispatch goes through the Responses translation the
+/// force lives in; the verdict text rides a `response.output_text.delta`, the
+/// same shape a real chatgpt judge replies with.
+mod internal_calls_do_not_force_encrypted_reasoning {
+    use std::collections::BTreeMap;
+
+    use axum::http::HeaderMap;
+    use serde_json::json;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    use base64::Engine as _;
+
+    use crate::config::{Config, ModelConfig};
+    use crate::proxy::failover::InboundContext;
+    use crate::routing::judge::{consult, JudgeOutcome};
+    use crate::routing::serve::AdmittedContext;
+    use crate::routing::stage::StageTier;
+
+    use super::judge_fixture;
+
+    const ROUTER_ID: &str = "claude-auto-chatgpt-judge";
+
+    #[tokio::test]
+    async fn a_judge_consult_to_a_chatgpt_target_does_not_request_encrypted_reasoning() {
+        // The env vars below are the codex store's own test env; its
+        // TEST_ENV_LOCK serializes them against every other reader/writer of
+        // those names in this binary.
+        let _env = crate::auth::codex::store::TEST_ENV_LOCK.lock().await;
+        let unique = format!(
+            "shunt-f9-judge-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let accounts = std::env::temp_dir().join(format!("{unique}-accounts"));
+        std::fs::create_dir_all(&accounts).unwrap();
+        let auth = std::env::temp_dir().join(format!("{unique}-auth.json"));
+        let payload = json!({
+            "exp": 4_102_444_800u64,
+            "https://api.openai.com/auth": {"chatgpt_account_id": "acct_f9"}
+        });
+        std::fs::write(
+            &auth,
+            serde_json::to_vec(&json!({
+                "tokens": {
+                    "access_token": format!(
+                        "x.{}.y",
+                        base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .encode(serde_json::to_vec(&payload).unwrap())
+                    ),
+                    "refresh_token": "refresh-xyz",
+                    "account_id": "acct_f9"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let _accounts_dir =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts);
+        let _auth_file = crate::auth::shared::EnvVarGuard::set("CODEX_AUTH_FILE", &auth);
+
+        let judge = MockServer::start().await;
+        let crux = json!({
+            "crux": "bounded task",
+            "primary_rule": "SUP-1",
+            "capability_boundary": "supported",
+            "p_solve": 0.1,
+        });
+        let delta = json!({"delta": serde_json::to_string(&crux).unwrap()}).to_string();
+        let sse = format!(
+            "event: response.created\ndata: {{\"response\":{{\"id\":\"resp_1\",\"usage\":{{\"output_tokens\":0}}}}}}\n\nevent: response.output_text.delta\ndata: {delta}\n\nevent: response.completed\ndata: {{\"response\":{{\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}}}\n\ndata: [DONE]\n\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/codex/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(sse))
+            .mount(&judge)
+            .await;
+
+        let stage = judge_fixture::stage();
+        let mut config = Config {
+            models: vec![
+                ModelConfig {
+                    subagents: None,
+                    id: ROUTER_ID.to_string(),
+                    display_name: None,
+                    upstream_model: None,
+                    router: Some(crate::config::RouterConfig::StageRouter(stage.clone())),
+                    stage_router: None,
+                },
+                ModelConfig {
+                    subagents: None,
+                    id: "judge-alias".to_string(),
+                    display_name: None,
+                    upstream_model: Some(BTreeMap::from([(
+                        "codex".to_string(),
+                        "gpt-5.2-codex".to_string(),
+                    )])),
+                    router: None,
+                    stage_router: None,
+                },
+            ],
+            ..Config::default()
+        };
+        // The built-in codex provider is the chatgpt-flavor one: its auth stays
+        // ChatgptOauth (which is what makes the flavor chatgpt and the path
+        // /codex/responses), pointed at the mock, with the fake login above for
+        // the credential.
+        let codex = config.providers.get_mut("codex").unwrap();
+        codex.base_url = judge.uri();
+        config.server.default_provider = "codex".to_string();
+        let state = crate::server::AppState::new(config, reqwest::Client::new())
+            .expect("the config is valid");
+
+        let inbound = InboundContext::internal();
+        let headers = HeaderMap::new();
+        let admitted = AdmittedContext::mint(&inbound, &headers, ROUTER_ID);
+        let request = json!({
+            "model": ROUTER_ID,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        });
+        let classifier = stage
+            .classifier
+            .as_ref()
+            .expect("the fixture names a judge");
+
+        let outcome = consult(&state, &admitted, &stage, classifier, &request).await;
+
+        // The flow worked: the consult dispatched, and the verdict parsed.
+        assert_eq!(
+            outcome,
+            JudgeOutcome::Decided(StageTier::Capable),
+            "a `p_solve` under the threshold is the judge declining the efficient tier"
+        );
+        let requests = judge
+            .received_requests()
+            .await
+            .expect("mock records requests");
+        assert_eq!(requests.len(), 1, "the consult dispatched exactly once");
+        // The chatgpt-flavor path compresses its request body (issue #285), so
+        // the include assertion reads the decompressed body.
+        let raw = zstd::decode_all(requests[0].body.as_slice()).expect("the body is zstd");
+        let body: serde_json::Value =
+            serde_json::from_slice(&raw).expect("the upstream body is JSON");
+        assert!(
+            body.get("include").is_none(),
+            "an internal call must not request encrypted reasoning: {body}"
+        );
+    }
+}
+
 /// `judge_max_response_bytes` has to bound what the call *allocates*, not just
 /// what reaches the JSON parser.
 ///
