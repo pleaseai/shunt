@@ -194,21 +194,24 @@ pub(crate) fn codex_delegation(headers: &HeaderMap, session_id: &str) -> Option<
 ///
 /// A delegated turn swaps `thread-id` for the child's derived id and adds the
 /// two subagent markers, and the thread-derived ids (`x-client-request-id`,
-/// the window id's identity part) carry the child's too. Sent only when a
-/// session id is available: a fabricated value is worse than omitting them.
-/// Each caller picks its own upstream gate (the ChatGPT backend, or the stock
-/// OpenAI host for api-key) and its own `accept` header.
+/// the window id's identity part) carry the child's too. `window` is the
+/// conversation's compaction window — the same counter the websocket
+/// handshake reads — so both transports carry the same `{thread}:{window}`.
+/// Sent only when a session id is available: a fabricated value is worse than
+/// omitting them. Each caller picks its own upstream gate (the ChatGPT
+/// backend, or the stock OpenAI host for api-key) and its own `accept`
+/// header.
 pub(super) fn session_affinity_headers(
     request: reqwest::RequestBuilder,
     session_id: Option<&str>,
     delegation: Option<&CodexDelegation>,
+    window: u64,
 ) -> reqwest::RequestBuilder {
     match session_id.filter(|session_id| !session_id.is_empty()) {
         Some(session_id) => {
             // The request id and the window id's identity part are
             // thread-derived like codex's: the child's id on a delegated
-            // turn, the session's otherwise. The HTTP window value stays `:0`
-            // (the websocket handshake carries the counter's value).
+            // turn, the session's otherwise.
             let thread_id =
                 delegation.map_or(session_id, |delegation| delegation.thread_id.as_str());
             let mut request = match delegation {
@@ -221,7 +224,7 @@ pub(super) fn session_affinity_headers(
                 .header("session-id", session_id)
                 .header("thread-id", thread_id)
                 .header("x-client-request-id", thread_id)
-                .header("x-codex-window-id", format!("{thread_id}:0"));
+                .header("x-codex-window-id", format!("{thread_id}:{window}"));
             request
         }
         None => request,
@@ -269,6 +272,7 @@ pub(super) fn request_builder(
     credential: Credential,
     session_id: Option<&str>,
     delegation: Option<&CodexDelegation>,
+    window: u64,
 ) -> reqwest::RequestBuilder {
     let mut request = state
         .http_client
@@ -293,7 +297,7 @@ pub(super) fn request_builder(
             if state.config.is_openai_backend(&route.provider) {
                 // Stock OpenAI gets the four affinity headers and nothing more:
                 // the subagent markers are a codex-backend shape.
-                request = session_affinity_headers(request, session_id, None);
+                request = session_affinity_headers(request, session_id, None, window);
             }
         }
         Credential::ChatGptOAuth {
@@ -317,7 +321,7 @@ pub(super) fn request_builder(
             if session_id.is_some_and(|session_id| !session_id.is_empty()) {
                 request = request.header("accept", "text/event-stream");
             }
-            request = session_affinity_headers(request, session_id, delegation);
+            request = session_affinity_headers(request, session_id, delegation, window);
         }
         // xAI subscription OAuth: the subscription bearer plus the Grok-CLI
         // identity headers the CLI chat proxy expects (no ChatGPT/Codex
@@ -371,7 +375,7 @@ fn build_test_request(
     credential: Credential,
     session_id: Option<&str>,
 ) -> reqwest::Request {
-    request_builder(state, route, credential, session_id, None)
+    request_builder(state, route, credential, session_id, None, 0)
         .body("{}")
         .build()
         .expect("test request should build")
@@ -462,6 +466,7 @@ mod tests {
             codex_oauth(),
             Some("session-123"),
             Some(&delegation),
+            0,
         )
         .body("{}")
         .build()
@@ -501,6 +506,7 @@ mod tests {
             codex_oauth(),
             Some("session-123"),
             None,
+            0,
         )
         .body("{}")
         .build()
@@ -671,7 +677,7 @@ mod tests {
             value: "openai-key".to_string(),
             header: ApiKeyHeader::Bearer,
         };
-        let response = request_builder(&state, &route, credential, Some("sess-redir"), None)
+        let response = request_builder(&state, &route, credential, Some("sess-redir"), None, 0)
             .body("{}")
             .send()
             .await
@@ -1003,6 +1009,7 @@ mod tests {
             codex_oauth(),
             None,
             None,
+            0,
         )
         .body("{}")
         .build()
@@ -1124,6 +1131,7 @@ mod tests {
             openai_api_key(),
             Some("session-123"),
             Some(&delegation),
+            0,
         )
         .body("{}")
         .build()

@@ -1,10 +1,46 @@
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use serde::{
     de::{self, MapAccess, SeqAccess, Visitor},
     Deserializer as _,
 };
 use serde_json::{Map, Number, Value};
+
+/// The client's one-shot post-compaction hint (`x-claude-code-context-compacted`),
+/// decided once per inbound request and consumed by the first dispatch that
+/// reaches an upstream, on either transport. Clones share the one shot: route
+/// failover, the gated lane's capture and REDO, and every raced attempt take
+/// the same cell, so exactly one of them bumps the conversation's window. The
+/// default is already-consumed — internal calls that build their own body
+/// (judge and advisor calls) never carry the mark.
+#[derive(Clone, Debug)]
+pub(crate) struct CompactionMark(Arc<AtomicBool>);
+
+impl Default for CompactionMark {
+    /// The default is already-consumed: a body nobody armed (judge and
+    /// advisor calls, the codex endpoint) never carries the mark.
+    fn default() -> Self {
+        Self::armed(false)
+    }
+}
+
+impl CompactionMark {
+    /// A cell carrying `pending`: the next take consumes it when true.
+    pub(crate) fn armed(pending: bool) -> Self {
+        Self(Arc::new(AtomicBool::new(!pending)))
+    }
+
+    /// Whether THIS take is the turn's first upstream-reaching dispatch.
+    pub(crate) fn take(&self) -> bool {
+        !self.0.swap(true, Ordering::Relaxed)
+    }
+}
 
 /// One buffered inbound request: the passthrough bytes plus their parsed JSON tree.
 ///
@@ -21,6 +57,7 @@ use serde_json::{Map, Number, Value};
 pub(crate) struct RequestBody {
     raw: Vec<u8>,
     json: Arc<Value>,
+    compaction: CompactionMark,
 }
 
 struct TopLevelValueVisitor;
@@ -143,6 +180,7 @@ impl RequestBody {
         Ok(Self {
             raw,
             json: Arc::new(json),
+            compaction: CompactionMark::default(),
         })
     }
 
@@ -152,6 +190,19 @@ impl RequestBody {
 
     pub(crate) fn json_arc(&self) -> Arc<Value> {
         Arc::clone(&self.json)
+    }
+
+    /// Arm (or leave consumed) the request's one-shot compaction mark. Called
+    /// once per inbound request, before any dispatch: the header the hint rode
+    /// in on keeps flowing for its other readers, and this cell becomes the
+    /// only source the window counter reads.
+    pub(crate) fn set_compaction_mark(&mut self, pending: bool) {
+        self.compaction = CompactionMark::armed(pending);
+    }
+
+    /// A handle sharing the request's one-shot compaction mark.
+    pub(crate) fn compaction_mark(&self) -> CompactionMark {
+        self.compaction.clone()
     }
 
     pub(crate) fn into_raw(self) -> Vec<u8> {

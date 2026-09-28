@@ -43,12 +43,13 @@ pub(super) async fn http_send(
     credential: Credential,
     session_id: Option<&str>,
     delegation: Option<&super::request::CodexDelegation>,
+    window: u64,
     body: PreparedBody,
 ) -> Result<reqwest::Response, crate::upstream_timeout::SendError<reqwest::Error>> {
     crate::upstream_timeout::wait(
         state.config.server.timeouts.upstream_ttfb_ms,
         body.attach(request_builder(
-            state, route, credential, session_id, delegation,
+            state, route, credential, session_id, delegation, window,
         ))
         .send(),
     )
@@ -83,6 +84,8 @@ pub(super) async fn forward_http(
         codex_quota_account,
         estimate_input,
         started_at,
+        window_key,
+        compact,
     } = forward;
     let policy = provider_retry_policy(state, route);
     if turn.client_wants_stream {
@@ -108,6 +111,8 @@ pub(super) async fn forward_http(
                 policy,
                 credential: None,
                 session_id: session_id.map(str::to_string),
+                window_key,
+                compact,
                 delegation: delegation.cloned(),
                 upstream_body: upstream_body.clone(),
                 auth,
@@ -146,6 +151,10 @@ pub(super) async fn forward_http(
     let estimate_handle = estimate_input.map(|request| {
         tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
     });
+    // The mark is consumed by the first send that reaches an upstream on
+    // either transport: a websocket attempt earlier in this dispatch already
+    // took it, so this reads the window it left.
+    let window = super::codex_ws::window_for_turn(window_key.as_deref(), compact.take());
     let upstream = crate::retry::send_with_retry_with_safety(
         policy,
         &route.provider,
@@ -157,6 +166,7 @@ pub(super) async fn forward_http(
                 credential.clone(),
                 session_id,
                 delegation,
+                window,
                 body.clone(),
             )
         },
@@ -722,6 +732,8 @@ mod tests {
             codex_quota_account: None,
             estimate_input: None,
             started_at: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
         };
         let credential = CredentialSource::Resolved(Credential::ApiKey {
             value: "probe".to_string(),
@@ -789,6 +801,8 @@ mod tests {
             codex_quota_account: None,
             estimate_input: None,
             started_at: Some(std::time::Instant::now() - std::time::Duration::from_millis(300)),
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
         };
         let credential = CredentialSource::Resolved(Credential::ApiKey {
             value: "probe".to_string(),

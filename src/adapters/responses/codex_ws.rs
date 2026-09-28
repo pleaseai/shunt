@@ -82,6 +82,14 @@ const POOL_IDLE_TTL: Duration = Duration::from_secs(30 * 60);
 const POOL_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 /// Hard cap on pooled connections, a backstop against unbounded session churn.
 const MAX_POOL_ENTRIES: usize = 10_000;
+/// Hard cap on window counters, the same backstop for [`WINDOWS`]: a marked
+/// turn records its counter before any connect, so turns that never complete
+/// cleanly (every WS attempt failing after the handshake, HTTP-only turns that
+/// never pool) would grow the map one entry per turn with nothing to bound it.
+/// Capacity is the ONLY expiry: a conversation's window survives any idle gap,
+/// so its post-gap turns never regress to `:0`; entries leave under pressure,
+/// via LRU on `last_touched`.
+const MAX_WINDOW_ENTRIES: usize = 10_000;
 /// Ceiling on simultaneously live overflow connections — the dedicated sockets
 /// opened when a session's pooled connection is already streaming (issue #248).
 /// Overflow is bounded by in-flight requests rather than growing over time (an
@@ -272,18 +280,19 @@ static POOL: LazyLock<Mutex<HashMap<String, Arc<PoolEntry>>>> =
 static LAST_POOL_SWEEP: LazyLock<Mutex<Instant>> = LazyLock::new(|| Mutex::new(Instant::now()));
 
 /// A per-session compaction-window counter, keyed by pool key. `last_touched`
-/// is the conversation's own liveness clock: the counter dies only when the
-/// CONVERSATION idles past [`POOL_IDLE_TTL`], never when its socket churns
-/// (a bump's rotation, capacity eviction) — and a compact turn's own stream
-/// cannot kill it, since the bump just touched it.
+/// orders LRU eviction only — it is never an expiry: the counter leaves the
+/// map solely when the map is at [`MAX_WINDOW_ENTRIES`] and it is the stalest
+/// entry, so a conversation's window survives any idle gap and any amount of
+/// socket churn.
 struct WindowCounter {
     value: u64,
     last_touched: Instant,
 }
 
 /// Per-session compaction-window counters, keyed by pool key alongside
-/// [`POOL`]. Swept on the pool's cadence (see `pool_insert`), by the counter's
-/// own idle clock rather than by socket membership.
+/// [`POOL`]. Bounded by [`MAX_WINDOW_ENTRIES`] alone (LRU under pressure);
+/// entries are never expired by idleness, so a compacted conversation keeps
+/// its window for its lifetime.
 static WINDOWS: LazyLock<Mutex<HashMap<String, WindowCounter>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -317,6 +326,22 @@ pub(crate) fn compose_identity_key(client: &str, session: &str, agent: &str) -> 
 pub(crate) fn advance_window(key: &str) -> u64 {
     let now = Instant::now();
     let mut windows = WINDOWS.lock().unwrap();
+    // Capacity is the only eviction: the round-0 ask was a count cap, and an
+    // idle-based expiry would reset a compacted conversation's window after a
+    // long turn gap — the divergence class F4 exists to fix. `last_touched`
+    // orders the LRU victim below, never an expiry.
+    if windows.len() >= MAX_WINDOW_ENTRIES {
+        // Evict the least recently touched counter. `HashMap` iteration order
+        // is unspecified, so `keys().next()` would drop an arbitrary (possibly
+        // active) entry instead of the stalest one.
+        if let Some(oldest) = windows
+            .iter()
+            .min_by_key(|(_, counter)| counter.last_touched)
+            .map(|(key, _)| key.clone())
+        {
+            windows.remove(&oldest);
+        }
+    }
     let slot = windows.entry(key.to_string()).or_insert(WindowCounter {
         value: 0,
         last_touched: now,
@@ -333,9 +358,9 @@ pub(crate) fn window_for(key: &str) -> u64 {
     let Some(counter) = windows.get_mut(key) else {
         return 0;
     };
-    // A read is conversation activity: refresh the liveness clock so the idle
-    // sweep keeps the window for an active conversation whose compactions are
-    // rarer than the idle TTL.
+    // A read is conversation activity: refresh the liveness clock so the LRU
+    // victim under capacity pressure is a conversation nobody is talking to,
+    // never one whose turns merely stopped bumping.
     counter.last_touched = Instant::now();
     counter.value
 }
@@ -393,14 +418,6 @@ fn pool_insert(key: String, entry: Arc<PoolEntry>) {
         // Sweep at most once per interval during ordinary churn, but always sweep
         // under capacity pressure before choosing an LRU victim.
         guard.retain(|_, entry| entry.conn.last_used_at.lock().unwrap().elapsed() < POOL_IDLE_TTL);
-        // The window counters sweep by their OWN idle clock, never by socket
-        // membership: a live conversation's counter must outlive its socket's
-        // churn (a bump's rotation, capacity eviction) and a compact turn's own
-        // stream (the socket only pools at clean completion).
-        WINDOWS
-            .lock()
-            .unwrap()
-            .retain(|_, counter| counter.last_touched.elapsed() < POOL_IDLE_TTL);
         *last_sweep = Instant::now();
     }
     drop(last_sweep);
@@ -1371,6 +1388,131 @@ mod tests {
             .ends_with(&format!("{KEY_COMPONENT_SEPARATOR}{a_key}")));
     }
 
+    /// The window counter map is capped like the pool: distinct compacted
+    /// sessions whose turns never complete cleanly (every WS turn failing
+    /// after the handshake, an HTTP-only turn never pooling) would otherwise
+    /// grow it one ~100 B entry per turn with nothing to sweep them. The cap
+    /// is spelled as a literal because the constant under test does not exist
+    /// before the fix.
+    #[tokio::test]
+    async fn window_counters_are_capped_like_the_pool() {
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        const CAP: usize = 10_000;
+        for i in 0..CAP {
+            advance_window(&format!("cap-fill-{i}"));
+        }
+        assert_eq!(advance_window("cap-final"), 1);
+        let len = WINDOWS.lock().unwrap().len();
+        assert!(
+            len <= CAP,
+            "the window counter map is capped like the pool: {len} entries"
+        );
+        assert_eq!(len, CAP, "the trim trims, and the newest entry survives");
+        assert_eq!(window_for("cap-final"), 1);
+        clear_pool_for_tests();
+    }
+
+    /// A conversation's window survives any idle gap: winding the counter's
+    /// liveness clock backwards past the pool's idle TTL must not reset it.
+    /// The next marked turn advances the EXISTING counter (2), and a plain
+    /// turn reads it unchanged. The round-0 ask was a count cap only: an
+    /// idle-based expiry here is the divergence class F4 exists to fix,
+    /// reopened on a time trigger.
+    #[tokio::test]
+    async fn a_counter_survives_an_idle_gap_past_the_pool_ttl() {
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        assert_eq!(advance_window("sess-a"), 1);
+        WINDOWS
+            .lock()
+            .unwrap()
+            .get_mut("sess-a")
+            .expect("the bump recorded the counter")
+            .last_touched = Instant::now() - POOL_IDLE_TTL - Duration::from_secs(1);
+        assert_eq!(
+            window_for_turn(Some("sess-a"), true),
+            2,
+            "the marked turn advances the conversation's existing window"
+        );
+        assert_eq!(
+            window_for_turn(Some("sess-a"), false),
+            2,
+            "a plain turn reads the surviving window"
+        );
+        clear_pool_for_tests();
+    }
+
+    /// Pooling a DIFFERENT conversation's socket must not expire a stale
+    /// counter: conversation A idles past the pool TTL, then conversation B
+    /// completes a clean websocket turn (pool_insert runs its sweep) — A's
+    /// window still reads 1, never resetting to the pre-compaction 0.
+    #[tokio::test]
+    async fn pooling_another_conversations_socket_does_not_expire_a_stale_counter() {
+        use tokio::net::TcpListener;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        assert_eq!(advance_window("sess-a"), 1);
+        WINDOWS
+            .lock()
+            .unwrap()
+            .get_mut("sess-a")
+            .expect("the bump recorded the counter")
+            .last_touched = Instant::now() - POOL_IDLE_TTL - Duration::from_secs(1);
+        *LAST_POOL_SWEEP.lock().unwrap() =
+            Instant::now() - POOL_SWEEP_INTERVAL - Duration::from_secs(1);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
+            while let Some(message) = ws.next().await {
+                match message.unwrap() {
+                    Message::Text(_) => {
+                        for event in [
+                            r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                            r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                            r#"{"type":"response.completed","response":{}}"#,
+                        ] {
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break,
+                    other => panic!("unexpected frame: {other:?}"),
+                }
+            }
+        });
+        let url = format!("ws://{addr}/codex/responses");
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
+        let mut events = open_simple(&url, HeaderMap::new(), &frame, Some("sess-b"))
+            .await
+            .expect("B's turn connects and streams");
+        drain(&mut events).await;
+        assert!(
+            pool_contains_for_tests("sess-b"),
+            "B's clean turn pooled its socket, so pool_insert ran"
+        );
+        assert_eq!(
+            window_for("sess-a"),
+            1,
+            "A's counter survives another conversation's pool insert"
+        );
+        clear_pool_for_tests();
+        server.abort();
+    }
+
     #[test]
     fn rewrites_https_to_wss() {
         assert_eq!(
@@ -1926,8 +2068,9 @@ mod tests {
     /// The counter starts at 1 on a key with no pooled connection (the mark
     /// that calls it is the conversation's first observed compaction, 0 being
     /// the pre-compaction default) and survives connection churn — the bump's
-    /// own rotation, idle TTL, capacity — so a later non-marked turn that
-    /// opens a fresh socket still handshakes with the current window id.
+    /// own rotation and capacity pressure both leave live counters alone — so
+    /// a later non-marked turn that opens a fresh socket still handshakes with
+    /// the current window id.
     /// Under `POOL_TEST_LOCK`: the counters are process-global and this test
     /// must not interleave with the rotation test's bumps.
     #[tokio::test]
@@ -1945,8 +2088,7 @@ mod tests {
         assert_eq!(window_for_turn(Some("session-1"), false), 3);
         assert_eq!(window_for_turn(None, true), 0);
         // A read is conversation activity: it refreshes the liveness clock, so
-        // an ACTIVE conversation whose compactions are rarer than the idle TTL
-        // never loses its window to the sweep.
+        // the LRU victim under capacity pressure is never a live conversation.
         WINDOWS
             .lock()
             .unwrap()

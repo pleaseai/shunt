@@ -326,3 +326,192 @@ async fn a_gated_websocket_turn_silent_before_its_first_event_falls_back_at_the_
 async fn a_gated_websocket_turn_silent_after_its_first_event_falls_back_at_the_idle_gap() {
     stalled_weak_turn_falls_back_at_the_idle_gap(Stall::AfterFirstEvent).await;
 }
+
+/// A codex websocket upstream that stalls the FIRST connection (the weak
+/// capture) and serves every later one completely, recording each
+/// connection's handshake headers. The escalation fallback's dispatch is the
+/// second connection.
+async fn spawn_stall_then_serve_upstream() -> (String, Arc<StdMutexVec<serde_json::Value>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handshakes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder_handshakes = Arc::clone(&handshakes);
+    tokio::spawn(async move {
+        let mut index = 0_usize;
+        loop {
+            let Ok((socket, _)) = listener.accept().await else {
+                return;
+            };
+            index += 1;
+            let stalled = index == 1;
+            let handshakes = Arc::clone(&recorder_handshakes);
+            tokio::spawn(async move {
+                use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+                let recorder = {
+                    let handshakes = Arc::clone(&handshakes);
+                    #[allow(clippy::result_large_err)]
+                    move |request: &Request, response: Response| -> Result<Response, tungstenite::handshake::server::ErrorResponse> {
+                        let mut recorded = serde_json::Map::new();
+                        for name in ["session-id", "x-codex-window-id"] {
+                            if let Some(value) = request
+                                .headers()
+                                .get(name)
+                                .and_then(|value| value.to_str().ok())
+                            {
+                                recorded.insert(name.to_string(), serde_json::json!(value));
+                            }
+                        }
+                        handshakes.lock().unwrap().push(serde_json::Value::Object(recorded));
+                        Ok(response)
+                    }
+                };
+                let Ok(mut ws) = tokio_tungstenite::accept_hdr_async_with_config(
+                    socket,
+                    recorder,
+                    Some(WebSocketConfig::default()),
+                )
+                .await
+                else {
+                    return;
+                };
+                let _ = ws.next().await; // the client's response.create frame
+                if stalled {
+                    // Silent, not closed: the capture's idle gap cuts it.
+                    std::future::pending::<()>().await;
+                    return;
+                }
+                for event in [
+                    r#"{"type":"response.created","response":{"id":"resp_strong"}}"#,
+                    r#"{"type":"response.output_text.delta","delta":"STRONG-WS"}"#,
+                    r#"{"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":1}}}"#,
+                ] {
+                    ws.send(Message::Text(event.to_string().into()))
+                        .await
+                        .expect("mock upstream should stream the strong turn");
+                }
+            });
+        }
+    });
+    (format!("http://{addr}"), handshakes)
+}
+
+/// Shared by the stall-then-serve mock: the handshake recordings.
+type StdMutexVec<T> = std::sync::Mutex<Vec<T>>;
+
+/// An escalation entry whose weak AND strong tiers are both the
+/// websocket-enabled codex provider: the caller's marked turn dispatches
+/// twice — the weak capture, then the strong fallback — and the window must
+/// advance exactly once. The judge never sees the mark at all, so its target
+/// (an HTTP provider here) is beside the point; the two websocket handshakes
+/// pin the once-per-turn rule end to end.
+#[tokio::test]
+async fn a_compacted_gated_turn_bumps_once_across_the_weak_and_strong_dispatches() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let mut scratch = fake_codex_login(&mut vars);
+    let judge = MockServer::start().await;
+    let (codex, handshakes) = spawn_stall_then_serve_upstream().await;
+    let config = {
+        let path = std::env::temp_dir().join(format!(
+            "shunt-ws-gated-once-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[providers.judge]
+kind = "anthropic"
+base_url = "{judge_uri}"
+auth = "none"
+
+[[models]]
+id = "{GATED_MODEL}"
+[models.router]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge-alias"
+strong_target = "strong-ws-alias"
+weak_target = "weak-ws-alias"
+gated_idle_ms = 300
+gated_max_duration_ms = 8000
+
+[[models]]
+id = "weak-ws-alias"
+upstream_model = {{ codex = "gpt-5.2-codex" }}
+
+[[models]]
+id = "strong-ws-alias"
+upstream_model = {{ codex = "gpt-5.2-codex" }}
+
+[[models]]
+id = "judge-alias"
+upstream_model = {{ judge = "upstream-judge" }}
+"#,
+                judge_uri = judge.uri()
+            ),
+        )
+        .unwrap();
+        scratch.0.push(path.clone());
+        let mut config = Config::load(Some(&path)).expect("the gated fixture config loads");
+        let provider = config
+            .providers
+            .get_mut("codex")
+            .expect("the built-in codex provider");
+        provider.base_url = codex;
+        provider.websocket = true;
+        config.server.bind = "127.0.0.1:0".to_string();
+        config
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (app, _, _) = shunt::server::build_router(config).unwrap();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(20),
+        reqwest::Client::new()
+            .post(format!("http://{addr}/v1/messages"))
+            .header("x-claude-code-session-id", "sess-gated-window-1")
+            .header("x-claude-code-context-compacted", "auto")
+            .json(&json!({
+                "model": GATED_MODEL,
+                "max_tokens": 64,
+                "stream": false,
+                "messages": [{ "role": "user", "content": "hi" }],
+            }))
+            .send(),
+    )
+    .await
+    .expect("the gated turn finishes within the guard")
+    .expect("the request reaches the gateway");
+
+    let status = response.status();
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(status, StatusCode::OK, "got: {body}");
+    let handshakes = handshakes.lock().unwrap().clone();
+    assert_eq!(
+        handshakes.len(),
+        2,
+        "the weak capture and the strong fallback are the two websocket dispatches"
+    );
+    assert_eq!(handshakes[0]["session-id"], "sess-gated-window-1");
+    assert_eq!(
+        handshakes[0]["x-codex-window-id"], "sess-gated-window-1:1",
+        "the capture's dispatch carries the once-bumped window"
+    );
+    assert_eq!(handshakes[1]["session-id"], "sess-gated-window-1");
+    assert_eq!(
+        handshakes[1]["x-codex-window-id"], "sess-gated-window-1:1",
+        "the strong re-dispatch reads the advanced window without bumping again"
+    );
+    server.abort();
+}

@@ -1290,7 +1290,7 @@ async fn delegated_turn_pools_its_own_websocket_and_the_parent_never_rides_it() 
     let (status, body) = post_messages(
         &gateway.base_url,
         &[
-            ("x-claude-code-session-id", "sess-1"),
+            ("x-claude-code-session-id", "sess-delegated-1"),
             ("x-claude-code-agent-id", "agent-7"),
             ("x-claude-code-agent-type", "Explore"),
         ],
@@ -1300,7 +1300,7 @@ async fn delegated_turn_pools_its_own_websocket_and_the_parent_never_rides_it() 
     assert_eq!(status, StatusCode::OK, "child turn failed: {body}");
     let (status, body) = post_messages(
         &gateway.base_url,
-        &[("x-claude-code-session-id", "sess-1")],
+        &[("x-claude-code-session-id", "sess-delegated-1")],
         &body,
     )
     .await;
@@ -1313,17 +1313,17 @@ async fn delegated_turn_pools_its_own_websocket_and_the_parent_never_rides_it() 
     );
     let handshakes = handshakes.lock().unwrap().clone();
     let child = &handshakes[0];
-    assert_eq!(child["session-id"], "sess-1");
-    assert_eq!(child["thread-id"], "sess-1::agent-7");
-    assert_eq!(child["x-codex-parent-thread-id"], "sess-1");
+    assert_eq!(child["session-id"], "sess-delegated-1");
+    assert_eq!(child["thread-id"], "sess-delegated-1::agent-7");
+    assert_eq!(child["x-codex-parent-thread-id"], "sess-delegated-1");
     assert_eq!(child["x-openai-subagent"], "Explore");
-    assert_eq!(child["x-client-request-id"], "sess-1::agent-7");
-    assert_eq!(child["x-codex-window-id"], "sess-1::agent-7:0");
+    assert_eq!(child["x-client-request-id"], "sess-delegated-1::agent-7");
+    assert_eq!(child["x-codex-window-id"], "sess-delegated-1::agent-7:0");
     let parent = &handshakes[1];
-    assert_eq!(parent["session-id"], "sess-1");
-    assert_eq!(parent["thread-id"], "sess-1");
-    assert_eq!(parent["x-client-request-id"], "sess-1");
-    assert_eq!(parent["x-codex-window-id"], "sess-1:0");
+    assert_eq!(parent["session-id"], "sess-delegated-1");
+    assert_eq!(parent["thread-id"], "sess-delegated-1");
+    assert_eq!(parent["x-client-request-id"], "sess-delegated-1");
+    assert_eq!(parent["x-codex-window-id"], "sess-delegated-1:0");
     assert!(
         parent.get("x-codex-parent-thread-id").is_none()
             && parent.get("x-openai-subagent").is_none(),
@@ -1486,4 +1486,88 @@ async fn a_bump_does_not_evict_a_socket_whose_key_text_ends_with_the_window_key(
 
     drop(gateway);
     server.abort();
+}
+
+/// An HTTP turn carries the same `{session}:{window}` a websocket handshake
+/// would: the compaction mark bumps the counter on the first dispatch that
+/// reaches an upstream on EITHER transport, and a later turn of the same
+/// conversation reads the advanced window without bumping. The mock records
+/// each turn's `x-codex-window-id` header; a marked turn must send `:1` and
+/// the turn after it `:1` again.
+#[tokio::test]
+async fn an_http_turn_carries_the_advanced_window_id() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+    let auth_path = write_fake_codex_auth(&mut vars);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(RESPONSES_SSE))
+        .mount(&upstream)
+        .await;
+
+    let mut config = Config::default();
+    config.providers.get_mut("codex").unwrap().base_url = upstream.uri();
+    config.routes.push(RouteConfig {
+        model: "codex-fallback-model".to_string(),
+        provider: "codex".to_string(),
+        upstream_model: None,
+        effort: None,
+        service_tier: None,
+    });
+    let gateway = start_gateway_with(config).await;
+
+    let body = serde_json::json!({
+        "model": "codex-fallback-model",
+        "max_tokens": 16,
+        "stream": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[
+            ("x-claude-code-session-id", "sess-http-window-1"),
+            ("x-claude-code-context-compacted", "auto"),
+        ],
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "marked turn failed: {body}");
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[("x-claude-code-session-id", "sess-http-window-1")],
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "second turn failed: {body}");
+
+    let requests = upstream
+        .received_requests()
+        .await
+        .expect("mock records requests");
+    assert_eq!(requests.len(), 2, "one HTTP turn each");
+    let window = |request: &wiremock::Request| {
+        request
+            .headers
+            .get("x-codex-window-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("the turn sends the window id")
+            .to_string()
+    };
+    assert_eq!(
+        window(&requests[0]),
+        "sess-http-window-1:1",
+        "the marked HTTP turn carries the advanced window"
+    );
+    assert_eq!(
+        window(&requests[1]),
+        "sess-http-window-1:1",
+        "the next turn reads the advanced window without bumping"
+    );
+
+    let _ = std::fs::remove_file(auth_path);
 }

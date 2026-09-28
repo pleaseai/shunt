@@ -89,6 +89,13 @@ pub(super) struct PoolStreamContext {
     pub(super) route: Route,
     pub(super) auth: AuthMode,
     pub(super) session_id: Option<String>,
+    /// The composed identity key the window counter keys on, so the HTTP
+    /// transports read (and, on the mark's consumption, bump) the same
+    /// counter the websocket path does.
+    pub(super) window_key: Option<String>,
+    /// The request's one-shot compaction mark, consumed by the first send
+    /// that reaches an upstream.
+    pub(super) compact: crate::request::CompactionMark,
     /// The delegated-turn subagent identity for the chatgpt arm's headers;
     /// `None` for a non-delegated turn.
     pub(super) delegation: Option<super::request::CodexDelegation>,
@@ -120,6 +127,13 @@ pub(super) struct PoolStreamContext {
 /// translation inputs.
 pub(super) struct PoolForwardStream {
     pub session_id: Option<String>,
+    /// The composed identity key the window counter keys on, so the HTTP
+    /// transports read (and, on the mark's consumption, bump) the same
+    /// counter the websocket path does.
+    pub window_key: Option<String>,
+    /// The request's one-shot compaction mark, consumed by the first send
+    /// that reaches an upstream.
+    pub compact: crate::request::CompactionMark,
     /// The delegated-turn subagent identity, derived once at the adapter from
     /// the inbound headers; `None` for a non-delegated turn.
     pub delegation: Option<super::request::CodexDelegation>,
@@ -145,6 +159,8 @@ pub(super) async fn forward_chatgpt_oauth_stream(
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let PoolForwardStream {
         session_id,
+        window_key,
+        compact,
         delegation,
         upstream_body,
         turn,
@@ -164,6 +180,8 @@ pub(super) async fn forward_chatgpt_oauth_stream(
             .unwrap_or(crate::retry::RetryPolicy::DISABLED),
         credential: None,
         session_id: session_id.clone(),
+        window_key: window_key.clone(),
+        compact: compact.clone(),
         delegation: delegation.clone(),
         upstream_body: upstream_body.clone(),
         auth: AuthMode::ChatgptOauth,
@@ -212,6 +230,8 @@ pub(super) fn pool_or_single_events(
         state: AppState,
         route: Route,
         session_id: Option<String>,
+        window_key: Option<String>,
+        compact: crate::request::CompactionMark,
         delegation: Option<super::request::CodexDelegation>,
         upstream_body: std::sync::Arc<Value>,
         single: HttpSendContext,
@@ -228,6 +248,8 @@ pub(super) fn pool_or_single_events(
             state,
             route,
             session_id,
+            window_key: single.window_key.clone(),
+            compact: single.compact.clone(),
             delegation: single.delegation.clone(),
             upstream_body,
             single,
@@ -242,6 +264,8 @@ pub(super) fn pool_or_single_events(
                         state,
                         route,
                         session_id,
+                        window_key,
+                        compact,
                         delegation,
                         upstream_body,
                         single,
@@ -305,6 +329,8 @@ pub(super) fn pool_or_single_events(
                             route,
                             auth: AuthMode::ChatgptOauth,
                             session_id,
+                            window_key,
+                            compact,
                             delegation,
                             upstream_body,
                             accounts_config,
@@ -344,6 +370,8 @@ pub(super) fn pool_events_stream(
         route,
         auth,
         session_id,
+        window_key,
+        compact,
         delegation,
         upstream_body,
         accounts_config,
@@ -378,6 +406,8 @@ pub(super) fn pool_events_stream(
             let route = route.clone();
             let accounts_config = accounts_config.clone();
             let session_id = session_id.clone();
+            let window_key = window_key.clone();
+            let compact = compact.clone();
             let delegation = delegation.clone();
             let upstream_body = upstream_body.clone();
             async move {
@@ -560,12 +590,17 @@ pub(super) fn pool_events_stream(
                             // after admission, credential, and body preparation
                             // have all succeeded.
                             commit_reprobe_for_account(&mut reprobe, index);
+                            let window = super::codex_ws::window_for_turn(
+                                window_key.as_deref(),
+                                compact.take(),
+                            );
                             let upstream = match http_send(
                                 &state,
                                 &route,
                                 credential.clone(),
                                 session_id.as_deref(),
                                 delegation.as_ref(),
+                                window,
                                 body.clone(),
                             )
                             .await
@@ -708,12 +743,19 @@ pub(super) fn pool_events_stream(
                                             continue;
                                         }
                                     };
+                                    // The primary send consumed the mark; this
+                                    // reads the window it left.
+                                    let window = super::codex_ws::window_for_turn(
+                                        window_key.as_deref(),
+                                        compact.take(),
+                                    );
                                     let retry = match http_send(
                                         &state,
                                         &route,
                                         retry_credential,
                                         session_id.as_deref(),
                                         delegation.as_ref(),
+                                        window,
                                         body.clone(),
                                     )
                                     .await
@@ -871,12 +913,12 @@ pub(super) fn pool_events_stream(
 pub(super) async fn forward_chatgpt_oauth(
     state: AppState,
     route: Route,
-    compact: bool,
     forward: PoolForward,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let PoolForward {
         pool_key,
         session_id,
+        compact,
         delegation,
         upstream_body,
         accounts_config,
@@ -924,6 +966,8 @@ pub(super) async fn forward_chatgpt_oauth(
             route: route.clone(),
             auth: AuthMode::ChatgptOauth,
             session_id,
+            window_key: pool_key.clone(),
+            compact: compact.clone(),
             delegation,
             upstream_body: upstream_body.clone(),
             accounts_config: std::sync::Arc::new(accounts_config),
@@ -966,7 +1010,6 @@ pub(super) async fn forward_chatgpt_oauth(
     let auth = AuthMode::ChatgptOauth;
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
-    let mut mark_pending = compact;
     let mut last_response: Option<reqwest::Response> = None;
     // The translated request is immutable across account attempts, so serialize
     // (and, on the ChatGPT backend, zstd-compress — issue #285) it at most once
@@ -1020,12 +1063,13 @@ pub(super) async fn forward_chatgpt_oauth(
                     session_id: session_id.as_deref(),
                     delegation: delegation.as_ref(),
                     // The bump is once per TURN, on the first attempt that
-                    // actually reaches the websocket: an admission failure on
-                    // an earlier-ranked account must not drop the mark (the
-                    // committed single-route path has the same semantics),
-                    // and a failover attempt reads the already-advanced
-                    // window instead of bumping a second time.
-                    compact: mark_pending,
+                    // actually reaches an upstream: the request's one-shot
+                    // mark is consumed by the first window computation, so an
+                    // admission failure on an earlier-ranked account (which
+                    // never reaches one) does not drop the mark, and every
+                    // later attempt — websocket or HTTP, any account — reads
+                    // the already-advanced window instead of bumping again.
+                    compact: compact.clone(),
                 },
                 ForwardOptions {
                     upstream_body: upstream_body.clone(),
@@ -1037,6 +1081,8 @@ pub(super) async fn forward_chatgpt_oauth(
                     // identical to the single-account path (see ForwardOptions).
                     estimate_input: estimate_input.clone(),
                     started_at: None,
+                    window_key: pool_key.clone(),
+                    compact: compact.clone(),
                 },
                 credential.clone(),
             )
@@ -1064,11 +1110,6 @@ pub(super) async fn forward_chatgpt_oauth(
                 Err(error) => return Err(error),
             }
         }
-        // The mark has been offered to the first websocket attempt that ran;
-        // every later attempt reads the advanced window (or, if this attempt
-        // fell back to HTTP, the next account's websocket attempt does).
-        mark_pending = false;
-
         // Prepared once per turn and reused by every later attempt: cloning it
         // is a refcount bump, whereas re-preparing would re-serialize and
         // re-compress the same body on each rotation. Borrow rather than clone
@@ -1096,12 +1137,17 @@ pub(super) async fn forward_chatgpt_oauth(
         // that never reaches this call is cancelled instead of consuming the
         // reprobe interval.
         commit_reprobe_for_account(&mut reprobe_reservation, index);
+        // The mark is consumed by the first send that reaches an upstream on
+        // either transport: a websocket attempt earlier in this dispatch
+        // already took it, so this reads the window it left.
+        let window = super::codex_ws::window_for_turn(pool_key.as_deref(), compact.take());
         let upstream = match http_send(
             &state,
             &route,
             credential.clone(),
             session_id.as_deref(),
             delegation.as_ref(),
+            window,
             body.clone(),
         )
         .await
@@ -1190,12 +1236,16 @@ pub(super) async fn forward_chatgpt_oauth(
                             continue;
                         }
                     };
+                // The primary send consumed the mark; this reads the window
+                // it left.
+                let window = super::codex_ws::window_for_turn(pool_key.as_deref(), compact.take());
                 let retry = match http_send(
                     &state,
                     &route,
                     retry_credential,
                     session_id.as_deref(),
                     delegation.as_ref(),
+                    window,
                     body.clone(),
                 )
                 .await
@@ -1951,10 +2001,10 @@ mod tests {
             let (status, _response) = forward_chatgpt_oauth(
                 state.clone(),
                 pool_route(),
-                true,
                 PoolForward {
                     pool_key: Some("sess-1".to_string()),
                     session_id: Some("sess-1".to_string()),
+                    compact: crate::request::CompactionMark::armed(true),
                     ..turn
                 },
             )
@@ -2096,10 +2146,10 @@ mod tests {
         let (status, _response) = forward_chatgpt_oauth(
             state.clone(),
             pool_route(),
-            true,
             PoolForward {
                 pool_key: Some("sess-1".to_string()),
                 session_id: Some("sess-1".to_string()),
+                compact: crate::request::CompactionMark::armed(true),
                 ..turn
             },
         )
@@ -2213,10 +2263,10 @@ mod tests {
         let (status, _response) = forward_chatgpt_oauth(
             state.clone(),
             pool_route(),
-            true,
             PoolForward {
                 pool_key: Some("sess-1".to_string()),
                 session_id: Some("sess-1".to_string()),
+                compact: crate::request::CompactionMark::armed(true),
                 ..turn
             },
         )
@@ -2315,7 +2365,6 @@ mod tests {
         let (status, response) = forward_chatgpt_oauth(
             state.clone(),
             pool_route(),
-            false,
             PoolForward {
                 pool_key: Some("sess-1".to_string()),
                 session_id: Some("sess-1".to_string()),
@@ -2343,10 +2392,10 @@ mod tests {
         let (status, _) = forward_chatgpt_oauth(
             state.clone(),
             pool_route(),
-            true,
             PoolForward {
                 pool_key: Some("sess-1".to_string()),
                 session_id: Some("sess-1".to_string()),
+                compact: crate::request::CompactionMark::armed(true),
                 ..pool_turn(
                     vec![
                         pool_account("acc-a", "SHUNT_POOL_PROBE_A"),
@@ -2394,6 +2443,7 @@ mod tests {
         PoolForward {
             pool_key: None,
             session_id: None,
+            compact: crate::request::CompactionMark::default(),
             delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             accounts_config: accounts,
@@ -2432,7 +2482,7 @@ mod tests {
         let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
         let state = pool_state(server.uri());
         let (status, response) =
-            forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, true))
+            forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
                 .await
                 .expect("streaming pool turn builds the response without upstream headers");
         assert_eq!(status, StatusCode::OK);
@@ -2478,10 +2528,9 @@ mod tests {
             pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
         ];
         let state = pool_state(server.uri());
-        let (_, response) =
-            forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, true))
-                .await
-                .expect("pool turn succeeds on the second account");
+        let (_, response) = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+            .await
+            .expect("pool turn succeeds on the second account");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body is readable");
@@ -2519,7 +2568,7 @@ mod tests {
         let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
         let state = pool_state(server.uri());
         let (status, response) =
-            forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, true))
+            forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
                 .await
                 .expect("pool turn commits and reports the failure in-stream");
         assert_eq!(status, StatusCode::OK);
@@ -2553,7 +2602,7 @@ mod tests {
             .await;
         let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
         let state = pool_state(server.uri());
-        let error = forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, false))
+        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
             .await
             .expect_err("non-streaming 429 stays an error response");
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -2607,7 +2656,6 @@ mod tests {
         let (status, response) = forward_chatgpt_oauth(
             state.clone(),
             pool_route(),
-            false,
             pool_turn(accounts.clone(), false),
         )
         .await
@@ -2678,10 +2726,9 @@ mod tests {
             pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
         ];
         let state = pool_state(server.uri());
-        let (_, response) =
-            forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, true))
-                .await
-                .expect("pool turn commits");
+        let (_, response) = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body is readable");
@@ -2719,7 +2766,7 @@ mod tests {
             pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
         ];
         let state = pool_state(server.uri());
-        let error = forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, false))
+        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
             .await
             .expect_err("an exhausted pool relays the refusal");
         assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
@@ -2759,7 +2806,7 @@ mod tests {
             pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
         ];
         let state = pool_state(server.uri());
-        let error = forward_chatgpt_oauth(state, pool_route(), false, pool_turn(accounts, false))
+        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
             .await
             .expect_err("a client 400 is relayed");
         assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
@@ -3193,7 +3240,7 @@ mod tests {
             "SHUNT_POOL_METRICS_PROBE",
         )];
         let (state, route) = pool_state_with_provider("pool-metrics-probe", server.uri());
-        let (_, response) = forward_chatgpt_oauth(state, route, false, pool_turn(accounts, true))
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
             .await
             .expect("pool turn commits and relays");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -3232,7 +3279,7 @@ mod tests {
             "SHUNT_POOL_METRICS_FAIL_PROBE",
         )];
         let (state, route) = pool_state_with_provider("pool-metrics-fail-probe", server.uri());
-        let (_, response) = forward_chatgpt_oauth(state, route, false, pool_turn(accounts, true))
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
             .await
             .expect("pool turn commits and reports the failure in-stream");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -3286,6 +3333,8 @@ mod tests {
             route: route.clone(),
             auth: AuthMode::ChatgptOauth,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
             delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             accounts_config: std::sync::Arc::new(accounts),
@@ -3342,7 +3391,7 @@ mod tests {
         let state = AppState::new(config, reqwest::Client::new()).unwrap();
         let mut route = pool_route();
         route.provider = "pool-metrics-ttfb-probe".to_string();
-        let (_, response) = forward_chatgpt_oauth(state, route, false, pool_turn(accounts, true))
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
             .await
             .expect("pool turn commits and reports the timeout in-stream");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -3407,7 +3456,7 @@ mod tests {
         let state = AppState::new(config, reqwest::Client::new()).unwrap();
         let mut route = pool_route();
         route.provider = "pool-metrics-refused-probe".to_string();
-        let (_, response) = forward_chatgpt_oauth(state, route, false, pool_turn(accounts, true))
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
             .await
             .expect("pool turn commits and reports the exhaustion in-stream");
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -3437,6 +3486,8 @@ mod tests {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
             delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: AuthMode::ChatgptOauth,
@@ -3478,6 +3529,8 @@ mod tests {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
             delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: AuthMode::ChatgptOauth,
@@ -3532,6 +3585,8 @@ mod tests {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
             delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: AuthMode::ApiKey,
@@ -3594,6 +3649,8 @@ mod tests {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
             delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: AuthMode::ChatgptOauth,

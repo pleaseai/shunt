@@ -787,3 +787,30 @@ mod oversized_reply {
         );
     }
 }
+
+mod judge_header_marks {
+    //! The compaction mark is the client turn's: judge and advisor calls must
+    //! never carry it, so their handshakes never advance the conversation's
+    //! window (round-2 ruling).
+
+    use super::super::judge_headers;
+    use crate::routing::context::CONTEXT_COMPACTED_HEADER;
+    use crate::server::AppState;
+
+    #[test]
+    fn a_judge_call_does_not_carry_the_callers_compaction_mark() {
+        use axum::http::{HeaderMap, HeaderValue};
+        let state = AppState::new(crate::config::Config::default(), reqwest::Client::new())
+            .expect("default config builds");
+        let mut caller = HeaderMap::new();
+        caller.insert("anthropic-beta", HeaderValue::from_static("feature"));
+        caller.insert(CONTEXT_COMPACTED_HEADER, HeaderValue::from_static("auto"));
+        let headers = judge_headers(&state, &caller);
+        assert!(
+            headers.get(CONTEXT_COMPACTED_HEADER).is_none(),
+            "judge and advisor calls never carry the compaction mark"
+        );
+        // The other deliberate removals still apply beside it.
+        assert!(headers.get("anthropic-beta").is_none());
+    }
+}

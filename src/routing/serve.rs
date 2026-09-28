@@ -366,6 +366,9 @@ pub(crate) fn judge_headers(state: &AppState, caller: &HeaderMap) -> HeaderMap {
     }
     headers.remove("anthropic-beta");
     headers.remove("content-length");
+    // The compaction mark is the client turn's: judge and advisor calls never
+    // carry it, so their handshakes never advance the conversation's window.
+    headers.remove(crate::routing::context::CONTEXT_COMPACTED_HEADER);
     headers
 }
 

@@ -28,14 +28,15 @@ use super::ws_stream::{json_events_response, stream_events_response};
 /// key (the turn's thread scope — the child's on a delegated turn — and
 /// account-prefixed on the pool path), the window-counter key (the same scope
 /// unprefixed by the account, so an account rotation cannot reset the
-/// conversation's window), the effective session id, whether this turn
-/// carries the client's one-shot post-compaction mark, and the delegated-turn
+/// conversation's window), the effective session id, the request's one-shot
+/// compaction mark (consumed by this turn's window computation if no earlier
+/// dispatch of the same turn reached an upstream), and the delegated-turn
 /// subagent identity (child thread id + markers) when the turn is a child's.
 pub(super) struct WsIdentity<'a> {
     pub(super) pool_key: Option<&'a str>,
     pub(super) window_key: Option<&'a str>,
     pub(super) session_id: Option<&'a str>,
-    pub(super) compact: bool,
+    pub(super) compact: crate::request::CompactionMark,
     pub(super) delegation: Option<&'a super::request::CodexDelegation>,
 }
 
@@ -59,6 +60,11 @@ pub(super) async fn forward_websocket(
         codex_quota_account,
         estimate_input,
         started_at: _,
+        // The websocket attempt's mark and window key arrive through
+        // `identity` below; `forward`'s copies exist for the HTTP fallback,
+        // which this function never drives itself.
+        window_key: _,
+        compact: _,
     } = forward;
     let WsIdentity {
         pool_key,
@@ -71,15 +77,17 @@ pub(super) async fn forward_websocket(
     let http_url = responses_url(&state.config, &route.provider);
     let ws_url = codex_ws::to_websocket_url(&http_url).map_err(ws_transport_error)?;
     // The handshake's `x-codex-window-id` carries the conversation's compaction
-    // window: a turn the client marks as post-compaction (the one-shot
-    // `x-claude-code-context-compacted` header) bumps the counter and rotates
-    // the socket; every other turn reads the current window. The counter keys
-    // on `window_key` — the turn's thread scope (the child's on a delegated
-    // turn), unprefixed by the account name so an account rotation cannot
-    // reset it — and the bump sweeps the conversation's sockets under every
-    // account, not just this attempt's (see `window_for_turn`). The HTTP
-    // transport never advances and stays `:0` (request.rs).
-    let window = codex_ws::window_for_turn(window_key, compact);
+    // window: the request's one-shot mark is consumed here — the first window
+    // computation of the turn, which is the first dispatch that reaches an
+    // upstream — bumping the counter and rotating the socket; every later
+    // dispatch of the same turn (route failover, a gated REDO, the HTTP
+    // fallback below) takes an already-consumed mark and reads the advanced
+    // window. The counter keys on `window_key` — the turn's thread scope (the
+    // child's on a delegated turn), unprefixed by the account name so an
+    // account rotation cannot reset it — and the bump sweeps the
+    // conversation's sockets under every account, not just this attempt's
+    // (see `window_for_turn`).
+    let window = codex_ws::window_for_turn(window_key, compact.take());
     let ctx = WsTurnContext {
         ws_url,
         pool_key,

@@ -63,6 +63,14 @@ pub(super) async fn forward(
             response: Box::new(error.into_response()),
         })?;
     normalize_request_body(&mut body);
+    // The client's one-shot post-compaction hint, decided once per request:
+    // the Responses adapter consumes it on the first dispatch that reaches an
+    // upstream — either transport — and every later dispatch of the same turn
+    // (route failover, the gated lane's capture and REDO, the WS→HTTP
+    // fallback) reads the already-advanced window without bumping again.
+    // Judge and advisor calls build their own body, so they never see the
+    // mark at all; `judge_headers` also drops the header they would clone.
+    body.set_compaction_mark(crate::adapters::responses::compact_marked(headers));
     // Claude Code's auto mode asks the API to classify the session's own tool
     // uses server-side (`safeguards` + the `dangerous-tool-use-…` beta). Only
     // api.anthropic.com answers it, and a completed response carrying no
