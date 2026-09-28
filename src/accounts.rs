@@ -342,6 +342,10 @@ impl ReloginCause {
 
 #[derive(Debug, Default)]
 struct AccountHealth {
+    /// Stamped by [`AccountPool::health_entry`] when the entry is created, so
+    /// an in-flight attempt can tell the entry it dispatched against from an
+    /// entry re-created for the same identity after a forget.
+    generation: u64,
     cooldown_until: Option<Instant>,
     cooldown_until_fable: Option<Instant>,
     quota: QuotaState,
@@ -541,12 +545,12 @@ pub struct AccountPool {
     /// only pattern needed; `forget_identity` takes this one alone, after it has
     /// released `entries`, which is still consistent with that order.
     store_relogin: Mutex<HashSet<StoreAccountRef>>,
-    /// Bumped whenever `forget_identity` actually removes an entry. An
-    /// in-flight attempt captures the epoch at dispatch; recording checks it,
-    /// so an outcome can never land on an entry re-created for the same
-    /// identity after a forget — removal is meant to reset the totals, and a
-    /// recreated entry is not the one the attempt happened on.
-    forget_epoch: AtomicU64,
+    /// Monotonic source for [`AccountHealth::generation`], stamped when an
+    /// entry is created. In-flight attempts capture the generation of the key
+    /// they dispatch against and only record onto an entry whose generation
+    /// still matches, so a delete-and-re-add of the same identity cannot hand
+    /// the old attempt's counters to the replacement entry.
+    next_entry_generation: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -812,7 +816,7 @@ impl AccountPool {
             let mut snapshots = Vec::with_capacity(accounts.len());
             let mut quota_expired = false;
             for account in accounts {
-                let health = entries.entry(account_key(&provider, account)).or_default();
+                let health = self.health_entry(&mut entries, account_key(&provider, account));
                 health.enabled |= !account.disabled;
                 quota_expired |= expire_stale_quota(&mut health.quota, unix_now);
                 // Assessing under the lock is pure CPU work and avoids cloning
@@ -1038,7 +1042,7 @@ impl AccountPool {
     pub fn note_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
-            let health = entries.entry(account_key(provider, account)).or_default();
+            let health = self.health_entry(&mut entries, account_key(provider, account));
             health.observed = true;
             let quota = &mut health.quota;
             let now = unix_now();
@@ -1138,7 +1142,7 @@ impl AccountPool {
     pub fn note_codex_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
-            let health = entries.entry(account_key(provider, account)).or_default();
+            let health = self.health_entry(&mut entries, account_key(provider, account));
             health.observed = true;
             let quota = &mut health.quota;
             let now = unix_now();
@@ -1203,7 +1207,7 @@ impl AccountPool {
     ) {
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
-            let health = entries.entry(account_key(provider, account)).or_default();
+            let health = self.health_entry(&mut entries, account_key(provider, account));
             health.observed = true;
             let quota = &mut health.quota;
             let now = unix_now();
@@ -1284,7 +1288,7 @@ impl AccountPool {
     ) {
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
-            let health = entries.entry(account_key(provider, account)).or_default();
+            let health = self.health_entry(&mut entries, account_key(provider, account));
             health.observed = true;
             let now = unix_now();
             {
@@ -1336,7 +1340,7 @@ impl AccountPool {
     ) {
         {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
-            let health = entries.entry(account_key(provider, account)).or_default();
+            let health = self.health_entry(&mut entries, account_key(provider, account));
             health.observed = true;
             let quota = &mut health.quota;
             let now = unix_now();
@@ -1396,7 +1400,7 @@ impl AccountPool {
         scope: CooldownScope,
     ) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let health = entries.entry(account_key(provider, account)).or_default();
+        let health = self.health_entry(&mut entries, account_key(provider, account));
         health.observed = true;
         health.enabled = !account.disabled;
         match scope {
@@ -1427,7 +1431,7 @@ impl AccountPool {
     ) {
         let now = Instant::now();
         let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let health = entries.entry(account_key(provider, account)).or_default();
+        let health = self.health_entry(&mut entries, account_key(provider, account));
         health.observed = true;
         health.enabled = !account.disabled;
         // Prune on insert so expired refusals do not accumulate. On the inbound
@@ -1478,7 +1482,7 @@ impl AccountPool {
                 health.needs_relogin = Some(ReloginCause::strongest(health.needs_relogin, cause));
             }
         }
-        let health = entries.entry(key).or_default();
+        let health = self.health_entry(&mut entries, key);
         health.observed = true;
         health.enabled = !account.disabled;
         health.needs_relogin = Some(ReloginCause::strongest(health.needs_relogin, cause));
@@ -1764,7 +1768,7 @@ impl AccountPool {
             self.any_needs_relogin
                 .store(still_marked, Ordering::Relaxed);
         }
-        let health = entries.entry(key).or_default();
+        let health = self.health_entry(&mut entries, key);
         health.observed = true;
         health.enabled = !account.disabled;
         health.cooldown_until = None;
@@ -1793,9 +1797,10 @@ impl AccountPool {
     /// missing entry means the account was forgotten while the attempt was in
     /// flight, and its outcome is discarded. The same discard covers an entry
     /// re-created for the identity after that forget: `CountAttempt` captures
-    /// [`Self::forget_epoch`] at dispatch and the record only lands while the
-    /// epoch is unchanged, so a delete-and-re-add mid-flight cannot hand the
-    /// old attempt's counters to the replacement entry.
+    /// the entry's [`AccountHealth::generation`] at dispatch and the record
+    /// only lands while it is unchanged, so a delete-and-re-add mid-flight
+    /// cannot hand the old attempt's counters to the replacement entry. A
+    /// forget of a different identity leaves this entry's generation alone.
     pub fn note_attempt(&self, provider: &str, account: &AccountConfig, outcome: AttemptOutcome) {
         let key = account_key(provider, account);
         let mut entries = self.entries.lock().expect("account health lock poisoned");
@@ -1804,10 +1809,30 @@ impl AccountPool {
         }
     }
 
-    /// The current forget epoch, captured by an in-flight attempt at dispatch
-    /// and re-checked when its outcome records.
-    pub(crate) fn forget_epoch(&self) -> u64 {
-        self.forget_epoch.load(Ordering::Relaxed)
+    /// The generation of the entry under `provider`/`account`, or `0` when
+    /// the pool holds no entry for it. Captured by an in-flight attempt at
+    /// dispatch and re-checked when its outcome records.
+    pub(crate) fn entry_generation(&self, provider: &str, account: &AccountConfig) -> u64 {
+        let key = account_key(provider, account);
+        let entries = self.entries.lock().expect("account health lock poisoned");
+        entries
+            .get(&key)
+            .map(|health| health.generation)
+            .unwrap_or(0)
+    }
+
+    /// The pool's health entry for `key`, stamping a fresh generation when it
+    /// is created.
+    fn health_entry<'a>(
+        &self,
+        entries: &'a mut HashMap<AccountKey, AccountHealth>,
+        key: AccountKey,
+    ) -> &'a mut AccountHealth {
+        let health = entries.entry(key).or_default();
+        if health.generation == 0 {
+            health.generation = self.next_entry_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        }
+        health
     }
 
     /// Storm-control admission gate (issue #195): admit a request to this
@@ -1835,7 +1860,7 @@ impl AccountPool {
             // Captured under the lock so `ramp_last_activity` (only ever
             // written under this same lock) can never be later than `now`.
             let now = Instant::now();
-            let health = entries.entry(key.clone()).or_default();
+            let health = self.health_entry(&mut entries, key.clone());
             let idle = health.in_flight == 0
                 && health
                     .ramp_last_activity
@@ -1910,14 +1935,13 @@ impl AccountPool {
                     AccountStateIdentity::UpstreamInline { .. } => false,
                 }
         };
-        let (removed_quota, removed_an_entry) = {
+        let removed_quota = {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
-            let before = entries.len();
             let removed_quota = entries
                 .iter()
                 .any(|(key, health)| matches(key) && health.quota.has_signal());
             entries.retain(|key, _| !matches(key));
-            (removed_quota, before != entries.len())
+            removed_quota
         };
         self.refresh_locks
             .lock()
@@ -1955,9 +1979,6 @@ impl AccountPool {
             });
         if removed_quota {
             self.mark_dirty();
-        }
-        if removed_an_entry {
-            self.forget_epoch.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -2255,7 +2276,7 @@ impl AccountPool {
             corrected |= clamp_future_observation(&mut quota.observed_at_status_7d, now);
             corrected |= clamp_future_observation(&mut quota.observed_at_status_7d_oi, now);
             corrected |= clamp_future_observation(&mut quota.observed_at_status, now);
-            let health = entries.entry(key).or_default();
+            let health = self.health_entry(&mut entries, key);
             health.observed = true;
             health.quota = quota;
         }

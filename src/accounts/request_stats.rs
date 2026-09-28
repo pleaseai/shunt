@@ -120,7 +120,7 @@ pub(crate) trait CountAttempt<E>:
             provider,
             account,
             dispatched: Instant::now(),
-            forget_epoch: pool.forget_epoch(),
+            entry_generation: pool.entry_generation(provider, account),
             resolved: false,
         };
         let sent = self.await;
@@ -144,7 +144,7 @@ struct InFlight<'a> {
     provider: &'a str,
     account: &'a AccountConfig,
     dispatched: Instant,
-    forget_epoch: u64,
+    entry_generation: u64,
     resolved: bool,
 }
 
@@ -152,8 +152,9 @@ impl InFlight<'_> {
     fn record(&self, outcome: AttemptOutcome) {
         // The account was forgotten (and possibly re-selected) mid-flight: the
         // entry under the key now is not the one the attempt dispatched
-        // against, so the outcome records against nothing.
-        if self.pool.forget_epoch() == self.forget_epoch {
+        // against, so the outcome records against nothing. A forget of a
+        // different identity leaves this entry's generation alone.
+        if self.pool.entry_generation(self.provider, self.account) == self.entry_generation {
             self.pool.note_attempt(self.provider, self.account, outcome);
         }
     }
@@ -473,6 +474,36 @@ mod tests {
         assert!(sent.is_err(), "the gated send answers Err");
 
         let snapshot = &pool.snapshot("anthropic", std::slice::from_ref(&a), None, None)[0];
+        assert_eq!(snapshot.requests_attempted, 1);
+        assert_eq!(snapshot.requests_failed, 1);
+    }
+
+    /// The guard above only spans a forget of the account's own identity: an
+    /// unrelated account's forget leaves this attempt's counters alone.
+    #[tokio::test(start_paused = true)]
+    async fn a_forget_of_another_account_leaves_the_in_flight_attempt_s_counters() {
+        let (a, b) = (account("a"), account("b"));
+        let pool = std::sync::Arc::new(selected(&[a.clone(), b.clone()]));
+        let (release, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let driver = tokio::spawn({
+            let pool = pool.clone();
+            let a = a.clone();
+            async move {
+                let send = async move {
+                    let _ = release_rx.await;
+                    Err::<reqwest::Response, ()>(())
+                };
+                send.count_attempt(&pool, "anthropic", &a).await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        pool.forget_identity(StoreFamily::Claude, "b-uuid", Some("b"));
+        let _ = release.send(());
+        let sent = driver.await.unwrap();
+        assert!(sent.is_err(), "the gated send answers Err");
+
+        let snapshot = &pool.snapshot("anthropic", &[a, b], None, None)[0];
         assert_eq!(snapshot.requests_attempted, 1);
         assert_eq!(snapshot.requests_failed, 1);
     }
