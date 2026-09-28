@@ -205,7 +205,7 @@ headers = { "x-api-key" = "..." }
 | `provider` | *(必填)* | 提供该模型的 provider。必须是 `kind = "responses"`,且不能使用不携带凭证的 auth 模式(`passthrough` 或 `none`) |
 | `upstream_model` | `model` | 发送给上游的模型 id。与 `model` 不同时,shunt 只改写请求体顶层的 `model`,其余字段保持不变 |
 
-指向未知 provider、非 `responses` provider,或使用不携带凭证的 auth 模式(`passthrough` 或 `none`)的 provider 的 route 会在校验时被拒绝;重复的 `model` 或空字段同样被拒绝。route 从实时配置快照读取,因此新增、修改、删除会在**重新加载**时生效;只有开关 `[server.codex_endpoint]` 表本身才需要重启。路由到非 ChatGPT provider 的请求使用全新组装的头部允许列表(`content-type`、`accept`、通过 flavor 门控的 `OpenAI-Beta`,以及 `xai_oauth` route 的 Grok CLI identity 头部)、identity 编码的请求体和单个凭证,没有池也没有故障转移。
+指向未知 provider、非 `responses` provider,或使用不携带凭证的 auth 模式(`passthrough` 或 `none`)的 provider 的 route 会在校验时被拒绝;重复的 `model` 或空字段同样被拒绝。route 从实时配置快照读取,因此新增、修改、删除会在**重新加载**时生效;只有开关 `[server.codex_endpoint]` 表本身才需要重启。路由到非 ChatGPT provider 的请求从全新组装的头部允许列表开始:只从客户端取得 `content-type`(缺省为 `application/json`)和 `accept`;shunt 再加入解析出的凭据、通过 flavor 门控的 `OpenAI-Beta`、`xai_oauth` route 的整套 Grok CLI identity 头部,以及当 `api_key` route 的 host 恰好是 `api.openai.com` 且解析出了非空 conversation id 时重新生成的 `session-id`、`thread-id`、`x-client-request-id`、`x-codex-window-id`。调用方发送的凭据、Codex identity、session 和 `x-codex-*` 头部仍会被剥离。xAI 和其他第三方 OpenAI 兼容 host 都不会收到亲和头部,API 密钥路径也不会生成 `accept: text/event-stream`。请求使用 identity 编码的请求体和单个凭证,没有池也没有故障转移。
 同一可选功能还会注册 `GET /models` 和 `GET /backend-api/codex/models`,它们在常规模型发现认证门之后返回有效的 Codex 回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 上,如果存在 `client_version` 查询,它优先于类 Anthropic 的头部并选择 Codex 空形状。没有 `client_version` 时,现有 Anthropic 发现响应保持不变。shunt 不会伪造不完整的 Codex `ModelInfo` 行。
 
 ## `[server.usage]`(可选)

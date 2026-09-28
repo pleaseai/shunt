@@ -43,7 +43,7 @@ Anthropic request (subset shunt reads) → Responses body:
 | `parallel_tool_calls` | `parallel_tool_calls` | Pass through, but see §4 (mutating-tool guard is **optional**). |
 | `thinking` | `reasoning.effort` | §5. Note: Claude's `budget_tokens` and Responses `effort` are different concepts — do not arithmetic-convert. |
 | — | `reasoning.summary` | `"auto"`. |
-| — | `text.verbosity` | `"medium"` (default; could be config later). |
+| — | `text` | omitted unless a `json_schema` format is requested (the judge path); the object carries the format alone, no `verbosity` key. |
 | — | `store` | `false`. |
 | — | `stream` | `true` (always). |
 | `max_tokens` | — | Responses has no direct equivalent used here; omit. (Revisit if truncation needed.) |

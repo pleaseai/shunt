@@ -151,7 +151,7 @@ shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，�
 
 路由到**非 ChatGPT** 上游的请求有以下不同：
 
-- **请求头白名单。** 只有 `content-type` 和 `accept` 取自客户端，另加解析出的凭据以及被路由到的上游自身所要求的 identity —— `OpenAI-Beta: responses=experimental`（xAI/Grok 除外），以及 `xai_oauth` 路由所需的 Grok CLI identity 请求头。`authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`x-codex-*`、`x-shunt-*` 都不会到达第三方。
+- **请求头白名单。** 新白名单起初只从客户端取得 `content-type`（缺省为 `application/json`）和 `accept`，然后加入解析出的凭据，以及被路由到的上游自身所需的请求头：xAI/Grok 会省略的 `OpenAI-Beta: responses=experimental`、`xai_oauth` 路由的整套 Grok CLI identity 请求头，以及当 `api_key` 路由的目标主机恰好是 `api.openai.com` 且解析出了非空 conversation id 时，重新生成的四个会话亲和请求头（`session-id`、`thread-id`、`x-client-request-id`、`x-codex-window-id`）。客户端发送的 `authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`thread-id`、`x-client-request-id`、`x-codex-*`、`x-shunt-*` 仍会被剥离；原生 OpenAI 所用的值也是重新生成，而不是转发。xAI 和其他第三方 OpenAI 兼容主机都不会收到这些会话亲和请求头。API 密钥路径也不会生成 `accept: text/event-stream`。
 - **改写请求体的 `model`。** 当 `upstream_model` 与请求的模型不同时，shunt 只改写顶层的 `model`，其余字段原样保留。不是 JSON 对象的请求体会以 `400` 拒绝，而不会被继续转发。
 - **identity 编码。** zstd 请求体会先解码（原生 Responses API 不接受该编码），且不转发 `content-encoding`。
 - **单一凭据，无故障转移。** 被路由到的第三方背后没有账号池，因此 429 或 5xx 会连同 `retry-after` 原样转发，不会触发轮换。

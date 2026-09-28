@@ -152,10 +152,13 @@ narrower path:
   So the routed request is built from scratch: only `content-type` (defaulted to
   `application/json`) and `accept` come from the client. Added to that are the resolved credential
   and whatever identity the *routed upstream itself* gates on: `OpenAI-Beta: responses=experimental`
-  under the same flavor gate the outbound path uses (skipped for xAI/Grok), and — for an
-  `xai_oauth` route — the four Grok-CLI headers the subscription chat proxy requires, shared with
-  the outbound path so the two cannot drift. Everything else is dropped by construction, so a header
-  added later cannot start reaching a third party because nobody remembered to deny it.
+  under the same flavor gate the outbound path uses (skipped for xAI/Grok), for an `xai_oauth` route
+  the four Grok-CLI headers the subscription chat proxy requires, and for an `api_key` route to the
+  stock OpenAI host (`api.openai.com` exactly) the four session-affinity headers (`session-id`,
+  `thread-id`, `x-client-request-id`, `x-codex-window-id`) generated from the resolved conversation
+  id. The client's own `session-id` and `x-codex-*` stay stripped in every case — a stock-OpenAI
+  route's headers are generated, never forwarded. Everything else is dropped by construction, so a
+  header added later cannot start reaching a third party because nobody remembered to deny it.
 - **Body `model` rewrite.** When the route's `upstream_model` differs from what the client asked
   for, shunt parses the body, replaces the top-level `model`, and re-serializes it. Every other
   field is preserved. A body that is not a JSON object cannot be rewritten and is rejected with a
@@ -210,7 +213,11 @@ Because the inbound client **is** a real Codex CLI (unlike the `/v1/messages` pa
 *impersonates* one), the passthrough forwards the client's **own request headers verbatim** rather
 than synthesizing them. shunt's translating path builds a fresh request with a hardcoded Codex
 identity (`originator=codex_cli_rs`, `user-agent=codex_cli_rs/0.156.0`, `version=0.156.0`,
-`OpenAI-Beta: responses=experimental`, and session/window headers derived from the session id); the
+`OpenAI-Beta: responses=experimental`) and session/window headers derived from the resolved
+conversation id — a routed request that arrives with the CLI's own `thread-id`,
+`x-client-request-id`, or `x-codex-window-id` keeps those values verbatim, and only the absent
+ones are generated (`session-id` always stays shunt's resolved id, so it equals the body's
+`prompt_cache_key`); the
 inbound passthrough does **not** — it forwards whatever `version`, `originator`, `user-agent`,
 `OpenAI-Beta`, `session-id`, `thread-id`, `x-codex-window-id`, `x-codex-*`, `content-type`, and
 `accept` the Codex CLI sent, so the client's **real** version drives the backend's

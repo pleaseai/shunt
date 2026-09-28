@@ -151,7 +151,7 @@ shunt は Codex CLI のディスカバリー要求に対して有効なフォー
 
 **ChatGPT 以外**のアップストリームへルーティングされたリクエストで変わる点:
 
-- **ヘッダーの許可リスト。** クライアントから引き継ぐのは `content-type` と `accept` のみで、これに解決された資格情報と、ルーティング先のアップストリーム自身が要求する identity が加わります — `OpenAI-Beta: responses=experimental`(xAI/Grok では省略)、および `xai_oauth` ルートの場合は Grok CLI の identity ヘッダー。`authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`x-codex-*`、`x-shunt-*` はいずれもサードパーティに届きません。
+- **ヘッダーの許可リスト。** 新しい許可リストは、まずクライアントから `content-type`（なければ `application/json`）と `accept` だけを引き継ぎ、解決された資格情報と、ルーティング先のアップストリーム自身が要求するヘッダーを加えます。具体的には、xAI/Grok では省略する `OpenAI-Beta: responses=experimental`、`xai_oauth` ルートの Grok CLI identity ヘッダー一式、そして `api_key` ルートの送信先が正確に `api.openai.com` で、空でない conversation id が解決された場合に新しく生成する 4 つのセッションアフィニティヘッダー（`session-id`、`thread-id`、`x-client-request-id`、`x-codex-window-id`）です。クライアントが送った `authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`thread-id`、`x-client-request-id`、`x-codex-*`、`x-shunt-*` は引き続き削除され、純正 OpenAI 向けの値も転送ではなく生成されます。xAI とその他のサードパーティ OpenAI 互換ホストにはセッションアフィニティヘッダーを追加しません。API キーパスは `accept: text/event-stream` も生成しません。
 - **ボディの `model` 書き換え。** `upstream_model` が要求されたモデルと異なる場合、shunt はトップレベルの `model` だけを書き換え、他のフィールドはそのまま残します。JSON オブジェクトでないボディはそのまま送らず `400` で拒否します。
 - **identity エンコーディング。** zstd のリクエストボディはまずデコードされ(純正の Responses API はそのエンコーディングを受け付けません)、`content-encoding` は転送されません。
 - **資格情報は 1 つ、フェイルオーバーなし。** ルーティング先のサードパーティの背後にプールはないため、429 や 5xx はローテーションを起こさず `retry-after` とともにそのままリレーされます。

@@ -151,7 +151,7 @@ shunt는 Codex CLI 디스커버리 요청에 유효한 폴백인 `{"models":[]}`
 
 **ChatGPT가 아닌** 업스트림으로 라우팅된 요청에서 달라지는 점:
 
-- **헤더 허용 목록.** 클라이언트에서 가져오는 것은 `content-type`과 `accept`뿐이고, 여기에 해석된 자격 증명과 라우팅 대상 업스트림이 요구하는 identity만 더해집니다 — `OpenAI-Beta: responses=experimental`(xAI/Grok에서는 생략), 그리고 `xai_oauth` 라우트의 경우 Grok CLI identity 헤더. `authorization`, `x-api-key`, `chatgpt-account-id`, `originator`, `version`, `user-agent`, `session-id`, `x-codex-*`, `x-shunt-*`는 어느 것도 서드파티에 닿지 않습니다.
+- **헤더 허용 목록.** 새 허용 목록은 먼저 클라이언트의 `content-type`(없으면 `application/json`)과 `accept`만 가져온 뒤, 해석된 자격 증명과 라우팅 대상 업스트림 자체가 요구하는 헤더를 더합니다: xAI/Grok에서는 생략되는 `OpenAI-Beta: responses=experimental`, `xai_oauth` 라우트의 Grok CLI identity 헤더 세트, 그리고 `api_key` 라우트가 정확히 `api.openai.com`을 대상으로 하며 비어 있지 않은 conversation id가 해석된 경우 새로 생성한 네 개의 세션 친화도 헤더(`session-id`, `thread-id`, `x-client-request-id`, `x-codex-window-id`)입니다. 클라이언트가 보낸 `authorization`, `x-api-key`, `chatgpt-account-id`, `originator`, `version`, `user-agent`, `session-id`, `thread-id`, `x-client-request-id`, `x-codex-*`, `x-shunt-*`는 계속 제거되며, 순정 OpenAI용 값도 전달하는 것이 아니라 새로 생성합니다. xAI와 그 밖의 서드파티 OpenAI 호환 호스트에는 세션 친화도 헤더가 추가되지 않습니다. API 키 경로는 `accept: text/event-stream`도 새로 만들지 않습니다.
 - **본문 `model` 재작성.** `upstream_model`이 요청된 모델과 다르면 shunt가 최상위 `model`만 바꾸고 나머지 필드는 그대로 둡니다. JSON 객체가 아닌 본문은 그대로 보내지 않고 `400`으로 거부합니다.
 - **identity 인코딩.** zstd 요청 본문은 먼저 디코딩되며 — 순정 Responses API는 그 인코딩을 받지 않습니다 — `content-encoding`은 전달되지 않습니다.
 - **자격 증명 하나, 페일오버 없음.** 라우팅된 서드파티 뒤에는 풀이 없으므로 429나 5xx는 회전을 유발하지 않고 `retry-after`와 함께 그대로 릴레이됩니다.
