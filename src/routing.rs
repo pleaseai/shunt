@@ -6,6 +6,7 @@ use crate::{
     error::ShuntError,
 };
 
+pub(crate) mod conditional;
 use context::RouterContext;
 use outcome::{RouteSource, RouterOutcome};
 use stage::{ConsultJudge, ConsultKind, StageContext};
@@ -217,6 +218,13 @@ fn resolve_chain(config: &Config, model: &str, stage: Option<&StageContext<'_>>)
                         )
                     }
                     RouterConfig::Random(random) => random::select(random, model, stage),
+                    // Reads the live request's headers only when the entry
+                    // carries this table, so non-conditional traffic pays
+                    // nothing. A body-less resolution passes no headers and a
+                    // header-gated rule simply does not match.
+                    RouterConfig::Conditional(conditional) => {
+                        conditional::select(conditional, model, stage.map(|stage| stage.headers))
+                    }
                     RouterConfig::PrefillRouter(prefill) => {
                         // Parked, not driven: the drive is inference plus an
                         // affinity write, and neither may happen for a caller
