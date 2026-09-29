@@ -887,7 +887,7 @@ max_reviews = 1
 | `advisor_max_tokens` | `2048` | 리뷰 한 번의 출력 토큰 상한. 최소 `1` |
 | `advisor_temperature` | 미설정 | 리뷰의 샘플링 온도. 설정하지 않으면 리뷰 요청에서 뺍니다 |
 | `transcript_max_chars` | `200000` | 어드바이저에게 보내는 트랜스크립트의 상한. 더 길면 가운데를 잘라 냅니다. 최소 `256` |
-| `fail_open` | `true` | 리뷰가 실패하면 붙잡아 둔 턴을 제공합니다. `false`면 대신 요청을 `502`로 실패시킵니다 |
+| `fail_open` | `true` | 리뷰가 실패하면 붙잡아 둔 턴을 제공합니다. `false`면 대신 요청을 `502`로 실패시킵니다 — 세션이 `max_judge_calls`를 다 써서 리뷰를 아예 보내지 않은 경우도 마찬가지이며, 그 거부도 `budget_exhausted`로 집계됩니다 |
 | `reviewer_system_prompt` | 패키지 프롬프트 | APPROVE/REDO 리뷰어 프롬프트를 대체합니다 |
 | `redo_feedback_prefix` | 패키지 프롬프트 | 실행 모델에게 돌려보내는 REDO 계획 앞에 붙는 문구를 대체합니다 |
 
@@ -938,7 +938,7 @@ Anthropic 실행 모델이든 OpenAI Responses 실행 모델이든 같습니다.
 | :-- | :-- | :-- | :-- |
 | `escalation_weak` | escalation | 판정 모델이 약한 턴을 통과시켰습니다. 거절했거나, 상향 전환 연속 횟수가 아직 `confirmations`보다 작습니다 | 재생 |
 | `escalation_latch` | escalation | 세션이 이 턴이나 그 이전에 고정되어 강한 타깃이 턴을 제공했습니다 | 실시간 |
-| `escalation_fallback` | escalation | 약한 턴이 실패했거나 종료 표시 전에 끊겨 강한 타깃이 턴을 제공했습니다. 판정 모델은 부르지 않았습니다 | 실시간 |
+| `escalation_fallback` | escalation | 약한 턴이 실패했거나, 종료 표시 전에 끊겼거나, 업스트림이 컨텍스트 윈도에 비해 너무 길다며 거부해 강한 타깃이 턴을 제공했습니다. 판정 모델은 부르지 않았습니다 | 실시간 |
 | `classifier_fail_open` | escalation | 완성된 약한 턴 뒤에 판정이 실패해 약한 턴을 제공했습니다 | 재생 |
 | `advisor_approve` | advisor | 실행 모델 턴을 리뷰해 승인했습니다 | 재생 |
 | `advisor_pass` | advisor | 실행 모델 턴을 리뷰 없이 제공했습니다. 게이트에 걸리지 않았거나(예: 도구 호출로 끝나는 턴), 리뷰를 예약할 수 없었습니다 | 재생 |
@@ -952,8 +952,9 @@ Anthropic 실행 모델이든 OpenAI Responses 실행 모델이든 같습니다.
 | 실패한 것 | `escalation` | `advisor` |
 | :-- | :-- | :-- |
 | 보류된 턴이 `gated_*` 한도를 넘거나 종료 표시 전에 끝남 | 헤더를 보내기 전에 버리고, 강한 타깃이 턴을 실시간으로 제공합니다(`escalation_fallback`) | 헤더를 보내기 전에 버리고, 요청은 Anthropic 오류 형태의 게이트웨이 소유 `502`로 실패합니다(`gated_error`). REDO도 페일오버 시도도 아닙니다 — 업스트림은 이미 `2xx`로 답했습니다 |
-| 보류된 호출의 업스트림이 오류 상태로 답함 | 실시간 턴과 마찬가지로 클라이언트에 그대로 전달합니다(`gated_error`) | 그대로 전달합니다(`gated_error`) |
-| 완성된 턴 뒤에 판정이나 리뷰가 실패함 — 타임아웃, 너무 크거나 파싱할 수 없는 응답, 업스트림 오류, `max_judge_calls` 소진 | 약한 턴을 제공합니다(`classifier_fail_open`) | `fail_open = true`면 실행 모델 턴을 제공하고(`advisor_fail_open`), `fail_open = false`면 요청이 게이트웨이 소유 `502`로 실패합니다(`gated_error`) |
+| 보류된 호출의 업스트림이 컨텍스트 윈도에 비해 너무 길다며 턴을 거부함: 오류 메시지에 `prompt is too long`, `maximum number of tokens`, `context window`, `context length` 중 하나가 들어 있는 `400` | 강한 타깃이 턴을 실시간으로 제공합니다(`escalation_fallback`) | 클라이언트가 컨텍스트를 압축할 수 있도록 그대로 전달합니다(`gated_error`) |
+| 보류된 호출의 업스트림이 그 밖의 오류 상태로 답함 | 실시간 턴과 마찬가지로 업스트림의 `retry-after`와 함께 클라이언트에 그대로 전달합니다(`gated_error`) | 그대로 전달합니다(`gated_error`) |
+| 완성된 턴 뒤에 판정이나 리뷰가 실패함 — 타임아웃, 너무 크거나 파싱할 수 없는 응답, 업스트림 오류, `max_judge_calls` 소진 | 약한 턴을 제공합니다(`classifier_fail_open`) | `fail_open = true`면 실행 모델 턴을 제공하고(`advisor_fail_open`), `fail_open = false`면 요청이 게이트웨이 소유 `502`로 실패합니다(`gated_error`). `max_judge_calls`가 리뷰를 거부한 경우도 마찬가지이며, 이때는 `budget_exhausted`로 집계됩니다 |
 
 **비용.** 다음은 항목별로 선택해 치르는 비용입니다.
 
