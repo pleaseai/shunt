@@ -1,0 +1,29 @@
+.please/docs/decisions/0005-routing-algorithm-extensions.md
+  s_e9c7bce466358a::t_e718107d7e96b9 688-692
+docs/routing-algorithms.md
+  s_e9c7bce466358a::t_41137e5121ba33 1513
+site/src/content/docs/ja/reference/configuration.md
+  s_e9c7bce466358a::t_925e39243a3135 602-603
+site/src/content/docs/ko/reference/configuration.md
+  s_e9c7bce466358a::t_3f9f93eb28cdce 619-620
+site/src/content/docs/reference/configuration.md
+  s_e9c7bce466358a::t_4ab82c82fec9cc 813-814
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_e9c7bce466358a::t_83aa02b2ad23b3 580-581
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7eb35c3b0abdf4c72fce9249c745de9a7b03d373",
+  "prompts": {},
+  "sessions": {
+    "s_e9c7bce466358a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52c4e84c-87ad-4bd6-aebe-df807ab7e91c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
