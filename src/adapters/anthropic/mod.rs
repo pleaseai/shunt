@@ -1455,6 +1455,7 @@ pub(crate) async fn chain_attempt(
                 remember: false,
                 envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                 status,
+                retry_after: None,
             };
         }
     };
@@ -1511,6 +1512,7 @@ pub(crate) async fn chain_attempt(
                 } else {
                     StatusCode::BAD_GATEWAY
                 },
+                retry_after: None,
             };
         }
     };
@@ -1526,6 +1528,12 @@ pub(crate) async fn chain_attempt(
         // non-terminating error body when the status alone suffices to
         // advance, and the chain's latency sample lands at header arrival
         // instead of after the budgeted read — mirroring the Responses arm.
+        // The single-route path relays the upstream's headers with its
+        // status; the one the committed stream keeps is `retry-after`.
+        let retry_after = upstream
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .cloned();
         let envelope = crate::proxy::chain_stream::LazyEnvelope::Deferred(Box::pin(
             mapped_error_envelope(status, upstream),
         ));
@@ -1534,6 +1542,7 @@ pub(crate) async fn chain_attempt(
             remember: true,
             envelope,
             status,
+            retry_after,
         };
     }
     let is_sse = upstream
@@ -1560,6 +1569,7 @@ pub(crate) async fn chain_attempt(
             remember: false,
             envelope,
             status: StatusCode::BAD_GATEWAY,
+            retry_after: None,
         };
     }
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
@@ -2393,6 +2403,7 @@ mod tests {
                 remember,
                 envelope,
                 status,
+                ..
             } => {
                 assert!(!advance, "a 400 is terminal");
                 assert!(remember, "a relayed status is remembered");

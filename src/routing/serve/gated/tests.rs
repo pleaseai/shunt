@@ -238,11 +238,20 @@ async fn a_stalled_refusal_body_is_cut_at_the_idle_gap() {
     ));
 }
 
+/// Gated bounds loose enough that only the case under test can bite.
+fn refusal_bounds() -> GatedBounds {
+    GatedBounds {
+        max_bytes: 1 << 20,
+        idle: Duration::from_secs(5),
+        max_duration: Duration::from_secs(30),
+    }
+}
+
 /// A successful reply whose body broke after its headers ended before its
 /// terminal marker, so it is cut and falls back; the same error without the
 /// marker is still the upstream's own failure.
-#[test]
-fn a_body_broken_after_the_headers_is_a_transport_cut() {
+#[tokio::test]
+async fn a_body_broken_after_the_headers_is_a_transport_cut() {
     let error = || crate::adapters::AdapterError {
         message: "failed to read body".to_string(),
         response: Box::new(axum::response::IntoResponse::into_response(
@@ -254,11 +263,15 @@ fn a_body_broken_after_the_headers_is_a_transport_cut() {
         crate::proxy::ForwardError::new(error.message, error.response)
     };
     assert!(matches!(
-        chain_failure(forward(crate::adapters::mark_body_broke(error()))),
+        chain_failure(
+            forward(crate::adapters::mark_body_broke(error())),
+            refusal_bounds()
+        )
+        .await,
         GatedCapture::Cut(CutReason::Transport)
     ));
     assert!(matches!(
-        chain_failure(forward(error())),
+        chain_failure(forward(error()), refusal_bounds()).await,
         GatedCapture::UpstreamError(UpstreamFailure::Failed { .. })
     ));
 }
@@ -266,14 +279,14 @@ fn a_body_broken_after_the_headers_is_a_transport_cut() {
 /// A body that went silent inside the adapter's whole-body read is the idle
 /// bound biting there rather than in `collect_gated`, so it is cut exactly as
 /// that collector would have cut it — not relayed as the upstream's failure.
-#[test]
-fn a_body_stalled_inside_the_adapter_is_an_idle_cut() {
+#[tokio::test]
+async fn a_body_stalled_inside_the_adapter_is_an_idle_cut() {
     let error = crate::adapters::idle_error(crate::adapters::UpstreamBodyIdle {
         idle: Duration::from_millis(300),
     });
     let forward = crate::proxy::ForwardError::new(error.message, error.response);
     assert!(matches!(
-        chain_failure(forward),
+        chain_failure(forward, refusal_bounds()).await,
         GatedCapture::Cut(CutReason::Bound(BoundExceeded::Idle))
     ));
 }

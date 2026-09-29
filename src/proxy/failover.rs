@@ -1106,5 +1106,8 @@ fn stamp_gateway_headers(
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod gated_tests;
+
 #[cfg(all(test, feature = "prefill-router"))]
 mod prefill_tests;

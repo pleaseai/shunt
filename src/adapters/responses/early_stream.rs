@@ -151,6 +151,10 @@ pub(super) enum SendClassified {
         /// configured timeout is an answer (`504 timeout_error`), not a
         /// transport failure, exactly like the pre-commit loop's mapping.
         advance: bool,
+        /// The upstream's `retry-after` on a relayed status, which
+        /// `mapped_upstream_error` copies onto the ordered loop's refusal
+        /// (issue #655). `None` for a gateway-synthesized failure.
+        retry_after: Option<axum::http::HeaderValue>,
     },
 }
 
@@ -173,6 +177,7 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
             status: StatusCode::BAD_GATEWAY,
             remember: false,
             advance: false,
+            retry_after: None,
         };
     };
     let body = super::body::prepare_body(
@@ -224,6 +229,7 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
                 status,
                 remember: false,
                 advance,
+                retry_after: None,
             };
         }
     };
@@ -243,6 +249,10 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
         // the budgeted read runs for the terminal error frame. The envelope
         // resolves where the failure turns terminal.
         let auth = context.auth;
+        let retry_after = upstream
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .cloned();
         let envelope = LazyEnvelope::Deferred(Box::pin(async move {
             adapter_error_envelope(mapped_upstream_error(status, upstream, auth).await).await
         }));
@@ -251,6 +261,7 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
             status,
             remember: true,
             advance: crate::proxy::failover::is_advance_status(status),
+            retry_after,
         };
     }
     SendClassified::Relay {

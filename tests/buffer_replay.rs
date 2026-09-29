@@ -33,6 +33,12 @@ mod transport;
 #[path = "buffer_replay/pool.rs"]
 mod pool;
 
+#[path = "buffer_replay/overflow.rs"]
+mod overflow;
+
+#[path = "buffer_replay/refusal.rs"]
+mod refusal;
+
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use wiremock::{matchers::method, Mock, MockServer};
@@ -44,7 +50,7 @@ use harness::{
 };
 use judge_harness::{
     can_bind_loopback, env, stall_mock, start_gateway, Stall, CAPABLE_UPSTREAM_MODEL,
-    EFFICIENT_UPSTREAM_MODEL, JUDGE_KEY_ENV, ROUTER_ID,
+    EFFICIENT_UPSTREAM_MODEL, ROUTER_ID,
 };
 
 pub(crate) const DECLINE: &str = r#"{"escalate": false, "reason": "progressing"}"#;
@@ -443,10 +449,8 @@ async fn a_refused_streaming_weak_chain_relays_the_client_facing_status() {
     }
 }
 
-/// An escalation gateway whose weak alias `chained-alias` maps two upstreams:
-/// an HTTP Responses route on `down` that answers `down_status`, then the
-/// Anthropic route on `efficient`. That is the shape the live path sends
-/// through the committed chain stream.
+/// [`refusal::chained_gateway_with`], with the Responses route answering a
+/// bare `down_status`.
 async fn chained_gateway(
     strong: &MockServer,
     efficient: &MockServer,
@@ -454,35 +458,12 @@ async fn chained_gateway(
     down: &MockServer,
     down_status: u16,
 ) -> judge_harness::TestGateway {
-    Mock::given(method("POST"))
-        .respond_with(wiremock::ResponseTemplate::new(down_status))
-        .expect(1)
-        .mount(down)
-        .await;
-    // Never called: the chain holds no Responses tier of the harness's own.
-    let responses = MockServer::start().await;
-    let tiers = Tiers::of(strong, efficient, &responses, judge.uri());
-    let mut config = harness::unvalidated_gated_config(&tiers, &escalation_router("chained-alias"));
-    let mut weak_responses = judge_harness::api_key("down", down.uri(), JUDGE_KEY_ENV);
-    weak_responses.kind = Some(shunt::config::ProviderKind::Responses);
-    // Ahead of `efficient`: the chain follows `[[upstreams]]` order.
-    let at = config
-        .upstreams
-        .iter()
-        .position(|upstream| upstream.name == "efficient")
-        .expect("the harness has an efficient upstream");
-    config.upstreams.insert(at, weak_responses);
-    let mut chained = judge_harness::alias("chained-alias", "efficient", EFFICIENT_UPSTREAM_MODEL);
-    chained
-        .upstream_model
-        .as_mut()
-        .expect("an alias maps its upstream")
-        .insert("down".to_string(), "upstream-down".to_string());
-    config.models.push(chained);
-    start_gateway(
-        config
-            .validate()
-            .expect("the chained config is well formed"),
+    refusal::chained_gateway_with(
+        strong,
+        efficient,
+        judge,
+        down,
+        wiremock::ResponseTemplate::new(down_status),
     )
     .await
 }

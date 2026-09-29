@@ -36,6 +36,10 @@
 //! | advisor | none | none | [`RouteSource::AdvisorExhausted`] | — |
 //!
 //! "—" records no judge call: none was made.
+//!
+//! A drive that ends in [`GatedDecision::Fail`] records `budget_exhausted` when
+//! `max_judge_calls` refused its judge call — an advisor under
+//! `fail_open = false` fails the turn on that refusal — and nothing otherwise.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -81,12 +85,18 @@ pub(crate) enum GatedDecision {
     /// Nothing is served but `response`. `relayed_status` is true when it is
     /// an upstream's own non-`2xx` answer the client path would have returned
     /// as a success, false for an error the caller receives as one.
+    /// `judge_outcome` is `budget_exhausted` when `max_judge_calls` refused the
+    /// drive's judge call before any was made, and `None` otherwise: an
+    /// advisor under `fail_open = false` turns that refusal into this failure,
+    /// and the series `max_judge_calls` is tuned by must still see it (issue
+    /// #686).
     Fail {
         target: String,
         source: RouteSource,
         response: axum::response::Response,
         message: String,
         relayed_status: bool,
+        judge_outcome: Option<&'static str>,
     },
 }
 
@@ -207,9 +217,9 @@ pub(crate) async fn drive_gated(
                 error_kind = libsy_error_kind(&error),
                 "gated routing produced no outcome"
             );
-            refuse(entry, captured)
+            refuse(entry, captured, notes.exhausted())
         }
-        Err(_) => refuse(entry, captured),
+        Err(_) => refuse(entry, captured, notes.exhausted()),
     }
 }
 
@@ -313,13 +323,17 @@ fn decide(
     hints: &RouterContext<'_>,
 ) -> GatedDecision {
     let Some(selected) = outcome.selected_model_ids.first().map(ToString::to_string) else {
-        return gateway_failure(entry, "gated routing selected no target");
+        return gateway_failure(entry, "gated routing selected no target", notes.exhausted());
     };
     if !entry.targets.contains(&selected) {
         // Defensive, as in `super::drive::decide`: an id outside the entry's
         // own set would resolve through `server.default_provider` as a
         // literal upstream model name.
-        return gateway_failure(entry, "gated routing selected a target outside its set");
+        return gateway_failure(
+            entry,
+            "gated routing selected a target outside its set",
+            notes.exhausted(),
+        );
     }
     let evidence = outcome
         .metadata
@@ -353,7 +367,11 @@ fn decide(
                 source,
                 judge_outcome,
             },
-            _ => gateway_failure(entry, "gated routing kept a turn that was not retained"),
+            _ => gateway_failure(
+                entry,
+                "gated routing kept a turn that was not retained",
+                notes.exhausted(),
+            ),
         };
     }
     let append = if source == RouteSource::AdvisorRedo {
@@ -361,7 +379,13 @@ fn decide(
             Ok(append) => append,
             // Dispatching without the feedback would re-run the turn the
             // advisor just rejected, so an unencodable REDO is a failure.
-            Err(()) => return gateway_failure(entry, "the advisor's REDO could not be encoded"),
+            Err(()) => {
+                return gateway_failure(
+                    entry,
+                    "the advisor's REDO could not be encoded",
+                    notes.exhausted(),
+                )
+            }
         }
     } else {
         Vec::new()
@@ -408,7 +432,12 @@ fn redo_tail(request: &Request) -> Result<Vec<Value>, ()> {
 
 /// The drive ended without an outcome. An upstream refusal the gated call
 /// recorded is relayed unchanged; anything else is the gateway's own `502`.
-fn refuse(entry: &DrivenEntry, captured: Option<GatedCapture>) -> GatedDecision {
+/// Every arm carries `judge_outcome`, the drive's budget refusal if it had one.
+fn refuse(
+    entry: &DrivenEntry,
+    captured: Option<GatedCapture>,
+    judge_outcome: Option<&'static str>,
+) -> GatedDecision {
     match captured {
         Some(GatedCapture::UpstreamError(UpstreamFailure::Answered {
             response, status, ..
@@ -418,40 +447,53 @@ fn refuse(entry: &DrivenEntry, captured: Option<GatedCapture>) -> GatedDecision 
             message: format!("the gated upstream answered {status}"),
             response,
             relayed_status: true,
+            judge_outcome,
         },
-        Some(GatedCapture::UpstreamError(UpstreamFailure::Failed { message, response })) => {
-            GatedDecision::Fail {
-                target: entry.fail_open.clone(),
-                source: RouteSource::GatedError,
-                message,
-                response,
-                relayed_status: false,
-            }
-        }
+        Some(GatedCapture::UpstreamError(UpstreamFailure::Failed {
+            message, response, ..
+        })) => GatedDecision::Fail {
+            target: entry.fail_open.clone(),
+            source: RouteSource::GatedError,
+            message,
+            response,
+            relayed_status: false,
+            judge_outcome,
+        },
         // A cut advisor turn lands here: libsy propagates the transport error
         // from buffering it, and neither a REDO nor a second executor call is
         // made. The upstream did answer `2xx`, but the caller never saw it —
         // no header is committed until this response — so ADR-0002's
         // post-2xx rule holds and the failure is the gateway's to report.
-        Some(GatedCapture::Cut(reason)) => {
-            gateway_failure(entry, &format!("the gated turn was discarded: {reason}"))
-        }
+        Some(GatedCapture::Cut(reason)) => gateway_failure(
+            entry,
+            &format!("the gated turn was discarded: {reason}"),
+            judge_outcome,
+        ),
         // The algorithm failed after a turn was retained (an advisor review
-        // under `fail_open = false`), or before one was made. Either way there
-        // is no servable turn.
-        _ => gateway_failure(entry, "gated routing produced no servable turn"),
+        // under `fail_open = false`, including one `max_judge_calls` refused),
+        // or before one was made. Either way there is no servable turn.
+        _ => gateway_failure(
+            entry,
+            "gated routing produced no servable turn",
+            judge_outcome,
+        ),
     }
 }
 
 /// A gateway-owned `502` in the Anthropic error shape. The message is the
 /// gateway's own wording: libsy's error text can carry an upstream body.
-fn gateway_failure(entry: &DrivenEntry, message: &str) -> GatedDecision {
+fn gateway_failure(
+    entry: &DrivenEntry,
+    message: &str,
+    judge_outcome: Option<&'static str>,
+) -> GatedDecision {
     GatedDecision::Fail {
         target: entry.fail_open.clone(),
         source: RouteSource::GatedError,
         response: ShuntError::new(StatusCode::BAD_GATEWAY, "api_error", message).into_response(),
         message: message.to_string(),
         relayed_status: false,
+        judge_outcome,
     }
 }
 

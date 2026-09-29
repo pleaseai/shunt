@@ -656,6 +656,19 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   accept one remains open to a later change and would not reverse this
   amendment.
 
+- **2026-09-29 (issue #654) — a weak turn refused for its context window
+  escalates.** §3 sends escalation to the strong target only for a weak turn
+  that "crosses a bound or ends before its marker"; an upstream refusal of the
+  gated call was relayed. The pinned libsy client types one refusal apart — a
+  `400` naming the context window, as `ContextWindowExceeded` — and both
+  pinned algorithms branch on it: escalation falls back to its strong target,
+  and the advisor propagates it for the host to relay. shunt, serving the gated
+  call, now types that refusal the same way, by libsy's Anthropic-backend rule
+  applied to the refusal the caller would have received, so a weak-tier
+  overflow is served live by the strong target (`escalation_fallback`) with no
+  judge call. An advisor still relays the `400`. Every other refusal is
+  relayed unchanged.
+
 ### 10. Verification before code
 
 Three external facts to capture live through `shunt run` before the
