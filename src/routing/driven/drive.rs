@@ -289,6 +289,17 @@ impl DriveNotes {
             .then_some("budget_exhausted")
     }
 
+    /// The outcome a drive that fails the turn records: a failed call's own
+    /// label first, then [`Self::exhausted`], and `None` when no judge call
+    /// was made or refused — a turn that never asked a judge records nothing.
+    pub(super) fn fail_outcome(&self) -> Option<&'static str> {
+        self.failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .map(JudgeFailure::as_label)
+            .or_else(|| self.exhausted())
+    }
+
     /// `fallback`, unless this drive recorded something more specific: a failed
     /// call's own label first — it is the more specific fact, since a call that
     /// was made and failed is what the operator is being told about — then the

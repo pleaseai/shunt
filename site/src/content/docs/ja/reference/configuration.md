@@ -878,7 +878,7 @@ max_reviews = 1
 | `advisor_max_tokens` | `2048` | レビュー 1 回あたりの出力トークン上限。最低でも `1` |
 | `advisor_temperature` | 未設定 | レビューのサンプリング温度。未設定ならレビューのリクエストから省きます |
 | `transcript_max_chars` | `200000` | アドバイザーに送るトランスクリプトの上限。長い場合は中央を削ります。最低でも `256` |
-| `fail_open` | `true` | レビューが失敗したら留め置いたターンを提供します。`false` なら代わりにリクエストを `502` で失敗させます — セッションが `max_judge_calls` を使い切ったためレビューを送らなかった場合も同様で、その拒否も `budget_exhausted` として数えます |
+| `fail_open` | `true` | レビューが失敗したら留め置いたターンを提供します。`false` なら代わりにリクエストを `502` で失敗させます — セッションが `max_judge_calls` を使い切ったためレビューを送らなかった場合も同様です。失敗したレビューはやはりその結果（例：`upstream_error`、`timeout`）として、`max_judge_calls` が拒否したレビューは `budget_exhausted` として数えます |
 | `reviewer_system_prompt` | パッケージのプロンプト | APPROVE/REDO のレビュアープロンプトを置き換えます |
 | `redo_feedback_prefix` | パッケージのプロンプト | 実行モデルに差し戻す REDO 計画の前に置く文言を置き換えます |
 
@@ -946,7 +946,7 @@ Anthropic の実行モデルでも OpenAI Responses の実行モデルでも同�
 | 留め置くターンが `gated_*` の上限を超えた、または終端マーカーの前に終わった | ヘッダーを送る前に捨て、強力なターゲットがターンをライブで提供します（`escalation_fallback`） | ヘッダーを送る前に捨て、リクエストは Anthropic エラー形式のゲートウェイ所有の `502` で失敗します（`gated_error`）。REDO でもフェイルオーバーの試行でもありません — アップストリームはすでに `2xx` で応答しています |
 | 留め置く呼び出しのアップストリームがコンテキストウィンドウに対して長すぎるとしてターンを拒否した：エラーメッセージに `prompt is too long`、`maximum number of tokens`、`context window`、`context length` のいずれかを含む `400` | 強力なターゲットがターンをライブで提供します（`escalation_fallback`） | クライアントがコンテキストを圧縮できるよう、そのまま中継します（`gated_error`） |
 | 留め置く呼び出しのアップストリームがそれ以外のエラーのステータスで応答した | ライブのターンと同じく、アップストリームの `retry-after` を付けてクライアントにそのまま中継します（`gated_error`）。ただし、ストリーミングのターンで `chatgpt_oauth` のアカウントプールのアカウントがすべて尽きた場合は、まだ `retry-after` を付けません | そのまま中継します（`gated_error`） |
-| 完成したターンのあとでジャッジやレビューが失敗した — タイムアウト、大きすぎる応答やパースできない応答、アップストリームのエラー、`max_judge_calls` の使い切り | 効率側のターンを提供します（`classifier_fail_open`） | `fail_open = true` なら実行モデルのターンを提供し（`advisor_fail_open`）、`fail_open = false` ならリクエストはゲートウェイ所有の `502` で失敗します（`gated_error`）。`max_judge_calls` がレビューを拒否した場合も同様で、`budget_exhausted` として数えます |
+| 完成したターンのあとでジャッジやレビューが失敗した — タイムアウト、大きすぎる応答やパースできない応答、アップストリームのエラー、`max_judge_calls` の使い切り | 効率側のターンを提供します（`classifier_fail_open`） | `fail_open = true` なら実行モデルのターンを提供し（`advisor_fail_open`）、`fail_open = false` ならリクエストはゲートウェイ所有の `502` で失敗します（`gated_error`）。`max_judge_calls` がレビューを拒否した場合も同様です。失敗したレビューはやはりその結果（例：`upstream_error`、`timeout`）として数え、`max_judge_calls` が拒否したものは `budget_exhausted` として数えます |
 
 **コスト。** 以下はエントリごとに選んで支払うコストです。
 

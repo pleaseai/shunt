@@ -830,7 +830,7 @@ max_reviews = 1
 | `advisor_max_tokens` | `2048` | 每次审阅的输出 token 上限。至少为 `1` |
 | `advisor_temperature` | 未设置 | 审阅的采样温度。未设置时不写进审阅请求 |
 | `transcript_max_chars` | `200000` | 发给审阅模型的对话记录上限;更长的会从中间截掉。至少为 `256` |
-| `fail_open` | `true` | 审阅失败时提供被扣住的回合。设为 `false` 则改为以 `502` 让请求失败 —— 会话已用完 `max_judge_calls`、审阅根本没有发出时也是如此;这次拒绝仍计为 `budget_exhausted` |
+| `fail_open` | `true` | 审阅失败时提供被扣住的回合。设为 `false` 则改为以 `502` 让请求失败 —— 会话已用完 `max_judge_calls`、审阅根本没有发出时也是如此;失败的审阅仍按其结果计数(例如 `upstream_error`、`timeout`),被 `max_judge_calls` 拒绝的则计为 `budget_exhausted` |
 | `reviewer_system_prompt` | 内置提示词 | 替换 APPROVE/REDO 审阅提示词 |
 | `redo_feedback_prefix` | 内置提示词 | 替换回传给执行模型的 REDO 计划前面的那段文字 |
 
@@ -889,7 +889,7 @@ Responses 执行模型都是如此,所以 Claude Code 的 `/model` 显示和 `--
 | 被扣住的回合越过某个 `gated_*` 上限,或在终止标记之前结束 | 在发送任何响应头之前丢弃,由强目标实时提供这一轮(`escalation_fallback`) | 在发送任何响应头之前丢弃,请求以网关自有、Anthropic 错误形态的 `502` 失败(`gated_error`)。这既不是 REDO,也不是一次故障转移尝试 —— 上游已经以 `2xx` 作答 |
 | 被扣住调用的上游以超出上下文窗口为由拒绝该回合:错误消息包含 `prompt is too long`、`maximum number of tokens`、`context window` 或 `context length` 的 `400` | 由强目标实时提供这一轮(`escalation_fallback`) | 原样转发(`gated_error`),以便客户端压缩上下文 |
 | 被扣住调用的上游返回其他错误状态 | 与实时回合一样原样转发给客户端,并附带上游的 `retry-after`(`gated_error`)。但流式回合中 `chatgpt_oauth` 账户池的账户全部耗尽时,目前还不附带 `retry-after` | 原样转发(`gated_error`) |
-| 在完整回合之后裁判或审阅失败 —— 超时、响应过大或无法解析、上游错误,或 `max_judge_calls` 用完 | 提供弱目标回合(`classifier_fail_open`) | `fail_open = true` 时提供执行模型回合(`advisor_fail_open`);`fail_open = false` 时请求以网关自有的 `502` 失败(`gated_error`),`max_judge_calls` 拒绝审阅时也是如此 —— 计为 `budget_exhausted` |
+| 在完整回合之后裁判或审阅失败 —— 超时、响应过大或无法解析、上游错误,或 `max_judge_calls` 用完 | 提供弱目标回合(`classifier_fail_open`) | `fail_open = true` 时提供执行模型回合(`advisor_fail_open`);`fail_open = false` 时请求以网关自有的 `502` 失败(`gated_error`),`max_judge_calls` 拒绝审阅时也是如此 —— 失败的审阅仍按其结果计数(例如 `upstream_error`、`timeout`),被 `max_judge_calls` 拒绝的则计为 `budget_exhausted` |
 
 **代价。** 这些代价是你按条目选择承担的:
 

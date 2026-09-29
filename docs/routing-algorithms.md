@@ -1566,7 +1566,7 @@ served.
 | The gated turn ends before its terminal marker | As above | As above. Not a REDO and not a failover attempt: the upstream answered `2xx` and the client never saw it |
 | The gated call's upstream refuses the turn as too long for its context window (a `400`, see below) | The strong target serves the turn live (`escalation_fallback`) | Relayed unchanged (`gated_error`), so a harness can compact |
 | The gated call's upstream answers any other non-2xx | Relayed to the client unchanged, as a live turn would be, `retry-after` included — except from a `chatgpt_oauth` account pool that ran out of accounts on a streaming turn, which relays none yet (issue #702) (`gated_error`) | Relayed unchanged (`gated_error`) |
-| The judge or review fails after a complete turn — timeout, oversized, unparseable, upstream error, or `max_judge_calls` spent | The algorithm's `fail_open` outcome: the weak turn is replayed (`classifier_fail_open`) | With `fail_open = true` (the default), the executor turn is replayed (`advisor_fail_open`). With `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`), including when `max_judge_calls` refused the review; that refusal is still recorded as `budget_exhausted` |
+| The judge or review fails after a complete turn — timeout, oversized, unparseable, upstream error, or `max_judge_calls` spent | The algorithm's `fail_open` outcome: the weak turn is replayed (`classifier_fail_open`) | With `fail_open = true` (the default), the executor turn is replayed (`advisor_fail_open`). With `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`), including when `max_judge_calls` refused the review; the failed review is still recorded under its outcome — e.g. `upstream_error` or `timeout`, or `budget_exhausted` when `max_judge_calls` refused it |
 
 **A context-window refusal (issue #654).** libsy's own client types a `400`
 naming the context window as `ContextWindowExceeded` rather than a generic HTTP
@@ -1587,16 +1587,19 @@ weak turn either way
 `a_weak_400_that_is_not_an_overflow_is_still_relayed`,
 `an_advisor_executor_overflow_is_relayed_as_the_refusal`).
 
-**A review `max_judge_calls` refused, under `fail_open = false` (issue #686).**
+**A review that failed or that `max_judge_calls` refused, under `fail_open = false` (issue #686).**
 A refused review is closed by libsy's own cascade, as on every other lane
 (ADR-0005 §3, 2026-09-25 amendment). For an advisor under `fail_open = false`
 that cascade is the algorithm's failure, so the turn fails with the
 gateway-owned `502` a failed review gets: `fail_open` governs a review that did
-not produce a verdict, and shunt does not distinguish why. The refusal is
-nonetheless recorded under `shunt.router.judge_calls{outcome="budget_exhausted"}`,
-the series `max_judge_calls` is tuned by — before #686 the `502` path recorded
-no outcome at all
-(`a_budget_refused_review_under_fail_open_false_is_a_502_recorded_as_budget_exhausted`).
+not produce a verdict, and shunt does not distinguish why. The failed review is
+nonetheless recorded under `shunt.router.judge_calls`, the series
+`max_judge_calls` is tuned by, with its outcome: a review that was made and
+failed under its own (`upstream_error`, `timeout`, …), one `max_judge_calls`
+refused as `budget_exhausted`. Before #686 the `502` path recorded no outcome at
+all
+(`a_budget_refused_review_under_fail_open_false_is_a_502_recorded_as_budget_exhausted`,
+`a_failed_review_under_fail_open_false_is_a_502_recorded_under_its_outcome`).
 An operator who wants a spent budget to serve the held turn sets
 `fail_open = true`.
 

@@ -37,9 +37,11 @@
 //!
 //! "—" records no judge call: none was made.
 //!
-//! A drive that ends in [`GatedDecision::Fail`] records `budget_exhausted` when
-//! `max_judge_calls` refused its judge call — an advisor under
-//! `fail_open = false` fails the turn on that refusal — and nothing otherwise.
+//! A drive that ends in [`GatedDecision::Fail`] records its failed judge
+//! call's own label (`upstream_error`, `timeout`, …) when one was made, else
+//! `budget_exhausted` when `max_judge_calls` refused it — an advisor under
+//! `fail_open = false` fails the turn on either — and nothing when no judge
+//! call was asked for.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -85,11 +87,11 @@ pub(crate) enum GatedDecision {
     /// Nothing is served but `response`. `relayed_status` is true when it is
     /// an upstream's own non-`2xx` answer the client path would have returned
     /// as a success, false for an error the caller receives as one.
-    /// `judge_outcome` is `budget_exhausted` when `max_judge_calls` refused the
-    /// drive's judge call before any was made, and `None` otherwise: an
-    /// advisor under `fail_open = false` turns that refusal into this failure,
-    /// and the series `max_judge_calls` is tuned by must still see it (issue
-    /// #686).
+    /// `judge_outcome` is the failed judge call's own label when one was made,
+    /// else `budget_exhausted` when `max_judge_calls` refused it before any
+    /// was made, and `None` when no judge call was asked for: an advisor under
+    /// `fail_open = false` turns a failed or refused review into this failure,
+    /// and the judge-call series must still see it (issue #686).
     Fail {
         target: String,
         source: RouteSource,
@@ -217,9 +219,9 @@ pub(crate) async fn drive_gated(
                 error_kind = libsy_error_kind(&error),
                 "gated routing produced no outcome"
             );
-            refuse(entry, captured, notes.exhausted())
+            refuse(entry, captured, notes.fail_outcome())
         }
-        Err(_) => refuse(entry, captured, notes.exhausted()),
+        Err(_) => refuse(entry, captured, notes.fail_outcome()),
     }
 }
 
@@ -323,7 +325,11 @@ fn decide(
     hints: &RouterContext<'_>,
 ) -> GatedDecision {
     let Some(selected) = outcome.selected_model_ids.first().map(ToString::to_string) else {
-        return gateway_failure(entry, "gated routing selected no target", notes.exhausted());
+        return gateway_failure(
+            entry,
+            "gated routing selected no target",
+            notes.fail_outcome(),
+        );
     };
     if !entry.targets.contains(&selected) {
         // Defensive, as in `super::drive::decide`: an id outside the entry's
@@ -332,7 +338,7 @@ fn decide(
         return gateway_failure(
             entry,
             "gated routing selected a target outside its set",
-            notes.exhausted(),
+            notes.fail_outcome(),
         );
     }
     let evidence = outcome
@@ -370,7 +376,7 @@ fn decide(
             _ => gateway_failure(
                 entry,
                 "gated routing kept a turn that was not retained",
-                notes.exhausted(),
+                notes.fail_outcome(),
             ),
         };
     }
@@ -383,7 +389,7 @@ fn decide(
                 return gateway_failure(
                     entry,
                     "the advisor's REDO could not be encoded",
-                    notes.exhausted(),
+                    notes.fail_outcome(),
                 )
             }
         }
@@ -432,7 +438,8 @@ fn redo_tail(request: &Request) -> Result<Vec<Value>, ()> {
 
 /// The drive ended without an outcome. An upstream refusal the gated call
 /// recorded is relayed unchanged; anything else is the gateway's own `502`.
-/// Every arm carries `judge_outcome`, the drive's budget refusal if it had one.
+/// Every arm carries `judge_outcome`, the drive's failed or refused judge call
+/// if it had one.
 fn refuse(
     entry: &DrivenEntry,
     captured: Option<GatedCapture>,
@@ -470,7 +477,7 @@ fn refuse(
             judge_outcome,
         ),
         // The algorithm failed after a turn was retained (an advisor review
-        // under `fail_open = false`, including one `max_judge_calls` refused),
+        // under `fail_open = false` that failed or `max_judge_calls` refused),
         // or before one was made. Either way there is no servable turn.
         _ => gateway_failure(
             entry,

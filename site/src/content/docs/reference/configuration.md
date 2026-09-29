@@ -1096,7 +1096,7 @@ max_reviews = 1
 | `advisor_max_tokens` | `2048` | Output-token ceiling on each review. Must be at least `1` |
 | `advisor_temperature` | unset | Sampling temperature for reviews. Omitted from the review request when unset |
 | `transcript_max_chars` | `200000` | Cap on the transcript sent to the advisor; a longer one is trimmed from the middle. Must be at least `256` |
-| `fail_open` | `true` | When a review fails, serve the held turn. `false` fails the request with a `502` instead — also when the review was never sent because the session spent `max_judge_calls`; that refusal is still counted as `budget_exhausted` |
+| `fail_open` | `true` | When a review fails, serve the held turn. `false` fails the request with a `502` instead — also when the review was never sent because the session spent `max_judge_calls`; the failed review is still counted under its outcome (e.g. `upstream_error`, `timeout`), or as `budget_exhausted` when `max_judge_calls` refused it |
 | `reviewer_system_prompt` | packaged prompt | Replaces the APPROVE/REDO reviewer prompt |
 | `redo_feedback_prefix` | packaged prompt | Replaces the text placed in front of a REDO plan fed back to the executor |
 
@@ -1165,7 +1165,7 @@ it does not cut the turn. Gated turns take the target's ordered failover chain.
 | The gated turn crosses a `gated_*` bound, or ends before its terminal marker | Discarded before any header is sent; the strong target serves the turn live (`escalation_fallback`) | Discarded before any header is sent; the request fails with a gateway-owned `502` in the Anthropic error shape (`gated_error`). It is not a REDO and not a failover attempt: the upstream already answered `2xx` |
 | The gated call's upstream refuses the turn as too long for its context window: a `400` whose error message contains `prompt is too long`, `maximum number of tokens`, `context window`, or `context length` | The strong target serves the turn live (`escalation_fallback`) | Relayed unchanged (`gated_error`), so the client can compact |
 | The gated call's upstream answers with any other error status | Relayed to the client unchanged, as a live turn's would be, with the upstream's `retry-after` (`gated_error`). A `chatgpt_oauth` account pool that ran out of accounts on a streaming turn does not relay `retry-after` yet | Relayed unchanged (`gated_error`) |
-| The judge or review fails after a complete turn — a timeout, an oversized or unparseable reply, an upstream error, or `max_judge_calls` spent | The weak turn is served (`classifier_fail_open`) | With `fail_open = true`, the executor turn is served (`advisor_fail_open`); with `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`), including when `max_judge_calls` refused the review — counted as `budget_exhausted` |
+| The judge or review fails after a complete turn — a timeout, an oversized or unparseable reply, an upstream error, or `max_judge_calls` spent | The weak turn is served (`classifier_fail_open`) | With `fail_open = true`, the executor turn is served (`advisor_fail_open`); with `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`), including when `max_judge_calls` refused the review — the failed review is still counted under its outcome (e.g. `upstream_error`, `timeout`), or as `budget_exhausted` when `max_judge_calls` refused it |
 
 **What it costs.** You opt into these per entry:
 
