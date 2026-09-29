@@ -1467,9 +1467,12 @@ Escalation therefore does not call the strong tier for a refused weak chain
 also carries the `retry-after` of the attempt whose failure it is — the value
 that upstream sent, from the same remembered failure the status comes from,
 which is the value the ordered loop relays with that failure (issue #655,
-`a_refused_streaming_weak_chain_relays_the_upstream_retry_after`). The live
-committed stream cannot: it has already answered `200` and reports the refusal
-as one `error` frame, so on that path the header is still absent. A route that
+`a_refused_streaming_weak_chain_relays_the_upstream_retry_after`). An
+`auth = "chatgpt_oauth"` account pool that ran out of accounts is the
+exception: its exhaustion does not keep the header yet, so that refusal relays
+none (issue #702). The live committed stream cannot carry the header at all:
+it has already answered `200` and reports the refusal as one `error` frame, so
+on that path the header is still absent. A route that
 fails after it has started streaming is still a cut.
 
 ### Why the gated call is the first `CallModel`
@@ -1562,7 +1565,7 @@ served.
 | The gated turn crosses a `gated_*` bound | Discarded before any header is committed; the strong target serves the turn live (`escalation_fallback`) | Discarded before any header is committed; the request fails with a gateway-owned `502` in the Anthropic error shape (`gated_error`) |
 | The gated turn ends before its terminal marker | As above | As above. Not a REDO and not a failover attempt: the upstream answered `2xx` and the client never saw it |
 | The gated call's upstream refuses the turn as too long for its context window (a `400`, see below) | The strong target serves the turn live (`escalation_fallback`) | Relayed unchanged (`gated_error`), so a harness can compact |
-| The gated call's upstream answers any other non-2xx | Relayed to the client unchanged, as a live turn would be, `retry-after` included (`gated_error`) | Relayed unchanged (`gated_error`) |
+| The gated call's upstream answers any other non-2xx | Relayed to the client unchanged, as a live turn would be, `retry-after` included — except from a `chatgpt_oauth` account pool that ran out of accounts on a streaming turn, which relays none yet (issue #702) (`gated_error`) | Relayed unchanged (`gated_error`) |
 | The judge or review fails after a complete turn — timeout, oversized, unparseable, upstream error, or `max_judge_calls` spent | The algorithm's `fail_open` outcome: the weak turn is replayed (`classifier_fail_open`) | With `fail_open = true` (the default), the executor turn is replayed (`advisor_fail_open`). With `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`), including when `max_judge_calls` refused the review; that refusal is still recorded as `budget_exhausted` |
 
 **A context-window refusal (issue #654).** libsy's own client types a `400`
