@@ -1134,9 +1134,10 @@ turn on every other route, streams exactly as before.
 Its SSE frames are retained as they arrive and, if the turn is served, replayed
 byte for byte. A `stream: false` caller gets the single JSON message of a
 completed turn. The Anthropic adapter makes that call non-streaming. The
-OpenAI Responses adapter streams upstream on every turn, because the
-ChatGPT/Codex backend refuses a non-streaming request, and assembles the one
-message from that stream under the same bounds. The gate changes *when* the
+OpenAI Responses adapter streams upstream on every turn, on every flavor, and
+assembles the one message from that stream under the same bounds. The
+ChatGPT/Codex backend is reported to refuse a non-streaming request; the stock
+OpenAI Platform accepts one, and there streaming keeps a single code path. The gate changes *when* the
 answer is sent, never its shape. The replayed `message_start.model` is the router's own
 id, not the executor's, on an Anthropic and an OpenAI Responses executor alike,
 so Claude Code's `/model` display and `--resume` see the id they asked for.

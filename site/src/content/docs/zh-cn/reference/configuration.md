@@ -859,8 +859,9 @@ max_reviews = 1
 
 **保持调用方的模式。** `stream: true` 调用方的被扣住调用是流式的:SSE 帧一到就保留下来,
 如果这一轮要提供,就逐字节回放。`stream: false` 调用方收到的是一个已完成回合的单条 JSON
-消息。Anthropic 适配器以非流式方式发出这次调用;OpenAI Responses 适配器则因为 ChatGPT/Codex
-后端拒绝非流式请求,每个回合都以流式方式请求上游,再在同样的上限内把这条流拼装成一条消息。
+消息。Anthropic 适配器以非流式方式发出这次调用;OpenAI Responses 适配器则不论哪种风格,
+每个回合都以流式方式请求上游,再在同样的上限内把这条流拼装成一条消息。据报告 ChatGPT/Codex
+后端会拒绝非流式请求,而标准 OpenAI Platform 接受它,在那里流式只是为了保持单一代码路径的选择。
 门控改变的只是回答*何时*发出,从不改变它的形态。回放出来的
 `message_start.model` 是路由器自己的 id,而不是执行模型的 id,Anthropic 执行模型和 OpenAI
 Responses 执行模型都是如此,所以 Claude Code 的 `/model` 显示和 `--resume` 看到的都是它请求

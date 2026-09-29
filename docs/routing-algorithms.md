@@ -1408,9 +1408,11 @@ A gated turn is made **in the caller's own mode**:
   The message is retained, and the judge's `Response` derives from it. The
   upstream transport is the adapter's (ADR-0005 §9, amendment of 2026-09-29).
   The Anthropic adapter makes a non-streaming call. The Responses adapter
-  streams upstream on every turn, since the ChatGPT/Codex backend refuses
-  `stream: false`, and aggregates the SSE into that message under the gated
-  bounds below.
+  streams upstream on every turn and aggregates the SSE into that message
+  under the gated bounds below. That is one code path for every flavor: the
+  ChatGPT/Codex backend is reported to refuse `stream: false`, while the
+  stock OpenAI Platform accepts it, so there streaming is a choice rather than
+  a constraint.
 
 `serve` adds no SSE-to-JSON conversion: the Responses aggregation is the
 adapter's own, the path every non-streaming client turn on that adapter

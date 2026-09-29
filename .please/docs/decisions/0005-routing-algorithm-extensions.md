@@ -617,7 +617,10 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   the Responses adapter the idle clock starts when the request is sent. The
   HTTP header wait and the WebSocket wait for the first event are the first
   gap. Local work after that — the bounded input-token estimate, up to 1 s —
-  neither pauses nor restarts the clock (#690). A new request starts its own
+  neither pauses nor restarts the clock (#690). The reply is not read during
+  that wait, so a frame that arrives after the gap closed but before the first
+  read is still taken as progress. The overshoot stays below the estimate's
+  1 s bound, and #703 tracks closing it. A new request starts its own
   clock: a retried send, a pooled account's attempt, or a retry after a
   credential refresh. The terminal-marker rule is unchanged. A message
   synthesized from a stream that ended before `response.completed` is marked
@@ -626,7 +629,7 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   The Responses adapter keeps streaming rather than making the call
   non-streaming. The evidence below was recorded on 2026-09-29 from public
   sources, with no live upstream call:
-  - The ChatGPT/Codex backend refuses `stream: false` with
+  - The ChatGPT/Codex backend is reported to refuse `stream: false` with
     `400 "Stream must be set to true"`. langchain-ai/langchain documents this
     in `libs/partners/openai/langchain_openai/chat_models/codex.py` and forces
     streaming, then aggregates. A mock backend in usestrix/strix
@@ -647,9 +650,11 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
     bounds for the gated and judge calls alone.
 
   The harm #653 reported was a stall held until `gated_max_duration_ms`.
-  #670 and #688 removed it, and the send-time clock above closes the last
-  window. A per-flavor non-streaming arm for the flavors that accept one
-  remains open to a later change and would not reverse this amendment.
+  #670 and #688 removed it, and the send-time clock above closes the window
+  the header wait and the estimate wait left open, short of the sub-second
+  residue #703 tracks. A per-flavor non-streaming arm for the flavors that
+  accept one remains open to a later change and would not reverse this
+  amendment.
 
 ### 10. Verification before code
 
