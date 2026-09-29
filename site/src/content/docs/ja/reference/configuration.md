@@ -944,7 +944,7 @@ Anthropic の実行モデルでも OpenAI Responses の実行モデルでも同�
 | 失敗したもの | `escalation` | `advisor` |
 | :-- | :-- | :-- |
 | 留め置くターンが `gated_*` の上限を超えた、または終端マーカーの前に終わった | ヘッダーを送る前に捨て、強力なターゲットがターンをライブで提供します（`escalation_fallback`） | ヘッダーを送る前に捨て、リクエストは Anthropic エラー形式のゲートウェイ所有の `502` で失敗します（`gated_error`）。REDO でもフェイルオーバーの試行でもありません — アップストリームはすでに `2xx` で応答しています |
-| 留め置く呼び出しのアップストリームがコンテキストウィンドウに対して長すぎるとしてターンを拒否した：`error.message` に — なければ JSON かどうかを問わず生の本文に — `prompt is too long`、`maximum number of tokens`、`context window`、`context length` のいずれかを含む `400` | 強力なターゲットがターンをライブで提供します（`escalation_fallback`） | クライアントがコンテキストを圧縮できるよう、そのまま中継します（`gated_error`） |
+| 留め置く呼び出しのアップストリームがコンテキストウィンドウに対して長すぎるとしてターンを拒否した：`error.message` に — メッセージに該当する文言がなければ JSON かどうかを問わず生の本文全体に — `prompt is too long`、`maximum number of tokens`、`context window`、`context length` のいずれかを含む `400` | 強力なターゲットがターンをライブで提供します（`escalation_fallback`） | クライアントがコンテキストを圧縮できるよう、そのまま中継します（`gated_error`） |
 | 留め置く呼び出しのアップストリームがそれ以外のエラーのステータスで応答した | ライブのターンと同じく、アップストリームの `retry-after` を付けてクライアントにそのまま中継します（`gated_error`）。ただし、ストリーミングのターンで `chatgpt_oauth` のアカウントプールのアカウントがすべて尽きた場合は、まだ `retry-after` を付けません | そのまま中継します（`gated_error`） |
 | 完成したターンのあとでジャッジやレビューが失敗した — タイムアウト、大きすぎる応答やパースできない応答、アップストリームのエラー、`max_judge_calls` の使い切り | 効率側のターンを提供します（`classifier_fail_open`） | `fail_open = true` なら実行モデルのターンを提供し（`advisor_fail_open`）、`fail_open = false` ならリクエストはゲートウェイ所有の `502` で失敗します（`gated_error`）。`max_judge_calls` がレビューを拒否した場合も同様です。失敗したレビューはやはりその結果（例：`upstream_error`、`timeout`）として数え、`max_judge_calls` が拒否したものは `budget_exhausted` として数えます |
 

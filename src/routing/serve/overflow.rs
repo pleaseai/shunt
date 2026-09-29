@@ -10,8 +10,9 @@
 //!
 //! The rule is the one the pinned libsy client applies
 //! (`libsy-llm-client/src/backend.rs` `is_context_overflow`, `error.rs`
-//! `is_overflow_body`, rev `3ddea9d`): a `400` whose error message — or,
-//! failing that, the raw body, whether or not it parsed as JSON — contains one
+//! `is_overflow_body`, rev `3ddea9d`): a `400` whose error message — or, when
+//! the message does not match, the whole raw body, whether or not it parsed as
+//! JSON — contains one
 //! of the phrases, case insensitively. The gated call's refusal is the one the caller would have
 //! been handed, rendered in the Anthropic Messages error shape by either
 //! adapter (the Responses adapter rewrites an upstream overflow into
