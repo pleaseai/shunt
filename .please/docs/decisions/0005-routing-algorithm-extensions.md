@@ -669,6 +669,24 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   judge call. An advisor still relays the `400`. Every other refusal is
   relayed unchanged.
 
+- **2026-09-29 (issues #703, #704) — the Responses send-time clock covers the
+  estimate wait and the error body.** The #653/#690 amendment above leaves one
+  residue: the reply was not read during the bounded input-token estimate, so
+  a frame that arrived after the gap closed but before the first read was taken
+  as progress, and #703 tracked closing it. It is closed. The non-streaming
+  collectors (`json_response` over HTTP, the pooled relay included, and
+  `json_events_response` over the WebSocket) now read the reply while the
+  estimate is still pending, and use the estimate only once the reply is
+  collected. A frame is progress only if it arrives inside the gap. The
+  estimate's 1 s bound is unchanged, and so is every client turn's output.
+  The same clock now covers an error body (#704). On a gated call, the error
+  body of an attempt that answered with a non-2xx status is read within the
+  rest of the gap its header wait began, and each chunk after that refreshes
+  the gap. This holds on the single-account HTTP path and in the pooled
+  ChatGPT-OAuth refusal check. A body that stalls is the call's cut, with the
+  idle marker. It is not relayed after the error-envelope budget, and it does
+  not rotate the pool. Client turns read error bodies as before.
+
 ### 10. Verification before code
 
 Three external facts to capture live through `shunt run` before the

@@ -807,9 +807,10 @@ WebSocket events, the first one included, and between Antigravity output lines
 that carry content, so a tool step alone does not reset it. On an OpenAI
 Responses target the gap starts when the request is sent, so the wait for the
 response headers, or for the WebSocket handshake (or a pooled connection's
-liveness check) and first event, counts toward it, and so does
-shunt's own local token count (up to 1 second) before the reply is read. A
-retried request starts the gap again. A cold Antigravity
+liveness check) and first event, counts toward it. shunt's own local token
+count (up to 1 second) runs while the reply is read, so a reply that arrives
+after the gap is still cut. An error response's body is read within the same
+gap. A retried request starts the gap again. A cold Antigravity
 model-catalog fetch made during one of these calls is read under the same
 bounds; a refused catalog falls back to the model id shunt would guess without
 one, and the next client turn fetches it again.
