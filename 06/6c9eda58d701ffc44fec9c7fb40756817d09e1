@@ -1,0 +1,46 @@
+site/src/content/docs/ko/reference/configuration.md
+  s_ae56742217ef70::t_cfe245faba931c 957
+  s_ae56742217ef70::t_579b62cd1c31ec 941
+  s_ae56742217ef70::t_756dd018643346 890
+  s_ae56742217ef70::t_7cb8ac99dda019 955-956
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_ae56742217ef70::t_69128f5d9d606d 65
+docs/routing-algorithms.md
+  s_ae56742217ef70::t_6d93ecff75d8f9 576,1466-1473,1520,1564-1598
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_ae56742217ef70::t_55b7a0b073101f 65
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_ae56742217ef70::t_79ba92e5f0a1a5 65
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_ae56742217ef70::t_de1d53154db886 890-891
+  s_ae56742217ef70::t_a4eab4837e9bbf 892
+  s_ae56742217ef70::t_0948898fa33407 876
+  s_ae56742217ef70::t_3d3a7fe7df7072 833
+site/src/content/docs/guides/opentelemetry.mdx
+  s_ae56742217ef70::t_77e10d8937ef53 65
+site/src/content/docs/ja/reference/configuration.md
+  s_ae56742217ef70::t_b6dcdd09336e62 933
+  s_ae56742217ef70::t_28d97ed48da733 881
+  s_ae56742217ef70::t_587a44352150b9 947-948
+  s_ae56742217ef70::t_a8e2c424a43cd4 949
+.please/docs/decisions/0005-routing-algorithm-extensions.md
+  s_ae56742217ef70::t_7f42b136f621fe 592-603
+site/src/content/docs/reference/configuration.md
+  s_ae56742217ef70::t_77e10d8937ef53 1099,1152,1166-1168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "066c9eda58d701ffc44fec9c7fb40756817d09e1",
+  "prompts": {},
+  "sessions": {
+    "s_ae56742217ef70": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae0ddf79-be81-4701-aafe-16260584e4a7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
