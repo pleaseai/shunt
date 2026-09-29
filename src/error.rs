@@ -137,6 +137,45 @@ pub(crate) async fn bounded_upstream_text(
     }
 }
 
+/// [`bounded_upstream_text`] under a gated call's idle clock as well: `clock`
+/// is the gap and the instant it started, the request's send, so the first
+/// wait for the body is the rest of the gap the header wait began, and each
+/// chunk after it refreshes the gap (#704). `Err` when the gap closes inside
+/// the budget: that is the caller's bound, carried back as its marker. Every
+/// other outcome is [`bounded_upstream_text`]'s.
+pub(crate) async fn bounded_upstream_text_within(
+    mut upstream: reqwest::Response,
+    budget: std::time::Duration,
+    cap: usize,
+    (idle, since): (std::time::Duration, tokio::time::Instant),
+) -> Result<Option<String>, crate::adapters::UpstreamBodyIdle> {
+    let budget_at = tokio::time::Instant::now() + budget;
+    let mut deadline = since + idle;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut over_cap = false;
+    loop {
+        let chunk = match tokio::time::timeout_at(deadline.min(budget_at), upstream.chunk()).await {
+            Ok(Ok(Some(chunk))) => chunk,
+            Ok(Ok(None)) if !over_cap => {
+                return Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+            }
+            Ok(_) => return Ok(None),
+            Err(_) if deadline < budget_at => {
+                return Err(crate::adapters::UpstreamBodyIdle { idle })
+            }
+            Err(_) => return Ok(None),
+        };
+        deadline = tokio::time::Instant::now() + idle;
+        // Past the cap, keep draining (as `bounded_upstream_text` does) so the
+        // connection can be reused, retaining only the prefix.
+        if over_cap || bytes.len() + chunk.len() > cap {
+            over_cap = true;
+            continue;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+}
+
 /// The JSON body of an already-built error response, for turning it into an
 /// SSE `error` event envelope. The read is budgeted (wall clock and size): a
 /// terminal SSE `error` event must not stall on a body the upstream keeps

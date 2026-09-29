@@ -28,7 +28,7 @@ use super::early_stream::{
     bounded_input_estimate, early_streaming_response, estimated_machine_factory,
     http_events_stream, parsed_events, translated_stream, HttpSendContext,
 };
-use super::error::{backend_error, mapped_upstream_error, own_error, transport_error};
+use super::error::{backend_error, mapped_upstream_error_within, own_error, transport_error};
 use super::request::request_builder;
 
 /// Send the upstream Responses HTTP request and return the raw response
@@ -200,7 +200,10 @@ pub(super) async fn forward_http(
     }
     let status = upstream.status();
     if !status.is_success() {
-        return Err(mapped_upstream_error(status, upstream, auth).await);
+        // The error body is read under the same send-time clock (#704).
+        return Err(
+            mapped_upstream_error_within(status, upstream, auth, idle.zip(idle_since)).await,
+        );
     }
     // Bounded like every other path so a saturated blocking pool cannot stall
     // the response (see `bounded_input_estimate`); by now the encode has had the

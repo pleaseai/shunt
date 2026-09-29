@@ -388,6 +388,26 @@ async fn a_non_streaming_responses_weak_body_stalled_after_its_headers_is_cut_at
     .await;
 }
 
+/// The Responses refusal twin (#704): a non-streaming Responses weak `422`
+/// whose error body stalls after its headers. `forward_http` reads that body
+/// under the send-time clock before it returns the refusal, so the stall is
+/// cut at the idle gap like a success. A `422` because `chain_failure` leaves
+/// every non-`400` refusal body unread: the adapter's read is the only one
+/// that can cut it.
+///
+/// Non-vacuity: pass `None` for the clock to `mapped_upstream_error_within`
+/// in `forward_http` and the lazy refusal is relayed as `gated_error`, so the
+/// status assertion goes red.
+#[tokio::test]
+async fn a_non_streaming_responses_weak_refusal_stalled_after_its_headers_is_cut_at_the_idle_gap() {
+    stalled_non_streaming_weak_turn_falls_back(
+        StalledTier::Responses,
+        b"HTTP/1.1 422 Unprocessable Entity\r\n",
+        b"{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"WEAK-",
+    )
+    .await;
+}
+
 /// A non-streaming Responses weak turn whose upstream accepted the request and
 /// then sent nothing, not even its headers. The Responses adapter streams
 /// upstream, so its idle clock starts at the send and the header wait is the
