@@ -155,12 +155,19 @@ pub(super) async fn forward_http(
     // either transport: a websocket attempt earlier in this dispatch already
     // took it, so this reads the window it left.
     let window = super::codex_ws::window_for_turn(window_key.as_deref(), compact.take());
+    // A gated call's idle clock starts as each attempt is sent: the headers
+    // wait inside the first gap, and `json_response` carries on from the same
+    // instant, so the bounded estimate wait below does not reopen it (#690).
+    // A retry is a new request and restarts the clock; the backoff before it
+    // has no request in flight to stall. `None` on every client turn.
+    let idle = turn.response_bounds.idle;
+    let mut idle_since = None;
     let upstream = crate::retry::send_with_retry_with_safety(
         policy,
         &route.provider,
         crate::retry::RetrySafety::NonIdempotentPost,
         || {
-            http_send(
+            let send = http_send(
                 state,
                 route,
                 credential.clone(),
@@ -168,12 +175,23 @@ pub(super) async fn forward_http(
                 delegation,
                 window,
                 body.clone(),
-            )
+            );
+            idle_since = idle.map(|_| tokio::time::Instant::now());
+            let clock = idle.zip(idle_since);
+            async move {
+                match crate::adapters::within_idle(clock, send).await {
+                    Ok(sent) => sent.map_err(AttemptError::Send),
+                    Err(idle) => Err(AttemptError::Idle(idle)),
+                }
+            }
         },
     )
     .await
-    .map_err(|error| {
-        error.into_adapter_error(|error| transport_error(error.without_url().to_string()))
+    .map_err(|error| match error {
+        AttemptError::Send(error) => {
+            error.into_adapter_error(|error| transport_error(error.without_url().to_string()))
+        }
+        AttemptError::Idle(idle) => crate::adapters::idle_error(idle),
     })?;
     if let Some(account) = &codex_quota_account {
         state
@@ -200,9 +218,44 @@ pub(super) async fn forward_http(
         turn.relay(route),
         input_tokens_estimate,
         turn.response_bounds,
+        idle_since,
     )
     .await?;
     Ok((response.status(), response))
+}
+
+/// One attempt of [`forward_http`]'s non-streaming send: the send's own
+/// failure, or a gated call's idle gap closing before the headers arrived.
+enum AttemptError {
+    Send(crate::upstream_timeout::SendError<reqwest::Error>),
+    Idle(crate::adapters::UpstreamBodyIdle),
+}
+
+impl std::fmt::Display for AttemptError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Send(error) => error.fmt(formatter),
+            Self::Idle(idle) => idle.fmt(formatter),
+        }
+    }
+}
+
+impl crate::retry::RetryableError for AttemptError {
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::Send(error) => error.is_transient(),
+            // The gap is the call's bound, spent: another attempt would start
+            // against a turn that is already cut.
+            Self::Idle(_) => false,
+        }
+    }
+
+    fn log_message(&self) -> String {
+        match self {
+            Self::Send(error) => error.log_message(),
+            Self::Idle(idle) => idle.to_string(),
+        }
+    }
 }
 
 pub(super) fn stream_response(
@@ -241,11 +294,16 @@ pub(super) fn stream_response(
 /// `final_json` falls back to the estimate when no usage was observed, so
 /// without it a stopped turn would report `input_tokens: 0` (issue #605). On
 /// every other turn the upstream's real usage arrives and overrides it.
+///
+/// `idle_since` is when a gated call's idle clock started — the instant the
+/// request was sent (see [`crate::adapters::within_idle`]) — and `None` starts
+/// it at the first read, as a client turn, which has no idle gap, never reads.
 pub(super) async fn json_response(
     upstream: reqwest::Response,
     relay: RelayOptions,
     input_tokens_estimate: u64,
     bounds: ResponseBounds,
+    idle_since: Option<tokio::time::Instant>,
 ) -> Result<axum::response::Response, AdapterError> {
     // This is the one Responses path that buffers a whole upstream reply, so
     // it is the one that has to honour `judge_max_response_bytes`. A judge call
@@ -258,9 +316,12 @@ pub(super) async fn json_response(
     // headers and stalls would otherwise hold the turn until
     // `gated_max_duration_ms`. The body is SSE, so the gap is measured
     // between completed content frames: keep-alive pings alone do not hold a
-    // stalled turn open. The default is the client path and stays
-    // byte-for-byte what it was.
-    let body = match collect_upstream_sse_body(upstream, bounds.max_bytes, bounds.idle).await {
+    // stalled turn open. The first gap runs from `idle_since`, the send, so
+    // the headers and the estimate wait before this read sit inside it. The
+    // default is the client path and stays byte-for-byte what it was.
+    let body = match collect_upstream_sse_body(upstream, bounds.max_bytes, bounds.idle, idle_since)
+        .await
+    {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(UpstreamBodyError::TooLarge(too_large)) => return Err(too_large_error(too_large)),
         Err(UpstreamBodyError::Idle(idle)) => return Err(idle_error(idle)),
@@ -350,7 +411,7 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"Upstream failed\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
+        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default(), None)
             .await
             .expect_err("backend error event should stop failover");
 
@@ -375,7 +436,7 @@ mod tests {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached\"}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
+        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default(), None)
             .await
             .expect_err("in-stream rate limit is an error");
 
@@ -403,7 +464,7 @@ mod tests {
                 .body(reqwest::Body::wrap_stream(chunks))
                 .unwrap(),
         );
-        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
+        let error = json_response(upstream, relay_opts(), 0, ResponseBounds::default(), None)
             .await
             .expect_err("a broken body is an error");
 
@@ -466,6 +527,7 @@ mod tests {
                     max_bytes: None,
                     idle: Some(idle),
                 },
+                None,
             ),
         )
         .await
@@ -516,10 +578,88 @@ mod tests {
                 max_bytes: None,
                 idle: Some(std::time::Duration::from_millis(500)),
             },
+            None,
         )
         .await
         .expect("a turn whose frames keep completing inside the gap finishes");
 
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_body_json(response).await;
+        assert_eq!(body["content"][0]["text"], "hello");
+    }
+
+    /// The first gap runs from the send, not from the first read (#690). The
+    /// estimate wait after the headers (200 ms) and the wait for the first
+    /// content frame after it (150 ms) each fit inside the 300 ms gap, and
+    /// together they cross it: the read is cut at the gap, measured from the
+    /// send.
+    ///
+    /// Non-vacuity: start the deadline at the read instead of at `idle_since`
+    /// and the frame lands 150 ms into a fresh gap, so the turn is served and
+    /// this goes red.
+    #[tokio::test(start_paused = true)]
+    async fn json_response_measures_the_first_gap_from_the_send() {
+        let idle = std::time::Duration::from_millis(300);
+        let sent_at = tokio::time::Instant::now();
+        let upstream = timed_sse_upstream(futures_util::stream::iter([(
+            std::time::Duration::from_millis(150),
+            &b"event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n"[..],
+        )]));
+        // The bounded input-token estimate between the headers and the read.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let error = json_response(
+            upstream,
+            relay_opts(),
+            0,
+            ResponseBounds {
+                max_bytes: None,
+                idle: Some(idle),
+            },
+            Some(sent_at),
+        )
+        .await
+        .expect_err("a reply silent for the whole gap since the send is cut");
+        assert_eq!(sent_at.elapsed(), idle, "cut at the gap from the send");
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle { idle }),
+            "got: {}",
+            error.message
+        );
+    }
+
+    /// The twin: the same estimate wait with the first content frame 50 ms
+    /// into the read lands inside the gap measured from the send, and the
+    /// frames after it refresh the gap, so the turn is served.
+    #[tokio::test(start_paused = true)]
+    async fn json_response_serves_a_reply_whose_first_frame_beats_the_gap_from_the_send() {
+        let sent_at = tokio::time::Instant::now();
+        let upstream = timed_sse_upstream(futures_util::stream::iter([
+            (
+                std::time::Duration::from_millis(50),
+                &b"event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\nevent: response.output_item.added\ndata: {\"item\":{\"type\":\"message\"}}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"hello\"}\n\n"[..],
+            ),
+            (
+                std::time::Duration::from_millis(250),
+                &b"event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"[..],
+            ),
+        ]));
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let response = json_response(
+            upstream,
+            relay_opts(),
+            0,
+            ResponseBounds {
+                max_bytes: None,
+                idle: Some(std::time::Duration::from_millis(300)),
+            },
+            Some(sent_at),
+        )
+        .await
+        .expect("each frame inside the gap since the last progress is served");
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_body_json(response).await;
         assert_eq!(body["content"][0]["text"], "hello");
@@ -542,7 +682,7 @@ mod tests {
             "data: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
+        let response = json_response(upstream, relay_opts(), 0, ResponseBounds::default(), None)
             .await
             .expect("json_response builds a response");
 
@@ -573,7 +713,7 @@ mod tests {
             "data: {\"delta\":\"partial\"}\n\n",
         );
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay_opts(), 0, ResponseBounds::default())
+        let response = json_response(upstream, relay_opts(), 0, ResponseBounds::default(), None)
             .await
             .expect("json_response builds a response");
 
@@ -609,7 +749,7 @@ mod tests {
             ..relay_opts()
         };
         let upstream = upstream_response(200, sse).await;
-        let response = json_response(upstream, relay, 11, ResponseBounds::default())
+        let response = json_response(upstream, relay, 11, ResponseBounds::default(), None)
             .await
             .expect("json_response builds a response");
 

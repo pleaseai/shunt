@@ -12,7 +12,8 @@ use wiremock::{Mock, MockServer};
 
 use super::harness::{
     anthropic_json, anthropic_sse, escalation_router, gated_config, gated_config_with_gemini,
-    header, judge_text, messages_mock, post, sse_events, sse_reply, streamed_text, Tiers,
+    header, judge_text, messages_mock, post, responses_sse, sse_events, sse_reply, streamed_text,
+    Tiers,
 };
 use super::judge_harness::{
     can_bind_loopback, env, start_gateway, CAPABLE_UPSTREAM_MODEL, EFFICIENT_UPSTREAM_MODEL,
@@ -387,6 +388,67 @@ async fn a_non_streaming_responses_weak_body_stalled_after_its_headers_is_cut_at
     .await;
 }
 
+/// A non-streaming Responses weak turn whose upstream accepted the request and
+/// then sent nothing, not even its headers. The Responses adapter streams
+/// upstream, so its idle clock starts at the send and the header wait is the
+/// first gap (#690): the turn is cut at `gated_idle_ms` rather than held to
+/// `upstream_ttfb_ms` or `gated_max_duration_ms`.
+///
+/// Non-vacuity: send without `within_idle` in `forward_http` and the header
+/// wait runs to the 8000 ms duration bound, so the elapsed-time assertion goes
+/// red.
+#[tokio::test]
+async fn a_non_streaming_responses_weak_turn_whose_headers_stall_is_cut_at_the_idle_gap() {
+    stalled_weak_turn_falls_back_after(StalledTier::Responses, Vec::new()).await;
+}
+
+/// The twin: a Responses weak turn whose headers and whole reply arrive
+/// 100 ms after the send, inside the 300 ms gap, is judged and replayed rather
+/// than cut, so the header wait is bounded by the gap without being charged
+/// against a turn that does make progress in time.
+#[tokio::test]
+async fn a_non_streaming_responses_weak_turn_whose_headers_arrive_inside_the_gap_is_replayed() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let (strong, efficient, responses, judge) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    messages_mock(anthropic_json(CAPABLE_UPSTREAM_MODEL, "STRONG"), 0)
+        .mount(&strong)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(responses_sse("WEAK-ANSWER").set_delay(Duration::from_millis(100)))
+        .expect(1)
+        .mount(&responses)
+        .await;
+    messages_mock(judge_text(DECLINE), 1).mount(&judge).await;
+    let tiers = Tiers {
+        strong: strong.uri(),
+        weak: efficient.uri(),
+        responses: responses.uri(),
+        judge: judge.uri(),
+    };
+    let router = format!(
+        "{}{STALL_ROUTER_EXTRA}",
+        escalation_router("responses-alias")
+    );
+    let gateway = start_gateway(gated_config(&tiers, &router)).await;
+
+    let response = post(&gateway, false).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        header(&response, "x-gateway-route-source"),
+        "escalation_weak"
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["content"][0]["text"], "WEAK-ANSWER", "got: {body}");
+}
+
 /// A non-streaming Gemini weak turn whose upstream sent its `200` headers and
 /// part of its `generateContent` JSON, then held the connection open: the
 /// Gemini adapter reads a non-streaming reply whole to translate it, so the
@@ -453,6 +515,17 @@ async fn stalled_non_streaming_weak_turn_falls_back(
     status_line: &[u8],
     partial: &[u8],
 ) {
+    let mut reply = status_line.to_vec();
+    reply.extend_from_slice(b"content-type: ");
+    reply.extend_from_slice(tier.content_type());
+    reply.extend_from_slice(b"\r\ncontent-length: 4096\r\n\r\n");
+    reply.extend_from_slice(partial);
+    stalled_weak_turn_falls_back_after(tier, reply).await;
+}
+
+/// [`stalled_non_streaming_weak_turn_falls_back`] with the stalled socket's
+/// bytes given whole: `reply` is everything it writes before holding open.
+async fn stalled_weak_turn_falls_back_after(tier: StalledTier, reply: Vec<u8>) {
     if !can_bind_loopback() {
         return;
     }
@@ -466,11 +539,6 @@ async fn stalled_non_streaming_weak_turn_falls_back(
         .mount(&strong)
         .await;
     messages_mock(judge_text(DECLINE), 0).mount(&judge).await;
-    let mut reply = status_line.to_vec();
-    reply.extend_from_slice(b"content-type: ");
-    reply.extend_from_slice(tier.content_type());
-    reply.extend_from_slice(b"\r\ncontent-length: 4096\r\n\r\n");
-    reply.extend_from_slice(partial);
     let (stalled, responder) = raw_upstream(reply, true).await;
     // The tiers the stalled socket does not stand behind get a mock that is
     // never called.

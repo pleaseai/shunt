@@ -1141,16 +1141,29 @@ pub(super) async fn forward_chatgpt_oauth(
         // either transport: a websocket attempt earlier in this dispatch
         // already took it, so this reads the window it left.
         let window = super::codex_ws::window_for_turn(pool_key.as_deref(), compact.take());
-        let upstream = match http_send(
-            &state,
-            &route,
-            credential.clone(),
-            session_id.as_deref(),
-            delegation.as_ref(),
-            window,
-            body.clone(),
+        // A gated call's idle clock starts as this account's request is sent,
+        // as on `forward_http`: the headers wait inside the first gap, and the
+        // collector carries on from the same instant rather than from after
+        // the estimate wait (#690). A stall past it is the call's cut, not a
+        // reason to rotate. `None` on every client turn.
+        let idle_since = turn
+            .response_bounds
+            .idle
+            .map(|_| tokio::time::Instant::now());
+        let upstream = match crate::adapters::within_idle(
+            turn.response_bounds.idle.zip(idle_since),
+            http_send(
+                &state,
+                &route,
+                credential.clone(),
+                session_id.as_deref(),
+                delegation.as_ref(),
+                window,
+                body.clone(),
+            ),
         )
         .await
+        .map_err(crate::adapters::idle_error)?
         {
             Ok(response) => response,
             Err(error @ crate::upstream_timeout::SendError::Timeout) => {
@@ -1204,6 +1217,7 @@ pub(super) async fn forward_chatgpt_oauth(
                         turn.relay(&route),
                         input_tokens_estimate,
                         turn.response_bounds,
+                        idle_since,
                     )
                     .await?;
                     let response = crate::adapters::with_admission(
@@ -1239,16 +1253,26 @@ pub(super) async fn forward_chatgpt_oauth(
                 // The primary send consumed the mark; this reads the window
                 // it left.
                 let window = super::codex_ws::window_for_turn(pool_key.as_deref(), compact.take());
-                let retry = match http_send(
-                    &state,
-                    &route,
-                    retry_credential,
-                    session_id.as_deref(),
-                    delegation.as_ref(),
-                    window,
-                    body.clone(),
+                // The refreshed retry is a new request: its own send starts
+                // the clock again, as the first attempt's did.
+                let retry_since = turn
+                    .response_bounds
+                    .idle
+                    .map(|_| tokio::time::Instant::now());
+                let retry = match crate::adapters::within_idle(
+                    turn.response_bounds.idle.zip(retry_since),
+                    http_send(
+                        &state,
+                        &route,
+                        retry_credential,
+                        session_id.as_deref(),
+                        delegation.as_ref(),
+                        window,
+                        body.clone(),
+                    ),
                 )
                 .await
+                .map_err(crate::adapters::idle_error)?
                 {
                     Ok(response) => response,
                     Err(error @ crate::upstream_timeout::SendError::Timeout) => {
@@ -1298,6 +1322,7 @@ pub(super) async fn forward_chatgpt_oauth(
                                 turn.relay(&route),
                                 input_tokens_estimate,
                                 turn.response_bounds,
+                                retry_since,
                             )
                             .await?;
                             let response = crate::adapters::with_admission(
@@ -1335,7 +1360,8 @@ pub(super) async fn forward_chatgpt_oauth(
 /// every success arm in [`forward_chatgpt_oauth`] so each only differs in
 /// which upstream response and account produced it (mirrors how the
 /// single-account [`forward_http`] picks between [`stream_response`] and
-/// [`json_response`]).
+/// [`json_response`]). `idle_since` is when the answering request was sent,
+/// and only the non-streaming read, the one a gated call takes, uses it.
 async fn relay_success(
     state: &AppState,
     upstream: reqwest::Response,
@@ -1343,6 +1369,7 @@ async fn relay_success(
     relay: RelayOptions,
     input_tokens_estimate: u64,
     bounds: crate::adapters::ResponseBounds,
+    idle_since: Option<tokio::time::Instant>,
 ) -> Result<axum::response::Response, AdapterError> {
     if client_wants_stream {
         let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
@@ -1353,7 +1380,7 @@ async fn relay_success(
             keepalive,
         ))
     } else {
-        json_response(upstream, relay, input_tokens_estimate, bounds).await
+        json_response(upstream, relay, input_tokens_estimate, bounds, idle_since).await
     }
 }
 

@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
 use shunt::config::{AuthMode, ProviderKind, UpstreamAuth};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,7 +16,7 @@ use wiremock::MockServer;
 
 use super::harness::{
     anthropic_json, escalation_router, header, judge_text, messages_mock, post,
-    unvalidated_gated_config, Tiers, GEMINI_UPSTREAM_MODEL,
+    unvalidated_gated_config, Tiers, GEMINI_UPSTREAM_MODEL, RESPONSES_UPSTREAM_MODEL,
 };
 use super::judge_harness::{
     alias, can_bind_loopback, env, start_gateway, upstream_with, CAPABLE_UPSTREAM_MODEL,
@@ -69,6 +70,18 @@ async fn counting_stalled_upstream(reply: Vec<u8>) -> (String, Arc<AtomicUsize>)
     (url, accepted)
 }
 
+/// A per-run temp dir for one test's account store.
+fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "shunt-buffer-replay-pool-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
 fn write_account(dir: &std::path::Path, name: &str) {
     let expiry = (std::time::SystemTime::now() + Duration::from_secs(3600))
         .duration_since(std::time::UNIX_EPOCH)
@@ -97,14 +110,7 @@ async fn a_pooled_antigravity_weak_body_stalled_after_its_headers_does_not_rotat
         return;
     }
     let mut vars = env().await;
-    let dir = std::env::temp_dir().join(format!(
-        "shunt-buffer-replay-pool-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = scratch_dir("antigravity");
     let accounts_dir = dir.join("accounts");
     std::fs::create_dir_all(&accounts_dir).unwrap();
     write_account(&accounts_dir, "a");
@@ -167,5 +173,93 @@ async fn a_pooled_antigravity_weak_body_stalled_after_its_headers_does_not_rotat
         1,
         "the idle cut must end the pool walk, not rotate to the next account"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A non-streaming Responses weak turn served through the ChatGPT-OAuth
+/// account pool, whose upstream accepted the request and then sent nothing,
+/// not even its headers. `forward_chatgpt_oauth` starts the idle clock at the
+/// account's send, as `forward_http` does (#690), so the header wait is the
+/// first gap and the turn is cut at `gated_idle_ms`.
+///
+/// Non-vacuity: pass `None` for the idle gap to the first attempt's
+/// `within_idle` in `forward_chatgpt_oauth` and the header wait runs to the
+/// 8000 ms duration bound, so the elapsed-time assertion goes red.
+#[tokio::test]
+async fn a_pooled_chatgpt_oauth_weak_turn_whose_headers_stall_is_cut_at_the_idle_gap() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = env().await;
+    let dir = scratch_dir("codex");
+    let accounts_dir = dir.join("accounts");
+    std::fs::create_dir_all(&accounts_dir).unwrap();
+    // A store account whose token reads as locally valid, so the first send
+    // uses it without a refresh.
+    let claims = serde_json::json!({
+        "exp": 4_102_444_800_u64,
+        "https://api.openai.com/auth": {"chatgpt_account_id": "acct-a"},
+    });
+    let token = format!(
+        "x.{}.y",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+    );
+    let account = serde_json::json!({"auth_mode": "ChatGPT", "tokens": {
+        "access_token": token, "refresh_token": "refresh-a"}});
+    std::fs::write(accounts_dir.join("a.json"), account.to_string()).unwrap();
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("CODEX_AUTH_FILE", dir.join("no-singleton.json"));
+
+    let (strong, unused_tier, judge) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    messages_mock(anthropic_json(CAPABLE_UPSTREAM_MODEL, "STRONG"), 1)
+        .mount(&strong)
+        .await;
+    messages_mock(judge_text(DECLINE), 0).mount(&judge).await;
+    let (stalled, accepted) = counting_stalled_upstream(Vec::new()).await;
+    let tiers = Tiers {
+        strong: strong.uri(),
+        weak: unused_tier.uri(),
+        responses: unused_tier.uri(),
+        judge: judge.uri(),
+    };
+    let router = format!(
+        "{}gated_idle_ms = 300\ngated_max_duration_ms = 8000\n",
+        escalation_router("codex-alias")
+    );
+    let mut config = unvalidated_gated_config(&tiers, &router);
+    let mut codex = upstream_with(
+        "codex-pool",
+        stalled,
+        UpstreamAuth::Shorthand(AuthMode::ChatgptOauth),
+    );
+    codex.kind = Some(ProviderKind::Responses);
+    config.upstreams.push(codex);
+    config
+        .models
+        .push(alias("codex-alias", "codex-pool", RESPONSES_UPSTREAM_MODEL));
+    let config = config
+        .validate()
+        .expect("the gated config with a pooled ChatGPT-OAuth tier is well formed");
+    let gateway = start_gateway(config).await;
+
+    let started = std::time::Instant::now();
+    let response = post(&gateway, false).await;
+    let elapsed = started.elapsed();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        header(&response, "x-gateway-route-source"),
+        "escalation_fallback"
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["content"][0]["text"], "STRONG", "got: {body}");
+    assert!(
+        elapsed < Duration::from_millis(4000),
+        "cut after {elapsed:?}: the stall ran on toward the 8000 ms duration bound"
+    );
+    assert_eq!(accepted.load(Ordering::SeqCst), 1, "the pooled send ran");
     let _ = std::fs::remove_dir_all(&dir);
 }

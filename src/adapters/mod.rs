@@ -140,8 +140,31 @@ pub(crate) struct ResponseBounds {
     /// after the headers included. Progress is any chunk for a plain body
     /// ([`collect_upstream_body`]) and a completed non-ping SSE frame for an
     /// event-stream body ([`collect_upstream_sse_body`]), so keep-alives alone
-    /// do not hold a stalled reply open.
+    /// do not hold a stalled reply open. The Responses adapter, which streams
+    /// upstream even for a non-streaming call, starts this clock when it sends
+    /// the request rather than when a collector starts (see [`within_idle`]).
     pub(crate) idle: Option<Duration>,
+}
+
+/// Await `send` — an upstream request on its way to its first sign of
+/// progress — under a gated call's idle clock: `clock` is the gap and the
+/// instant it started, which is when the request was sent.
+///
+/// `None` is every client turn: `send` is awaited as it always was, and no
+/// clock is read. The Responses adapter passes the same start instant on to
+/// its collector, so neither the wait for the headers nor any local work
+/// between them and the collector (the bounded input-token estimate) opens a
+/// window the idle gap does not cover.
+pub(crate) async fn within_idle<F: std::future::Future>(
+    clock: Option<(Duration, tokio::time::Instant)>,
+    send: F,
+) -> Result<F::Output, UpstreamBodyIdle> {
+    match clock {
+        None => Ok(send.await),
+        Some((idle, since)) => tokio::time::timeout_at(since + idle, send)
+            .await
+            .map_err(|_| UpstreamBodyIdle { idle }),
+    }
 }
 
 /// How a bounded whole-body read ended.
@@ -177,7 +200,7 @@ pub(crate) async fn collect_upstream_body(
     cap: Option<usize>,
     idle: Option<Duration>,
 ) -> Result<bytes::Bytes, UpstreamBodyError> {
-    collect_bounded_body(upstream, cap, idle, IdleProgress::Chunk).await
+    collect_bounded_body(upstream, cap, idle, None, IdleProgress::Chunk).await
 }
 
 /// [`collect_upstream_body`] for a body that is an SSE stream, read whole — the
@@ -193,12 +216,17 @@ pub(crate) async fn collect_upstream_body(
 /// a frame still arriving — so it adds neither memory against the cap nor a
 /// rescan per chunk. The body returned is every byte received, keep-alives
 /// included, and the cap counts every one of them.
+///
+/// `idle_since` is when the idle clock started: the instant the request was
+/// sent, which the headers do not refresh because they are not content.
+/// `None` starts it here, as [`collect_upstream_body`] always does.
 pub(crate) async fn collect_upstream_sse_body(
     upstream: reqwest::Response,
     cap: Option<usize>,
     idle: Option<Duration>,
+    idle_since: Option<tokio::time::Instant>,
 ) -> Result<bytes::Bytes, UpstreamBodyError> {
-    collect_bounded_body(upstream, cap, idle, IdleProgress::SseFrame).await
+    collect_bounded_body(upstream, cap, idle, idle_since, IdleProgress::SseFrame).await
 }
 
 /// What refreshes a bounded read's idle deadline.
@@ -215,6 +243,7 @@ async fn collect_bounded_body(
     upstream: reqwest::Response,
     cap: Option<usize>,
     idle: Option<Duration>,
+    idle_since: Option<tokio::time::Instant>,
     progress: IdleProgress,
 ) -> Result<bytes::Bytes, UpstreamBodyError> {
     if cap.is_none() && idle.is_none() {
@@ -255,7 +284,7 @@ async fn collect_bounded_body(
     // An absolute deadline, not a per-poll timeout: a chunk that is not
     // progress must leave it where it was, which re-arming a timeout on every
     // poll could not do.
-    let mut deadline = idle.map(|idle| tokio::time::Instant::now() + idle);
+    let mut deadline = idle.map(|idle| idle_since.unwrap_or_else(tokio::time::Instant::now) + idle);
     // Frame boundaries over `collected` itself: indices only, no second copy.
     let mut frames = crate::routing::serve::bounds::IncrementalFrameScanner::default();
     loop {
