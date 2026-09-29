@@ -141,6 +141,11 @@ pub(super) enum PoolItem {
         advance: bool,
         remember: bool,
         envelope: LazyEnvelope,
+        /// The exhausting upstream response's `retry-after`, read before the
+        /// response moves into its lazy envelope, so a refused gated chain
+        /// relays it the way the ordered loop's refusal does (#702). `None`
+        /// when no upstream answered or it sent none.
+        retry_after: Option<axum::http::HeaderValue>,
     },
 }
 

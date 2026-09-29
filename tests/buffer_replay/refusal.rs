@@ -3,6 +3,7 @@
 
 use reqwest::StatusCode;
 use serde_json::json;
+use shunt::config::{AuthMode, UpstreamAuth};
 use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
 use super::harness::{
@@ -25,6 +26,20 @@ pub(crate) async fn chained_gateway_with(
     down: &MockServer,
     down_reply: ResponseTemplate,
 ) -> super::judge_harness::TestGateway {
+    let weak_responses = super::judge_harness::api_key("down", down.uri(), JUDGE_KEY_ENV);
+    chained_gateway_via(strong, efficient, judge, down, down_reply, weak_responses).await
+}
+
+/// [`chained_gateway_with`] with the Responses route's upstream entry given:
+/// the one the chain reaches `down` through (its `name` must be `down`).
+async fn chained_gateway_via(
+    strong: &MockServer,
+    efficient: &MockServer,
+    judge: &MockServer,
+    down: &MockServer,
+    down_reply: ResponseTemplate,
+    mut weak_responses: shunt::config::UpstreamConfig,
+) -> super::judge_harness::TestGateway {
     Mock::given(method("POST"))
         .respond_with(down_reply)
         .expect(1)
@@ -35,7 +50,6 @@ pub(crate) async fn chained_gateway_with(
     let tiers = Tiers::of(strong, efficient, &responses, judge.uri());
     let mut config =
         super::harness::unvalidated_gated_config(&tiers, &escalation_router("chained-alias"));
-    let mut weak_responses = super::judge_harness::api_key("down", down.uri(), JUDGE_KEY_ENV);
     weak_responses.kind = Some(shunt::config::ProviderKind::Responses);
     // Ahead of `efficient`: the chain follows `[[upstreams]]` order.
     let at = config
@@ -121,4 +135,63 @@ async fn a_refused_streaming_weak_chain_relays_the_upstream_retry_after() {
             "the case whose 429 says retry-after: {expected}"
         );
     }
+}
+
+/// The Codex OAuth account pool's case of the test above (#702): a streaming
+/// weak chain whose pooled Responses route runs out of accounts on a `429
+/// retry-after: 13`, ahead of an Anthropic `500`, relays that `429` with the
+/// pool's `retry-after`, as the ordered loop's refusal carries it.
+///
+/// Non-vacuity: forward `retry_after: None` for `PoolItem::Exhausted` in the
+/// pooled `chain_attempt`, or read none at the exhaustion site in
+/// `pool.rs`, and the header is missing.
+#[tokio::test]
+async fn a_refused_streaming_weak_chain_relays_a_pool_exhausted_retry_after() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = env().await;
+    let dir = super::pool::codex_pool_store(&mut vars, "refusal");
+    let (strong, efficient, judge, down) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    messages_mock(
+        sse_reply(anthropic_sse(CAPABLE_UPSTREAM_MODEL, "STRONG")),
+        0,
+    )
+    .mount(&strong)
+    .await;
+    messages_mock(ResponseTemplate::new(500), 1)
+        .mount(&efficient)
+        .await;
+    messages_mock(judge_text(DECLINE), 0).mount(&judge).await;
+    let pooled = super::judge_harness::upstream_with(
+        "down",
+        down.uri(),
+        UpstreamAuth::Shorthand(AuthMode::ChatgptOauth),
+    );
+    let gateway = chained_gateway_via(
+        &strong,
+        &efficient,
+        &judge,
+        &down,
+        rate_limited("13"),
+        pooled,
+    )
+    .await;
+
+    let response = post(&gateway, true).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(header(&response, "x-gateway-route-source"), "gated_error");
+    assert_eq!(
+        response
+            .headers()
+            .get("retry-after")
+            .expect("the pool's exhaustion relays its retry-after"),
+        "13"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

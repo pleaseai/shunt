@@ -208,6 +208,7 @@ async fn pooled_first_poll_never_waits_for_the_build_on_a_pre_frame_failure() {
         advance: true,
         remember: false,
         envelope: LazyEnvelope::Ready(Value::Null),
+        retry_after: None,
     })]);
     let build = async move {
         let (machine, start): (AnthropicSseMachine, Vec<String>) =

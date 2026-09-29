@@ -510,10 +510,11 @@ pub(super) fn pool_events_stream(
                                 // advance status is advance-worthy and
                                 // remembered, transport exhaustion advances
                                 // without remembering.
-                                let (status, advance, remember, envelope) =
+                                let (status, advance, remember, envelope, retry_after) =
                                     match last_response.take() {
                                         Some(upstream) => {
                                             let status = upstream.status();
+                                            let retry_after = retry_after_of(&upstream);
                                             let envelope =
                                                 LazyEnvelope::Deferred(Box::pin(async move {
                                                     adapter_error_envelope(
@@ -529,6 +530,7 @@ pub(super) fn pool_events_stream(
                                                 crate::proxy::failover::is_advance_status(status),
                                                 true,
                                                 envelope,
+                                                retry_after,
                                             )
                                         }
                                         None => (
@@ -542,6 +544,7 @@ pub(super) fn pool_events_stream(
                                                 ))
                                                 .await,
                                             ),
+                                            None,
                                         ),
                                     };
                                 record(status);
@@ -551,6 +554,7 @@ pub(super) fn pool_events_stream(
                                         advance,
                                         remember,
                                         envelope,
+                                        retry_after,
                                     }),
                                     (
                                         Phase::Done,
@@ -622,6 +626,7 @@ pub(super) fn pool_events_stream(
                                             advance: false,
                                             remember: false,
                                             envelope: LazyEnvelope::Ready(envelope),
+                                            retry_after: None,
                                         }),
                                         (
                                             Phase::Done,
@@ -703,6 +708,7 @@ pub(super) fn pool_events_stream(
                                         // this path. Terminal, carrying its
                                         // real status for metrics.
                                         record(status);
+                                        let retry_after = retry_after_of(&upstream);
                                         let envelope = adapter_error_envelope(
                                             mapped_upstream_error(status, upstream, auth).await,
                                         )
@@ -713,6 +719,7 @@ pub(super) fn pool_events_stream(
                                                 advance: false,
                                                 remember: true,
                                                 envelope: LazyEnvelope::Ready(envelope),
+                                                retry_after,
                                             }),
                                             (
                                                 Phase::Done,
@@ -779,6 +786,7 @@ pub(super) fn pool_events_stream(
                                                     advance: false,
                                                     remember: false,
                                                     envelope: LazyEnvelope::Ready(envelope),
+                                                    retry_after: None,
                                                 }),
                                                 (
                                                     Phase::Done,
@@ -854,6 +862,7 @@ pub(super) fn pool_events_stream(
                                                     account: Some(account.name.clone()),
                                                 };
                                             } else {
+                                                let retry_after = retry_after_of(&retry);
                                                 let envelope = adapter_error_envelope(
                                                     mapped_upstream_error(
                                                         retry_status,
@@ -872,6 +881,7 @@ pub(super) fn pool_events_stream(
                                                         advance: false,
                                                         remember: true,
                                                         envelope: LazyEnvelope::Ready(envelope),
+                                                        retry_after,
                                                     }),
                                                     (
                                                         Phase::Done,
@@ -1353,6 +1363,16 @@ pub(super) async fn forward_chatgpt_oauth(
             "all Codex OAuth accounts failed before receiving an upstream response".to_string(),
         )),
     }
+}
+
+/// The `retry-after` an exhausting upstream response carries, read before the
+/// response moves into [`mapped_upstream_error`] — the same header that
+/// function copies onto the ordered loop's refusal (#702).
+fn retry_after_of(upstream: &reqwest::Response) -> Option<HeaderValue> {
+    upstream
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .cloned()
 }
 
 /// Relay a successful upstream Responses answer to the client, choosing SSE

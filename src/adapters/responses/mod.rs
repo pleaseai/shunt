@@ -719,6 +719,7 @@ pub(crate) async fn chain_attempt(
                     advance,
                     remember,
                     envelope,
+                    retry_after,
                 })) => {
                     // The pending build is dropped with the failure: the
                     // estimate share it holds keeps the chain's single
@@ -730,7 +731,7 @@ pub(crate) async fn chain_attempt(
                         remember,
                         envelope,
                         status,
-                        retry_after: None,
+                        retry_after,
                     };
                 }
                 Some(Err(envelope)) => {

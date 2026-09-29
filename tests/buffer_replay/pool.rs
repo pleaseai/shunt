@@ -82,6 +82,29 @@ fn scratch_dir(tag: &str) -> std::path::PathBuf {
     ))
 }
 
+/// Point the ChatGPT-OAuth account pool at a fresh store holding one account
+/// whose token reads as locally valid, so the first send uses it without a
+/// refresh. Returns the scratch directory for the caller to remove.
+pub(crate) fn codex_pool_store(vars: &mut crate::common::EnvVars, tag: &str) -> std::path::PathBuf {
+    let dir = scratch_dir(tag);
+    let accounts_dir = dir.join("accounts");
+    std::fs::create_dir_all(&accounts_dir).unwrap();
+    let claims = serde_json::json!({
+        "exp": 4_102_444_800_u64,
+        "https://api.openai.com/auth": {"chatgpt_account_id": "acct-a"},
+    });
+    let token = format!(
+        "x.{}.y",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+    );
+    let account = serde_json::json!({"auth_mode": "ChatGPT", "tokens": {
+        "access_token": token, "refresh_token": "refresh-a"}});
+    std::fs::write(accounts_dir.join("a.json"), account.to_string()).unwrap();
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("CODEX_AUTH_FILE", dir.join("no-singleton.json"));
+    dir
+}
+
 fn write_account(dir: &std::path::Path, name: &str) {
     let expiry = (std::time::SystemTime::now() + Duration::from_secs(3600))
         .duration_since(std::time::UNIX_EPOCH)
@@ -191,24 +214,7 @@ async fn a_pooled_chatgpt_oauth_weak_turn_whose_headers_stall_is_cut_at_the_idle
         return;
     }
     let mut vars = env().await;
-    let dir = scratch_dir("codex");
-    let accounts_dir = dir.join("accounts");
-    std::fs::create_dir_all(&accounts_dir).unwrap();
-    // A store account whose token reads as locally valid, so the first send
-    // uses it without a refresh.
-    let claims = serde_json::json!({
-        "exp": 4_102_444_800_u64,
-        "https://api.openai.com/auth": {"chatgpt_account_id": "acct-a"},
-    });
-    let token = format!(
-        "x.{}.y",
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
-    );
-    let account = serde_json::json!({"auth_mode": "ChatGPT", "tokens": {
-        "access_token": token, "refresh_token": "refresh-a"}});
-    std::fs::write(accounts_dir.join("a.json"), account.to_string()).unwrap();
-    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
-    vars.set("CODEX_AUTH_FILE", dir.join("no-singleton.json"));
+    let dir = codex_pool_store(&mut vars, "codex");
 
     let (strong, unused_tier, judge) = (
         MockServer::start().await,
