@@ -608,6 +608,7 @@ pub(crate) async fn chain_attempt(
                     remember: false,
                     envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                     status: StatusCode::BAD_GATEWAY,
+                    retry_after: None,
                 };
             }
         };
@@ -629,6 +630,7 @@ pub(crate) async fn chain_attempt(
                     remember: false,
                     envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                     status: StatusCode::BAD_GATEWAY,
+                    retry_after: None,
                 };
             }
             let (order, reprobe) = state.accounts.select_order_deferred(
@@ -728,6 +730,7 @@ pub(crate) async fn chain_attempt(
                         remember,
                         envelope,
                         status,
+                        retry_after: None,
                     };
                 }
                 Some(Err(envelope)) => {
@@ -739,6 +742,7 @@ pub(crate) async fn chain_attempt(
                         remember: false,
                         envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                         status: StatusCode::BAD_GATEWAY,
+                        retry_after: None,
                     };
                 }
                 None => {
@@ -753,6 +757,7 @@ pub(crate) async fn chain_attempt(
                             .await,
                         ),
                         status: StatusCode::BAD_GATEWAY,
+                        retry_after: None,
                     };
                 }
             }
@@ -775,6 +780,7 @@ pub(crate) async fn chain_attempt(
                 remember: false,
                 envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                 status,
+                retry_after: None,
             };
         }
     };
@@ -857,11 +863,13 @@ pub(crate) async fn chain_attempt(
             status,
             remember,
             advance,
+            retry_after,
         } => crate::proxy::chain_stream::Attempt::Failed {
             advance,
             remember,
             envelope,
             status,
+            retry_after,
         },
     }
 }

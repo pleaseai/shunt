@@ -292,6 +292,7 @@ async fn send_classified_with_estimate_never_waits_for_the_estimate_on_a_classif
             status: StatusCode::BAD_GATEWAY,
             remember: false,
             advance: true,
+            retry_after: None,
         }
     };
     let raced = tokio::time::timeout(
@@ -353,6 +354,7 @@ async fn send_classified_with_estimate_headers_at_precedes_a_pending_estimate() 
             status: StatusCode::BAD_GATEWAY,
             remember: false,
             advance: true,
+            retry_after: None,
         }
     };
     let raced = tokio::time::timeout(
@@ -961,6 +963,7 @@ async fn send_classified_defers_the_error_body_for_advance_statuses() {
         status,
         remember,
         advance,
+        ..
     } = outcome
     else {
         panic!("expected a failed classification, got a relay");

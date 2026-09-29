@@ -411,14 +411,24 @@ async fn retain_stream(
     // out, or an attempt failed terminally before its headers — with a `200`
     // and one `error` frame. That is the refusal the ordered loop would have
     // returned, not a cut: relay it as one, so escalation does not bill the
-    // strong tier for it and the caller keeps the refusal's status. The
-    // upstream's response headers (`retry-after`) are not carried through the
-    // committed stream, so the relay has none.
-    if let Some((status, envelope)) = winner.and_then(|winner| winner.refusal()) {
+    // strong tier for it and the caller keeps the refusal's status — and its
+    // `retry-after`, which the committed stream carries beside the status
+    // exactly because this relay, unlike the live stream's `200`, has not
+    // committed its headers yet (issue #655).
+    if let Some(refusal) = winner.and_then(|winner| winner.refusal()) {
+        let mut response = axum::response::IntoResponse::into_response((
+            refusal.status,
+            axum::Json(&refusal.envelope),
+        ));
+        if let Some(retry_after) = refusal.retry_after {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, retry_after);
+        }
         return GatedCapture::UpstreamError(UpstreamFailure::Answered {
-            status,
-            body: envelope.to_string(),
-            response: axum::response::IntoResponse::into_response((status, axum::Json(envelope))),
+            status: refusal.status,
+            body: refusal.envelope.to_string(),
+            response,
         });
     }
     if !scan.is_terminal() {
