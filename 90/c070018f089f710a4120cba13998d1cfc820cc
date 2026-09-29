@@ -1,0 +1,25 @@
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_ae56742217ef70::t_3e003760ca71f3 65
+site/src/content/docs/ja/reference/configuration.md
+  s_ae56742217ef70::t_3e003760ca71f3 881
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_ae56742217ef70::t_3e003760ca71f3 65
+site/src/content/docs/ko/reference/configuration.md
+  s_ae56742217ef70::t_3e003760ca71f3 890
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "90c070018f089f710a4120cba13998d1cfc820cc",
+  "prompts": {},
+  "sessions": {
+    "s_ae56742217ef70": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae0ddf79-be81-4701-aafe-16260584e4a7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
