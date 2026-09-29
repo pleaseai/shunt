@@ -784,7 +784,14 @@ pub async fn begin(
     };
     let (conn, handshake_headers) =
         Connection::open(ws_url, headers, connection_pool_key.clone(), overflow_slot).await?;
-    let slot = conn.turn_lock.clone().lock_owned().await;
+    // Take the slot without an await: `open` has already spawned the reader, and
+    // until the `Turn` exists nothing fires its `shutdown`. A caller dropping
+    // `begin` here (a gated call's idle bound) would leak the reader and socket.
+    let slot = conn
+        .turn_lock
+        .clone()
+        .try_lock_owned()
+        .expect("a freshly opened connection's turn lock is uncontended");
     Ok(Turn {
         conn,
         handshake_headers: Some(handshake_headers),
