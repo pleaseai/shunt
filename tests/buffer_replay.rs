@@ -33,6 +33,9 @@ mod transport;
 #[path = "buffer_replay/pool.rs"]
 mod pool;
 
+#[path = "buffer_replay/overflow.rs"]
+mod overflow;
+
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use wiremock::{matchers::method, Mock, MockServer};

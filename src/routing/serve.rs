@@ -27,6 +27,7 @@
 
 pub(crate) mod bounds;
 pub(crate) mod gated;
+mod overflow;
 
 use std::sync::Mutex;
 

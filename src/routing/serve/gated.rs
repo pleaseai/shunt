@@ -153,6 +153,9 @@ pub(crate) enum UpstreamFailure {
     Failed {
         message: String,
         response: axum::response::Response,
+        /// The collected body of a `400`, the one status whose body is read
+        /// here (see [`chain_failure`]); `None` for every other status.
+        body: Option<String>,
     },
 }
 
@@ -244,14 +247,14 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
                 .await
             }
         };
-        let success = match outcome {
-            Ok(success) => success,
-            Err(error) => return chain_failure(error),
-        };
         let gated = GatedBounds {
             max_bytes: bounds.gated_max_bytes,
             idle: bounds.gated_idle,
             max_duration: bounds.gated_max_duration,
+        };
+        let success = match outcome {
+            Ok(success) => success,
+            Err(error) => return chain_failure(error, gated).await,
         };
         if !success.status.is_success() {
             return relay_refusal(success, gated).await;
@@ -271,7 +274,13 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
 /// before its terminal marker — the same transport cut `retain_stream` and
 /// `collect_gated` make of a broken body — and everything else is the
 /// upstream's failure to relay.
-fn chain_failure(error: ForwardError) -> GatedCapture {
+///
+/// A `400` has its body collected, under the gated cap and idle gap as
+/// [`relay_refusal`] collects one, because that body is what tells a
+/// context-window overflow apart from any other refusal (issue #654): the
+/// Responses adapter answers an upstream refusal as this error, not as a
+/// relayed status. Every other status stays unread, as before.
+async fn chain_failure(error: ForwardError, gated: GatedBounds) -> GatedCapture {
     if error.body_too_large().is_some() {
         return GatedCapture::Cut(CutReason::Bound(BoundExceeded::MaxBytes));
     }
@@ -282,10 +291,26 @@ fn chain_failure(error: ForwardError) -> GatedCapture {
         return GatedCapture::Cut(CutReason::Transport);
     }
     let message = error.message().to_string();
-    GatedCapture::UpstreamError(UpstreamFailure::Failed {
-        message,
-        response: axum::response::IntoResponse::into_response(error),
-    })
+    let response = axum::response::IntoResponse::into_response(error);
+    if response.status() != StatusCode::BAD_REQUEST {
+        return GatedCapture::UpstreamError(UpstreamFailure::Failed {
+            message,
+            response,
+            body: None,
+        });
+    }
+    let (parts, body) = response.into_parts();
+    match collect_gated(body, gated).await {
+        Ok(bytes) => GatedCapture::UpstreamError(UpstreamFailure::Failed {
+            message,
+            body: Some(String::from_utf8_lossy(&bytes).into_owned()),
+            response: axum::response::Response::from_parts(
+                parts,
+                axum::body::Body::from(Bytes::from(bytes)),
+            ),
+        }),
+        Err(reason) => GatedCapture::Cut(reason),
+    }
 }
 
 /// A non-`2xx` answer, collected under the gated cap and idle gap so libsy's
@@ -577,13 +602,29 @@ fn promise_result(capture: &GatedCapture, target: &ModelId) -> switchyard_libsy:
             };
             LlmResponse::Stream(Box::pin(futures_util::stream::iter([Err(error)])))
         }
+        // A context-window overflow is typed as libsy's own client types it,
+        // so the algorithm's branch on it runs: escalation falls back to the
+        // strong target (`escalation_fallback`), an advisor propagates it and
+        // the refusal is relayed (issue #654). Any other refusal ends the
+        // drive and is relayed unchanged.
         GatedCapture::UpstreamError(failure) => {
             let (status, body) = match failure {
                 UpstreamFailure::Answered { status, body, .. } => (*status, body.clone()),
-                UpstreamFailure::Failed { message, response } => {
-                    (response.status(), message.clone())
-                }
+                UpstreamFailure::Failed {
+                    message,
+                    response,
+                    body,
+                } => (
+                    response.status(),
+                    body.clone().unwrap_or_else(|| message.clone()),
+                ),
             };
+            if super::overflow::is_context_overflow(status, &body) {
+                return Err(client_call(LlmClientError::ContextWindowExceeded {
+                    model: target.clone(),
+                    message: body,
+                }));
+            }
             return Err(client_call(LlmClientError::UpstreamHttp { status, body }));
         }
     };
