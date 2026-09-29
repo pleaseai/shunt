@@ -1,0 +1,35 @@
+tests/buffer_replay/overflow.rs
+  s_ae56742217ef70::t_4b1cea034a2f27 179-181
+  s_ae56742217ef70::t_5efbb7f8d7c119 1-178,182-198
+src/routing/serve/gated.rs
+  s_ae56742217ef70::t_592690868d1caa 255-257
+  s_ae56742217ef70::t_2ac3df4ffac460 277-283,294-313
+  s_ae56742217ef70::t_16cf3130af1699 156-158
+  s_ae56742217ef70::t_a4f2b4fb8b3d92 606-609,613-620
+  s_ae56742217ef70::t_64d27581111f37 258,605,622-627
+tests/buffer_replay.rs
+  s_ae56742217ef70::t_4b1cea034a2f27 36-38
+src/routing/serve/overflow.rs
+  s_ae56742217ef70::t_17c1d46189072e 1-71,73-92
+  s_ae56742217ef70::t_34a8dea8e8cac7 72
+src/routing/serve.rs
+  s_ae56742217ef70::t_ba60fe09bad5a0 30
+src/routing/serve/gated/tests.rs
+  s_ae56742217ef70::t_9f0ed5847ad6a5 241-249,253-254,266-270,274,282-283,289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0f904c2147b864c2fe719dce3004309034b5f10f",
+  "prompts": {},
+  "sessions": {
+    "s_ae56742217ef70": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae0ddf79-be81-4701-aafe-16260584e4a7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
