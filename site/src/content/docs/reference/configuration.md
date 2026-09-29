@@ -806,7 +806,8 @@ retained text and tool-call fields on Cursor. The idle gap is timed between
 WebSocket events, the first one included, and between Antigravity output lines
 that carry content, so a tool step alone does not reset it. On an OpenAI
 Responses target the gap starts when the request is sent, so the wait for the
-response headers or the first WebSocket event counts toward it, and so does
+response headers, or for the WebSocket handshake (or a pooled connection's
+liveness check) and first event, counts toward it, and so does
 shunt's own local token count (up to 1 second) before the reply is read. A
 retried request starts the gap again. A cold Antigravity
 model-catalog fetch made during one of these calls is read under the same

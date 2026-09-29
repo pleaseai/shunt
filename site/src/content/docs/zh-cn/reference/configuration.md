@@ -574,8 +574,8 @@ base_threshold = 0.5
 按到达时的响应体计;Codex WebSocket 按每个事件的类型与负载的紧凑 JSON 计;Antigravity 按
 CLI 的 stdout 计,含行终止符;Cursor 按保留的文本与工具调用字段计。空闲间隔在 WebSocket
 事件之间(包括等待第一个事件)以及带内容的 Antigravity 输出行之间计时,单独的工具步骤不会
-重置它。对 OpenAI Responses 目标,间隔从请求发出的那一刻开始计时,所以等待响应头或第一个
-WebSocket 事件的时间,以及读取回复前 shunt 在本地计算 token 的时间(最多 1 秒),都计入间隔。
+重置它。对 OpenAI Responses 目标,间隔从请求发出的那一刻开始计时,所以等待响应头,或等待 WebSocket
+握手(复用连接池中的连接时为存活检查)和第一个事件的时间,以及读取回复前 shunt 在本地计算 token 的时间(最多 1 秒),都计入间隔。
 重新发送的请求会重新开始计时。在这些调用中因缓存为空而触发的 Antigravity 模型目录拉取,也按同样的上限读取;被拒绝
 的目录会回退到没有目录时 shunt 推测的模型 id,下一次客户端回合会重新拉取。
 

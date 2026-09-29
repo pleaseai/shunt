@@ -230,21 +230,24 @@ pub(super) type BufferedEvent = Option<Result<ResponseEvent, CodexWsError>>;
 /// ([`stream_events_response`]), a gateway error for a non-streaming one
 /// ([`json_events_response`]).
 ///
-/// `idle` is the gated call's `gated_idle_ms` and `None` for every other turn;
-/// see [`peek_first_event`], whose arrival instant is returned alongside the
-/// event for the collector to measure its first gap from.
+/// `idle` is the gated call's `gated_idle_ms` and `None` for every other turn.
+/// With it set, the clock starts as the turn is opened, as `forward_http`'s
+/// starts at its send: the handshake (or a pooled connection's probe), the
+/// frame, and the wait for the first event are one gap (#690), and a stall
+/// anywhere in it is a cut, not an HTTP fallback (see [`peek_first_event`]).
+/// The retry below is a new request and starts its own clock. The first
+/// event's arrival instant is returned for the collector to measure its next
+/// gap from.
 async fn open_ws_turn(
     ctx: &WsTurnContext<'_>,
     idle: Option<std::time::Duration>,
 ) -> Result<(BufferedEvent, Option<tokio::time::Instant>, CodexWsEvents), AdapterError> {
-    let (events, used_continuation) = start_ws_turn(ctx, true).await?;
-    let (first, first_at, events) = peek_first_event(events, idle).await?;
+    let (first, first_at, events, used_continuation) = open_and_peek(ctx, true, idle).await?;
     // A rejected previous_response_id arrives before any output: retry once with
     // the full input on a fresh connection, then evaluate that stream instead.
     if used_continuation && matches!(&first, Some(Err(error)) if error.previous_response_missing) {
         tracing::info!("codex previous_response_id rejected; retrying with full input");
-        let (events, _) = start_ws_turn(ctx, false).await?;
-        let (first, first_at, events) = peek_first_event(events, idle).await?;
+        let (first, first_at, events, _) = open_and_peek(ctx, false, idle).await?;
         let (first, events) = commit_or_fallback(first, events, ctx.auth)?;
         return Ok((first, first_at, events));
     }
@@ -252,33 +255,56 @@ async fn open_ws_turn(
     Ok((first, first_at, events))
 }
 
+/// [`start_ws_turn`] then [`peek_first_event`], both under one gated idle
+/// clock started here. `None` reads no clock.
+async fn open_and_peek(
+    ctx: &WsTurnContext<'_>,
+    allow_continuation: bool,
+    idle: Option<std::time::Duration>,
+) -> Result<
+    (
+        BufferedEvent,
+        Option<tokio::time::Instant>,
+        CodexWsEvents,
+        bool,
+    ),
+    AdapterError,
+> {
+    let clock = idle.map(|idle| (idle, tokio::time::Instant::now()));
+    let (events, used_continuation) =
+        crate::adapters::within_idle(clock, start_ws_turn(ctx, allow_continuation))
+            .await
+            .map_err(crate::adapters::idle_error)??;
+    let (first, first_at, events) = peek_first_event(events, clock).await?;
+    Ok((first, first_at, events, used_continuation))
+}
+
 /// Await the first event of a freshly opened turn, returning it alongside the
 /// still-live channel so it can be replayed before the remainder of the stream.
 ///
-/// With `idle` set, the wait is the gated call's first gap, from the turn's
-/// frame being sent — the twin of the gap `forward_http` times from its send,
-/// the header wait included (#690) — and a backend that
-/// accepts the frame and then says nothing is cut there with the idle marker
-/// rather than held to the transport's own idle timeout. That is a cut, not an
-/// HTTP fallback: the bound belongs to the call, and re-driving the turn over
-/// HTTP would start it again against a gap already spent. Dropping `events`
-/// abandons the turn, so its socket is evicted rather than pooled.
+/// With `clock` set — the gated call's gap and the instant [`open_and_peek`]
+/// opened the turn — the wait ends at the close of that first gap, which the
+/// handshake and the frame already spent part of: the twin of the gap
+/// `forward_http` times from its send, the header wait included (#690). A
+/// backend that accepts the frame and then says nothing is cut there with the
+/// idle marker rather than held to the transport's own idle timeout. That is a
+/// cut, not an HTTP fallback: the bound belongs to the call, and re-driving
+/// the turn over HTTP would start it again against a gap already spent.
+/// Dropping `events` abandons the turn, so its socket is evicted rather than
+/// pooled.
 ///
-/// With `idle` set, the first event's arrival is returned too: it is the
+/// With `clock` set, the first event's arrival is returned too: it is the
 /// upstream's last progress, and the collector's next gap runs from it rather
 /// than from whenever the collector starts after the bounded estimate wait
 /// (#690). `None` for every other turn, which reads no clock.
 async fn peek_first_event(
     mut events: CodexWsEvents,
-    idle: Option<std::time::Duration>,
+    clock: Option<(std::time::Duration, tokio::time::Instant)>,
 ) -> Result<(BufferedEvent, Option<tokio::time::Instant>, CodexWsEvents), AdapterError> {
-    let first = match idle {
-        Some(idle) => tokio::time::timeout(idle, events.recv())
-            .await
-            .map_err(|_| crate::adapters::idle_error(crate::adapters::UpstreamBodyIdle { idle }))?,
-        None => events.recv().await,
-    };
-    let first_at = idle.map(|_| tokio::time::Instant::now());
+    let first = crate::adapters::within_idle(clock, events.recv())
+        .await
+        .map_err(crate::adapters::idle_error)?;
+    let first_at = clock.map(|_| tokio::time::Instant::now());
     Ok((first, first_at, events))
 }
 
@@ -765,6 +791,7 @@ mod tests {
         ) -> (tokio::time::Instant, Option<tokio::time::Instant>) {
             let (tx, rx) = tokio::sync::mpsc::channel(16);
             let started = tokio::time::Instant::now();
+            let clock = idle.map(|idle| (idle, started));
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(120)).await;
                 let event = super::ResponseEvent {
@@ -773,7 +800,7 @@ mod tests {
                 };
                 let _ = tx.send(Ok(event)).await;
             });
-            let (first, first_at, _events) = super::peek_first_event(rx, idle)
+            let (first, first_at, _events) = super::peek_first_event(rx, clock)
                 .await
                 .expect("an event inside the gap is peeked");
             assert!(matches!(first, Some(Ok(_))), "the first event is returned");
@@ -789,6 +816,58 @@ mod tests {
 
         let (_, first_at) = peek_one(None).await;
         assert_eq!(first_at, None, "a client turn reads no clock");
+    }
+
+    /// The peek's wait ends at the close of the gap the turn's opening started
+    /// — the handshake and the frame spent part of it (#690) — not a full gap
+    /// after the peek begins. With 200 ms spent opening and a 300 ms gap, a
+    /// first event 150 ms into the peek is past the gap and is cut; one 50 ms
+    /// into it is inside and is peeked.
+    ///
+    /// Non-vacuity: time the peek with a fresh `timeout(idle, …)` instead of
+    /// the opening's deadline and the 150 ms event lands inside a new gap, so
+    /// this goes red.
+    #[tokio::test(start_paused = true)]
+    async fn peek_first_event_ends_at_the_gap_the_opening_started() {
+        async fn peek_after(
+            event_at: std::time::Duration,
+        ) -> Result<super::BufferedEvent, crate::adapters::AdapterError> {
+            let idle = std::time::Duration::from_millis(300);
+            let opened_at = tokio::time::Instant::now();
+            // The handshake and the frame, before the peek starts.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let (tx, rx) = tokio::sync::mpsc::channel(16);
+            tokio::spawn(async move {
+                tokio::time::sleep(event_at).await;
+                let event = super::ResponseEvent {
+                    event: Some("response.created".to_string()),
+                    data: Value::Null,
+                };
+                let _ = tx.send(Ok(event)).await;
+            });
+            super::peek_first_event(rx, Some((idle, opened_at)))
+                .await
+                .map(|(first, _, _)| first)
+        }
+
+        let error = peek_after(std::time::Duration::from_millis(150))
+            .await
+            .expect_err("an event past the gap since the opening is cut");
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle {
+                idle: std::time::Duration::from_millis(300)
+            }),
+            "got: {}",
+            error.message
+        );
+        let first = peek_after(std::time::Duration::from_millis(50))
+            .await
+            .expect("an event inside the gap since the opening is peeked");
+        assert!(matches!(first, Some(Ok(_))));
     }
 
     /// Peek `data` as the first event of a turn through `commit_or_fallback`.

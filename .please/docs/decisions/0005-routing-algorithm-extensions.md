@@ -615,8 +615,8 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   and `gated_idle_ms` on the gap between units of progress. A unit of progress
   is a completed SSE frame that is not a keep-alive, or a WebSocket event. On
   the Responses adapter the idle clock starts when the request is sent. The
-  HTTP header wait and the WebSocket wait for the first event are the first
-  gap. Local work after that — the bounded input-token estimate, up to 1 s —
+  HTTP header wait, and the WebSocket handshake (or a pooled connection's
+  probe) with the wait for the first event, are the first gap. Local work after that — the bounded input-token estimate, up to 1 s —
   neither pauses nor restarts the clock (#690). The reply is not read during
   that wait, so a frame that arrives after the gap closed but before the first
   read is still taken as progress. The overshoot stays below the estimate's

@@ -40,6 +40,8 @@ const GATED_MODEL: &str = "ws-gated";
 /// Where the websocket turn stalls.
 #[derive(Clone, Copy)]
 enum Stall {
+    /// Accept the connection and never answer the websocket upgrade.
+    BeforeHandshake,
     /// Accept the turn's frame and send nothing at all.
     BeforeFirstEvent,
     /// Start the turn, then send nothing more.
@@ -67,6 +69,13 @@ async fn spawn_stalling_upstream(stall: Stall) -> (String, Arc<AtomicUsize>) {
                 continue;
             }
             tokio::spawn(async move {
+                if let Stall::BeforeHandshake = stall {
+                    // Silent, not closed: the upgrade request is read by
+                    // nobody and the socket stays open until the test ends.
+                    std::future::pending::<()>().await;
+                    drop(socket);
+                    return;
+                }
                 // An explicit config, as `tests/codex_websocket_fallback.rs`
                 // passes: it is what negotiates the permessage-deflate
                 // extension the client offers.
@@ -302,6 +311,20 @@ async fn stalled_weak_turn_falls_back_at_the_idle_gap(stall: Stall) {
     );
     strong.verify().await;
     server.abort();
+}
+
+/// A backend that accepts the connection and never completes the websocket
+/// upgrade is cut at the gap too: the clock starts as the turn is opened, as
+/// `forward_http`'s starts at its send (#690), so the handshake is inside the
+/// first gap rather than held to the 15 s connect timeout — and, as for every
+/// idle cut, not re-driven over HTTP.
+///
+/// Non-vacuity: open the turn without `within_idle` in `open_and_peek` and the
+/// handshake waits out the 8 s duration bound, so the elapsed-time assertion
+/// goes red.
+#[tokio::test]
+async fn a_gated_websocket_turn_whose_handshake_stalls_falls_back_at_the_idle_gap() {
+    stalled_weak_turn_falls_back_at_the_idle_gap(Stall::BeforeHandshake).await;
 }
 
 /// A backend that accepts the turn's frame and never sends a first event is
