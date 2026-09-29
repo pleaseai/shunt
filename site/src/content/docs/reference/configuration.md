@@ -804,7 +804,11 @@ Responses over HTTP; each event's type and payload as compact JSON on the Codex
 WebSocket; the CLI's stdout, line terminators included, on Antigravity; and the
 retained text and tool-call fields on Cursor. The idle gap is timed between
 WebSocket events, the first one included, and between Antigravity output lines
-that carry content, so a tool step alone does not reset it. A cold Antigravity
+that carry content, so a tool step alone does not reset it. On an OpenAI
+Responses target the gap starts when the request is sent, so the wait for the
+response headers or the first WebSocket event counts toward it, and so does
+shunt's own local token count (up to 1 second) before the reply is read. A
+retried request starts the gap again. A cold Antigravity
 model-catalog fetch made during one of these calls is read under the same
 bounds; a refused catalog falls back to the model id shunt would guess without
 one, and the next client turn fetches it again.
@@ -1128,9 +1132,12 @@ turn on every other route, streams exactly as before.
 
 **The caller's mode is kept.** A `stream: true` caller's gated call streams.
 Its SSE frames are retained as they arrive and, if the turn is served, replayed
-byte for byte. A `stream: false` caller's gated call is non-streaming, and the
-caller gets the single JSON message. The gate changes *when* the answer is
-sent, never its shape. The replayed `message_start.model` is the router's own
+byte for byte. A `stream: false` caller gets the single JSON message of a
+completed turn. The Anthropic adapter makes that call non-streaming. The
+OpenAI Responses adapter streams upstream on every turn, because the
+ChatGPT/Codex backend refuses a non-streaming request, and assembles the one
+message from that stream under the same bounds. The gate changes *when* the
+answer is sent, never its shape. The replayed `message_start.model` is the router's own
 id, not the executor's, on an Anthropic and an OpenAI Responses executor alike,
 so Claude Code's `/model` display and `--resume` see the id they asked for.
 Response headers are committed only when the replay starts.

@@ -1404,12 +1404,17 @@ A gated turn is made **in the caller's own mode**:
   are retained as they arrive. The judge's neutral `Response` is assembled from
   them. If the turn is served, the retained frames are replayed byte for byte.
   They are retained, not re-encoded.
-- **`stream: false`.** The call is non-streaming. The single JSON message is
-  retained, the judge's `Response` derives from it, and the client gets that
-  message.
+- **`stream: false`.** The client gets one JSON message from a completed turn.
+  The message is retained, and the judge's `Response` derives from it. The
+  upstream transport is the adapter's (ADR-0005 §9, amendment of 2026-09-29).
+  The Anthropic adapter makes a non-streaming call. The Responses adapter
+  streams upstream on every turn, since the ChatGPT/Codex backend refuses
+  `stream: false`, and aggregates the SSE into that message under the gated
+  bounds below.
 
-No SSE-to-JSON conversion exists or is added: the gate changes *when* the answer
-is sent, never its shape.
+`serve` adds no SSE-to-JSON conversion: the Responses aggregation is the
+adapter's own, the path every non-streaming client turn on that adapter
+already takes. The gate changes *when* the answer is sent, never its shape.
 
 **Replayed under the advertised id.** The internal dispatch carries the
 router's own id as the alias to render, so `message_start.model` — or the
@@ -1494,7 +1499,7 @@ gated turn:
 | Key | Default | Bounds |
 | :-- | :-- | :-- |
 | `gated_max_bytes` | `8388608` | Retained SSE frame bytes, or the retained JSON body. An adapter that builds the reply before the capture sees it counts what it receives, as §5 describes for `judge_max_response_bytes` |
-| `gated_idle_ms` | `60000` | The gap between body chunks. On an SSE body — a streaming call, or a Responses upstream's reply, which is SSE even when read whole for a non-streaming call — only a completed content frame counts as progress (§5), so SSE `ping` frames do not reset it and an endless keep-alive stream cannot hold a gated turn open. The adapters that accumulate a non-streaming reply apply it between the pieces they accumulate, the first wait included: the Responses WebSocket between events (and before the first one, where a cut is not an HTTP fallback), Antigravity between CLI lines whose translation carries a content frame, so a tool step alone does not reset it. Cursor's agent stream already ends a quiet turn on its own first-byte and idle timeouts |
+| `gated_idle_ms` | `60000` | The gap between body chunks. On an SSE body — a streaming call, or a Responses upstream's reply, which is SSE even when read whole for a non-streaming call — only a completed content frame counts as progress (§5), so SSE `ping` frames do not reset it and an endless keep-alive stream cannot hold a gated turn open. The adapters that accumulate a non-streaming reply apply it between the pieces they accumulate, the first wait included: the Responses WebSocket between events (and before the first one, where a cut is not an HTTP fallback), Antigravity between CLI lines whose translation carries a content frame, so a tool step alone does not reset it. Cursor's agent stream already ends a quiet turn on its own first-byte and idle timeouts. On a non-streaming Responses call the clock starts when the request is sent, so the HTTP header wait is the first gap. The bounded input-token estimate between the headers (or the peeked first WebSocket event) and the collector sits inside the gap rather than before it; a retried send, a pooled account's attempt, or a retry after a credential refresh starts its own clock (#690) |
 | `gated_max_duration_ms` | `600000` | Wall clock across headers and body |
 
 Crossing a bound cancels the upstream call and refunds nothing: the upstream

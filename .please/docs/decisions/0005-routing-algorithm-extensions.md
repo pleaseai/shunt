@@ -589,6 +589,67 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   - a drive abandoned after libsy wrote records nothing;
   - libsy's hourly sweep can keep an idle latch up to about two hours, while a
     probe treats it as expired after one.
+- **2026-09-29 (issues #653, #690) — a gated `stream: false` call keeps its
+  client contract, and its upstream transport is the adapter's.** §3 says
+  that for a non-streaming caller "the call is non-streaming too", and §4
+  that the JSON message comes "from a gated call made in non-streaming mode
+  (§3), on both adapters". That holds on the Anthropic adapter. The Responses
+  adapter has sent `"stream": true` on every turn since M1
+  (`src/model/responses_request.rs`; `docs/m1-responses-translation.md` §0 and
+  §5): one SSE state machine serves streaming and non-streaming callers, and
+  a non-streaming reply is aggregated from that SSE into one message
+  (`json_response` over HTTP, `json_events_response` over the Codex
+  WebSocket). The contract is therefore stated at the client. A `stream:
+  false` caller on a gated turn gets one JSON message from a completed turn,
+  and the judge's `Response` derives from that message. The upstream transport
+  is adapter-specific: the Anthropic adapter makes a non-streaming call, and
+  the Responses adapter streams upstream and aggregates. The same split
+  applies to §3's "Non-streaming for judges": a judge, classifier, or review
+  call to a Responses target is aggregated the same way. `serve` still adds no
+  SSE-to-JSON conversion; the aggregation is the adapter's own, the path every
+  non-streaming client turn on that adapter already takes.
+
+  The aggregation is bounded by the §3 keys: `gated_max_bytes` on what the
+  adapter receives (the body bytes over HTTP, each event's type and payload as
+  compact JSON on the WebSocket), `gated_max_duration_ms` on the wall clock,
+  and `gated_idle_ms` on the gap between units of progress. A unit of progress
+  is a completed SSE frame that is not a keep-alive, or a WebSocket event. On
+  the Responses adapter the idle clock starts when the request is sent. The
+  HTTP header wait and the WebSocket wait for the first event are the first
+  gap. Local work after that — the bounded input-token estimate, up to 1 s —
+  neither pauses nor restarts the clock (#690). A new request starts its own
+  clock: a retried send, a pooled account's attempt, or a retry after a
+  credential refresh. The terminal-marker rule is unchanged. A message
+  synthesized from a stream that ended before `response.completed` is marked
+  `UpstreamTruncated` and cut, never served.
+
+  The Responses adapter keeps streaming rather than making the call
+  non-streaming. The evidence below was recorded on 2026-09-29 from public
+  sources, with no live upstream call:
+  - The ChatGPT/Codex backend refuses `stream: false` with
+    `400 "Stream must be set to true"`. langchain-ai/langchain documents this
+    in `libs/partners/openai/langchain_openai/chat_models/codex.py` and forces
+    streaming, then aggregates. A mock backend in usestrix/strix
+    (`tests/test_codex_streaming.py`) and a bug report in tinyhumansai/openhuman
+    (#5353) show the same body. openai/codex sends `stream: true` on every
+    Responses request, its internal guardian-v2 scorer included
+    (`codex-rs/core/src/client.rs`,
+    `codex-rs/ext/guardian-v2/src/async_scorer/sampler.rs`). The Codex
+    WebSocket transport has no non-streaming form at all.
+  - Xiaomi MiMo, one of the documented Codex Responses vendors, is reported
+    to refuse `stream: false` the same way (mydisha/keirouter,
+    `backend/internal/connectors/openai_compatible.go`).
+  - The stock OpenAI Platform `/v1/responses` accepts `stream: false`
+    (openai-python's non-streaming `responses.create` overload). The xAI and
+    Grok flavors were not checked. On those flavors, streaming is a choice
+    rather than a constraint: one code path for every flavor, where a
+    non-streaming arm would add a second parser, error mapping, and set of
+    bounds for the gated and judge calls alone.
+
+  The harm #653 reported was a stall held until `gated_max_duration_ms`.
+  #670 and #688 removed it, and the send-time clock above closes the last
+  window. A per-flavor non-streaming arm for the flavors that accept one
+  remains open to a later change and would not reverse this amendment.
 
 ### 10. Verification before code
 
