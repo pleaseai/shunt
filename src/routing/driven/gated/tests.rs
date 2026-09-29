@@ -9,16 +9,24 @@
 //! set `gated: None` on the escalation or advisor build and
 //! `only_escalation_and_advisor_entries_are_gated` goes red; drop the gated
 //! term from [`gated_deadline`] and `the_outer_deadline_covers_the_gated_turn`
-//! goes red.
+//! goes red; build any of [`decide`]'s early failures with the budget refusal
+//! alone and `every_decide_failure_carries_the_failed_judge_outcome` goes red
+//! on that row.
 
 use std::time::Duration;
 
+use axum::http::HeaderMap;
 use serde_json::json;
+use switchyard_libsy::{OutcomeMetadata, RoutingOutcome};
+use switchyard_protocol::{text_response, LlmResponse, ModelId, Request, Response};
 
-use super::{gated_deadline, read_evidence, JudgeReading};
+use super::{decide, gated_deadline, read_evidence, GatedDecision, JudgeReading};
 use crate::config::{CallBounds, RouterConfig};
+use crate::routing::context::RouterContext;
+use crate::routing::driven::drive::DriveNotes;
 use crate::routing::driven::{build, GatedKind};
 use crate::routing::outcome::RouteSource;
+use crate::routing::serve::JudgeFailure;
 
 #[test]
 fn every_row_of_the_evidence_map_reads_as_documented() {
@@ -215,4 +223,85 @@ fn the_outer_deadline_covers_the_gated_turn() {
         ..bounds
     };
     assert_eq!(gated_deadline(unbounded), Duration::MAX, "saturates");
+}
+
+/// An advisor outcome selecting `selected` (or nothing), with `evidence`, and
+/// a response when `served` — libsy's "serve the retained turn" signal.
+fn advisor_outcome(
+    selected: Option<&str>,
+    served: bool,
+    evidence: Option<serde_json::Value>,
+) -> RoutingOutcome {
+    let mut outcome =
+        RoutingOutcome::route_to(ModelId::from("executor"), vec![], Request::default());
+    outcome.selected_model_ids = selected.into_iter().map(ModelId::from).collect();
+    outcome.response = served.then(|| Response {
+        llm_response: LlmResponse::Agg(text_response(None, "held")),
+        metadata: None,
+        upstream_headers: HeaderMap::new(),
+    });
+    outcome.metadata = Some(OutcomeMetadata::new("test".to_string(), evidence));
+    outcome
+}
+
+/// Every early failure in [`decide`] carries the drive's failed judge call, as
+/// `refuse` does, so a made-and-failed review is still recorded (issue #686).
+/// The twin — the same rows with nothing recorded — reads `None`, so a row
+/// cannot pass on an outcome the notes did not supply.
+#[test]
+fn every_decide_failure_carries_the_failed_judge_outcome() {
+    let entry = entry(
+        r#"
+        type = "advisor"
+        executor_target = "executor"
+        advisor_target = "advisor"
+        "#,
+    );
+    let headers = HeaderMap::new();
+    let hints = RouterContext::from_headers(&headers);
+    let failed = DriveNotes::default();
+    *failed.failure().lock().unwrap() = Some(JudgeFailure::UpstreamStatus);
+    let clean = DriveNotes::default();
+    let approve = json!({"source": "advisor", "verdict": "approve"});
+    let redo = json!({"source": "advisor", "verdict": "redo"});
+    let rows = [
+        (None, false, None, "gated routing selected no target"),
+        (
+            Some("elsewhere"),
+            false,
+            None,
+            "gated routing selected a target outside its set",
+        ),
+        // Served, but nothing was captured to serve.
+        (
+            Some("executor"),
+            true,
+            Some(approve),
+            "gated routing kept a turn that was not retained",
+        ),
+        // `Request::default()` has no messages, so there is no REDO tail.
+        (
+            Some("executor"),
+            false,
+            Some(redo),
+            "the advisor's REDO could not be encoded",
+        ),
+    ];
+    for (selected, served, evidence, expected) in rows {
+        for (notes, recorded) in [(&failed, Some("upstream_error")), (&clean, None)] {
+            let outcome = advisor_outcome(selected, served, evidence.clone());
+            let GatedDecision::Fail {
+                message,
+                source,
+                judge_outcome,
+                ..
+            } = decide(&entry, GatedKind::Advisor, outcome, None, notes, &hints)
+            else {
+                panic!("{expected}: decide did not fail the turn");
+            };
+            assert_eq!(message, expected);
+            assert_eq!(source, RouteSource::GatedError, "{expected}");
+            assert_eq!(judge_outcome, recorded, "{expected}");
+        }
+    }
 }
