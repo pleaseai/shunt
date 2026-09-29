@@ -643,6 +643,23 @@ impl Turn {
         let payload = serde_json::to_string(frame).map_err(|error| {
             CodexWsError::transport(format!("failed to encode ws frame: {error}"))
         })?;
+        // Reserve the reader's command slot before marking the turn streamed: the
+        // reservation is this function's only await, and a caller that drops the
+        // future there (a gated call's idle gap or duration bound, a client that
+        // went away) must still leave `Drop` to wake a fresh connection's reader.
+        // Marking first would drop the command unsent and skip that nudge, and
+        // the reader and its socket would leak.
+        let Ok(permit) = self.conn.commands.reserve().await else {
+            // The connection-owned reader is gone (socket dead). Evict a reused
+            // entry so the next turn on this session opens a fresh socket instead
+            // of re-probing the same dead one.
+            if self.reused {
+                if let Some(key) = &self.pool_key {
+                    invalidate_pool_entry(key, &self.conn);
+                }
+            }
+            return Err(CodexWsError::transport("codex websocket reader is gone"));
+        };
         // Past the last fallible step before dispatch: mark the turn streamed so
         // `Drop` does not also signal shutdown for the connection we are about to
         // hand to the reader, then take the slot to move it into the command.
@@ -651,27 +668,13 @@ impl Turn {
             .slot
             .take()
             .expect("turn slot is present until the turn is streamed");
-        let conn = self.conn.clone();
-        let reused = self.reused;
-        let pool_key = self.pool_key.take();
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-        let command = StartTurn {
+        permit.send(StartTurn {
             frame: Message::Text(payload.into()),
             events: tx,
             record,
             slot,
-        };
-        if conn.commands.send(command).await.is_err() {
-            // The connection-owned reader is gone (socket dead). Evict a reused
-            // entry so the next turn on this session opens a fresh socket instead
-            // of re-probing the same dead one.
-            if reused {
-                if let Some(key) = &pool_key {
-                    invalidate_pool_entry(key, &conn);
-                }
-            }
-            return Err(CodexWsError::transport("codex websocket reader is gone"));
-        }
+        });
         Ok(rx)
     }
 }
@@ -3488,6 +3491,59 @@ mod tests {
             .await
             .expect("dropping a fresh turn closes its socket")
             .unwrap();
+    }
+
+    /// A fresh turn whose `stream` is dropped while it waits for the reader's
+    /// command slot (a gated call's idle gap or duration bound, a client that
+    /// went away) must still close its socket: the turn is not streamed until
+    /// the slot is reserved, so `Drop` wakes the reader to exit.
+    ///
+    /// Non-vacuity: mark the turn streamed before the slot is reserved (the
+    /// old `send(..).await` order) and the dropped future skips that nudge, the
+    /// reader keeps the socket open, and the server never sees it close.
+    #[tokio::test]
+    async fn a_fresh_turn_dropped_while_dispatching_releases_socket() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let turn = begin(&url, HeaderMap::new(), None, "codex")
+            .await
+            .expect("handshake connects");
+        // Hold the reader's only command slot, so `stream` waits for it.
+        let commands = turn.conn.commands.clone();
+        let held = commands.reserve().await.expect("the reader is live");
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
+        let dispatch = tokio::time::timeout(
+            Duration::from_millis(50),
+            turn.stream(&frame, RecordPlan::none()),
+        )
+        .await;
+        assert!(dispatch.is_err(), "the dispatch waits on the held slot");
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("dropping a fresh turn mid-dispatch closes its socket")
+            .unwrap();
+        drop(held);
     }
 
     /// A turn command buffered as the reader exits (a `stream` that raced the
