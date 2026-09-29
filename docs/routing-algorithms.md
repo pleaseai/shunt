@@ -1575,7 +1575,7 @@ strong target (evidence `{"source": "fallback", "reason_code":
 "context_window"}`), and the advisor propagates it so the host can relay the
 `400` a harness compacts on. shunt serves the gated call itself, so it applies
 the same rule to the refusal the caller would have received: a `400` whose
-`error.message` — or, for a body that is not such JSON, the raw body —
+`error.message` — or, failing that, the raw body, JSON or not —
 contains `prompt is too long`, `maximum number of tokens`, `context window`, or
 `context length`, case-insensitively (libsy's Anthropic-backend phrase set, at
 the pinned revision). That refusal is rendered in the Anthropic error shape on

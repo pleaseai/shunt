@@ -10,9 +10,9 @@
 //!
 //! The rule is the one the pinned libsy client applies
 //! (`libsy-llm-client/src/backend.rs` `is_context_overflow`, `error.rs`
-//! `is_overflow_body`, rev `3ddea9d`): a `400` whose error message — or, when
-//! the body is not such JSON, the raw body — contains one of the phrases, case
-//! insensitively. The gated call's refusal is the one the caller would have
+//! `is_overflow_body`, rev `3ddea9d`): a `400` whose error message — or,
+//! failing that, the raw body, whether or not it parsed as JSON — contains one
+//! of the phrases, case insensitively. The gated call's refusal is the one the caller would have
 //! been handed, rendered in the Anthropic Messages error shape by either
 //! adapter (the Responses adapter rewrites an upstream overflow into
 //! Anthropic's "prompt is too long" wording), so the Anthropic backend's
@@ -35,17 +35,18 @@ pub(crate) fn is_context_overflow(status: StatusCode, body: &str) -> bool {
     if status != StatusCode::BAD_REQUEST {
         return false;
     }
-    let message = serde_json::from_str::<Value>(body).ok().and_then(|value| {
-        value
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        if value
             .pointer("/error/message")
             .and_then(Value::as_str)
-            .map(str::to_owned)
-    });
-    if message.as_deref().is_some_and(contains_phrase) {
-        return true;
+            .is_some_and(contains_phrase)
+        {
+            return true;
+        }
     }
     // Some upstream proxies answer in plain text; libsy falls through to the
-    // raw body for the same reason.
+    // raw body for the same reason — unconditionally, even for a JSON body
+    // whose `error.message` names nothing, so this does too.
     contains_phrase(body)
 }
 
@@ -88,5 +89,15 @@ mod tests {
         for status in [StatusCode::PAYLOAD_TOO_LARGE, StatusCode::BAD_GATEWAY] {
             assert!(!is_context_overflow(status, body), "{status}");
         }
+    }
+
+    /// libsy's `is_overflow_body` falls through to the raw body even when the
+    /// JSON parsed and its `error.message` names nothing: a phrase anywhere
+    /// else in the body still types the refusal. Returning on the message
+    /// alone would diverge from the pinned client.
+    #[test]
+    fn a_phrase_outside_the_error_message_still_matches_as_libsy_does() {
+        let body = r#"{"error":{"message":"invalid request","detail":"input exceeds the context window"}}"#;
+        assert!(is_context_overflow(StatusCode::BAD_REQUEST, body));
     }
 }
