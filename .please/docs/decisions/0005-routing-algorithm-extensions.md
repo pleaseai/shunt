@@ -685,7 +685,11 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   the gap. This holds on the single-account HTTP path and in the pooled
   ChatGPT-OAuth refusal check. A body that stalls is the call's cut, with the
   idle marker. It is not relayed after the error-envelope budget, and it does
-  not rotate the pool. Client turns read error bodies as before.
+  not rotate the pool. Client turns read error bodies as before. One read is
+  left out: the body a ChatGPT-OAuth pool relays once every account has
+  failed is still read under the error-envelope budget alone. Anchoring it to
+  the retained attempt's send would charge it for the later attempts' time;
+  #707 tracks reading it under a fresh gap.
 
 ### 10. Verification before code
 
