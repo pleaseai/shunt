@@ -103,7 +103,12 @@ pub(super) async fn consult(
             judge_outcome,
             ..
         } => (target.clone(), *source, *judge_outcome),
-        GatedDecision::Fail { target, source, .. } => (target.clone(), *source, None),
+        GatedDecision::Fail {
+            target,
+            source,
+            judge_outcome,
+            ..
+        } => (target.clone(), *source, *judge_outcome),
     };
     outcome.target.clone_from(&target);
     outcome.source = source;
