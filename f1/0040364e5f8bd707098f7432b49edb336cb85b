@@ -1,0 +1,41 @@
+site/src/content/docs/reference/configuration.md
+  s_cd09753964b0ac::t_096a588c9b257f 1176
+src/adapters/responses/sse_parse.rs
+  s_cd09753964b0ac::t_d13e2b05ac201a 144-148
+src/adapters/responses/early_stream_tests.rs
+  s_cd09753964b0ac::t_d13e2b05ac201a 211
+src/adapters/responses/pool.rs
+  s_cd09753964b0ac::t_cbcccbdd385675 513,517,533,547,557,629,711,722,789,865,884,1368-1372
+  s_cd09753964b0ac::t_4654624bfcec3e 1373-1377
+docs/routing-algorithms.md
+  s_cd09753964b0ac::t_096a588c9b257f 1478-1481,1576
+tests/buffer_replay/refusal.rs
+  s_cd09753964b0ac::t_7b1d0347abbe33 6,28-41,139-197
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_cd09753964b0ac::t_096a588c9b257f 896
+site/src/content/docs/ja/reference/configuration.md
+  s_cd09753964b0ac::t_096a588c9b257f 954
+site/src/content/docs/ko/reference/configuration.md
+  s_cd09753964b0ac::t_096a588c9b257f 963
+tests/buffer_replay/pool.rs
+  s_cd09753964b0ac::t_7b1d0347abbe33 85-107,217
+src/adapters/responses/mod.rs
+  s_cd09753964b0ac::t_d13e2b05ac201a 722
+  s_cd09753964b0ac::t_23b69acb01ec76 734
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f10040364e5f8bd707098f7432b49edb336cb85b",
+  "prompts": {},
+  "sessions": {
+    "s_cd09753964b0ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "69bb83d2-142d-4f3c-ac46-86777aa60054",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
