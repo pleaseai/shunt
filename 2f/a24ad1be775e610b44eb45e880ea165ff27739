@@ -1,0 +1,45 @@
+site/src/content/docs/ko/reference/configuration.md
+  s_ae56742217ef70::t_7f5a500f747554 890
+  s_ae56742217ef70::t_2fe45558e14b70 957
+site/src/content/docs/guides/opentelemetry.mdx
+  s_ae56742217ef70::t_7f5a500f747554 65
+site/src/content/docs/ja/reference/configuration.md
+  s_ae56742217ef70::t_7f5a500f747554 881,949
+site/src/content/docs/ko/guides/opentelemetry.mdx
+  s_ae56742217ef70::t_7f5a500f747554 65
+site/src/content/docs/zh-cn/guides/opentelemetry.mdx
+  s_ae56742217ef70::t_7f5a500f747554 65
+site/src/content/docs/ja/guides/opentelemetry.mdx
+  s_ae56742217ef70::t_7f5a500f747554 65
+src/routing/driven/drive.rs
+  s_ae56742217ef70::t_4bb2145f710586 292-302
+docs/routing-algorithms.md
+  s_ae56742217ef70::t_0a67a6abccc900 1596-1599
+  s_ae56742217ef70::t_7f5a500f747554 1569,1590,1595,1600-1602
+site/src/content/docs/reference/configuration.md
+  s_ae56742217ef70::t_7f5a500f747554 1099
+  s_ae56742217ef70::t_59b17d71da6fcd 1168
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_ae56742217ef70::t_7f5a500f747554 833,892
+src/routing/driven/gated.rs
+  s_ae56742217ef70::t_8e2e115f59d534 40-44,90-94,222,224,328-332,341,379,392,441-442,480
+src/proxy/failover/gated_tests.rs
+  s_ae56742217ef70::t_e8fbf2e9221eb5 238
+  s_ae56742217ef70::t_f18b57cdac667e 1-2,11-13,28,42-52,90-115,126,151-152,174,176,178-179,181,188-193,198-237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2fa24ad1be775e610b44eb45e880ea165ff27739",
+  "prompts": {},
+  "sessions": {
+    "s_ae56742217ef70": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae0ddf79-be81-4701-aafe-16260584e4a7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}
