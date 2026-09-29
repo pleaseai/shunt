@@ -25,8 +25,8 @@ use super::body::{prepare_body, PreparedBody};
 use super::codex_ws::KEY_COMPONENT_SEPARATOR;
 use super::context::{CredentialSource, ForwardOptions, PoolForward, RelayOptions, TurnOptions};
 use super::early_stream::{
-    bounded_input_estimate, estimated_machine_factory, http_events_stream, parsed_events,
-    pool_streaming_response, HttpSendContext, PoolEvent, PoolItem,
+    estimated_machine_factory, http_events_stream, parsed_events, pool_streaming_response,
+    HttpSendContext, InputEstimate, PoolEvent, PoolItem,
 };
 use super::error::{
     adapter_error_envelope, mapped_upstream_error, mapped_upstream_error_within, own_error,
@@ -1215,7 +1215,7 @@ pub(super) async fn forward_chatgpt_oauth(
                     .accounts
                     .mark_healthy(&route.provider, account, status.is_success());
                 if status.is_success() {
-                    let input_tokens_estimate = take_estimate(&mut estimate_handle).await;
+                    let input_tokens_estimate = take_estimate(&mut estimate_handle);
                     let response = relay_success(
                         &state,
                         upstream,
@@ -1312,7 +1312,7 @@ pub(super) async fn forward_chatgpt_oauth(
                         let retry_status = retry.status();
                         if retry_status.is_success() {
                             state.accounts.mark_healthy(&route.provider, account, true);
-                            let input_tokens_estimate = take_estimate(&mut estimate_handle).await;
+                            let input_tokens_estimate = take_estimate(&mut estimate_handle);
                             let response = relay_success(
                                 &state,
                                 retry,
@@ -1375,13 +1375,15 @@ fn retry_after_of(upstream: &reqwest::Response) -> Option<HeaderValue> {
 /// which upstream response and account produced it (mirrors how the
 /// single-account [`forward_http`] picks between [`stream_response`] and
 /// [`json_response`]). `idle_since` is when the answering request was sent,
-/// and only the non-streaming read, the one a gated call takes, uses it.
+/// and only the non-streaming read, the one a gated call takes, uses it. The
+/// streaming relay seeds `message_start` with the estimate, so it waits for it
+/// first; the non-streaming read waits for it beside the collection (#703).
 async fn relay_success(
     state: &AppState,
     upstream: reqwest::Response,
     client_wants_stream: bool,
     relay: RelayOptions,
-    input_tokens_estimate: u64,
+    input_tokens_estimate: InputEstimate,
     bounds: crate::adapters::ResponseBounds,
     idle_since: Option<tokio::time::Instant>,
 ) -> Result<axum::response::Response, AdapterError> {
@@ -1390,7 +1392,7 @@ async fn relay_success(
         Ok(stream_response(
             upstream,
             relay,
-            input_tokens_estimate,
+            input_tokens_estimate.resolve().await,
             keepalive,
         ))
     } else {
@@ -1398,23 +1400,21 @@ async fn relay_success(
     }
 }
 
-/// Await the lazily-spawned HTTP-path tiktoken estimate handle exactly once,
-/// mirroring `forward_http`'s inline `match estimate_handle { .. }`. Factored
-/// out because the pool loop has two success arms (first attempt and
-/// refresh retry) that must consume the same handle without awaiting it
-/// twice — `JoinHandle` is not `Clone`, so `.take()` leaves a torn-down `None`
-/// behind for whichever arm does not run. A non-streaming turn seeds no
+/// Take the lazily-spawned HTTP-path tiktoken estimate handle exactly once,
+/// as the [`InputEstimate`] [`relay_success`] waits for, mirroring
+/// `forward_http`'s handoff to `json_response`. Factored out because the pool
+/// loop has two success arms (first attempt and refresh retry) that must
+/// consume the same handle without awaiting it twice — `JoinHandle` is not
+/// `Clone`, so `.take()` leaves a torn-down `None` behind for whichever arm
+/// does not run. A non-streaming turn seeds no
 /// `message_start`, so `forward`'s gate spawns a handle for one only when it
 /// carries `stop_sequences` — there the estimate is what keeps a stopped turn's
 /// final JSON from reporting `input_tokens: 0` (issue #605). Without either, the
-/// handle is `None` and this naturally yields `0` below.
-async fn take_estimate(estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>) -> u64 {
-    match estimate_handle.take() {
-        // Bounded like `forward_http`: the committed `message_start` must not
-        // wait on the estimator (see `bounded_input_estimate`).
-        Some(handle) => bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await,
-        None => 0,
-    }
+/// handle is `None` and this naturally yields `0`. The wait is bounded like
+/// `forward_http`'s: the committed `message_start` must not wait on the
+/// estimator (see `bounded_input_estimate`).
+fn take_estimate(estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>) -> InputEstimate {
+    estimate_handle.take().into()
 }
 
 /// Inject `x-shunt-account` naming which pool account produced the response,

@@ -25,8 +25,8 @@ use crate::{
 use super::body::{prepare_body, PreparedBody};
 use super::context::{CredentialSource, ForwardOptions, RelayOptions};
 use super::early_stream::{
-    bounded_input_estimate, early_streaming_response, estimated_machine_factory,
-    http_events_stream, parsed_events, translated_stream, HttpSendContext,
+    early_streaming_response, estimated_machine_factory, http_events_stream, parsed_events,
+    translated_stream, HttpSendContext, InputEstimate,
 };
 use super::error::{backend_error, mapped_upstream_error_within, own_error, transport_error};
 use super::request::request_builder;
@@ -157,7 +157,7 @@ pub(super) async fn forward_http(
     let window = super::codex_ws::window_for_turn(window_key.as_deref(), compact.take());
     // A gated call's idle clock starts as each attempt is sent: the headers
     // wait inside the first gap, and `json_response` carries on from the same
-    // instant, so the bounded estimate wait below does not reopen it (#690).
+    // instant, so no wait between the send and the read reopens it (#690).
     // A retry is a new request and restarts the clock; the backoff before it
     // has no request in flight to stall. `None` on every client turn.
     let idle = turn.response_bounds.idle;
@@ -208,18 +208,15 @@ pub(super) async fn forward_http(
     // Bounded like every other path so a saturated blocking pool cannot stall
     // the response (see `bounded_input_estimate`); by now the encode has had the
     // whole upstream round-trip to finish, so this normally resolves instantly.
-    let input_tokens_estimate = match estimate_handle {
-        Some(handle) => bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await,
-        None => 0,
-    };
-    // Thread the real response status: `json_response` returns a `502` when
+    // `json_response` waits for it beside the reply's collection, not before
+    // it (#703). Thread the real response status: `json_response` returns a `502` when
     // a backend error event surfaced via `backend_error` (issue #113), so
     // the proxy's access log (`upstream_status`) and `record_proxied_request`
     // metrics reflect the failure instead of a hardcoded `200`.
     let response = json_response(
         upstream,
         turn.relay(route),
-        input_tokens_estimate,
+        estimate_handle,
         turn.response_bounds,
         idle_since,
     )
@@ -296,7 +293,8 @@ pub(super) fn stream_response(
 /// the stop makes the upstream's `response.completed` usage a no-op, and
 /// `final_json` falls back to the estimate when no usage was observed, so
 /// without it a stopped turn would report `input_tokens: 0` (issue #605). On
-/// every other turn the upstream's real usage arrives and overrides it.
+/// every other turn the upstream's real usage arrives and overrides it. A
+/// pending estimate is waited for beside the collection ([`InputEstimate`]).
 ///
 /// `idle_since` is when a gated call's idle clock started — the instant the
 /// request was sent (see [`crate::adapters::within_idle`]) — and `None` starts
@@ -304,7 +302,7 @@ pub(super) fn stream_response(
 pub(super) async fn json_response(
     upstream: reqwest::Response,
     relay: RelayOptions,
-    input_tokens_estimate: u64,
+    input_tokens_estimate: impl Into<InputEstimate>,
     bounds: ResponseBounds,
     idle_since: Option<tokio::time::Instant>,
 ) -> Result<axum::response::Response, AdapterError> {
@@ -320,22 +318,22 @@ pub(super) async fn json_response(
     // `gated_max_duration_ms`. The body is SSE, so the gap is measured
     // between completed content frames: keep-alive pings alone do not hold a
     // stalled turn open. The first gap runs from `idle_since`, the send, so
-    // the headers and the estimate wait before this read sit inside it. The
-    // default is the client path and stays byte-for-byte what it was.
-    let body = match collect_upstream_sse_body(upstream, bounds.max_bytes, bounds.idle, idle_since)
-        .await
-    {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(UpstreamBodyError::TooLarge(too_large)) => return Err(too_large_error(too_large)),
-        Err(UpstreamBodyError::Idle(idle)) => return Err(idle_error(idle)),
-        // Only ever a successful reply here: a turn cut before its terminal
-        // event, which `routing::serve` reads back through the marker.
-        Err(UpstreamBodyError::Transport(error)) => {
-            return Err(mark_body_broke(own_error(format!(
+    // the headers sit inside it, and the estimate wait runs beside the read
+    // rather than before it (#703). The default is the client path and stays
+    // byte-for-byte what it was.
+    let collect = async {
+        match collect_upstream_sse_body(upstream, bounds.max_bytes, bounds.idle, idle_since).await {
+            Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(UpstreamBodyError::TooLarge(too_large)) => Err(too_large_error(too_large)),
+            Err(UpstreamBodyError::Idle(idle)) => Err(idle_error(idle)),
+            // Only ever a successful reply here: a turn cut before its terminal
+            // event, which `routing::serve` reads back through the marker.
+            Err(UpstreamBodyError::Transport(error)) => Err(mark_body_broke(own_error(format!(
                 "failed to read Responses body: {error}"
-            ))))
+            )))),
         }
     };
+    let (body, input_tokens_estimate) = input_tokens_estimate.into().beside(collect).await?;
     let mut machine = relay.machine().with_input_estimate(input_tokens_estimate);
     for event in parse_sse_events(&body) {
         let _ = machine.apply(event);
@@ -608,7 +606,8 @@ mod tests {
             std::time::Duration::from_millis(150),
             &b"event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n"[..],
         )]));
-        // The bounded input-token estimate between the headers and the read.
+        // Local work between the headers and the read (the estimate's wait
+        // before #703).
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let error = json_response(
             upstream,
@@ -666,6 +665,122 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_body_json(response).await;
         assert_eq!(body["content"][0]["text"], "hello");
+    }
+
+    /// A `200` SSE reply built in-process whose whole body lands at the absolute
+    /// instant `at` and then ends — already buffered when a read that starts
+    /// after `at` first polls it.
+    fn sse_upstream_arriving_at(
+        at: tokio::time::Instant,
+        body: &'static [u8],
+    ) -> reqwest::Response {
+        let chunk = futures_util::stream::once(async move {
+            tokio::time::sleep_until(at).await;
+            Ok::<_, std::io::Error>(bytes::Bytes::from_static(body))
+        });
+        reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(200)
+                .header("content-type", "text/event-stream")
+                .body(reqwest::Body::wrap_stream(chunk))
+                .unwrap(),
+        )
+    }
+
+    /// A stopped turn: its upstream usage is a no-op, so the reply reports the
+    /// input estimate.
+    const STOPPED_TURN: &[u8] = b"event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\nevent: response.output_item.added\ndata: {\"item\":{\"type\":\"message\"}}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"keep<<STOP>>drop\"}\n\nevent: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n";
+
+    /// The estimate still running on the blocking pool: `42` after `wait`.
+    fn estimate_after(wait: std::time::Duration) -> InputEstimate {
+        InputEstimate::Pending(tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            42
+        }))
+    }
+
+    /// The reply is read while the input estimate is still pending, not after
+    /// it (#703). Headers 200 ms after the send, an estimate wait of 200 ms
+    /// more, and the first frame 350 ms after the send: the frame misses the
+    /// 300 ms gap from the send, so the read is cut at the gap even though the
+    /// frame is ready by the time the estimate resolves.
+    ///
+    /// Non-vacuity: wait for the estimate before the collection in
+    /// `InputEstimate::beside` (the sequential await) and the collector's
+    /// first poll, at 400 ms, finds the frame ready, takes it as progress, and
+    /// serves the turn, so this goes red.
+    #[tokio::test(start_paused = true)]
+    async fn json_response_reads_the_reply_beside_a_pending_estimate() {
+        let idle = std::time::Duration::from_millis(300);
+        let sent_at = tokio::time::Instant::now();
+        let upstream = sse_upstream_arriving_at(
+            sent_at + std::time::Duration::from_millis(350),
+            STOPPED_TURN,
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let relay = super::super::context::RelayOptions {
+            stop_sequences: vec!["<<STOP>>".to_string()],
+            ..relay_opts()
+        };
+        let error = json_response(
+            upstream,
+            relay,
+            estimate_after(std::time::Duration::from_millis(200)),
+            ResponseBounds {
+                max_bytes: None,
+                idle: Some(idle),
+            },
+            Some(sent_at),
+        )
+        .await
+        .expect_err("a frame that missed the gap from the send is not progress");
+        assert_eq!(sent_at.elapsed(), idle, "cut at the gap from the send");
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle { idle }),
+            "got: {}",
+            error.message
+        );
+    }
+
+    /// The twin: the same waits with the frame 250 ms after the send land
+    /// inside the gap, so the turn is served — and it still reports the
+    /// estimate, resolved once the reply was collected.
+    #[tokio::test(start_paused = true)]
+    async fn json_response_serves_a_reply_inside_the_gap_and_reports_the_later_estimate() {
+        let sent_at = tokio::time::Instant::now();
+        let upstream = sse_upstream_arriving_at(
+            sent_at + std::time::Duration::from_millis(250),
+            STOPPED_TURN,
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let relay = super::super::context::RelayOptions {
+            stop_sequences: vec!["<<STOP>>".to_string()],
+            ..relay_opts()
+        };
+        let response = json_response(
+            upstream,
+            relay,
+            estimate_after(std::time::Duration::from_millis(200)),
+            ResponseBounds {
+                max_bytes: None,
+                idle: Some(std::time::Duration::from_millis(300)),
+            },
+            Some(sent_at),
+        )
+        .await
+        .expect("a frame inside the gap from the send is served");
+        assert_eq!(
+            sent_at.elapsed(),
+            std::time::Duration::from_millis(400),
+            "served once the estimate resolved"
+        );
+        let body = response_body_json(response).await;
+        assert_eq!(body["content"][0]["text"], "keep");
+        assert_eq!(body["usage"]["input_tokens"], 42, "the estimate, not 0");
     }
 
     /// A clean turn still returns the collected Anthropic message as `200 OK` —

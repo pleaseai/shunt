@@ -19,7 +19,7 @@ use crate::{
 use super::codex_continuation;
 use super::codex_ws::{self, CodexWsError, CodexWsEvents};
 use super::context::ForwardOptions;
-use super::early_stream::bounded_input_estimate;
+use super::early_stream::InputEstimate;
 use super::error::build_upstream_error;
 use super::request::{responses_url, routing_hint, CODEX_CLIENT_VERSION, CODEX_USER_AGENT};
 use super::ws_stream::{json_events_response, stream_events_response};
@@ -133,11 +133,10 @@ pub(super) async fn forward_websocket(
     // backpressures the bounded `CodexWsEvents` channel until tokenization ends.
     // The encode has had the whole `open_ws_turn` to finish, so the bound only
     // bites when the blocking pool is saturated — the same trade the HTTP and
-    // pooled paths already make.
-    let input_tokens_estimate = match estimate_handle {
-        Some(handle) => bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await,
-        None => 0,
-    };
+    // pooled paths already make. The streaming arm waits for it before its
+    // first frame; the non-streaming collector waits for it beside the events
+    // (#703).
+    let input_tokens_estimate = InputEstimate::from(estimate_handle);
     if turn.client_wants_stream {
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
         Ok((
@@ -146,7 +145,7 @@ pub(super) async fn forward_websocket(
                 buffered,
                 events,
                 turn.relay(route),
-                input_tokens_estimate,
+                input_tokens_estimate.resolve().await,
                 keepalive,
             ),
         ))
@@ -295,8 +294,7 @@ async fn open_and_peek(
 ///
 /// With `clock` set, the first event's arrival is returned too: it is the
 /// upstream's last progress, and the collector's next gap runs from it rather
-/// than from whenever the collector starts after the bounded estimate wait
-/// (#690). `None` for every other turn, which reads no clock.
+/// than from whenever the collector starts (#690). `None` for every other turn, which reads no clock.
 async fn peek_first_event(
     mut events: CodexWsEvents,
     clock: Option<(std::time::Duration, tokio::time::Instant)>,

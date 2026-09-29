@@ -153,8 +153,9 @@ pub(crate) struct ResponseBounds {
 /// `None` is every client turn: `send` is awaited as it always was, and no
 /// clock is read. The Responses adapter passes the same start instant on to
 /// its collector, so neither the wait for the headers nor any local work
-/// between them and the collector (the bounded input-token estimate) opens a
-/// window the idle gap does not cover.
+/// between them and the collector opens a window the idle gap does not cover.
+/// The bounded input-token estimate runs beside the collector rather than
+/// between them (#703).
 pub(crate) async fn within_idle<F: std::future::Future>(
     clock: Option<(Duration, tokio::time::Instant)>,
     send: F,

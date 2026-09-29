@@ -26,7 +26,8 @@ use crate::proxy::chain_stream::{ClientFrames, LazyEnvelope, RelayBuild};
 
 pub(super) use super::sse_parse::{
     bounded_input_estimate, next_parsed, parsed_events, pool_translated_stream, pooled_first_poll,
-    translated_core, translated_stream, PoolEvent, PoolFirstPoll, PoolItem, SseParser,
+    translated_core, translated_stream, InputEstimate, PoolEvent, PoolFirstPoll, PoolItem,
+    SseParser,
 };
 
 /// Marker on the committed streaming responses: their
