@@ -255,9 +255,9 @@ async fn open_ws_turn(
 /// Await the first event of a freshly opened turn, returning it alongside the
 /// still-live channel so it can be replayed before the remainder of the stream.
 ///
-/// With `idle` set, the wait is the gated call's first gap after the
-/// handshake — the twin of the first wait after the headers that
-/// `collect_upstream_sse_body` times on the HTTP path — and a backend that
+/// With `idle` set, the wait is the gated call's first gap, from the turn's
+/// frame being sent — the twin of the gap `forward_http` times from its send,
+/// the header wait included (#690) — and a backend that
 /// accepts the frame and then says nothing is cut there with the idle marker
 /// rather than held to the transport's own idle timeout. That is a cut, not an
 /// HTTP fallback: the bound belongs to the call, and re-driving the turn over
@@ -750,6 +750,45 @@ mod tests {
             error.failure,
             Some(crate::adapters::AdapterFailure::BeforeHeaders)
         );
+    }
+
+    /// `peek_first_event` hands back when the first event arrived — the
+    /// instant `json_events_response` measures its next gap from (#690) — and
+    /// reads no clock on a client turn.
+    ///
+    /// Non-vacuity: take the instant before the wait rather than after it and
+    /// `first_at` is the peek's start, 120 ms early, so this goes red.
+    #[tokio::test(start_paused = true)]
+    async fn peek_first_event_returns_the_first_events_arrival_instant() {
+        async fn peek_one(
+            idle: Option<std::time::Duration>,
+        ) -> (tokio::time::Instant, Option<tokio::time::Instant>) {
+            let (tx, rx) = tokio::sync::mpsc::channel(16);
+            let started = tokio::time::Instant::now();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                let event = super::ResponseEvent {
+                    event: Some("response.created".to_string()),
+                    data: Value::Null,
+                };
+                let _ = tx.send(Ok(event)).await;
+            });
+            let (first, first_at, _events) = super::peek_first_event(rx, idle)
+                .await
+                .expect("an event inside the gap is peeked");
+            assert!(matches!(first, Some(Ok(_))), "the first event is returned");
+            (started, first_at)
+        }
+
+        let (started, first_at) = peek_one(Some(std::time::Duration::from_millis(300))).await;
+        assert_eq!(
+            first_at,
+            Some(started + std::time::Duration::from_millis(120)),
+            "a gated peek returns the first event's arrival"
+        );
+
+        let (_, first_at) = peek_one(None).await;
+        assert_eq!(first_at, None, "a client turn reads no clock");
     }
 
     /// Peek `data` as the first event of a turn through `commit_or_fallback`.
