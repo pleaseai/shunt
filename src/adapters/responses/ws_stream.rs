@@ -128,7 +128,7 @@ pub(super) fn stream_events_response(
 /// [`ResponseBounds::default`]: crate::adapters::ResponseBounds::default
 pub(super) async fn json_events_response(
     buffered: BufferedEvent,
-    mut events: CodexWsEvents,
+    events: CodexWsEvents,
     relay: RelayOptions,
     input_tokens_estimate: impl Into<InputEstimate>,
     bounds: crate::adapters::ResponseBounds,
@@ -166,6 +166,11 @@ pub(super) async fn json_events_response(
     let mut machine = relay.machine();
     let mut buffered = buffered;
     let collect = async {
+        // Owned by the collector, so it drops the moment the collection ends —
+        // on a stop sequence too, while a pending estimate is still awaited
+        // beside it — and the connection reader aborts the turn then rather
+        // than once the estimate resolves.
+        let mut events = events;
         loop {
             // The replayed first event is not progress now: it arrived before
             // `idle_since`, which already counts it.
@@ -991,6 +996,53 @@ mod tests {
         assert_eq!(body["usage"]["input_tokens"], 19);
 
         drop(tx);
+    }
+
+    /// The collector drops the event receiver the moment a stop sequence ends
+    /// the turn, not once a still-pending input estimate resolves: the codex_ws
+    /// reader aborts the upstream turn only when it sees the receiver gone, so
+    /// holding it across the estimate's wait (#703) would let the upstream keep
+    /// generating for up to the estimate's 1 s bound (issue #605).
+    ///
+    /// Non-vacuity: leave `events` borrowed by the collector (dropped only when
+    /// `json_events_response` returns) and the receiver is still open 10 ms in,
+    /// while the estimate waits until 900 ms, so the `is_closed` assertion goes
+    /// red.
+    #[tokio::test(start_paused = true)]
+    async fn json_events_response_drops_the_receiver_on_a_stop_before_a_pending_estimate() {
+        let (tx, rx) = mpsc::channel(16);
+        tx.try_send(Ok(created_event())).unwrap();
+        tx.try_send(Ok(text_delta_event("answer</block>garbage")))
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        let collector = tokio::spawn(json_events_response(
+            None,
+            rx,
+            relay_opts_with_stops(&["</block>"]),
+            estimate_after(std::time::Duration::from_millis(900)),
+            ResponseBounds::default(),
+            None,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert!(!collector.is_finished(), "the estimate is still pending");
+        assert!(
+            tx.is_closed(),
+            "the receiver must be dropped at the stop so the upstream turn is aborted"
+        );
+
+        let response = collector
+            .await
+            .unwrap()
+            .expect("a stop sequence is a successful turn");
+        assert_eq!(
+            started.elapsed(),
+            std::time::Duration::from_millis(900),
+            "served once the estimate resolved"
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["stop_reason"], "stop_sequence");
+        assert_eq!(body["usage"]["input_tokens"], 42, "the estimate, not 0");
     }
 
     /// The streaming path drops the event receiver the moment the stop fires, so
