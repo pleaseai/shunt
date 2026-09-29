@@ -887,7 +887,7 @@ max_reviews = 1
 | `advisor_max_tokens` | `2048` | 리뷰 한 번의 출력 토큰 상한. 최소 `1` |
 | `advisor_temperature` | 미설정 | 리뷰의 샘플링 온도. 설정하지 않으면 리뷰 요청에서 뺍니다 |
 | `transcript_max_chars` | `200000` | 어드바이저에게 보내는 트랜스크립트의 상한. 더 길면 가운데를 잘라 냅니다. 최소 `256` |
-| `fail_open` | `true` | 리뷰가 실패하면 붙잡아 둔 턴을 제공합니다. `false`면 대신 요청을 `502`로 실패시킵니다 — 세션이 `max_judge_calls`를 다 써서 리뷰를 아예 보내지 않은 경우도 마찬가지입니다. 실패한 리뷰는 여전히 그 결과(예: `upstream_error`, `timeout`)로, `max_judge_calls`가 거부한 리뷰는 `budget_exhausted`로 집계됩니다 |
+| `fail_open` | `true` | 리뷰가 실패하면 붙잡아 둔 턴을 제공합니다. `false`면 대신 요청을 `502`로 실패시킵니다 — 세션이 `max_judge_calls`를 다 써서 리뷰를 아예 보내지 않은 경우도 마찬가지입니다. 실패한 리뷰는 여전히 그 결과(예: `upstream_error`, `timeout`)로 집계되고, `max_judge_calls`가 거부한 리뷰는 `budget_exhausted`로 집계됩니다 |
 | `reviewer_system_prompt` | 패키지 프롬프트 | APPROVE/REDO 리뷰어 프롬프트를 대체합니다 |
 | `redo_feedback_prefix` | 패키지 프롬프트 | 실행 모델에게 돌려보내는 REDO 계획 앞에 붙는 문구를 대체합니다 |
 

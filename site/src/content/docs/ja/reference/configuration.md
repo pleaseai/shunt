@@ -878,7 +878,7 @@ max_reviews = 1
 | `advisor_max_tokens` | `2048` | レビュー 1 回あたりの出力トークン上限。最低でも `1` |
 | `advisor_temperature` | 未設定 | レビューのサンプリング温度。未設定ならレビューのリクエストから省きます |
 | `transcript_max_chars` | `200000` | アドバイザーに送るトランスクリプトの上限。長い場合は中央を削ります。最低でも `256` |
-| `fail_open` | `true` | レビューが失敗したら留め置いたターンを提供します。`false` なら代わりにリクエストを `502` で失敗させます — セッションが `max_judge_calls` を使い切ったためレビューを送らなかった場合も同様です。失敗したレビューはやはりその結果（例：`upstream_error`、`timeout`）として、`max_judge_calls` が拒否したレビューは `budget_exhausted` として数えます |
+| `fail_open` | `true` | レビューが失敗したら留め置いたターンを提供します。`false` なら代わりにリクエストを `502` で失敗させます — セッションが `max_judge_calls` を使い切ったためレビューを送らなかった場合も同様です。失敗したレビューはやはりその結果（例：`upstream_error`、`timeout`）として数え、`max_judge_calls` が拒否したレビューは `budget_exhausted` として数えます |
 | `reviewer_system_prompt` | パッケージのプロンプト | APPROVE/REDO のレビュアープロンプトを置き換えます |
 | `redo_feedback_prefix` | パッケージのプロンプト | 実行モデルに差し戻す REDO 計画の前に置く文言を置き換えます |
 
