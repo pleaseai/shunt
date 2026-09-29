@@ -113,12 +113,11 @@ async fn a_refused_streaming_weak_chain_relays_the_upstream_retry_after() {
             "{expected}"
         );
         assert_eq!(header(&response, "x-gateway-route-source"), "gated_error");
+        let retry_after = response.headers().get("retry-after").unwrap_or_else(|| {
+            panic!("no retry-after relayed in the case whose 429 says retry-after: {expected}")
+        });
         assert_eq!(
-            response
-                .headers()
-                .get("retry-after")
-                .and_then(|value| value.to_str().ok()),
-            Some(expected),
+            retry_after, expected,
             "the case whose 429 says retry-after: {expected}"
         );
     }

@@ -102,11 +102,9 @@ async fn turn(state: &AppState) -> (StatusCode, String) {
         Ok((_, response)) => response,
         Err(error) => axum::response::IntoResponse::into_response(error),
     };
-    let source = response
-        .headers()
-        .get("x-gateway-route-source")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
+    let source = response.headers()["x-gateway-route-source"]
+        .to_str()
+        .expect("x-gateway-route-source is ASCII")
         .to_string();
     (response.status(), source)
 }
