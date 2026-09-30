@@ -402,13 +402,15 @@ fn delimiter_length_at<F: Fn(usize) -> u8>(
         if second != b'\r' {
             return Some(0);
         }
+        // LF then CR: the blank line ends in CRLF or a bare CR; the next byte
+        // decides which, so wait for it rather than splitting a CRLF.
         if index + 2 >= length {
             return None;
         }
         return if byte_at(index + 2) == b'\n' {
             Some(3)
         } else {
-            Some(0)
+            Some(2)
         };
     }
     if first != b'\r' {
@@ -434,13 +436,14 @@ fn delimiter_length_at<F: Fn(usize) -> u8>(
     if third != b'\r' {
         return Some(0);
     }
+    // CRLF then CR: as above, the blank line ends in CRLF or a bare CR.
     if index + 3 >= length {
         return None;
     }
     if byte_at(index + 3) == b'\n' {
         Some(4)
     } else {
-        Some(0)
+        Some(3)
     }
 }
 
@@ -638,6 +641,52 @@ pub mod tests {
                     parse_sse_block(std::str::from_utf8(&res[0]).unwrap()),
                     Some("test".to_string())
                 );
+            }
+        }
+
+        /// Feed `input` split at `split`, then finish, returning each block's payload.
+        fn payloads_split_at(input: &[u8], split: usize) -> Vec<String> {
+            let mut framer = BoundedSseFrameBuffer::new(MAX_CLIENT_SSE_FRAME_BYTES);
+            let mut blocks = framer.feed(&input[..split]).unwrap();
+            blocks.extend(framer.feed(&input[split..]).unwrap());
+            blocks.extend(framer.finish().unwrap());
+            blocks
+                .iter()
+                .filter_map(|block| parse_sse_block(std::str::from_utf8(block).unwrap()))
+                .collect()
+        }
+
+        #[test]
+        fn bare_cr_terminates_blank_line_after_lf_or_crlf() {
+            for delim in [b"\n\r".as_slice(), b"\r\n\r"] {
+                let mut input = b"data: a".to_vec();
+                input.extend_from_slice(delim);
+                input.extend_from_slice(b"data: b");
+                input.extend_from_slice(delim);
+                for split in 0..=input.len() {
+                    assert_eq!(
+                        payloads_split_at(&input, split),
+                        vec!["a".to_string(), "b".to_string()],
+                        "delimiter {delim:?} split at {split}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn bare_cr_delimiter_is_emitted_once_the_next_byte_arrives() {
+            for delim in [b"\n\r".as_slice(), b"\r\n\r"] {
+                let mut framer = BoundedSseFrameBuffer::new(MAX_CLIENT_SSE_FRAME_BYTES);
+                let mut input = b"data: a".to_vec();
+                input.extend_from_slice(delim);
+                // The trailing CR may still become CRLF, so the block waits.
+                assert!(framer.feed(&input).unwrap().is_empty(), "{delim:?}");
+                assert_eq!(
+                    framer.feed(b"data: b").unwrap(),
+                    vec![b"data: a".to_vec()],
+                    "{delim:?}"
+                );
+                assert_eq!(framer.finish().unwrap(), Some(b"data: b".to_vec()));
             }
         }
 
