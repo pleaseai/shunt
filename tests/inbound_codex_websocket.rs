@@ -424,6 +424,40 @@ async fn streams_ordered_payloads_and_forces_streaming_upstream() {
 }
 
 #[tokio::test]
+async fn response_done_is_terminal_and_drops_later_events() {
+    let _env = ENV_LOCK.lock().await;
+    let body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+        "data: {\"type\":\"response.done\",\"response\":{\"id\":\"r1\"}}\n\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"stale\"}\n\n"
+    );
+    let (upstream, _) = start_upstream(vec![Reply::Static {
+        status: StatusCode::OK,
+        content_type: "text/event-stream",
+        body: body.to_string(),
+        headers: Vec::new(),
+    }])
+    .await;
+    let (gateway, account_env, client_env, _env_cleanup) =
+        start_gateway(&upstream, "RESPONSE_DONE").await;
+    let mut socket = connect(&gateway, "/v1/responses").await;
+    send_create(&mut socket, "done").await;
+
+    assert_eq!(next_json(&mut socket).await["type"], "response.created");
+    assert_eq!(next_json(&mut socket).await["delta"], "hi");
+    assert_eq!(next_json(&mut socket).await["type"], "response.done");
+    // Neither the stale delta nor an "ended before terminal event" protocol
+    // error may follow the terminal frame.
+    if let Ok(Some(Ok(extra))) =
+        tokio::time::timeout(Duration::from_millis(100), socket.next()).await
+    {
+        panic!("unexpected frame after response.done: {extra:?}");
+    }
+    cleanup(&account_env, &client_env);
+}
+
+#[tokio::test]
 async fn omitted_generate_defaults_to_a_live_turn() {
     let _env = ENV_LOCK.lock().await;
     let (upstream, state) = start_upstream(vec![Reply::Static {

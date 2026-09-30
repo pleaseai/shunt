@@ -218,7 +218,7 @@ pub enum TerminalStatus {
 /// Classify terminal status from event type.
 pub fn terminal_status_from_type(type_str: &str) -> Option<TerminalStatus> {
     match type_str {
-        "response.completed" => Some(TerminalStatus::Completed),
+        "response.completed" | "response.done" => Some(TerminalStatus::Completed),
         "response.failed" => Some(TerminalStatus::Failed),
         "response.incomplete" => Some(TerminalStatus::Incomplete),
         "error" => Some(TerminalStatus::Failed),
