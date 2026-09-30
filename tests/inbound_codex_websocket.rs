@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, Notify};
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
 use tungstenite::client::IntoClientRequest;
 
-static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+mod common;
 
 struct RunningServer {
     address: SocketAddr,
@@ -148,25 +148,26 @@ async fn start_upstream(replies: Vec<Reply>) -> (RunningServer, UpstreamState) {
 async fn start_native_gateway(
     upstream: &RunningServer,
     suffix: &str,
-) -> (RunningServer, String, String, String, EnvCleanup) {
+    env: &mut common::EnvVars,
+) -> RunningServer {
     let account_env = format!("SHUNT_TEST_INBOUND_WS_ACCOUNT_{suffix}");
     let client_env = format!("SHUNT_TEST_INBOUND_WS_CLIENT_{suffix}");
     let api_env = format!("SHUNT_TEST_INBOUND_WS_API_{suffix}");
-    std::env::set_var(&account_env, access_token("account-1"));
-    std::env::set_var(&client_env, "client:gateway-secret");
-    std::env::set_var(&api_env, "native-api-key");
+    env.set(&account_env, access_token("account-1"))
+        .set(&client_env, "client:gateway-secret")
+        .set(&api_env, "native-api-key");
 
     let mut config = Config::default();
     let codex = config.providers.get_mut("codex").unwrap();
     codex.base_url = format!("http://{}", upstream.address);
     codex.accounts = vec![AccountConfig {
         name: "account-1".to_string(),
-        token_env: Some(account_env.clone()),
+        token_env: Some(account_env),
         ..Default::default()
     }];
     let openai = config.providers.get_mut("openai").unwrap();
     openai.base_url = format!("http://{}", upstream.address);
-    openai.api_key_env = Some(api_env.clone());
+    openai.api_key_env = Some(api_env);
     config.server.codex_endpoint = Some(CodexEndpointConfig {
         provider: "codex".to_string(),
         routes: vec![CodexRouteConfig {
@@ -177,17 +178,10 @@ async fn start_native_gateway(
     });
     config.server.auth = Some(InboundAuthConfig {
         header: "x-shunt-token".to_string(),
-        tokens_env: client_env.clone(),
+        tokens_env: client_env,
     });
     let (router, _, _) = server::build_router(config).unwrap();
-    let cleanup = EnvCleanup::new([account_env.clone(), client_env.clone(), api_env.clone()]);
-    (
-        start_server(router).await,
-        account_env,
-        client_env,
-        api_env,
-        cleanup,
-    )
+    start_server(router).await
 }
 
 fn access_token(account_id: &str) -> String {
@@ -209,18 +203,19 @@ fn access_token(account_id: &str) -> String {
 async fn start_gateway(
     upstream: &RunningServer,
     suffix: &str,
-) -> (RunningServer, String, String, EnvCleanup) {
+    env: &mut common::EnvVars,
+) -> RunningServer {
     let account_env = format!("SHUNT_TEST_INBOUND_WS_ACCOUNT_{suffix}");
     let client_env = format!("SHUNT_TEST_INBOUND_WS_CLIENT_{suffix}");
-    std::env::set_var(&account_env, access_token("account-1"));
-    std::env::set_var(&client_env, "client:gateway-secret");
+    env.set(&account_env, access_token("account-1"))
+        .set(&client_env, "client:gateway-secret");
 
     let mut config = Config::default();
     let provider = config.providers.get_mut("codex").unwrap();
     provider.base_url = format!("http://{}", upstream.address);
     provider.accounts = vec![AccountConfig {
         name: "account-1".to_string(),
-        token_env: Some(account_env.clone()),
+        token_env: Some(account_env),
         ..Default::default()
     }];
     config.server.codex_endpoint = Some(CodexEndpointConfig {
@@ -229,11 +224,10 @@ async fn start_gateway(
     });
     config.server.auth = Some(InboundAuthConfig {
         header: "x-shunt-token".to_string(),
-        tokens_env: client_env.clone(),
+        tokens_env: client_env,
     });
     let (router, _, _) = server::build_router(config).unwrap();
-    let cleanup = EnvCleanup::new([account_env.clone(), client_env.clone()]);
-    (start_server(router).await, account_env, client_env, cleanup)
+    start_server(router).await
 }
 
 async fn connect(
@@ -289,38 +283,13 @@ async fn next_json(
     serde_json::from_str(message.to_text().unwrap()).unwrap()
 }
 
-struct EnvCleanup {
-    names: Vec<String>,
-}
-
-impl EnvCleanup {
-    fn new(names: impl IntoIterator<Item = String>) -> Self {
-        Self {
-            names: names.into_iter().collect(),
-        }
-    }
-}
-
-impl Drop for EnvCleanup {
-    fn drop(&mut self) {
-        for name in &self.names {
-            std::env::remove_var(name);
-        }
-    }
-}
-
-fn cleanup(account_env: &str, client_env: &str) {
-    std::env::remove_var(account_env);
-    std::env::remove_var(client_env);
-}
-
 #[tokio::test]
 async fn disabled_and_unauthorized_upgrades_fail_before_websocket_open() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let (disabled_router, _, _) = server::build_router(Config::default()).unwrap();
     let disabled = start_server(disabled_router).await;
     let (upstream, _) = start_upstream(Vec::new()).await;
-    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "AUTH").await;
+    let gateway = start_gateway(&upstream, "AUTH", &mut env).await;
     let client = reqwest::Client::new();
 
     for path in [
@@ -355,14 +324,13 @@ async fn disabled_and_unauthorized_upgrades_fail_before_websocket_open() {
             assert_eq!(error["error"]["type"], "authentication_error");
         }
     }
-    cleanup(&account_env, &client_env);
 }
 
 #[tokio::test]
 async fn warmup_is_local_and_all_registered_paths_upgrade() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let (upstream, state) = start_upstream(Vec::new()).await;
-    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "PATHS").await;
+    let gateway = start_gateway(&upstream, "PATHS", &mut env).await;
 
     for path in [
         "/backend-api/codex/responses",
@@ -384,12 +352,11 @@ async fn warmup_is_local_and_all_registered_paths_upgrade() {
         assert_eq!(completed["response"]["id"], "");
     }
     assert!(state.requests.lock().unwrap().is_empty());
-    cleanup(&account_env, &client_env);
 }
 
 #[tokio::test]
 async fn streams_ordered_payloads_and_forces_streaming_upstream() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let body = concat!(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n",
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
@@ -403,7 +370,7 @@ async fn streams_ordered_payloads_and_forces_streaming_upstream() {
         headers: Vec::new(),
     }])
     .await;
-    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "STREAM").await;
+    let gateway = start_gateway(&upstream, "STREAM", &mut env).await;
     let mut socket = connect(&gateway, "/v1/responses").await;
     send_create(&mut socket, "live").await;
 
@@ -420,12 +387,11 @@ async fn streams_ordered_payloads_and_forces_streaming_upstream() {
     assert_eq!(requests[0]["stream"], true);
     assert!(requests[0].get("type").is_none());
     assert!(requests[0].get("generate").is_none());
-    cleanup(&account_env, &client_env);
 }
 
 #[tokio::test]
 async fn response_done_is_terminal_and_drops_later_events() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let body = concat!(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n",
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
@@ -439,8 +405,7 @@ async fn response_done_is_terminal_and_drops_later_events() {
         headers: Vec::new(),
     }])
     .await;
-    let (gateway, account_env, client_env, _env_cleanup) =
-        start_gateway(&upstream, "RESPONSE_DONE").await;
+    let gateway = start_gateway(&upstream, "RESPONSE_DONE", &mut env).await;
     let mut socket = connect(&gateway, "/v1/responses").await;
     send_create(&mut socket, "done").await;
 
@@ -454,15 +419,13 @@ async fn response_done_is_terminal_and_drops_later_events() {
     {
         panic!("unexpected frame after response.done: {extra:?}");
     }
-    cleanup(&account_env, &client_env);
 }
 
 #[tokio::test]
 async fn failed_upgrade_handshake_returns_responses_error_envelope() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let (upstream, state) = start_upstream(Vec::new()).await;
-    let (gateway, account_env, client_env, _env_cleanup) =
-        start_gateway(&upstream, "BAD_UPGRADE").await;
+    let gateway = start_gateway(&upstream, "BAD_UPGRADE", &mut env).await;
 
     // Authenticated, but without `Connection: upgrade` / `Sec-WebSocket-*`.
     let response = reqwest::Client::new()
@@ -480,17 +443,15 @@ async fn failed_upgrade_handshake_returns_responses_error_envelope() {
     assert_eq!(detail["type"], "invalid_request_error");
     assert!(detail.contains_key("code"));
     assert!(state.requests.lock().unwrap().is_empty());
-    cleanup(&account_env, &client_env);
 }
 
 #[tokio::test]
 async fn upgrade_after_reload_disables_endpoint_returns_responses_error_envelope() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let account_env = "SHUNT_TEST_INBOUND_WS_ACCOUNT_RELOAD_DISABLED";
     let client_env = "SHUNT_TEST_INBOUND_WS_CLIENT_RELOAD_DISABLED";
-    std::env::set_var(account_env, access_token("account-1"));
-    std::env::set_var(client_env, "client:gateway-secret");
-    let _env_cleanup = EnvCleanup::new([account_env.to_string(), client_env.to_string()]);
+    env.set(account_env, access_token("account-1"));
+    env.set(client_env, "client:gateway-secret");
 
     let mut config = Config::default();
     config.providers.get_mut("codex").unwrap().accounts = vec![AccountConfig {
@@ -550,7 +511,7 @@ async fn upgrade_after_reload_disables_endpoint_returns_responses_error_envelope
 
 #[tokio::test]
 async fn omitted_generate_defaults_to_a_live_turn() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let (upstream, state) = start_upstream(vec![Reply::Static {
         status: StatusCode::OK,
         content_type: "text/event-stream",
@@ -559,8 +520,7 @@ async fn omitted_generate_defaults_to_a_live_turn() {
         headers: Vec::new(),
     }])
     .await;
-    let (gateway, account_env, client_env, _env_cleanup) =
-        start_gateway(&upstream, "DEFAULT_GENERATE").await;
+    let gateway = start_gateway(&upstream, "DEFAULT_GENERATE", &mut env).await;
     let mut socket = connect(&gateway, "/v1/responses").await;
 
     socket
@@ -583,12 +543,11 @@ async fn omitted_generate_defaults_to_a_live_turn() {
     assert_eq!(requests[0]["stream"], true);
     assert!(requests[0].get("type").is_none());
     assert!(requests[0].get("generate").is_none());
-    cleanup(&account_env, &client_env);
 }
 
 #[tokio::test]
 async fn native_route_matches_http_and_websocket_provider_selection() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let body = "data: {\"type\":\"response.completed\",\"marker\":\"native\"}\n\n";
     let (upstream, state) = start_upstream(vec![
         Reply::Static {
@@ -605,8 +564,7 @@ async fn native_route_matches_http_and_websocket_provider_selection() {
         },
     ])
     .await;
-    let (gateway, account_env, client_env, api_env, _env_cleanup) =
-        start_native_gateway(&upstream, "NATIVE_PARITY").await;
+    let gateway = start_native_gateway(&upstream, "NATIVE_PARITY", &mut env).await;
 
     let http = reqwest::Client::new()
         .post(format!("http://{}/v1/responses", gateway.address))
@@ -631,13 +589,11 @@ async fn native_route_matches_http_and_websocket_provider_selection() {
     assert!(requests
         .iter()
         .all(|request| request["model"] == "native-ws-model"));
-    cleanup(&account_env, &client_env);
-    std::env::remove_var(api_env);
 }
 
 #[tokio::test]
 async fn missing_model_websocket_uses_pinned_fallback_even_when_unknown_route_exists() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let body_pinned = "data: {\"type\":\"response.completed\",\"marker\":\"pinned-codex\"}\n\n";
     let (upstream_pinned, state_pinned) = start_upstream(vec![
         Reply::Static {
@@ -666,14 +622,9 @@ async fn missing_model_websocket_uses_pinned_fallback_even_when_unknown_route_ex
     let account_env = "SHUNT_TEST_INBOUND_WS_ACCOUNT_UNKNOWN_ROUTE";
     let client_env = "SHUNT_TEST_INBOUND_WS_CLIENT_UNKNOWN_ROUTE";
     let api_env = "SHUNT_TEST_INBOUND_WS_API_UNKNOWN_ROUTE";
-    std::env::set_var(account_env, access_token("account-1"));
-    std::env::set_var(client_env, "client:gateway-secret");
-    std::env::set_var(api_env, "native-api-key");
-    let _env_cleanup = EnvCleanup::new([
-        account_env.to_string(),
-        client_env.to_string(),
-        api_env.to_string(),
-    ]);
+    env.set(account_env, access_token("account-1"));
+    env.set(client_env, "client:gateway-secret");
+    env.set(api_env, "native-api-key");
 
     let mut config = Config::default();
     let codex = config.providers.get_mut("codex").unwrap();
@@ -734,13 +685,11 @@ async fn missing_model_websocket_uses_pinned_fallback_even_when_unknown_route_ex
 
     assert_eq!(state_pinned.requests.lock().unwrap().len(), 2);
     assert!(state_unknown.requests.lock().unwrap().is_empty());
-    cleanup(account_env, client_env);
-    std::env::remove_var(api_env);
 }
 
 #[tokio::test]
 async fn hot_reload_snapshot_routes_each_websocket_turn_once() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let reply = |marker: &'static str| Reply::Static {
         status: StatusCode::OK,
         content_type: "text/event-stream",
@@ -753,9 +702,9 @@ async fn hot_reload_snapshot_routes_each_websocket_turn_once() {
     let account_env = "SHUNT_TEST_INBOUND_WS_ACCOUNT_RELOAD";
     let client_env = "SHUNT_TEST_INBOUND_WS_CLIENT_RELOAD";
     let api_env = "SHUNT_TEST_INBOUND_WS_API_RELOAD";
-    std::env::set_var(account_env, access_token("account-1"));
-    std::env::set_var(client_env, "client:gateway-secret");
-    std::env::set_var(api_env, "native-api-key");
+    env.set(account_env, access_token("account-1"));
+    env.set(client_env, "client:gateway-secret");
+    env.set(api_env, "native-api-key");
 
     let mut config = Config::default();
     config.providers.get_mut("codex").unwrap().base_url = format!("http://{}", upstream_a.address);
@@ -807,14 +756,11 @@ async fn hot_reload_snapshot_routes_each_websocket_turn_once() {
     assert_eq!(state_b.requests.lock().unwrap().len(), 1);
 
     std::fs::remove_dir_all(dir).ok();
-    std::env::remove_var(account_env);
-    std::env::remove_var(client_env);
-    std::env::remove_var(api_env);
 }
 
 #[tokio::test]
 async fn no_mid_stream_hop() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let (upstream, state) = start_upstream(vec![Reply::Static {
         status: StatusCode::OK,
         content_type: "text/event-stream",
@@ -824,18 +770,17 @@ async fn no_mid_stream_hop() {
         headers: Vec::new(),
     }])
     .await;
-    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "NO_HOP").await;
+    let gateway = start_gateway(&upstream, "NO_HOP", &mut env).await;
     let mut socket = connect(&gateway, "/v1/responses").await;
     send_create(&mut socket, "no-hop").await;
     assert_eq!(next_json(&mut socket).await["type"], "response.created");
     assert_eq!(next_json(&mut socket).await["type"], "response.completed");
     assert_eq!(state.requests.lock().unwrap().len(), 1);
-    cleanup(&account_env, &client_env);
 }
 
 #[tokio::test]
 async fn responses_terminal_premature_done_and_malformed_sse_become_protocol_errors() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let replies = vec![
         Reply::Static {
             status: StatusCode::OK,
@@ -851,7 +796,7 @@ async fn responses_terminal_premature_done_and_malformed_sse_become_protocol_err
         },
     ];
     let (upstream, _) = start_upstream(replies).await;
-    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "ERRORS").await;
+    let gateway = start_gateway(&upstream, "ERRORS", &mut env).await;
     let mut socket = connect(&gateway, "/v1/responses").await;
 
     send_create(&mut socket, "done").await;
@@ -870,12 +815,11 @@ async fn responses_terminal_premature_done_and_malformed_sse_become_protocol_err
         malformed["error"]["message"],
         "Invalid JSON payload in upstream SSE frame"
     );
-    cleanup(&account_env, &client_env);
 }
 
 #[tokio::test]
 async fn invalid_utf8_sse_becomes_an_immediate_protocol_error() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let mut body = b"data: \xff\n\n".to_vec();
     body.extend_from_slice(
         b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"ignored\"}}\n\n",
@@ -886,8 +830,7 @@ async fn invalid_utf8_sse_becomes_an_immediate_protocol_error() {
         body,
     }])
     .await;
-    let (gateway, account_env, client_env, _env_cleanup) =
-        start_gateway(&upstream, "INVALID_UTF8").await;
+    let gateway = start_gateway(&upstream, "INVALID_UTF8", &mut env).await;
     let mut socket = connect(&gateway, "/v1/responses").await;
 
     send_create(&mut socket, "invalid-utf8").await;
@@ -899,12 +842,11 @@ async fn invalid_utf8_sse_becomes_an_immediate_protocol_error() {
         error["error"]["message"],
         "Invalid UTF-8 in upstream SSE frame"
     );
-    cleanup(&account_env, &client_env);
 }
 
 #[tokio::test]
 async fn upstream_error_projects_only_safe_headers() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let (upstream, _) = start_upstream(vec![Reply::Static {
         status: StatusCode::BAD_REQUEST,
         content_type: "application/json",
@@ -917,8 +859,7 @@ async fn upstream_error_projects_only_safe_headers() {
         ],
     }])
     .await;
-    let (gateway, account_env, client_env, _env_cleanup) =
-        start_gateway(&upstream, "HEADERS").await;
+    let gateway = start_gateway(&upstream, "HEADERS", &mut env).await;
     let mut socket = connect(&gateway, "/v1/responses").await;
     send_create(&mut socket, "headers").await;
     let error = next_json(&mut socket).await;
@@ -928,12 +869,11 @@ async fn upstream_error_projects_only_safe_headers() {
     assert_eq!(error["headers"]["x-request-id"], "req-1");
     assert_eq!(error["headers"]["x-codex-primary-used-percent"], "42");
     assert!(error["headers"].get("set-cookie").is_none());
-    cleanup(&account_env, &client_env);
 }
 
 #[tokio::test]
 async fn replacement_and_disconnect_drop_active_upstream_bodies() {
-    let _env = ENV_LOCK.lock().await;
+    let mut env = common::env_lock().await;
     let first_started = Arc::new(Notify::new());
     let first_dropped = Arc::new(Notify::new());
     let second_started = Arc::new(Notify::new());
@@ -958,7 +898,7 @@ async fn replacement_and_disconnect_drop_active_upstream_bodies() {
         },
     ];
     let (upstream, _) = start_upstream(replies).await;
-    let (gateway, account_env, client_env, _env_cleanup) = start_gateway(&upstream, "CANCEL").await;
+    let gateway = start_gateway(&upstream, "CANCEL", &mut env).await;
 
     let mut socket = connect(&gateway, "/v1/responses").await;
     send_create(&mut socket, "first").await;
@@ -982,5 +922,4 @@ async fn replacement_and_disconnect_drop_active_upstream_bodies() {
     tokio::time::timeout(Duration::from_secs(5), second_dropped.notified())
         .await
         .expect("disconnect did not drop the active upstream body");
-    cleanup(&account_env, &client_env);
 }
