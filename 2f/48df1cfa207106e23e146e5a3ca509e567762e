@@ -1,0 +1,32 @@
+site/src/content/docs/guides/anthropic-multi-account.mdx
+  s_8a796677de9f62::t_9b99faf9050623 204-205,241
+  s_8a796677de9f62::t_0bb64b04372776 208
+site/src/content/docs/ko/guides/anthropic-multi-account.mdx
+  s_8a796677de9f62::t_0bb64b04372776 206
+  s_8a796677de9f62::t_86b4edf944dc66 202-203,239
+docs/notes/anthropic-thinking-signatures.md
+  s_8a796677de9f62::t_0bb64b04372776 67-71
+  s_8a796677de9f62::t_78decd13be8298 66
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.mdx
+  s_8a796677de9f62::t_86b4edf944dc66 204-205,241
+  s_8a796677de9f62::t_0bb64b04372776 208
+site/src/content/docs/ja/guides/anthropic-multi-account.mdx
+  s_8a796677de9f62::t_0bb64b04372776 208
+  s_8a796677de9f62::t_86b4edf944dc66 204-205,241
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2f48df1cfa207106e23e146e5a3ca509e567762e",
+  "prompts": {},
+  "sessions": {
+    "s_8a796677de9f62": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "10fd7e26-2507-4a8f-b618-84b93381d1cf",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
