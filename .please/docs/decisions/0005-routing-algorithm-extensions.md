@@ -697,11 +697,15 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   relays once every account has failed is read under a new idle gap that
   starts when the pool runs out of accounts, as the Anthropic adapter's gated
   error read starts its own. The kept attempt's send stays the wrong anchor,
-  for the reason given above. A body that stalls is the call's cut, with the
-  idle marker, so an escalation entry falls back to its strong target as it
-  does on the single-account path. A body that arrives inside the gap
-  is relayed as before, with its status, `retry-after`, and message, under
-  the same 5 s and 256 KiB error-envelope bounds. Client turns read this body
+  for the reason given above. The gap can cut the read only when
+  `gated_idle_ms` is shorter than the 5 s error-envelope budget. Then a body
+  that stalls past the gap is the call's cut, with the idle marker, so an
+  escalation entry falls back to its strong target as it does on the
+  single-account path. With a longer gap, the default 60 s included, the
+  envelope budget ends the read first, and the refusal is relayed with its
+  status as before. A body that arrives inside the gap is relayed as before,
+  with its status, `retry-after`, and message, under the same 5 s and
+  256 KiB error-envelope bounds. Client turns read this body
   lazily and read no clock, as before.
 
 ### 10. Verification before code
