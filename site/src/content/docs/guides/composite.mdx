@@ -1,0 +1,74 @@
+---
+title: Composite
+description: Let an LLM judge set the tier a stage router falls open to, while the stage router's signal scoring decides every turn it can.
+---
+
+`type = "composite"` combines a judge with a [stage router](/guides/stage-router/).
+The judge sets the tier the stage router falls open to, and leaves the signal
+scoring alone: a turn the signals decide is decided by the signals, and a turn
+they leave undecided lands on the tier the judge picked instead of a fixed
+`picker`.
+
+## Configure it
+
+```toml
+[[models]]
+id = "claude-composite"
+
+[models.router]
+type = "composite"
+
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[models.router.stage]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.5
+# recent_turn_window = 3
+# capable_hold_turns = 0
+```
+
+The stage table takes **no `picker`** — the classifier supplies that tier — so a
+`picker` key here is a startup error. `classifier.base_threshold` is the lowest
+`p_solve` that still routes to the efficient tier.
+
+`classifier.classify_trigger` is required, and decides how often the tier is
+re-picked:
+
+- `user_turn` re-picks the tier on each human user turn.
+- `new_session` picks once and holds it.
+- `every_request` is **rejected** here — a judge call per tool step is the cost
+  this type exists to avoid.
+
+`classifier.message_hash_fallback` retains the tier by hashing the first user
+message, for clients that send no session id. `stage.tool_semantics` takes the same
+four lists as a stage router's
+[`[models.router.tool_semantics]`](/guides/stage-router/#the-vocabulary), under the
+same rules. The six [per-call bounds](/reference/configuration/#per-call-bounds) go
+on `[models.router]`, not inside either sub-table.
+
+## When the judge is not reached
+
+A turn the classifier cannot reach falls open to `stage.efficient_target`, which is
+upstream's rule and is also what a body-less surface reports. A turn whose judge
+call `max_judge_calls` refuses keeps the session's last retained tier when it has
+one, or else takes the picker's default tier, so the tier never moves between a
+user turn and its tool continuations; a turn that needs no judge call is never
+refused.
+
+A `count_tokens` probe scores no signals and makes no judge call: it answers from
+the session's retained tier, or from `stage.efficient_target` when there is none.
+
+## What the client sees
+
+Because the stage half is libsy's own stage route, its decisive turns keep the
+stage router's route sources rather than reporting as classifier decisions — so a
+composite's signal-driven turns read the same way a plain `stage_router`'s do (see
+[What the client sees](/guides/stage-router/#what-the-client-sees)).
+
+Every key is in the
+[configuration reference](/reference/configuration/#type--composite); the rules
+every judge follows are under [judge calls](/guides/routing/#judge-calls).
