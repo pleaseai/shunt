@@ -88,6 +88,8 @@ http_headers = { "x-shunt-token" = "<token>" }
 
 세 개의 Responses 경로는 HTTP `POST`와 인증된 WebSocket `GET` 업그레이드를 모두 허용합니다. 인증은 `101 Switching Protocols` 전에 완료됩니다. 소켓에서 `generate: false` 웜업은 로컬에서 완료되며, 일반 `response.create`는 기존 HTTP 계정 풀을 재사용하고 업스트림 스트리밍을 강제하여 첫 번째 터미널 이벤트까지 각 SSE `data:` 페이로드를 WebSocket 텍스트 프레임으로 전달합니다. 턴을 교체하거나 소켓을 닫으면 진행 중인 업스트림 본문이 취소됩니다. 클라이언트 프레임과 SSE 이벤트는 4 MiB로 제한되고, 전송에는 바운디드 백프레셔가 적용되며, 오류 프레임에는 안전한 응답 메타데이터만 포함됩니다.
 
+`[server.auth]`가 없으면 브라우저의 업그레이드는 `Origin`과 `Host`를 비교해 검사하는데, 이 검사는 같은 호스트의 `http`와 `https`를 구분하지 못합니다. 따라서 루프백 이외의 용도에서는 `[server.auth]`로 엔드포인트를 보호하세요.
+
 ## 계정 프로비저닝
 
 [Codex 멀티 계정](/ko/guides/codex-multi-account/#풀-구성)과 동일한 풀을 재사용합니다:

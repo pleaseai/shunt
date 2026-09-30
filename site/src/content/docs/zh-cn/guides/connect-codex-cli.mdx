@@ -90,16 +90,16 @@ ChatGPT token,而 shunt 无法把它当作客户端 token 接受 —— 因此**
 `Incorrect API key` 失败。只有配置键才会同时重定向 HTTP 与 WebSocket 两条路径。(`chatgpt_base_url`、
 `model_provider` 和 `experimental_realtime_ws_base_url` 同理:它们都是用户级 `~/.codex/config.toml`
 的键 —— CLI 会忽略项目本地 `.codex/config.toml` 中的它们,而且没有等效的环境变量。)使用
-`openai_base_url` 时,CLI 仍会先*尝试* WebSocket;shunt 没有 `wss` 路由,因此 CLI 会自行回退到 HTTP。
-上面的自定义 `model_provider` 连这一次往返都省了 —— `supports_websockets` 默认关闭,所以它直接走 HTTP。
+`openai_base_url` 时,CLI 会先*尝试* WebSocket,shunt 会在同一个 Responses 路径上接受这次升级。
+上面的自定义 `model_provider` 的 `supports_websockets` 默认关闭,所以它直接走 HTTP。
 
 </Aside>
 
 
 
 CLI 自己本地的 `~/.codex/auth.json` 登录**与哪个账户来应答无关** —— 每个请求都从 shunt 的池中取用一个
-账户。回环的 `base_url` 可以保持纯 `http://`;远程场景请使用 `https://`。**不要**在 shunt 提供方上设置
-`supports_websockets = true` —— 这个端点只走 HTTP/SSE(见下文)。
+账户。回环的 `base_url` 可以保持纯 `http://`;远程场景请使用 `https://`。在 shunt 提供方上设置
+`supports_websockets = true` 是可选的 —— 这个端点同时支持 HTTP/SSE 与 WebSocket(见下文)。
 
 
 
@@ -266,9 +266,9 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
 这条路径与 `/v1/messages` 路径的差异,见[入站 Codex 端点](/zh-cn/guides/inbound-codex-endpoint/);已注册的
 路由见 [HTTP 端点](/zh-cn/reference/endpoints/)。
 
-## 仅 HTTP/SSE
+## HTTP/SSE 与 WebSocket
 
-即使目标提供方设置了 `websocket = true`,这个端点也始终使用 HTTP 传输,因此请在 Codex CLI 的 shunt
-提供方上保持 `supports_websockets` 关闭(其默认值)。实验性的
-[Codex WebSocket v2 传输](https://github.com/pleaseai/shunt/blob/main/docs/m11-inbound-codex-endpoint.md)
-不在这个端点的范围内,已作为后续工作跟踪。
+这个端点在同样的三个 Responses 路径上同时接受 HTTP `POST` 请求和 WebSocket `GET` 升级,因此 Codex CLI
+的 shunt 提供方上的 `supports_websockets` 既可以保持关闭(其默认值,只走 HTTP),也可以设为 `true`。
+两种传输都不依赖目标提供方的 `websocket = true`,那个设置控制的是 shunt 自己的出站传输。套接字的行为见
+[WebSocket 传输](/zh-cn/guides/inbound-codex-endpoint/#websocket-传输)。

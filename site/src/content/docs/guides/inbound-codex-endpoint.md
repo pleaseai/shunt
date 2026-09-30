@@ -88,6 +88,8 @@ Without `[server.auth]`, the endpoint is open to anyone who can reach it — acc
 
 The three Responses paths accept both HTTP `POST` and authenticated WebSocket `GET` upgrades. Authentication completes before `101 Switching Protocols`. On a socket, `generate: false` warmups complete locally; live `response.create` frames reuse the HTTP account pool, force upstream streaming, and forward each SSE `data:` payload as a WebSocket text frame through the first terminal event. Replacing a turn or closing the socket cancels the active upstream body. Client frames and SSE events are limited to 4 MiB, sends apply bounded backpressure, and protocol/upstream failures use standalone `type: "error"` frames with only safe response metadata.
 
+Without `[server.auth]`, browser upgrades are checked by comparing `Origin` with `Host`, and that check cannot distinguish `http` from `https` on the same host, so gate the endpoint with `[server.auth]` for anything beyond loopback.
+
 ## Account provisioning
 
 Reuses the same pool as [Codex Multi-Account](/guides/codex-multi-account/#configure-the-pool):

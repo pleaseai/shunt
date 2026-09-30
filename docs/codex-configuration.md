@@ -842,7 +842,9 @@ auto-discovered accounts, so imported store logins still get pooling.)
 - On pool exhaustion, the last upstream response is relayed **verbatim** rather than re-shaped
   into an Anthropic-style error — the opposite of §13's outbound Codex pool, which re-shapes the
   last response into an Anthropic error envelope (`build_upstream_error`).
-- HTTP/SSE only, even if the target provider has `websocket = true`.
+- Two inbound transports on the same three paths: HTTP `POST` (byte-faithful SSE passthrough) and
+  a WebSocket `GET` upgrade that relays each upstream SSE event as a text frame through the first
+  terminal event. Neither depends on the target provider's outbound `websocket = true`.
 
 See [`m11-inbound-codex-endpoint.md`](m11-inbound-codex-endpoint.md) for the full spec, including
 the exact failover/cooldown table and reload semantics.

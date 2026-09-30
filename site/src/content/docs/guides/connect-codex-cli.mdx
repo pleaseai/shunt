@@ -97,9 +97,9 @@ directly. Only the config key redirects both the HTTP and WebSocket paths. (The 
 to `chatgpt_base_url`, `model_provider`, and `experimental_realtime_ws_base_url`: these are
 user-level `~/.codex/config.toml` keys — the CLI ignores them in a project-local
 `.codex/config.toml`, and there is no environment-variable equivalent.) With `openai_base_url`
-the CLI still *tries* a WebSocket first; shunt has no `wss` route, so the CLI falls back to
-HTTP on its own. The custom `model_provider` above avoids even that round-trip —
-`supports_websockets` defaults off, so it goes straight to HTTP.
+the CLI tries a WebSocket first, and shunt accepts that upgrade on the same Responses path.
+The custom `model_provider` above leaves `supports_websockets` off by default, so it goes
+straight to HTTP.
 
 </Aside>
 
@@ -107,8 +107,8 @@ HTTP on its own. The custom `model_provider` above avoids even that round-trip �
 
 The CLI's own local `~/.codex/auth.json` login is **irrelevant to which account answers** — every
 request draws an account from shunt's pool. A loopback `base_url` may stay plain `http://`; use
-`https://` for anything remote. Do **not** set `supports_websockets = true` on the shunt provider —
-this endpoint is HTTP/SSE-only (see below).
+`https://` for anything remote. Setting `supports_websockets = true` on the shunt provider
+is optional — this endpoint serves both HTTP/SSE and WebSocket (see below).
 
 
 
@@ -284,9 +284,10 @@ side beyond the base URL. See [Inbound Codex Endpoint](/guides/inbound-codex-end
 differs from the `/v1/messages` path and [HTTP Endpoints](/reference/endpoints/) for the registered
 routes.
 
-## HTTP/SSE only
+## HTTP/SSE and WebSocket
 
-Even when the target provider has `websocket = true`, this endpoint always uses the HTTP transport,
-so leave `supports_websockets` off (its default) on the Codex CLI's shunt provider. The experimental
-[Codex WebSocket v2 transport](https://github.com/pleaseai/shunt/blob/main/docs/m11-inbound-codex-endpoint.md)
-is out of scope for this endpoint and tracked as a follow-up.
+The endpoint accepts HTTP `POST` requests and WebSocket `GET` upgrades on the same three Responses
+paths, so `supports_websockets` on the Codex CLI's shunt provider may stay off (its default, HTTP
+only) or be set to `true`. Neither transport depends on the target provider's `websocket = true`,
+which controls shunt's own outbound transport. See
+[WebSocket transport](/guides/inbound-codex-endpoint/#websocket-transport) for how the socket behaves.

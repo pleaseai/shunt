@@ -193,7 +193,7 @@ headers = { "x-api-key" = "..." }
 | `provider` | `codex` | 处理所有未被任何 route 的 `model` 匹配的入站请求的 `[providers.<name>]` 表名。必须使用 `auth = "chatgpt_oauth"` |
 | `routes` | `[]` | 可选的按模型路由(见下文) |
 
-注册 `POST /backend-api/codex/responses`、`POST /responses` 和 `POST /v1/responses`,均由指定 provider 的账户池处理。存在 `[server.auth]` 时,与其他服务端凭证路由一样要求有效的客户端 token。没有 `[server.auth]` 时,端点会注入操作者的 Codex 凭证,却对任何能访问的人**开放**,因此在 loopback 之外的环境务必加以保护。与 `/v1/messages` 不同,请求不会转换为 Anthropic Messages 或反向转换,而是原样 relay 到上游。
+在 `/backend-api/codex/responses`、`/responses` 和 `/v1/responses` 上分别注册 `POST` 与 `GET`(WebSocket 升级),均由指定 provider 的账户池处理。存在 `[server.auth]` 时,与其他服务端凭证路由一样要求有效的客户端 token。没有 `[server.auth]` 时,端点会注入操作者的 Codex 凭证,却对任何能访问的人**开放**,因此在 loopback 之外的环境务必加以保护。与 `/v1/messages` 不同,请求不会转换为 Anthropic Messages 或反向转换,而是原样 relay 到上游。
 
 ### `[[server.codex_endpoint.routes]]`(可选)
 

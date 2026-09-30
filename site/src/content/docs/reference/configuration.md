@@ -290,7 +290,7 @@ Presence of this table enables an inbound OpenAI Responses passthrough so the **
 | `provider` | `codex` | Configured upstream name to serve inbound requests whose `model` matches no route; must use `auth = "chatgpt_oauth"` |
 | `routes` | `[]` | Opt-in per-model routing (see below) |
 
-Registers `POST /backend-api/codex/responses`, `POST /responses`, and `POST /v1/responses` — all served by the named provider's account pool. When `[server.auth]` is configured they require a valid client token (like the other injected-credential routes); with no `[server.auth]` they are **open** to anyone who can reach them while still injecting the operator's Codex credential, so gate them on anything beyond loopback. Unlike `/v1/messages`, the request is not translated to or from Anthropic Messages; it is relayed to and from the upstream verbatim.
+Registers `POST` and `GET` (WebSocket upgrade) on each of `/backend-api/codex/responses`, `/responses`, and `/v1/responses` — all served by the named provider's account pool. When `[server.auth]` is configured they require a valid client token (like the other injected-credential routes); with no `[server.auth]` they are **open** to anyone who can reach them while still injecting the operator's Codex credential, so gate them on anything beyond loopback. Unlike `/v1/messages`, the request is not translated to or from Anthropic Messages; it is relayed to and from the upstream verbatim.
 
 ### `[[server.codex_endpoint.routes]]` (optional)
 

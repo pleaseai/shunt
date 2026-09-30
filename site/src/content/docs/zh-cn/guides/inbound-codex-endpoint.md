@@ -88,6 +88,8 @@ http_headers = { "x-shunt-token" = "<token>" }
 
 这三个 Responses 路径同时接受 HTTP `POST` 和经过身份验证的 WebSocket `GET` 升级。身份验证在 `101 Switching Protocols` 之前完成。在套接字上，`generate: false` 预热在本地完成；常规的 `response.create` 帧复用 HTTP 账户池，强制上游流式传输，并在第一个终端事件之前将每个 SSE `data:` 有效载荷作为 WebSocket 文本帧转发。替换轮次或关闭套接字将取消活动的上游请求体。客户端帧和 SSE 事件限制为 4 MiB，发送应用有界背压，协议/上游故障使用仅包含安全响应元数据的独立 `type: "error"` 帧。
 
+没有 `[server.auth]` 时，浏览器发起的升级通过比较 `Origin` 与 `Host` 来检查，而该检查无法区分同一主机上的 `http` 与 `https`，因此在回环之外的场景请用 `[server.auth]` 保护该端点。
+
 ## 账户预配
 
 复用与 [Codex 多账户](/zh-cn/guides/codex-multi-account/#配置账户池)相同的账户池:

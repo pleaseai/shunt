@@ -92,9 +92,9 @@ CLI は `wss://api.openai.com/v1/responses` を開き続けて shunt を完全�
 の両方の経路をリダイレクトできるのは設定キーだけです。（`chatgpt_base_url`、`model_provider`、
 `experimental_realtime_ws_base_url` も同様です。これらはユーザーレベルの `~/.codex/config.toml`
 のキーで、CLI はプロジェクトローカルの `.codex/config.toml` では無視し、環境変数の等価物もありません。）
-`openai_base_url` を使っても CLI はまず WebSocket を*試みます*が、shunt に `wss`
-ルートはないため、CLI は自力で HTTP へフォールバックします。上記のカスタム `model_provider`
-なら、その往復すら避けられます — `supports_websockets` はデフォルトでオフなので、直接 HTTP へ向かいます。
+`openai_base_url` を使うと CLI はまず WebSocket を*試み*、shunt は同じ Responses
+パスでそのアップグレードを受け付けます。上記のカスタム `model_provider` では
+`supports_websockets` がデフォルトでオフなので、直接 HTTP へ向かいます。
 
 </Aside>
 
@@ -102,8 +102,8 @@ CLI は `wss://api.openai.com/v1/responses` を開き続けて shunt を完全�
 
 CLI 自身のローカルな `~/.codex/auth.json` のログインは、**どのアカウントが応答するかとは無関係**です —
 すべてのリクエストは shunt のプールからアカウントを引きます。ループバックの `base_url` は素の `http://`
-のままで構いません。リモートには `https://` を使ってください。shunt プロバイダーには
-`supports_websockets = true` を設定**しないで**ください — このエンドポイントは HTTP/SSE 専用です（後述）。
+のままで構いません。リモートには `https://` を使ってください。shunt プロバイダーでの
+`supports_websockets = true` の設定は任意です — このエンドポイントは HTTP/SSE と WebSocket の両方を扱います（後述）。
 
 
 
@@ -273,9 +273,10 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
 [インバウンド Codex エンドポイント](/ja/guides/inbound-codex-endpoint/)を、登録されるルートは
 [HTTP エンドポイント](/ja/reference/endpoints/)を参照してください。
 
-## HTTP/SSE のみ
+## HTTP/SSE と WebSocket
 
-対象のプロバイダーが `websocket = true` であっても、このエンドポイントは常に HTTP トランスポートを使います。そのため
-Codex CLI の shunt プロバイダーでは `supports_websockets` をオフ（デフォルト）のままにしてください。実験的な
-[Codex WebSocket v2 トランスポート](https://github.com/pleaseai/shunt/blob/main/docs/m11-inbound-codex-endpoint.md)
-はこのエンドポイントのスコープ外で、フォローアップとして追跡されています。
+このエンドポイントは同じ 3 つの Responses パスで HTTP `POST` リクエストと WebSocket `GET`
+アップグレードの両方を受け付けます。そのため Codex CLI の shunt プロバイダーでは、`supports_websockets`
+をオフ（デフォルト、HTTP のみ）のままにしても、`true` に設定しても構いません。どちらのトランスポートも、
+shunt 自身のアウトバウンドトランスポートを制御する対象プロバイダーの `websocket = true` には依存しません。
+ソケットの挙動は [WebSocket トランスポート](/ja/guides/inbound-codex-endpoint/#websocket-トランスポート)を参照してください。

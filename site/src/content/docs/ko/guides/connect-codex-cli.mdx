@@ -96,10 +96,9 @@ CLI가 계속 `wss://api.openai.com/v1/responses`를 열어 shunt를 완전히 �
 경로를 모두 리디렉션하는 것은 설정 키뿐입니다. (`chatgpt_base_url`, `model_provider`,
 `experimental_realtime_ws_base_url`도 마찬가지입니다: 이들은 사용자 레벨
 `~/.codex/config.toml` 키이며, CLI는 프로젝트 로컬 `.codex/config.toml`에서는 이들을
-무시하고, 대응하는 환경 변수도 없습니다.) `openai_base_url`을 쓰면 CLI는 여전히 WebSocket을
-*시도*하지만, shunt에는 `wss` 라우트가 없으므로 CLI가 알아서 HTTP로 폴백합니다. 위의 커스텀
-`model_provider`는 그 왕복조차 피합니다 — `supports_websockets`가 기본적으로 꺼져 있어 곧바로
-HTTP로 갑니다.
+무시하고, 대응하는 환경 변수도 없습니다.) `openai_base_url`을 쓰면 CLI는 먼저 WebSocket을
+*시도*하고, shunt는 같은 Responses 경로에서 그 업그레이드를 받아들입니다. 위의 커스텀
+`model_provider`는 `supports_websockets`가 기본적으로 꺼져 있어 곧바로 HTTP로 갑니다.
 
 </Aside>
 
@@ -107,8 +106,8 @@ HTTP로 갑니다.
 
 CLI 자체의 로컬 `~/.codex/auth.json` 로그인은 **어느 계정이 응답하는지와 무관합니다** — 모든
 요청은 shunt의 풀에서 계정을 가져옵니다. 루프백 `base_url`은 평문 `http://`로 두어도 되지만,
-원격이라면 `https://`를 사용하세요. shunt 프로바이더에 `supports_websockets = true`를 설정하지
-**마세요** — 이 엔드포인트는 HTTP/SSE 전용입니다(아래 참고).
+원격이라면 `https://`를 사용하세요. shunt 프로바이더의 `supports_websockets = true`
+설정은 선택 사항입니다 — 이 엔드포인트는 HTTP/SSE와 WebSocket을 모두 처리합니다(아래 참고).
 
 
 
@@ -285,9 +284,10 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
 [인바운드 Codex 엔드포인트](/ko/guides/inbound-codex-endpoint/)를, 등록된 라우트는
 [HTTP 엔드포인트](/ko/reference/endpoints/)를 참고하세요.
 
-## HTTP/SSE 전용
+## HTTP/SSE와 WebSocket
 
-대상 프로바이더에 `websocket = true`가 설정되어 있어도 이 엔드포인트는 항상 HTTP 전송을 사용하므로,
-Codex CLI의 shunt 프로바이더에서는 `supports_websockets`를 꺼진 기본값 그대로 두세요. 실험적
-[Codex WebSocket v2 전송](https://github.com/pleaseai/shunt/blob/main/docs/m11-inbound-codex-endpoint.md)은
-이 엔드포인트의 범위 밖이며 후속 작업으로 추적되고 있습니다.
+이 엔드포인트는 같은 세 Responses 경로에서 HTTP `POST` 요청과 WebSocket `GET` 업그레이드를 모두
+받아들입니다. 따라서 Codex CLI의 shunt 프로바이더에서 `supports_websockets`는 꺼진 기본값(HTTP 전용)으로
+두어도 되고 `true`로 설정해도 됩니다. 두 전송 모두 shunt 자신의 아웃바운드 전송을 제어하는 대상
+프로바이더의 `websocket = true`에 의존하지 않습니다. 소켓 동작은
+[WebSocket 전송](/ko/guides/inbound-codex-endpoint/#websocket-전송)을 참고하세요.

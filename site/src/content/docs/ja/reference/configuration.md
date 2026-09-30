@@ -193,7 +193,7 @@ headers = { "x-api-key" = "..." }
 | `provider` | `codex` | どの route にも `model` が一致しない inbound request を処理する `[providers.<name>]` テーブル名。`auth = "chatgpt_oauth"` を使う必要があります |
 | `routes` | `[]` | オプションのモデル単位ルーティング（下記参照） |
 
-`POST /backend-api/codex/responses`、`POST /responses`、`POST /v1/responses` を登録し、いずれも指定した provider のアカウントプールが処理します。`[server.auth]` があれば、他のサーバー側 credential ルートと同様に有効なクライアントトークンを要求します。`[server.auth]` がなければ、オペレーターの Codex credential を注入しつつ到達可能な誰にでも**開放**された状態になるため、loopback 以外の環境では必ず保護してください。`/v1/messages` と異なり、request は Anthropic Messages へ変換したりその逆を行ったりせず、アップストリームへそのまま relay されます。
+`/backend-api/codex/responses`、`/responses`、`/v1/responses` のそれぞれに `POST` と `GET`（WebSocket アップグレード）を登録し、いずれも指定した provider のアカウントプールが処理します。`[server.auth]` があれば、他のサーバー側 credential ルートと同様に有効なクライアントトークンを要求します。`[server.auth]` がなければ、オペレーターの Codex credential を注入しつつ到達可能な誰にでも**開放**された状態になるため、loopback 以外の環境では必ず保護してください。`/v1/messages` と異なり、request は Anthropic Messages へ変換したりその逆を行ったりせず、アップストリームへそのまま relay されます。
 
 ### `[[server.codex_endpoint.routes]]`（オプション）
 

@@ -316,11 +316,28 @@ failover, no `x-shunt-account` header — mirroring M10's existing single-accoun
 outbound path. A user with one Codex login therefore works out of the box the moment
 `[server.codex_endpoint]` is set, with no account configuration at all.
 
-## Transport: HTTP/SSE only
+## Transports: HTTP/SSE and WebSocket
 
-Even if the configured provider sets `websocket = true`, this endpoint always uses the HTTP path.
-The experimental [Codex WebSocket v2 transport](m7-codex-websocket.md) is out of scope for
-M11 and is tracked as a follow-up (see below).
+Each of the three Responses paths serves two inbound transports, independent of whether the
+configured provider sets the outbound `websocket = true`
+([Codex WebSocket v2 transport](m7-codex-websocket.md)):
+
+- **HTTP `POST`** — the byte-faithful passthrough described above.
+- **WebSocket `GET` upgrade** — authentication completes before `101 Switching Protocols`. On an
+  open socket, a `response.create` frame with `generate: false` is a warmup answered locally; a
+  live `response.create` reuses the HTTP account pool, forces `stream: true` upstream, and
+  forwards each upstream SSE `data:` payload as one WebSocket text frame through the first
+  terminal event (`response.completed`, `response.done`, `response.failed`,
+  `response.incomplete`, or `error`). Replacing a turn or closing the socket cancels the active
+  upstream body. Client frames and SSE events are capped at 4 MiB, and protocol or upstream
+  failures arrive as standalone `type: "error"` frames carrying only safe response metadata.
+  Failures before the upgrade (missing client token, a handshake without valid upgrade headers,
+  an endpoint disabled by reload) return the OpenAI Responses error shape over HTTP.
+
+Without `[server.auth]`, a browser-originated upgrade is admitted only when its `Origin` matches
+the `Host` header. That check cannot tell `http` from `https` on the same host — shunt does not
+see the client-facing scheme when TLS terminates at a proxy — so gate the endpoint with
+`[server.auth]` for anything beyond loopback.
 
 ## Reload behavior
 
