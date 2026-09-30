@@ -1,0 +1,77 @@
+---
+title: コンポジット
+description: ステージルーターが fall-open するティアを LLM ジャッジに決めさせ、決められるターンはすべてステージルーターのシグナル採点に任せます。
+---
+
+`type = "composite"` はジャッジと[ステージルーター](/ja/guides/stage-router/)を組み合わせ
+ます。ジャッジはステージルーターの fall-open ティアを決め、シグナルの採点には手を触れません。
+シグナルが決めるターンはシグナルが決め、シグナルが決着させられなかったターンは、固定の
+`picker` の代わりにジャッジが選んだティアに着地します。
+
+## 設定する
+
+```toml
+[[models]]
+id = "claude-composite"
+
+[models.router]
+type = "composite"
+
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[models.router.stage]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.5
+# recent_turn_window = 3
+# capable_hold_turns = 0
+```
+
+stage テーブルは **`picker` を受け付けません** — そのティアは classifier が供給するから
+です。したがってここに `picker` を書くと起動エラーです。`classifier.base_threshold` は、
+それでも効率ティアに送る `p_solve` の下限です。
+
+`classifier.classify_trigger` は必須で、ティアをどれだけ頻繁に選び直すかを決めます。
+
+- `user_turn` は人間のユーザーターンごとにティアを選び直します。
+- `new_session` は一度選んで保持します。
+- `every_request` はここでは**拒否**されます — ツールの 1 ステップごとにジャッジを呼ぶ
+  コストこそ、このタイプが避けようとしているものだからです。
+
+`classifier.message_hash_fallback` は、セッション id を送らないクライアント向けに、最初の
+ユーザーメッセージをハッシュしてティアを保持します。`stage.tool_semantics` はステージ
+ルーターの [`[models.router.tool_semantics]`](/ja/guides/stage-router/#ツールの語彙) と同じ
+4 つのリストを取り、規則も同じです。6 つの
+[呼び出しごとの上限](/ja/reference/configuration/#呼び出しごとの上限)は、どちらのサブ
+テーブルでもなく `[models.router]` に置きます。
+
+## ジャッジに届かないとき
+
+classifier が届かなかったターンは `stage.efficient_target` に fall-open します。これは上流の
+規則であり、ボディのない面が報告する値でもあります。`max_judge_calls` がジャッジ呼び出しを
+拒否したターンは、セッションが最後に保持したティアがあればそれを保ち、なければ picker の
+デフォルトのティアへ行きます。そのため、ユーザーターンとそれに続くツールの継続ターンの
+あいだでティアが動くことはありません。ジャッジ呼び出しを必要としないターンは拒否されません。
+
+`count_tokens` プローブはシグナルを採点せず、ジャッジも呼びません。セッションが保持した
+ティアがあればそれで、なければ `stage.efficient_target` で応答します。
+
+## クライアントから見えるもの
+
+stage 側は libsy 自身の stage ルートなので、決着したターンは classifier の決定ではなく
+ステージルーターのルートソースをそのまま報告します — composite のシグナル起因のターンを、
+素の `stage_router` のターンと同じように読めるということです
+（[クライアントから見えるもの](/ja/guides/stage-router/#クライアントから見えるもの)を参照）。
+
+シグナルが決めなかったターンはあるティアへ fall-open し、ソースはそのティアがどこから
+来たかを示します。このターンのジャッジ呼び出しがティアを決めたなら `llm-classifier`、
+以前のターンが保持したティアなら `classifier_retained` です。判定がターンを決めなかった
+とき — ジャッジに届かなかった、または `max_judge_calls` が呼び出しを拒否したとき — は
+ソースが `classifier_fail_open` になり、ティアは
+[ジャッジに届かないとき](#ジャッジに届かないとき)で説明したものです。
+
+すべてのキーは[設定リファレンス](/ja/reference/configuration/#type--composite)にあり、
+どのジャッジも従う規則は[ジャッジ呼び出し](/ja/guides/routing/#ジャッジ呼び出し)にあります。

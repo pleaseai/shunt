@@ -4,9 +4,9 @@ Engineering note for the opt-in `[models.router]` `type = "stage_router"`,
 implementing
 [ADR-0004](../.please/docs/decisions/0004-content-aware-stage-router.md).
 Status: **implemented.** User-facing documentation lives in the
-[stage router guide](https://shunt.sh/guides/stage-router/), with the scorer's
-provenance, the upstream benchmark results, and the scoring formula in
-[Switchyard Integration](https://shunt.sh/guides/switchyard/); this document is
+[stage router guide](https://shunt.sh/guides/stage-router/), which also carries
+the scoring formula, with the scorer's provenance and the upstream benchmark
+results in [Switchyard Integration](https://shunt.sh/guides/switchyard/); this document is
 the implementation record — what the code does, why, and what a change to it must
 not break. The `switchyard-libsy` dependency it scores through — how it is
 pinned, how to read its API, and how to bump it — is

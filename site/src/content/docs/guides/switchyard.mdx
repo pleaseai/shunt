@@ -1,6 +1,6 @@
 ---
 title: Switchyard Integration
-description: The scorer behind shunt's stage router comes from NVIDIA's Switchyard project. What shunt vendors, what it leaves behind, the published benchmark results, and the routing algorithm itself.
+description: The scorer behind shunt's stage router comes from NVIDIA's Switchyard project. What shunt vendors, what it leaves behind, the published benchmark results, and what the integration cost.
 ---
 
 shunt's [stage router](/guides/stage-router/) does not invent its own scoring. It
@@ -10,8 +10,8 @@ depends on [`switchyard-libsy`][libsy], the routing library from
 
 This page is the integration record: which part of Switchyard shunt uses, which
 parts it deliberately does not, what the published numbers actually measure, and
-how the algorithm decides a turn. If you only want to turn the feature on, the
-[stage router guide](/guides/stage-router/) is the shorter read.
+what the dependency cost. How each algorithm decides a turn lives with that
+algorithm — start at the [routing overview](/guides/routing/).
 
 [libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
 [sy]: https://github.com/NVIDIA-NeMo/Switchyard
@@ -30,11 +30,11 @@ boundary — and leaves the server.
 | `switchyard-protocol` | Pulled in as libsy's own dependency; shunt builds no `Request` |
 | `switchyard-translation` | **At the routing boundary only** — neutral ⇄ Anthropic on the judge request and its reply. The Anthropic → Responses wire translation stays shunt's own `src/model/responses_request.rs` |
 | `switchyard-server` | **No** — shunt is the server |
-| LLM classifier / judge | **Opt-in per entry** — [`[models.router.classifier]`](/guides/stage-router/#the-judge-fallback) on a `stage_router`, consulted only on the turns the signals leave undecided; see [below](#the-llm-judge-is-opt-in-per-entry) |
-| Escalation routing | **Opt-in per entry** — [`mode = "escalation"`](/reference/configuration/#mode--escalation). The weak turn is held until the judge rules, so the switch to the strong target happens before any header is sent; see [below](#two-judges-read-the-finished-turn) |
-| Handoff notes | **Yes** — [`[models.router.handoff_notes]`](/reference/configuration/#modelsrouterhandoff_notes-optional) |
-| Advisor gate | **Opt-in per entry** — [`type = "advisor"`](/reference/configuration/#type--advisor), with the executor turn held until the review |
-| Sub-agent routing | **Yes** — [`[models.subagents]`](/reference/configuration/#modelssubagents-optional) |
+| LLM classifier / judge | **Opt-in per entry** — [`[models.router.classifier]`](/guides/stage-router/#the-judge-fallback) on a `stage_router`, consulted only on the turns the signals leave undecided, plus the judge-backed [`llm_classifier`](/guides/llm-classifier/) and [`composite`](/guides/composite/) types; see [judge calls](/guides/routing/#judge-calls) |
+| Escalation routing | **Opt-in per entry** — [`mode = "escalation"`](/guides/escalation/). The weak turn is held until the judge rules, so the switch to the strong target happens before any header is sent; see [held turns](/guides/routing/#held-turns) |
+| Handoff notes | **Yes** — [`[models.router.handoff_notes]`](/guides/stage-router/#telling-the-incoming-model-why) |
+| Advisor gate | **Opt-in per entry** — [`type = "advisor"`](/guides/advisor/), with the executor turn held until the review |
+| Sub-agent routing | **Yes** — [`[models.subagents]`](/guides/subagents/) |
 
 The whole coupling is one function call. shunt fills libsy's `ToolSignals`
 struct straight from the parsed Anthropic Messages body and calls `pick_tier`;
@@ -128,7 +128,7 @@ result.
 | Signal extraction | Upstream's, provider-neutral | shunt's own, from Anthropic Messages blocks |
 | `tests_passed` / `repeated_failure` | Available to the scorer | Always `false` — never populated |
 | `compacted` | Available to the scorer | Set from `x-claude-code-context-compacted` and latched onto the session pin |
-| Judge on ambiguous turns | Optionally available | Never; falls open to the picker default |
+| Judge on ambiguous turns | Optionally available | Off by default, falling open to the picker default; opt in per entry with [`[models.router.classifier]`](/guides/stage-router/#the-judge-fallback) |
 | Tier stability across turns | Scored per turn | Session-pinned with asymmetric hysteresis |
 | Workload | Terminal-Bench 2.1 tasks | Claude Code sessions |
 
@@ -145,289 +145,26 @@ libsy's compaction override does fire here — see
 [Stage Router](/guides/stage-router/). Against that, shunt's
 hysteresis exists precisely because a per-turn flip is expensive in a Claude
 Code session in ways a benchmark harness never pays (see
-[below](#what-shunt-adds)).
+[Why going down is harder than going up](/guides/stage-router/#why-going-down-is-harder-than-going-up)).
 
-## The routing algorithm
+## Where the algorithms are documented
 
-### 1. Signals
+Switchyard is provider-neutral and does not have to price a tier flip. shunt is a
+Claude Code gateway and does, and that difference produces most of what shunt
+adds on top of the vendored code. Each part lives with the algorithm it belongs
+to:
 
-shunt walks the request's `messages` array twice. The first pass runs backwards
-over assistant messages, only as far as `recent_turn_window` reaches, collecting
-the `tool_use` ids that count as *recent*. The second runs forwards, once, over
-both roles: it maps `tool_use.id → tool_use.name` and records every
-`tool_result` against the `tool_use_id` it answered. Names are resolved after
-that walk rather than during it, so a result that precedes its own call still
-joins. A `tool_result` block does not carry the tool's name, so that join is the
-single point the whole extractor stands on.
-
-Past the ids that make the join, only two fields are read — `tool_use.name` and
-`tool_result.is_error`. No system prompt, no user text, no tool arguments.
-
-Claude Code reports failure as a bare boolean, with no grading, so shunt maps it
-onto libsy's `0.0 / 0.3 / 0.7 / 1.0` severity scale itself:
-
-| Condition | `severity` |
-| :-- | :-- |
-| No failed result in the window | `0.0` |
-| Any failed result in the window | `0.7` (hard) |
-| A failed `Task` in the window — a whole delegated subagent run collapsing | `1.0` (critical) |
-| The last two completed results both failed, both in the window — not recovering | `1.0` (critical) |
-
-Tool names are bucketed by the [vocabulary](/guides/stage-router/#the-vocabulary):
-`Observe`, `Mutate`, `Plan`, and uncategorised. `Bash` stays uncategorised on
-purpose — `git status`, `rm -rf`, and `cargo test` are only separable by reading
-`input.command`, which is the fragile inference this design avoids.
-
-If no completed tool call exists, extraction returns nothing and the turn takes
-the picker default. An empty conversation is not scored as "efficient."
-
-### 2. Dimensions
-
-The signals project onto two axes — is something *wrong*, and is the agent
-*producing*:
-
-| Dimension | Meaning | Pushes toward |
-| :-- | :-- | :-- |
-| `severity` | Windowed max error severity, `[0, 1]` | Capable |
-| `spinning` | A deep turn with no reads, plans, writes, or edits — pure churn | Capable |
-| `exploring` | A deep turn that reads or plans but does not write or edit | Capable |
-| `production_intensity` | Writes + edits as a fraction of recent tool ops | Efficient |
-
-`spinning` and `exploring` both require `turn_depth >= 8`: early turns with no
-writes are ordinary exploration, not a stall. They partition the same
-"not producing" case by whether investigative activity happened, so at most one
-fires and the production axis is never double-counted.
-
-### 3. Score
-
-Each maxed dimension contributes one signal unit of `0.10`, with `severity`
-normalised by its hard cap of `0.7` so it lands at the same weight:
-
-```
-raw   = 0.10 × (severity / 0.7 + spinning + exploring − production_intensity)
-score = tanh(5.0 × raw)          // signed: + capable, − efficient
-confidence = |score|
-```
-
-The gain of `5.0` is what makes the range usable — without it confidence would
-cap near `±0.20` and no meaningful threshold would ever be reachable.
-
-The design is **corroborative**: no single axis can peg the decision.
-
-| Signals agreeing | `raw` | `confidence` | Clears the `0.5` default? |
-| :-- | --: | --: | :-- |
-| One saturated | `0.10` | `tanh(0.5) ≈ 0.46` | No |
-| Two corroborating | `0.20` | `tanh(1.0) ≈ 0.76` | Yes |
-
-That is where the `0.5` default comes from: one wrong signal on its own is not
-enough to move a turn, and two agreeing signals are.
-
-### 4. Decision
-
-`pick_tier` runs three rules in order; the first to fire wins.
-
-1. **Hard escalate** → capable. A critical severity, a compacted context, or the
-   same failure repeated in the recent window. Skips the scorer, reports
-   `confidence: 1.0`.
-2. **Scorer.** Outside the ambiguous band around the midpoint, follow the sign.
-3. **Fall open.** Inside the band, libsy returns `ConsultClassifier`. shunt runs
-   no classifier, so the turn lands on the picker's default tier.
-
-There used to be a fourth — a hard *de-escalate* on a settled turn whose tests
-had passed. Upstream removed it; a passing test now only clears libsy's own
-capable hold, which shunt does not use.
-
-Two of rule 1's three triggers fire in shunt today. Critical severity reaches it
-through the two paths in the severity table above, and a compacted context
-reaches it from `x-claude-code-context-compacted` — a request header rather than
-anything in the transcript, which is also why that trigger can fire on a turn
-with no tool activity at all. The repeated-failure half stays dormant because
-libsy decides *same failure* by matching result text against its error table,
-which the `is_error` boolean Claude Code sends cannot support. shunt's own "the last two
-completed results both failed" rule already reaches rule 1 by way of `severity`.
-
-### 5. Hysteresis
-
-Everything above decides a turn in isolation. shunt then applies its own gate
-before the decision is allowed to move a session's pinned tier:
-
-| Direction | Requires |
-| :-- | :-- |
-| Efficient → Capable | A scorer-made decision, clearing `confidence_threshold` (0.5) |
-| Capable → Efficient | A scorer-made decision, **and** `min_dwell_turns` elapsed, **and** `deescalate_threshold` (0.75) |
-
-A fall-open, an ambiguous turn, or a turn with no tool activity is the picker's
-default rather than evidence, and cannot move a pin in either direction.
-
-The confidence gate admits no exemption. It used to carry one, for the
-`tests_passed` shortcut, which reported no confidence at all; with that rule gone
-upstream, every source that counts as evidence reports a confidence, and a turn
-that reports none is held rather than trusted. libsy's own `capable_hold` — its
-replacement, meaning an earlier escalation is still being held — is not evidence
-either: it is the same idea as the `sticky` row above, and only libsy's stateful
-classifier stamps it, which shunt does not call.
-
-## What shunt adds
-
-Switchyard is provider-neutral and does not have to price a tier flip.
-shunt is a Claude Code gateway and does, and that difference produces most of
-what is listed here.
-
-### Claude Code's actual tool vocabulary
-
-The scorer wants to know whether a call observed, mutated, or planned.
-A provider-neutral router has to infer that; shunt knows the names, and matches
-fourteen of them directly: `Read`, `Glob`, `Grep`, `NotebookRead`, `WebFetch`,
-`WebSearch`, and `BashOutput` as observation; `Edit`, `NotebookEdit`, and
-`Write` as mutation; `TodoWrite`, `Task`, `EnterPlanMode`, and `ExitPlanMode` as
-planning. One of them gets more than its category: a *failed* `Task` is scored
-critical rather than merely hard, because it is a whole delegated subagent run
-collapsing rather than one command failing.
-
-### Asymmetric hysteresis, because a flip is not free
-
-On a long Claude Code session a tier flip costs three concrete things:
-
-- **Prompt caching is keyed per model** — a flip forfeits the warm prefix and
-  pays a full cache write on the new tier.
-- **Codex continuation** hashes the model into its signature, so a flip forces a
-  full re-send and gives back the upload trimming shunt just earned.
-- **A cross-provider flip** also abandons the session's pooled connection and its
-  sticky account slot.
-
-Scored independently every turn, a long session can cost *more* routed than
-unrouted. That is why the two directions are unequal and why hysteresis is the
-core of shunt's integration rather than a refinement on it.
-
-### Session pinning that does not leak the session id
-
-Decisions are pinned per `(advertised model id, session id, agent id)`, each id
-keyed on a SHA-256 prefix — both are hashed and never stored. The agent id is
-`x-claude-code-agent-id`, which Claude Code sends on every delegated turn, so a
-`Task` child pins apart from the parent that spawned it: its failures do not
-escalate the parent, and its turns do not advance the parent's dwell. The store
-caps at 4096 parent sessions and, separately, at 4096 child pins; it evicts on
-the insert path with no background task, persists nothing, and a trim only ever
-reaches the scope it grew, so a wide fan-out cannot evict the parent waiting on
-it.
-
-The pin also carries the compaction latch. The turn that sends
-`x-claude-code-context-compacted` is scored as compacted, and the flag is stored,
-so the turns after it — the header is sent once per compaction — are scored the
-same way until the pin expires or a reload drops it.
-
-A pin also remembers a fingerprint of the router table it was made under, so
-editing one router drops only its own pins across a hot reload. That fingerprint
-destructures the config struct rather than dotting into it, so a key added later
-fails to compile instead of quietly letting stale pins outlive it.
-
-### Delegated work can take a different target
-
-Switchyard's `subagents` overlay carries over as `[models.subagents]`, on the
-entry rather than inside the router table — a fixed entry has no router table,
-and upstream's "passthrough with subagents" is exactly a fixed entry here. A
-`Task` child, a hook agent, or a workflow sub-agent requesting the id is
-diverted to the overlay's `target`, or to the `by_type` entry matching its
-`x-claude-code-agent-type`; the parent's own turns never see the table.
-
-```toml
-[models.subagents]
-type = "passthrough"
-target = "claude-haiku-4-5"
-by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6" }
-```
-
-What shunt adds is the reading of "delegated". Upstream keys on its
-`claude_lineage` header alone; shunt reads `x-claude-code-request-class` first
-(`subagent` and `workflow` are delegated, `main` is not even when an agent id
-rides along, and `compaction` and `auxiliary` are harness maintenance that
-never takes the overlay) and falls back to the agent id only when the class is
-not sent — which, behind a default gateway deployment, it is not. `by_type`
-keys are the header's literal values, case included, and a project agent
-arrives as `custom` with its name withheld. The overlay is stateless: a
-diverted child is never scored, never pinned, and never advances its parent's
-dwell, and its turn reports `subagent_type` or `subagent` in
-`x-gateway-route-source`.
-
-### The LLM judge is opt-in, per entry
-
-When the signals are inconclusive, libsy returns
-`PickOutcome::ConsultClassifier { default_tier }`. A `stage_router` with no
-classifier table treats that as the answer and takes `default_tier`, so its hot
-path carries no judge: no second model call, no second credential, and no added
-latency on the turns where the router is least sure. Falling open is not
-fighting the API — it *is* the API's documented fall-open path. That is the
-default, and it is what every entry on the pure lane still does.
-
-An entry can opt back in, one entry at a time, in four shapes:
-
-| Shape | What the judge decides |
-| :-- | :-- |
-| [`[models.router.classifier]`](/reference/configuration/#modelsrouterclassifier-optional) on a `stage_router` | Only the turns the signals leave undecided; everything else stays signal-driven |
-| [`type = "llm_classifier"`](/reference/configuration/#type--llm_classifier) | The whole turn — a solve probability between two tiers in `mode = "capability"`, or a model group named by your own prompt and schema in `mode = "custom"` |
-| [`type = "composite"`](/reference/configuration/#type--composite) | The tier a stage router falls open to, leaving its scoring untouched |
-| [`[models.subagents]` with `type = "llm_classifier"`](/reference/configuration/#subagents-type--llm_classifier) | Where a delegated child goes, decided once per `(session, agent)` |
-
-All four recover the accuracy a judge buys — a real part of what the upstream
-classifier-assisted configurations measured — and pay for it in latency and in
-the judge target's own pool quota. A `classify_trigger` key decides how often
-that cost is paid: judge every turn, judge each new human user turn and hold the
-verdict across the tool calls between them, or judge once per session. The judge
-is consulted only after the request has been admitted, never on a `count_tokens`
-probe — which answers from the target the session is already holding, if any —
-and never more than `max_judge_calls` times for one `(session, agent)` —
-a turn that replays a retained verdict makes no call and is never refused.
-Every judge failure — a timeout, a `400`, an unparseable verdict — resolves to
-the algorithm's own default rather than failing the request, and exactly one
-judge call is made per consulted turn.
-
-### Two judges read the finished turn
-
-Every shape above decides where a turn goes before the turn runs. Two more
-decide afterwards.
-[`mode = "escalation"`](/reference/configuration/#mode--escalation) serves a
-weak target's turn and has a judge rule on the completed work; after
-`confirmations` consecutive escalate verdicts it latches the session onto a
-strong target. [`type = "advisor"`](/reference/configuration/#type--advisor) has
-a stronger reviewer approve an executor's terminal turn or send it back to redo
-the work.
-
-Both judge a turn that already exists, so shunt holds it. The upstream response
-is buffered, judged, and only then replayed to the client — byte for byte,
-under the id the client asked for, in the streaming or non-streaming mode it
-asked for. That is the one exception to shunt's rule against buffering a
-stream, and it covers only the turns these two entries gate. No other route
-changes.
-
-Holding the turn is what keeps upstream's design inside shunt's post-2xx
-no-replay rule. No response header is committed until the replay starts, so a
-discarded turn — replaced by the strong target, or sent back for REDO — was
-never seen by the client. The cost is latency: on a held turn the first byte
-arrives when the whole turn is done, and escalation adds a judge call per turn
-until it latches. The
-[configuration reference](/reference/configuration/#buffered-turns-escalation-and-advisor)
-lists the route sources and what happens when a held turn fails.
-
-### The routed target is an ordinary model id
-
-The router's output is a public model id, so it re-enters shunt's normal routing
-ladder and inherits failover chains, account pools, adapter selection, `effort`,
-and `service_tier` for free, and appears in `/v1/models` discovery with no extra
-code. A target that is itself a router is a startup error, so resolution is one
-hop **by construction** rather than by a depth counter.
-
-### The client still sees the id it asked for
-
-The tier travels upstream in `upstream_model` and nowhere else. Responses report
-the requested id, so Claude Code's `/model` display and `--resume` model
-restoration keep working.
-
-### Inert unless you ask for it
-
-Absent a `[models.router]` table the router arm is a single
-`Option` check on a config field existing deployments do not have. Nothing
-about the routing path changes — and the check costs the same whichever `type`
-the routed entries declare.
+- **The stage scorer** — signals, dimensions, score, and decision, plus shunt's
+  Claude Code tool vocabulary, asymmetric hysteresis, and session pinning — is in
+  [Stage Router](/guides/stage-router/).
+- **What every router shares** — targets as ordinary model ids, the id the client
+  sees, judge calls, and held turns — is in the
+  [routing overview](/guides/routing/).
+- **The judge-backed types** each have a page:
+  [LLM Classifier](/guides/llm-classifier/), [Escalation](/guides/escalation/),
+  [Advisor Gate](/guides/advisor/), and [Composite](/guides/composite/).
+- **Delegated work**, and how shunt reads "delegated" differently from upstream's
+  `claude_lineage` header, is in [Subagent Routing](/guides/subagents/).
 
 ## What the integration cost
 

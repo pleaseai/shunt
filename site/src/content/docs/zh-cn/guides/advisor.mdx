@@ -1,0 +1,92 @@
+---
+title: advisor 门控
+description: 让一个执行模型负责每一轮,由更强的审阅模型批准它的计划和完成声明,或把它打回重做。
+---
+
+`type = "advisor"` 让一个**执行模型**(executor)提供客户端看到的每一轮。更强的**审阅模型**
+(advisor)在客户端看到之前审阅执行模型的收尾回合 —— 动手之前给出的计划,或者声称任务已完成
+的回合。APPROVE 放行被扣住的回合;REDO 丢弃它,并带着审阅模型的计划把执行模型打回去重做。
+审阅模型从不提供回合,所以客户端只会看到执行模型的输出。
+
+## 如何配置
+
+```toml
+[[models]]
+id = "claude-reviewed"
+
+[models.router]
+type = "advisor"
+executor_target = "claude-sonnet-4-6"
+advisor_target = "claude-opus-4-8"
+gate_trigger = "no_tool_call"
+max_reviews = 1
+# gate_stall_turns = 0
+# gate_min_tool_results = 0
+# advisor_max_tokens = 2048
+# transcript_max_chars = 200000
+# fail_open = true
+```
+
+触发审阅的条件:
+
+- `gate_trigger = "no_tool_call"`(默认)审阅执行模型第一次不带工具调用结束的回合。
+  `gate_min_tool_results` 让这样的回合只在对话中已有这么多 tool result 之后才可被审阅。
+- `gate_trigger = "pattern"` 改为在 `gate_trigger_pattern` 上触发,这是一个按搜索而非锚定
+  匹配的正则表达式。
+- `gate_stall_turns` 在对话中的 assistant 回合数达到这个值时,额外审阅一轮作为任务中途的
+  检查点;`0` 表示关闭。
+
+`max_reviews` 限制每个会话的审阅次数。没有 `x-claude-code-session-id` 的请求单独算作一个
+会话,因此没有会话的调用方之间不会共用同一份预算。审阅模型看到的对话记录会从中间截到
+`transcript_max_chars`;`reviewer_system_prompt` 和 `redo_feedback_prefix` 分别替换内置的
+APPROVE/REDO 审阅提示词,以及回传给执行模型的 REDO 计划前面的那段文字。
+
+六个[每次调用的上限](/zh-cn/reference/configuration/#每次调用的上限)放在 `[models.router]`
+上;其中三个 `gated_*` 上限约束被扣住的执行模型回合。
+
+## 哪些回合会被扣住
+
+一轮是否触发 `gate_trigger`,要等这一轮完成才知道。所以只要会话还有审阅预算,执行模型的
+**每一轮**都会被扣住,没有触发门控的那些回合不经审阅直接提供。`max_reviews` 用完之后,或者
+该会话中审阅模型的调用已失败三次之后(失败的调用会退还这次审阅),该会话剩下的回合不再缓冲,
+实时流式返回。[被扣住的回合](/zh-cn/guides/routing/#被扣住的回合)说明了被扣住的回合如何
+提供以及要付出什么代价:在被扣住的回合上,第一个字节要等整轮结束才到达。
+
+## REDO
+
+被扣住的回合在任何响应头到达客户端之前就被丢弃。被丢弃的回合和审阅模型的计划会追加进对话,
+然后重新运行执行模型;这次重跑是实时流式返回的。
+
+## 审阅失败时
+
+`fail_open = true`(默认)时,审阅失败会提供被扣住的回合。`fail_open = false` 则改为以 `502`
+让请求失败 —— 会话已用完 `max_judge_calls`、审阅根本没有发出时也是如此。无论哪种情况,失败
+的审阅仍按其结果计数(例如 `upstream_error`、`timeout`),被 `max_judge_calls` 拒绝的则计为
+`budget_exhausted`。
+
+越过某个 `gated_*` 上限、或在终止标记之前结束的被扣住回合,会在发送任何响应头之前被丢弃,
+请求以网关自有、Anthropic 错误形态的 `502` 失败。这既不是 REDO,也不是一次故障转移尝试 ——
+上游已经以 `2xx` 作答。[配置参考](/zh-cn/reference/configuration/#被扣住的回合escalation-与-advisor)
+列出了每一种失败情形。
+
+## 凭证与探测
+
+与 `advisor_target` 不同,`executor_target` 可以是 **passthrough** 路由:执行模型回合就是
+客户端自己的回答,所以它携带调用方的凭证,而审阅是一次裁判调用,不携带调用方的任何凭证。见
+[裁判调用](/zh-cn/guides/routing/#裁判调用)。
+
+`count_tokens` 探测既不发起审阅也不发起被扣住的调用,始终由 `executor_target` 作答。
+
+## 客户端看到什么
+
+| `x-gateway-route-source` | 含义 |
+| :-- | :-- |
+| `advisor_approve` | 执行模型回合经过审阅并被批准;它被回放 |
+| `advisor_pass` | 执行模型回合未经审阅就被提供 —— 它没有触发门控,或者没能预留到审阅 |
+| `advisor_fail_open` | 在完整的执行模型回合之后审阅失败,于是提供了这一轮 |
+| `advisor_redo` | 审阅模型给出 REDO;这是执行模型的实时重跑 |
+| `advisor_exhausted` | 审阅预算已用完,或者审阅模型的调用已失败三次,执行模型不经缓冲直接流式返回 |
+| `gated_error` | 被扣住的回合无法提供 |
+
+审阅计入 `shunt.router.judge_calls{algorithm="advisor"}`,`GET /routes` 把 `advisor_target`
+列在 `judges` 下。每个键都在[配置参考](/zh-cn/reference/configuration/#type--advisor)中。

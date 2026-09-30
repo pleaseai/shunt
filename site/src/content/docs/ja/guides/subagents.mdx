@@ -1,0 +1,151 @@
+---
+title: サブエージェントルーティング
+description: 委譲された作業 — Task サブエージェント、フックエージェント、ワークフローサブエージェント — を、固定のマップまたはジャッジによって、親セッションとは別のターゲットへ送ります。
+---
+
+`[models.subagents]` オーバーレイは、親セッションが自分の宛先を保ったまま、**委譲された
+作業**を別のターゲットへ送ります。その id を要求した `Task` サブエージェント、フック
+エージェント、ワークフローサブエージェントは、オーバーレイのターゲットへ振り分けられます。
+親セッション自身のターンはこのテーブルを一切見ず、オーバーレイがなかったときとまったく同じ
+ようにエントリを解決します。
+
+オーバーレイは任意の `[[models]]` エントリに載せられます。`[models.upstream_model]` マップを
+持つエントリ、`[models.router]` テーブルを持つエントリ、マップを持たず `[[routes]]` 経由で
+解決される id のいずれでも構いません。ルーターテーブルの中ではなくエントリ側に置くのは、
+固定エントリにはルーターテーブルが存在しないからです — Switchyard の「passthrough with
+subagents」は、ここではまさに固定エントリにあたります。
+
+形式は 2 つあります。
+
+| `type` | 子のターゲットの決まり方 |
+| :-- | :-- |
+| `passthrough` | そのエージェントタイプの `by_type`、なければ `target` — ジャッジも状態もありません |
+| `llm_classifier` | 委譲されたタスクを読むジャッジが、`(session, agent)` ごとに一度決めます |
+
+## 委譲された作業とみなされるもの
+
+アップストリームは自分の `claude_lineage` ヘッダーだけを見ます。shunt はまず
+`x-claude-code-request-class` を読み、クラスが送られてこないときだけエージェント id に
+フォールバックします。
+
+| リクエスト | オーバーレイを使うか |
+| :-- | :-- |
+| `x-claude-code-request-class: subagent` または `workflow` | 使う |
+| `x-claude-code-request-class: main`（エージェント id を伴っていても） | 使わない — メイントラフィック |
+| `x-claude-code-request-class: compaction` または `auxiliary` | 使わない — ハーネスの保守作業 |
+| クラスヘッダーがなく、空でない `x-claude-code-agent-id` がある | 使う |
+
+`x-claude-code-agent-id` は、Claude Code がヒントのゲートに関係なくすべての委譲ターンで
+送ります。クラスとエージェントタイプのヘッダーはゲートされており、shunt の背後では
+クライアントが `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` を設定したときにだけ送られます
+（[クライアント環境変数](/ja/reference/client-environment/)を参照）。したがってデフォルトの
+デプロイでは `Task` の子はすべて `target` へ行き、`by_type` を使うにはこの変数が必要です。
+
+## `passthrough` 形式
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+委譲されたターンは、自身の `x-claude-code-agent-type` に一致する `by_type` のエントリへ、
+そのエージェントタイプについて `by_type` が何も指定していないときは `target` へ行きます —
+エージェントタイプのヘッダーが送られてこない場合は、委譲されたすべてのターンが `target` へ
+行きます。
+
+**`by_type` のキー**はヘッダーのリテラル値そのもので、大文字小文字も含めて厳密に照合します。
+組み込みエージェントの id はそのまま届きます — `Explore`、`Plan`、`general-purpose`、
+`claude`、そして `fork`（クライアントは `CLAUDE_CODE_FORK_SUBAGENT=1` のときだけ提示します）。
+`.claude/agents/` のプロジェクトエージェントは `custom` として届き、自身の名前は決して送られ
+ないため、一致しうるキーは `custom` だけです。`teammate` は Agent Teams のメンバーを指す
+クライアント側のリテラルで、ワイヤ上ではまだ観測されていません。
+
+**状態を持ちません。** ターゲットは設定とリクエストのヘッダーだけで決まります。セッション
+ピンもストアもジャッジ呼び出しもありません。ルーターを持つ id では、子はルーターが走る前に
+振り分けられるため、子のターンがトランスクリプトに対して採点されることはなく、ピン留めも
+されず、親のピンや dwell に触れたり進めたりすることもありません。
+
+## `llm_classifier` 形式
+
+固定のターゲットの代わりに、ジャッジが委譲されたタスクを読み、それを処理するグループの名前を
+挙げます。ここにあるのは `mode = "custom"` だけで、キーは
+[LLM 分類器](/ja/guides/llm-classifier/#mode--custom)のページで説明した `custom` モードの
+ものです。
+
+```toml
+[models.subagents]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+classify_trigger = "new_session"
+max_output_tokens = 64
+prompt = """
+委譲されたタスクに対するターゲットをちょうど 1 つ選んでください。
+
+- コードレビュー、批評、監査、正しさの分析には "capable" を選んでください。
+- 実装、調査、説明、その他の委譲作業には "efficient" を選んでください。
+
+レスポンススキーマに一致する JSON だけを返してください。
+"""
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+`[models.router]` の形式と異なる規則が 3 つあります。
+
+- **`classify_trigger` の既定値は `new_session`** で、`user_turn` は拒否されます。委譲
+  された子はひとつのタスクなので、ターゲットは一度選んで最後まで保持します。ユーザー
+  ターンごとに判定し直せば、変わりようのない決定にジャッジ呼び出しを払い続けることに
+  なります。
+- **`message_hash_fallback` は `false` でなければなりません。** 分類はすでに `(session,
+  agent)` でキーを取っているので、代わりに最初のメッセージをハッシュすると、ひとつの
+  セッションの異なる子ふたつがひとつの判定に束ねられてしまいます。
+- **親が分類されることはありません。** 何が委譲された作業かは `passthrough` 形式と
+  まったく同じです。したがって親のターン、エージェント id を伴う `main` のターン、
+  `compaction` と `auxiliary` のクラスはいずれも、このテーブルがないかのようにエントリを
+  解決し、ジャッジ呼び出しも行いません。
+
+6 つの[呼び出しごとの上限](/ja/reference/configuration/#呼び出しごとの上限)は、呼び出しを
+行う当事者であるこのテーブルに置きます。ジャッジは他と同じ規則に従います — 1 ホップ、
+passthrough ルート禁止、そして呼び出し元の資格情報スロットはひとつも同行しません
+（[ジャッジ呼び出し](/ja/guides/routing/#ジャッジ呼び出し)を参照）。委譲されたターンが
+ジャッジを呼びうるため、そうしたターンのインバウンド認証はオーバーレイのターゲットと
+ジャッジまで対象にします — 認証できない委譲ターンはジャッジ呼び出しを 1 回も行わずに拒否
+されます。`count_tokens` プローブも同様にジャッジ呼び出しを行いません。その子の
+`(session, agent)` の割り当てがあればそれで、なければ `default_target` グループの最初の
+モデルで応答します。
+
+## クライアントから見えるもの
+
+振り分けられたターンには `x-gateway-routed-model`（ターゲット）と
+`x-gateway-route-source`（`by_type` に一致したときは `subagent_type`、`target` への
+フォールバックなら `subagent`）が付き、`shunt.router.decisions` に
+`algorithm = "subagents"` として計上されます。`llm_classifier` 形式は代わりに
+classifier 自身のソースを報告します。ジャッジが分類したターンは `llm-classifier`、その
+子のその後のターンが割り当てを再生したときは `classifier_retained`、判定がターンを
+決めなかったときは `classifier_fail_open` です
+（[LLM Classifier](/ja/guides/llm-classifier/#クライアントから見えるもの)を参照）。
+
+リクエストを伴わないサーフェスは何も解決しません。`/v1/models` ディスカバリと
+`shunt check` はモデルごとの宛先情報をまったく持たず、`GET /routes` は親自身の
+`[[routes]]`／`[models.router]` エントリがある場合にそれを示すだけです
+（`server.default_provider` に委ねられた id はどちらの配列にも現れません）。いずれの
+サーフェスも振り分け先のターゲットを解決せず、このオーバーレイが `routers` 配列に載ることも
+ありません。
+
+ターゲットの規則、検証エラー、すべてのキーは
+[設定リファレンス](/ja/reference/configuration/#modelssubagentsオプション)にあります。
