@@ -1348,14 +1348,34 @@ pub(super) async fn forward_chatgpt_oauth(
     }
 
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
+    Err(exhausted_error(last_response, auth, turn.response_bounds.idle).await)
+}
+
+/// The error [`forward_chatgpt_oauth`] returns once every account failed: the
+/// last upstream answer the pool kept, mapped, or a transport error when no
+/// account reached an upstream.
+///
+/// On a gated call (`idle` set) the kept body is read under a fresh gap taken
+/// here, at exhaustion, as the Anthropic adapter's gated error read does
+/// (#707). The kept attempt's own send is the wrong anchor: later accounts'
+/// sends, header waits, and refusal checks all ran after it rotated away, so
+/// its gap may have closed on their time. A stall is the call's cut, with the
+/// [`crate::adapters::UpstreamBodyIdle`] marker. `None`, every client turn,
+/// reads no clock and leaves the body lazy, as it always was.
+async fn exhausted_error(
+    last_response: Option<reqwest::Response>,
+    auth: AuthMode,
+    idle: Option<Duration>,
+) -> AdapterError {
     match last_response {
         Some(upstream) => {
             let status = upstream.status();
-            Err(mapped_upstream_error(status, upstream, auth).await)
+            let clock = idle.map(|idle| (idle, tokio::time::Instant::now()));
+            mapped_upstream_error_within(status, upstream, auth, clock).await
         }
-        None => Err(transport_error(
+        None => transport_error(
             "all Codex OAuth accounts failed before receiving an upstream response".to_string(),
-        )),
+        ),
     }
 }
 
@@ -2944,6 +2964,176 @@ mod tests {
             .expect("a body inside the gap is read");
         assert_eq!(relayed.status(), StatusCode::BAD_REQUEST);
         assert_eq!(judged.as_deref(), Some(body), "the whole body is judged");
+    }
+
+    /// A `429` built in-process, as a pool account's rate limit answers it,
+    /// with a `retry-after`: `body` is sent whole at its absolute instant and
+    /// then ends, and `None` is a body that never sends a byte.
+    fn timed_rate_limit(body: Option<(tokio::time::Instant, &'static [u8])>) -> reqwest::Response {
+        let chunk = futures_util::stream::once(async move {
+            let Some((at, bytes)) = body else {
+                return futures_util::future::pending().await;
+            };
+            tokio::time::sleep_until(at).await;
+            Ok::<_, std::io::Error>(bytes::Bytes::from_static(bytes))
+        });
+        reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", "7")
+                .body(reqwest::Body::wrap_stream(chunk))
+                .unwrap(),
+        )
+    }
+
+    /// #707: a gated pool whose only account answered `429` and whose kept
+    /// body never sends a byte is cut at the idle gap measured from the
+    /// exhaustion, with the idle marker, not relayed after the 5 s envelope
+    /// budget. The 500 ms before the exhaustion stands for the later accounts'
+    /// sends and header waits, and outlasts the 300 ms gap, so a gap anchored
+    /// at the kept attempt's send would cut at once.
+    ///
+    /// Non-vacuity: map the kept response lazily (the pre-#707 arm) and no
+    /// marker is set.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_pool_exhausted_on_a_stalled_429_is_cut_at_the_gap_from_exhaustion() {
+        let idle = Duration::from_millis(300);
+        let kept = timed_rate_limit(None);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let exhausted_at = tokio::time::Instant::now();
+        let error = exhausted_error(Some(kept), AuthMode::ChatgptOauth, Some(idle)).await;
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle { idle }),
+            "got: {}",
+            error.message
+        );
+        assert!(error.failure.is_none(), "a cut is not a failover");
+        assert_eq!(
+            exhausted_at.elapsed(),
+            idle,
+            "cut at the gap from exhaustion"
+        );
+    }
+
+    /// The twin: the kept `429` whose body completes 280 ms after the
+    /// exhaustion is relayed as the `429` it was, with its `retry-after` and
+    /// message.
+    ///
+    /// Non-vacuity: anchor the gap at the kept attempt's send, 500 ms earlier,
+    /// and this body is cut before it lands.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_pool_exhausted_on_a_429_inside_the_gap_relays_it() {
+        let idle = Duration::from_millis(300);
+        let message = "Rate limit reached for the account";
+        let body: &'static [u8] = br#"{"detail":"Rate limit reached for the account"}"#;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let exhausted_at = tokio::time::Instant::now();
+        let kept = timed_rate_limit(Some((exhausted_at + Duration::from_millis(280), body)));
+        let error = exhausted_error(Some(kept), AuthMode::ChatgptOauth, Some(idle)).await;
+        assert!(error
+            .response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyIdle>()
+            .is_none());
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            error.response.headers().get("retry-after"),
+            Some(&HeaderValue::from_static("7"))
+        );
+        let bytes = axum::body::to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains(message), "got: {text}");
+    }
+
+    /// A client turn (`idle = None`) is unchanged: the kept body stays lazy,
+    /// so the error returns before a stalled body sends a byte, with its
+    /// status and `retry-after`.
+    ///
+    /// Non-vacuity: read the body before returning when `idle` is `None` and
+    /// this never returns.
+    #[tokio::test(start_paused = true)]
+    async fn a_client_pool_exhausted_on_a_429_keeps_the_lazy_body() {
+        let exhausted_at = tokio::time::Instant::now();
+        let error =
+            exhausted_error(Some(timed_rate_limit(None)), AuthMode::ChatgptOauth, None).await;
+        assert_eq!(exhausted_at.elapsed(), Duration::ZERO, "nothing was read");
+        assert!(error
+            .response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyIdle>()
+            .is_none());
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            error.response.headers().get("retry-after"),
+            Some(&HeaderValue::from_static("7"))
+        );
+    }
+
+    /// End to end through [`forward_chatgpt_oauth`]: a gated call whose only
+    /// account answers `429` with headers and then a body that never arrives
+    /// is cut with the idle marker once the pool is exhausted, rather than
+    /// relayed after the envelope budget. A real listener rather than a paused
+    /// clock, since the send crosses a socket; the elapsed time is not
+    /// asserted, only the cut.
+    ///
+    /// Non-vacuity: pass no idle to the exhausted arm (the pre-#707 lazy map)
+    /// and the relayed error has no marker.
+    #[tokio::test]
+    async fn a_gated_pool_exhausted_on_a_stalled_429_is_cut_end_to_end() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).await.expect("read");
+                assert!(read > 0, "the request ended before its headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\n\
+                      content-length: 64\r\nretry-after: 7\r\n\r\n",
+                )
+                .await
+                .expect("write");
+            // Hold the connection open with the promised body unsent.
+            futures_util::future::pending::<()>().await;
+            drop(socket);
+        });
+        let idle = Duration::from_millis(200);
+        let mut forward = pool_turn(
+            vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")],
+            false,
+        );
+        forward.turn.response_bounds.idle = Some(idle);
+        let state = pool_state(format!("http://{address}"));
+        let error = forward_chatgpt_oauth(state, pool_route(), forward)
+            .await
+            .expect_err("an exhausted pool fails the call");
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle { idle }),
+            "got: {}",
+            error.message
+        );
     }
 
     /// Positive twin: on the translating path an unjudged 400 falls back to the
