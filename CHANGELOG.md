@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.51.0](https://github.com/pleaseai/shunt/compare/v0.50.0...v0.51.0) (2026-09-30)
+
+
+### Features
+
+* **discovery:** add claude-sonnet-5-5 to the built-in catalog ([#715](https://github.com/pleaseai/shunt/issues/715)) ([b26fb65](https://github.com/pleaseai/shunt/commit/b26fb65b576ed64949a7c115f189007009dd75c8))
+
+
+### Bug Fixes
+
+* **retry:** parse decimal Retry-After with ceiling rounding and clamp bounded wait ([#518](https://github.com/pleaseai/shunt/issues/518)) ([67862e7](https://github.com/pleaseai/shunt/commit/67862e7ba3fc443484438b590a0d3c910270c653))
+
 ## [0.50.0](https://github.com/pleaseai/shunt/compare/v0.49.1...v0.50.0) (2026-09-30)
 
 
