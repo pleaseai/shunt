@@ -33,7 +33,7 @@ shunt 只是遵从它收到的 model id —— 没有脆弱的按 agent 系统�
 阶段路由器和基于评判模型的路由器并不是 shunt 自己发明的启发式规则。它们以 NVIDIA [Switchyard](https://github.com/NVIDIA-NeMo/Switchyard) 项目的路由库 [`switchyard-libsy`](https://github.com/NVIDIA-NeMo/Switchyard/tree/main/crates/libsy) 为基础。Switchyard 的目标是把“每一次 LLM 调用路由到仍能完成任务的最便宜模型”。这带来以下好处:
 
 - **有公开结果的评分器。** shunt 原样使用 Switchyard 的阶段评分器。在上游的 Terminal-Bench 2.1 运行中,阶段路由保留了 Opus 4.8 基线准确率的 95.7%,成本降低 30.5%。参与对比的四个固定单模型,得分全部低于 56%。这些是上游测出的数字,不是 shunt 的:shunt 没有跑过这个基准,信号也是用自己的方式提取的。请把它们当作这种思路确实划算的证据,而不是对你配置的模型组合的承诺。
-- **多种算法。** 除阶段评分外,shunt 还提供 Switchyard 的其他算法,每一项都按模型条目单独启用。每个条目选择一种路由器类型:`stage_router`(可附加交接笔记)、`llm_classifier`(其 `escalation` 模式即升级路由)、`composite` 或 `advisor`。子 agent 路由则另外通过 `[models.subagents]` 表配置。
+- **多种算法。** 除阶段评分外,shunt 还提供 Switchyard 的其他算法,每一项都按模型条目单独启用。每个条目选择一种路由器类型,例如 `stage_router`(可附加交接笔记)、`llm_classifier`(其 `escalation` 模式即升级路由)、`composite`、`advisor` 等。子 agent 路由则另外通过 `[models.subagents]` 表配置。
 - **为 Claude Code 会话所做的调整。** Switchyard 与提供方无关。shunt 补上 Claude Code 网关所需的部分。工具名直接按 Claude Code 实际使用的名字匹配。会话的档位用非对称迟滞固定,避免长会话逐轮切换档位而丢掉已预热的提示缓存。被委派子 agent 的路由与父会话分开处理。
 - **仍是普通 model id 的目标。** 路由后的目标会重新进入 shunt 的常规路由,因此沿用各自的故障转移链、账号池和适配器。客户端看到的 model id 也与请求时一致。
 - **轻量的依赖。** 这个依赖让发布二进制增大约 0.3%。它固定在一个经过审阅的上游修订上,因此每次升级也都是一份经过审阅的 diff。既没有 `[models.router]` 表也没有 `[models.subagents]` 表的条目,路由方式与之前完全相同。
