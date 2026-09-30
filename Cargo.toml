@@ -57,7 +57,7 @@ arc-swap = "1.9.2"
 # `switchyard_libsy::Algorithm` is an `#[async_trait]` trait, so hosting one
 # needs the same attribute macro on the impl.
 async-trait = "0.1"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
