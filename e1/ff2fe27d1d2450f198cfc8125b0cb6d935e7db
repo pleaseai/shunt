@@ -1,0 +1,29 @@
+src/codex_endpoint/websocket.rs
+  s_cb39357fb104c2::t_5a32ae5456a691 57-60,86-99
+tests/inbound_codex_websocket.rs
+  s_b6742971f8b6e5::t_343d406e136887 460-550
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e1ff2fe27d1d2450f198cfc8125b0cb6d935e7db",
+  "prompts": {},
+  "sessions": {
+    "s_b6742971f8b6e5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "36bb4dd5-be65-4c82-9c43-2ddaf52d0875",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_cb39357fb104c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0a6fe9c-be10-4f28-a495-ad83906f4e3c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
