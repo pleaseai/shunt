@@ -37,6 +37,7 @@ The stage router and the judge-backed routers are not heuristics shunt invented.
 - **Fitted to Claude Code sessions.** Switchyard is provider-neutral. shunt adds what a Claude Code gateway needs: it matches Claude Code's own tool names, pins each session's tier with asymmetric hysteresis so a long session does not flip tiers turn by turn and lose its warm prompt cache, and keeps a delegated subagent's routing apart from its parent's.
 - **Targets stay ordinary model ids.** A routed target re-enters shunt's normal routing, so it keeps its own failover chain, account pool, and adapter, and the client still sees the model id it asked for.
 - **Little to carry.** The dependency added about 0.3% to the release binary, and it is pinned to a reviewed upstream revision, so an upgrade is a reviewed diff. Without a `[models.router]` table, the routing path is unchanged.
+- **No second server.** Switchyard's [server path](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/docs/getting_started.md#server-path) runs `switchyard-server` as a standalone proxy. For clients that speak Anthropic Messages, such as Claude Code, the same route types — `auto`, `stage_router`, and `llm_classifier` — are `[models.router]` types in shunt, so there is no second proxy to run. shunt applies routers only on `/v1/messages`, so routing for OpenAI Chat Completions or Responses clients is outside what it covers.
 
 [Switchyard Integration](/guides/switchyard/) covers what shunt takes from Switchyard and what it leaves out, the benchmark caveats, and the algorithm step by step.
 

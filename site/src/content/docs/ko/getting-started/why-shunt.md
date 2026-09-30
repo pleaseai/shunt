@@ -37,6 +37,7 @@ model id 하나를 스스로 판단하게 만들 수도 있습니다. [스테이
 - **Claude Code 세션에 맞춘 조정.** Switchyard는 프로바이더 중립적입니다. shunt는 Claude Code 게이트웨이에 필요한 것을 더합니다. Claude Code의 실제 도구 이름을 그대로 매칭합니다. 세션의 티어는 비대칭 히스테리시스로 고정해 긴 세션이 턴마다 티어를 바꾸다가 이미 쌓아 둔 프롬프트 캐시를 잃지 않게 합니다. 위임된 서브에이전트의 라우팅은 부모와 따로 둡니다.
 - **일반 model id로 남는 타깃.** 라우팅된 타깃은 shunt의 기본 라우팅 경로로 다시 들어가므로 자체 페일오버 체인, 계정 풀, 어댑터를 그대로 씁니다. 클라이언트가 보는 model id도 요청한 그대로입니다.
 - **적은 부담.** 이 의존성이 릴리스 바이너리에 더한 크기는 약 0.3%입니다. 검토한 업스트림 리비전에 고정해 두었으므로 업그레이드도 검토를 거친 diff로 반영됩니다. `[models.router]` 테이블이 없으면 라우팅 경로는 바뀌지 않습니다.
+- **별도 서버 없는 라우팅.** Switchyard의 [Server Path](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/docs/getting_started.md#server-path)는 `switchyard-server`를 독립 프록시로 따로 띄웁니다. Claude Code처럼 Anthropic Messages로 요청하는 클라이언트라면 같은 route 타입(`auto`, `stage_router`, `llm_classifier`)을 shunt의 `[models.router]`에서 그대로 쓸 수 있으므로 프록시를 하나 더 둘 필요가 없습니다. 다만 shunt는 `/v1/messages`에서만 라우터를 적용합니다. OpenAI Chat Completions나 Responses 클라이언트의 라우팅은 shunt가 다루지 않습니다.
 
 shunt가 Switchyard에서 가져온 것과 두고 온 것, 벤치마크를 읽을 때 주의할 점, 알고리즘의 단계별 동작은 [Switchyard 통합](/ko/guides/switchyard/)에서 다룹니다.
 

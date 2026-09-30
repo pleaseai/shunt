@@ -37,6 +37,7 @@ shunt 只是遵从它收到的 model id —— 没有脆弱的按 agent 系统�
 - **为 Claude Code 会话所做的调整。** Switchyard 与提供方无关。shunt 补上 Claude Code 网关所需的部分。工具名直接按 Claude Code 实际使用的名字匹配。会话的档位用非对称迟滞固定,避免长会话逐轮切换档位而丢掉已预热的提示缓存。被委派子 agent 的路由与父会话分开处理。
 - **仍是普通 model id 的目标。** 路由后的目标会重新进入 shunt 的常规路由,因此沿用各自的故障转移链、账号池和适配器。客户端看到的 model id 也与请求时一致。
 - **轻量的依赖。** 这个依赖让发布二进制增大约 0.3%。它固定在一个经过审阅的上游修订上,因此每次升级也都是一份经过审阅的 diff。没有 `[models.router]` 表时,路由路径保持不变。
+- **无需另起服务器的路由。** Switchyard 的 [Server Path](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/docs/getting_started.md#server-path) 会把 `switchyard-server` 作为独立代理单独运行。对于像 Claude Code 这样用 Anthropic Messages 发请求的客户端,同样的路由类型(`auto`、`stage_router`、`llm_classifier`)可以直接写进 shunt 的 `[models.router]`,不必再多部署一个代理。不过 shunt 只在 `/v1/messages` 上应用路由器,OpenAI Chat Completions 或 Responses 客户端的路由不在 shunt 的覆盖范围内。
 
 shunt 从 Switchyard 引入了什么、舍弃了什么,基准的注意事项,以及算法的逐步说明,见 [Switchyard 集成](/zh-cn/guides/switchyard/)。
 

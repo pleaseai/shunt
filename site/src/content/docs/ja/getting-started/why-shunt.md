@@ -37,6 +37,7 @@ shunt は受け取ったモデル id を尊重するだけです — エージ�
 - **Claude Code のセッションに合わせた調整。** Switchyard はプロバイダー中立です。shunt は Claude Code ゲートウェイに必要なものを加えます。ツール名は Claude Code が実際に使う名前をそのまま照合します。セッションのティアは非対称ヒステリシスでピン留めし、ターンごとのティア切り替えで長いセッションが蓄積したプロンプトキャッシュを失わないようにします。委譲されたサブエージェントのルーティングは親と切り離します。
 - **モデル id のままのターゲット。** ルーティングされたターゲットは shunt の通常のルーティング経路に戻るため、それぞれのフェイルオーバーチェーン、アカウントプール、アダプターをそのまま使えます。クライアントに見えるモデル id も、要求したとおりです。
 - **小さな負担。** この依存がリリースバイナリに加えたサイズは約 0.3% です。レビュー済みの上流リビジョンに固定しているので、アップグレードもレビューを経た diff として入ります。`[models.router]` テーブルがなければ、ルーティング経路は変わりません。
+- **別サーバー不要のルーティング。** Switchyard の [Server Path](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/docs/getting_started.md#server-path) では `switchyard-server` を独立したプロキシとして別途起動します。Claude Code のように Anthropic Messages でリクエストするクライアントなら、同じルートタイプ（`auto`、`stage_router`、`llm_classifier`）を shunt の `[models.router]` でそのまま使えるため、プロキシをもう 1 つ置く必要はありません。ただし shunt がルーターを適用するのは `/v1/messages` だけです。OpenAI Chat Completions や Responses のクライアントのルーティングは shunt の対象外です。
 
 shunt が Switchyard から取り込んだものと置いてきたもの、ベンチマークの注意点、アルゴリズムの段階ごとの動作は [Switchyard 統合](/ja/guides/switchyard/)で扱います。
 
