@@ -1,0 +1,25 @@
+src/discovery.rs
+  s_c538e90ca6ca1d::t_e435cd3f3f8588 302
+  s_c538e90ca6ca1d::t_8d75ba37be3e6e 383-403
+  s_c538e90ca6ca1d::t_ce8bd16eacca12 41-42
+  s_c538e90ca6ca1d::t_4f6b78aea37e8f 20-21
+docs/m3-discovery.md
+  s_c538e90ca6ca1d::t_d3a843c6f3bd91 110
+  s_c538e90ca6ca1d::t_86eeac7bb3560c 109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a042d51e78e8000173755bb4f5db7f3a74ac17e4",
+  "prompts": {},
+  "sessions": {
+    "s_c538e90ca6ca1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "95f98144-ae0d-497c-b4fb-bb8dde939359",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
