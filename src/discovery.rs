@@ -385,16 +385,14 @@ mod tests {
     /// only in the hand-copied fixture below.
     #[test]
     fn builtin_table_is_newest_first_with_unique_ids() {
-        for pair in BUILTIN_MODELS.windows(2) {
-            assert!(
-                pair[0].created_at >= pair[1].created_at,
-                "{} ({}) must not be older than {} ({})",
-                pair[0].id,
-                pair[0].created_at,
-                pair[1].id,
-                pair[1].created_at
-            );
-        }
+        let table: Vec<(&str, &str)> = BUILTIN_MODELS
+            .iter()
+            .map(|model| (model.created_at, model.id))
+            .collect();
+        // A stable sort keeps rows that share a `created_at` in table order.
+        let mut newest_first = table.clone();
+        newest_first.sort_by(|a, b| b.0.cmp(a.0));
+        assert_eq!(table, newest_first, "builtin rows must be newest-first");
         let mut ids: Vec<&str> = BUILTIN_MODELS.iter().map(|model| model.id).collect();
         ids.sort_unstable();
         ids.dedup();
