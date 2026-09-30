@@ -1,0 +1,45 @@
+docs/codex-configuration.md
+  s_217d08c795e32c::t_499d5068fe7f13 845-847
+docs/m11-inbound-codex-endpoint.md
+  s_217d08c795e32c::t_c0106b5b2c26c3 319-340
+site/src/content/docs/guides/connect-codex-cli.mdx
+  s_217d08c795e32c::t_dbdabb832e6ae2 100-102,110-111,287,289-293
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_217d08c795e32c::t_8b9ddaa478af63 91-92
+site/src/content/docs/ja/guides/connect-codex-cli.mdx
+  s_217d08c795e32c::t_b6d3ac8b7a3240 95-97,105-106,276,278-282
+site/src/content/docs/ja/guides/inbound-codex-endpoint.md
+  s_217d08c795e32c::t_cb9188ebd694ea 91-92
+site/src/content/docs/ja/reference/configuration.md
+  s_217d08c795e32c::t_2fe2a3774c7450 196
+site/src/content/docs/ko/guides/connect-codex-cli.mdx
+  s_217d08c795e32c::t_3adc784d9ba51d 99-101,109-110,287,289-293
+site/src/content/docs/ko/guides/inbound-codex-endpoint.md
+  s_217d08c795e32c::t_38a90676c635af 91-92
+site/src/content/docs/ko/reference/configuration.md
+  s_217d08c795e32c::t_bd2cb27f47b927 197
+site/src/content/docs/reference/configuration.md
+  s_217d08c795e32c::t_b556adcea9847f 293
+site/src/content/docs/zh-cn/guides/connect-codex-cli.mdx
+  s_217d08c795e32c::t_8f688ad2919ca4 93-94,101-102,269,271-274
+site/src/content/docs/zh-cn/guides/inbound-codex-endpoint.md
+  s_217d08c795e32c::t_96ce15bf6f1194 91-92
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_217d08c795e32c::t_93c82f38adeca6 196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7b242dcdca9e0a3b54be5ff9adc813c6c7a628ac",
+  "prompts": {},
+  "sessions": {
+    "s_217d08c795e32c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15d9890a-c61c-4a45-9586-f798a76e2a17",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
