@@ -351,7 +351,7 @@ codex-fallback = "gpt-5.2"
 
 ### `[providers.<name>.retry]`
 
-针对受支持的单凭据调用中**瞬时**上游故障的有界重试，适用于 `passthrough`/`api_key` Anthropic 路径和单凭据 Responses 路径（`api_key`、`xai_oauth`/Grok，以及没有池化账户的 `chatgpt_oauth` provider）。遇到连接层传输错误（连接 reset/refused、超时）时，它会重新发出请求（在任何字节到达客户端之前，携带完整请求体）。这些创建类 POST 不是幂等的，上游可能已经接受了一次计费的生成，因此瞬时响应状态不会重试。当前 Cursor 适配器的流式回合没有被这一重试层包裹，因此其规范化后的 `retry` 表不起作用，响应之前的连接失败会直接浮出。所有受支持的路径都不会重试 `4xx` 响应，响应正文开始流式传输之后也绝不会开始重试。
+针对受支持的单凭据调用中**瞬时**上游故障的有界重试，适用于 `passthrough`/`api_key` Anthropic 路径和单凭据 Responses 路径（`api_key`、`xai_oauth`/Grok，以及没有池化账户的 `chatgpt_oauth` provider）。遇到连接层传输错误（连接 reset/refused、超时）时，它会重新发出请求（在任何响应字节到达客户端之前，携带完整请求体）。这些创建类 POST 不是幂等的，上游可能已经接受了一次计费的生成，因此瞬时响应状态不会重试。当前 Cursor 适配器的流式回合没有被这一重试层包裹，因此其规范化后的 `retry` 表不起作用，响应之前的连接失败会直接浮出。所有受支持的路径都不会重试 `4xx` 响应，响应正文开始流式传输之后也绝不会开始重试。
 
 退避采用带随机化（full）抖动的指数方式，上限为 `max_backoff_ms`。服务器提供的 `Retry-After` 优先（delta-seconds 与 HTTP-date 两种形式都会遵循）；小数形式的 delta-seconds 也会被接受，并向上取整到下一个整数秒，格式错误或过长的值则会被忽略。如果它要求的等待超过 `max_backoff_ms`，响应会立即浮出，而不是超出预算地休眠等待。无论此设置如何，**`count_tokens` 都不会重试**。`claude_oauth` / `chatgpt_oauth` / `kimi_oauth` 账户池各自执行账户轮换故障转移，不受此表影响。
 
