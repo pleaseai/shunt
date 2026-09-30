@@ -8,10 +8,9 @@ A `[[models]]` entry normally names one destination. A **stage router** names tw
 serves each turn. Errors, stalled investigation, and exploratory reading route
 up; routine production once the plan is settled stays down.
 
-It is one `type` of the entry's `[models.router]` table. The others are `auto`
-(this router under upstream's preset), `random` (a weighted, session-sticky
-split), and `noop` (an empty reply, for smoke tests); all four are documented in
-the [configuration reference](/reference/configuration/).
+It is one `type` of the entry's `[models.router]` table. `auto` is this router
+under upstream's preset; the other types, and how to choose between them, are in
+the [routing overview](/guides/routing/).
 
 This is opt-in and inert by default. Configure no `[models.router]` table and
 shunt routes exactly as it did before: by the request's `model` id, and nothing
@@ -33,10 +32,22 @@ A `tool_result` block does **not** carry the tool's name. The only link is
 `tool_use_id` → `tool_use.id`, and that join is the single point the whole
 extractor stands on.
 
+shunt walks the request's `messages` array twice. The first pass runs backwards
+over assistant messages, only as far as `recent_turn_window` reaches, collecting
+the `tool_use` ids that count as *recent*. The second runs forwards, once, over
+both roles: it maps `tool_use.id → tool_use.name` and records every
+`tool_result` against the `tool_use_id` it answered. Names are resolved after
+that walk rather than during it, so a result that precedes its own call still
+joins. Past the ids that make the join, only the two fields above are read.
+
+If no completed tool call exists, extraction returns nothing and the turn takes
+the picker default. An empty conversation is not scored as "efficient."
+
 ### The vocabulary
 
-shunt knows Claude Code's actual tool names, which is where it can do better than
-a provider-neutral router:
+The scorer wants to know whether a call observed, mutated, or planned. A
+provider-neutral router has to infer that; shunt knows Claude Code's actual tool
+names, which is where it can do better, and matches these fourteen directly:
 
 | Category | Tools |
 | :-- | :-- |
@@ -52,39 +63,113 @@ already knows: putting `Read` in `mutate` is a startup error, not an override.
 Editing the lists drops that router's session pins on the next load.
 
 Every `Plan` call — `ExitPlanMode` included — counts as planning activity, which
-reads as exploration and pushes **up**, not down. One name gets more than its
-category: a failed `Task` is scored critical rather than merely hard, because it
-is a whole delegated subagent run collapsing rather than one command failing. Two
-consecutive failures at the end of the conversation are critical too — a session
-that is not recovering.
+reads as exploration and pushes **up**, not down.
 
 `Bash` is deliberately uncategorised. `git status` observes, `rm -rf` mutates,
 and `cargo test` is a settled-state signal — only `input.command` separates them,
 and classifying command strings would be exactly the kind of fragile inference
 this design avoids.
 
+### Severity
+
+Claude Code reports failure as a bare boolean, with no grading, so shunt maps it
+onto libsy's `0.0 / 0.3 / 0.7 / 1.0` severity scale itself:
+
+| Condition | `severity` |
+| :-- | :-- |
+| No failed result in the window | `0.0` |
+| Any failed result in the window | `0.7` (hard) |
+| A failed `Task` in the window — a whole delegated subagent run collapsing rather than one command failing | `1.0` (critical) |
+| The last two completed results both failed, both in the window — a session that is not recovering | `1.0` (critical) |
+
 ## How it decides
 
 Signals are scored by [`switchyard-libsy`][libsy], the scorer from
 [NVIDIA-NeMo/Switchyard][sy], which is the calibrated part and is not
-reimplemented here. One saturated signal alone scores about `0.46` and cannot
-decide a turn; two corroborating signals reach about `0.76`.
-
-When the signals are inconclusive the scorer asks for an LLM judge. **shunt runs
-none by default** — it falls open to the picker's default instead, which keeps
-the hot path free of an extra model call and an extra credential.
-[The judge fallback](#the-judge-fallback) below is the opt-in that answers those
-turns with a judge after all, and only those turns.
-
-The full scoring formula, the published benchmark results behind it, and what
-shunt adds on top are in [Switchyard Integration](/guides/switchyard/).
+reimplemented here. Where that dependency comes from, and the published benchmark
+results behind it, are in [Switchyard Integration](/guides/switchyard/).
 
 [libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
 [sy]: https://github.com/NVIDIA-NeMo/Switchyard
 
+### Dimensions
+
+The signals project onto two axes — is something *wrong*, and is the agent
+*producing*:
+
+| Dimension | Meaning | Pushes toward |
+| :-- | :-- | :-- |
+| `severity` | Windowed max error severity, `[0, 1]` | Capable |
+| `spinning` | A deep turn with no reads, plans, writes, or edits — pure churn | Capable |
+| `exploring` | A deep turn that reads or plans but does not write or edit | Capable |
+| `production_intensity` | Writes + edits as a fraction of recent tool ops | Efficient |
+
+`spinning` and `exploring` both require `turn_depth >= 8`: early turns with no
+writes are ordinary exploration, not a stall. They partition the same
+"not producing" case by whether investigative activity happened, so at most one
+fires and the production axis is never double-counted.
+
+### Score
+
+Each maxed dimension contributes one signal unit of `0.10`, with `severity`
+normalised by its hard cap of `0.7` so it lands at the same weight:
+
+```
+raw   = 0.10 × (severity / 0.7 + spinning + exploring − production_intensity)
+score = tanh(5.0 × raw)          // signed: + capable, − efficient
+confidence = |score|
+```
+
+The gain of `5.0` is what makes the range usable — without it confidence would
+cap near `±0.20` and no meaningful threshold would ever be reachable.
+
+The design is **corroborative**: no single axis can peg the decision.
+
+| Signals agreeing | `raw` | `confidence` | Clears the `0.5` default? |
+| :-- | --: | --: | :-- |
+| One saturated | `0.10` | `tanh(0.5) ≈ 0.46` | No |
+| Two corroborating | `0.20` | `tanh(1.0) ≈ 0.76` | Yes |
+
+That is where the `0.5` default comes from: one wrong signal on its own is not
+enough to move a turn, and two agreeing signals are.
+
+### Decision
+
+`pick_tier` runs three rules in order; the first to fire wins.
+
+1. **Hard escalate** → capable. A critical severity, a compacted context, or the
+   same failure repeated in the recent window. Skips the scorer, reports
+   `confidence: 1.0`.
+2. **Scorer.** Outside the ambiguous band around the midpoint, follow the sign.
+3. **Fall open.** Inside the band, libsy returns
+   `PickOutcome::ConsultClassifier { default_tier }` and the turn lands on the
+   picker's default tier.
+
+Falling open is not fighting the API — it *is* the API's documented fall-open
+path. **shunt runs no judge by default**, which keeps the hot path free of a
+second model call, a second credential, and added latency on the turns where the
+router is least sure. [The judge fallback](#the-judge-fallback) below is the
+opt-in that answers those turns with a judge after all, and only those turns.
+
+There used to be a fourth rule — a hard *de-escalate* on a settled turn whose
+tests had passed. Upstream removed it; a passing test now only clears libsy's own
+capable hold, which shunt does not use.
+
+Two of rule 1's three triggers fire in shunt today. Critical severity reaches it
+through the two paths in the [severity table](#severity), and a compacted context
+reaches it from `x-claude-code-context-compacted` — a request header rather than
+anything in the transcript, which is also why that trigger can fire on a turn
+with no tool activity at all. The repeated-failure half stays dormant because
+libsy decides *same failure* by matching result text against its error table,
+which the `is_error` boolean Claude Code sends cannot support. shunt's own "the
+last two completed results both failed" rule already reaches rule 1 by way of
+`severity`.
+
 ## Why going down is harder than going up
 
-A tier flip is not free, and on a long Claude Code session the cost is concrete:
+Everything above decides a turn in isolation. shunt then applies its own gate
+before the decision is allowed to move a session's pinned tier, because a tier
+flip is not free, and on a long Claude Code session the cost is concrete:
 
 - **Prompt caching is keyed per model.** A flip forfeits the warm prefix and pays
   a full cache write on the new tier.
@@ -93,15 +178,25 @@ A tier flip is not free, and on a long Claude Code session the cost is concrete:
 - **A cross-provider flip** also abandons the session's pooled connection and its
   sticky account slot.
 
-So the two directions are deliberately unequal:
+Scored independently every turn, a long session can cost *more* routed than
+unrouted. That is why the two directions are deliberately unequal, and why
+hysteresis is the core of shunt's integration rather than a refinement on it:
 
 | Direction | Requires |
 | :-- | :-- |
-| Efficient → Capable | `confidence_threshold` (0.5) alone. A turn the cheap tier cannot serve costs more than the forfeited cache prefix. |
-| Capable → Efficient | `min_dwell_turns` **and** `deescalate_threshold` (0.75) **and** a decision the scorer actually made. |
+| Efficient → Capable | A decision the scorer made, clearing `confidence_threshold` (0.5). A turn the cheap tier cannot serve costs more than the forfeited cache prefix. |
+| Capable → Efficient | A decision the scorer made, **and** `min_dwell_turns` elapsed, **and** `deescalate_threshold` (0.75). |
 
-A fall-open or a turn with no tool activity is the picker's default, not
-evidence, and cannot move a tier in either direction.
+A fall-open, an ambiguous turn, or a turn with no tool activity is the picker's
+default, not evidence, and cannot move a tier in either direction.
+
+The confidence gate admits no exemption. It used to carry one, for the
+`tests_passed` shortcut, which reported no confidence at all; with that rule gone
+upstream, every source that counts as evidence reports a confidence, and a turn
+that reports none is held rather than trusted. libsy's own `capable_hold` — its
+replacement, meaning an earlier escalation is still being held — is not evidence
+either: it is the same idea as a `sticky` turn, and only libsy's stateful
+classifier stamps it, which shunt does not call.
 
 `capable_hold_turns` (default `0`) holds the capable tier for a few more turns
 after a signal pushed it up, which is useful when the recovery itself is quiet
@@ -116,25 +211,33 @@ request on the turn a signal moves the tier — `escalation_note` on the way up,
 over rather than starting fresh. Claude Code's attribution block is the first
 system block and is left alone; the note goes at the end.
 
+By default (`only_on_wrong_signal_escalation = true`) `escalation_note` is
+restricted to the signal-driven escalations, route sources `override` and
+`dimensions`. Sticky turns, turns with no signal, and `count_tokens` probes carry
+no note — nor does a turn that hands nothing over: the first turn of a session,
+and a later signal that only re-confirms the tier already pinned.
+
 **Each toggle costs a prompt-cache miss**, because the system array is part of
 the cached prefix. That is on top of the per-model prefix the flip itself
-forfeits, which is why the table is off unless you ask for it.
+forfeits, which is why the table is off unless you ask for it, and why
+`only_on_wrong_signal_escalation` defaults to the narrower set.
 
 ## Session pinning
 
-Decisions are pinned per `(model id, session id, agent id)`, read from
-`x-claude-code-session-id` and `x-claude-code-agent-id`. Both ids are hashed and
-never stored. Two router-backed models used in the same session keep independent
-tiers.
+Decisions are pinned per `(advertised model id, session id, agent id)`, read from
+`x-claude-code-session-id` and `x-claude-code-agent-id`. Each id is keyed on a
+SHA-256 prefix — both are hashed and never stored. Two router-backed models used
+in the same session keep independent tiers.
 
 **A sub-agent keeps a pin of its own.** A `Task` child sends its parent's
 session id with an agent id of its own, so it reads and writes a separate entry:
 its failures no longer escalate the parent, and its turns no longer count toward
 the parent's dwell. Claude Code sends that header on every delegated turn
 without any opt-in, so this holds on a default shunt deployment with no client
-change. Child pins are evicted against a budget of their own — 4096, beside the
-4096 parent sessions — and a trim only ever reaches the scope it grew, so a wide
-fan-out cannot evict the parent that is waiting on it.
+change. The store caps at 4096 parent sessions and, separately, at 4096 child
+pins; it evicts on the insert path with no background task, and a trim only ever
+reaches the scope it grew, so a wide fan-out cannot evict the parent that is
+waiting on it.
 
 **A compaction escalates, and the escalation holds.** Claude Code marks the
 first turn after a context compaction with `x-claude-code-context-compacted`,
@@ -155,11 +258,18 @@ turns count as delegated in place of the agent-id rule above.
   same pin and so reach the same tier; on an *unpinned* session the probe is
   scored from its own history and can land on a different tier than the turn
   after it.
-- Pins survive a config reload, but a pin remembers the router table it was made
-  under: edit one router and only its own pins are dropped.
+- Pins survive a config reload, but a pin remembers a fingerprint of the router
+  table it was made under: edit one router and only its own pins are dropped.
+  That fingerprint destructures the config struct rather than dotting into it, so
+  a key added later fails to compile instead of quietly letting stale pins
+  outlive it.
 - Pins expire after `session_ttl_seconds`. Nothing is persisted across restarts.
   The compaction latch clears with the pin that carries it — on that expiry, or
   when a reload changes the router table.
+
+Delegated work can also leave this router entirely: a
+[`[models.subagents]`](/guides/subagents/) overlay diverts a child before the
+router runs, so the child is never scored or pinned here.
 
 ## What the client sees
 
@@ -232,7 +342,7 @@ and `service_tier`. A target that is itself a router is a startup error, so
 resolution is one hop by construction.
 
 Every key is documented in the
-[configuration reference](/reference/configuration/). The design record,
+[configuration reference](/reference/configuration/#type--stage_router). The design record,
 including what was deliberately left out, is
 [ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md);
 [ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)
@@ -256,7 +366,9 @@ Without the table nothing changes: an inconclusive turn falls open to the
 picker default, as it always has. With it, that same turn is put to the judge
 instead — but only that turn. A session whose pin already holds the turn is
 never judged, a `count_tokens` probe is never judged, and no judge call is made
-before the request has been authenticated.
+before the request has been authenticated. `classify_trigger = "user_turn"`
+narrows it further, to turns whose latest message is a human user turn, so a tool
+continuation rides the session's pin instead of paying a judge call.
 
 The judge is an ordinary public model id and runs on **its own route's**
 credential, never the caller's: the reserved `x-shunt-*` slots and `cookie`,
@@ -277,7 +389,7 @@ targets are all passthrough makes those turns require a client credential. An
 unauthenticated or policy-denied request makes zero judge calls. A turn that
 reaches no judge is gated by the chain it actually resolved, exactly as it was
 before the table existed: one the signals decided on their own, and one a
-[`[models.subagents]`](/reference/configuration/#modelssubagents-optional)
+[`[models.subagents]`](/guides/subagents/)
 overlay diverted before the router ran.
 
 Six keys on `[models.router]` bound every internal call: `judge_timeout_ms`
@@ -300,10 +412,10 @@ it.
 - **No mid-turn escalation.** Once response headers are committed shunt does not
   replay a turn, so a tier chosen at the start of a turn serves all of it.
 - **This judge decides a tier, nothing more.** The other judge-backed types have
-  their own tables: `llm_classifier`, `composite`, and `advisor` are configured
-  on `[models.router]` directly — see the
-  [configuration reference](/reference/configuration/#type--llm_classifier).
-  Only `llm_classifier`'s `mode = "escalation"` and `advisor` hold a turn back
+  their own tables: [`llm_classifier`](/guides/llm-classifier/),
+  [`composite`](/guides/composite/), and [`advisor`](/guides/advisor/) are
+  configured on `[models.router]` directly. Only `llm_classifier`'s
+  [`mode = "escalation"`](/guides/escalation/) and `advisor` hold a turn back
   until a verdict is in; this judge never does.
 - **Out of scope for `[server.codex_endpoint]`**, which uses its own routing
   table.
