@@ -601,8 +601,8 @@ Per-request routing for one advertised id. Instead of naming a single
 destination, the entry carries a `[models.router]` table whose `type` key picks
 a routing algorithm, and the algorithm picks the destination. Absent this table
 and the [`[models.subagents]`](#modelssubagents-optional) overlay, a `[[models]]`
-entry behaves exactly as it did before; configure neither anywhere and routing
-is unchanged.
+entry behaves exactly as it did before. See the
+[routing overview](/guides/routing/) for how to choose a type.
 
 `type` — rather than shunt's usual `kind` or `mode` — is a **deliberate
 exception to shunt's own naming convention**, and this is the one place the
@@ -611,10 +611,8 @@ reference says so. The routing algorithms come from
 its key name means its schema documentation and its `type` values transfer here
 unchanged instead of being translated twice.
 
-Every target named by any router is an ordinary public model id, so each
-resolves through the normal ladder and keeps its failover chain, account pool,
-adapter, `effort`, and `service_tier`. What the client is told it got stays the
-id it asked for — the chosen target travels upstream only.
+Every target named by any router is an ordinary public model id, resolved one
+hop through the normal ladder; the client is still told the id it asked for.
 
 | `type` | Picks by | Reads the request body |
 | :-- | :-- | :-- |
@@ -627,15 +625,12 @@ id it asked for — the chosen target travels upstream only.
 | `composite` | An LLM judge sets the tier a stage router falls open to | Yes — the transcript for the judge, tool-result metadata for the signals |
 | `advisor` | One executor serves every turn; a stronger reviewer approves or sends back its terminal turns | Yes — the transcript, for the reviewer |
 
-Two shapes serve a turn while still deciding how to route it:
 `llm_classifier`'s [`mode = "escalation"`](#mode--escalation) and
-[`type = "advisor"`](#type--advisor). They hold the turn until the verdict is in
-and then serve it, so they are the only routes on which shunt buffers a
-response the client asked to stream — see
-[buffered turns](#buffered-turns-escalation-and-advisor). `prefill_router` is implemented but
-**gated at compile time**: it is available only from a build that opts into the
-`prefill-router` cargo feature, which is off by default — see
-[below](#type--prefill_router).
+[`type = "advisor"`](#type--advisor) hold the turn until the verdict is in, so
+they are the only routes on which shunt buffers a response the client asked to
+stream — see [buffered turns](#buffered-turns-escalation-and-advisor).
+`prefill_router` is available only from a build that opts into the
+off-by-default `prefill-router` cargo feature — see [below](#type--prefill_router).
 
 `[models.router]` and `[models.upstream_model]` on the same entry are mutually
 exclusive.
@@ -718,15 +713,9 @@ only_on_wrong_signal_escalation = true
 | `only_on_wrong_signal_escalation` | `true` | Restrict `escalation_note` to the signal-driven escalations (route sources `override` and `dimensions`). Set `false` to append it on every scorer-made escalation |
 
 The note is a new block at the **end** of the `system` array; Claude Code's
-attribution block is the first element and is never touched. Sticky turns,
-turns with no signal, and `count_tokens` probes carry no note — nor does a turn
-that hands nothing over: the first turn of a session, and a later signal that
-only re-confirms the tier already pinned. A blank note is a startup error.
-
-**Each toggle costs a prompt-cache miss.** The system array is part of the
-cached prefix, so appending or dropping the note invalidates it — on top of the
-per-model prefix a tier change already forfeits. That is why the table is
-opt-in, and why `only_on_wrong_signal_escalation` defaults to the narrower set.
+attribution block is never touched. A blank note is a startup error. Which turns
+carry a note, and why each toggle costs a prompt-cache miss, is in the
+[stage router guide](/guides/stage-router/#telling-the-incoming-model-why).
 
 #### `[models.router.classifier]` (optional)
 
@@ -748,31 +737,13 @@ base_threshold = 0.5
 | `base_threshold` | `0.5` | Lowest `p_solve` that keeps a supported task on the efficient tier, in `(0.0, 1.0]` |
 | `classify_trigger` | `every_request` | When the judge may be consulted. `every_request` allows it on any undecided turn, tool continuations included. `user_turn` allows it only when the latest message is a human user turn — `role: user` carrying at least one block that is not a `tool_result` — so a tool continuation rides the session's pin instead of paying a judge call. `new_session` behaves exactly as `every_request` here, as it does upstream: this router already holds its decision in shunt's own session pin |
 
-The judge target is an ordinary public model id held to the same one-hop rule
-as the tier targets, plus one more: it must not resolve to a **passthrough**
-route. `auth = "passthrough"` means *forward the caller's credential*, and the
-caller's credential is exactly what a judge call strips — so such a target
-arrives with nothing and is a startup error. Every other auth mode is accepted,
-including `auth = "none"`: that mode means the endpoint needs no credential at
-all, so a local or self-hosted judge behind no auth is a supported
-configuration, not an error. None of the caller's credential slots travel with it — the reserved
-`x-shunt-*` slots and `cookie`, `authorization`, `x-api-key`, and
-`anthropic-beta` are all removed. The call consumes that target's own account
-pool quota, which is why a judge should map its own `[[models]]` entry.
-
-A judged turn reports route source `llm-classifier` and pins the session like
-any other decision. A judge failure of any kind — a timeout, an oversized
-reply, an upstream error, an unparseable verdict, or an exhausted budget —
-resolves as `fall_open`, the picker default. The judge is never consulted on a
-`count_tokens` probe, and never before the request is admitted: on a turn that
-consults one, inbound auth ranges over the requested id plus every target and
-judge the entry can name, each with its whole failover chain, so a passthrough
-answer target with a credential-injecting judge requires the client credential,
-and an unauthenticated or policy-denied request makes zero judge calls. A turn
-that consults no judge is gated by the chain it actually resolved — one the
-signals decided on their own, and one a
-[`[models.subagents]`](#modelssubagents-optional) overlay diverted before the
-router ran.
+The judge target is held to the same one-hop rule as the tier targets, and must
+not resolve to a **passthrough** route — the caller's credential is stripped from
+a judge call, so such a target is a startup error. `auth = "none"` is accepted. A
+judged turn reports route source `llm-classifier`; a judge failure of any kind
+resolves as `fall_open`. How the judge's credential, admission, and failures
+work is in the
+[stage router guide](/guides/stage-router/#the-judge-fallback).
 
 #### Per-call bounds
 
@@ -818,16 +789,12 @@ one, and the next client turn fetches it again.
 
 #### `type = "llm_classifier"`
 
-An LLM **judge** decides the whole turn, rather than stepping in only where
-signals ran out. The entry names the judge, the destinations it may pick, and
-`mode` — which of three verdict shapes the judge produces. `capability` and
-`custom` are described here; `escalation` judges a completed turn instead and
-has [its own section](#mode--escalation).
-
-`mode` is **required**, which is a deliberate departure from the upstream
-schema, where it defaults to `capability`: the three modes route on different
-principles, and one of them (`escalation`) buffers the turn it serves, so an
-omitted `mode` must not silently pick one.
+An LLM **judge** decides the whole turn. The entry names the judge, the
+destinations it may pick, and `mode` — which of three verdict shapes the judge
+produces. `capability` and `custom` are described here; `escalation` has
+[its own section](#mode--escalation). `mode` is **required**, unlike upstream's
+schema, where it defaults to `capability`. See the
+[LLM Classifier guide](/guides/llm-classifier/).
 
 **`mode = "capability"`** — the packaged judge returns a solve probability for
 the task. A probability at or above `base_threshold` keeps the turn on
@@ -906,58 +873,24 @@ Both modes share these, and the six [per-call bounds](#per-call-bounds):
 | `recent_turn_window` | unset | When set, trailing turns the judge additionally sees. Must be at least `1` |
 | `max_output_tokens` | `4096` | Completion-token ceiling on the judge verdict. Must be at least `1` |
 
-**When the judge does not answer.** A judge call that fails in any way — a
-timeout, an oversized reply, an upstream error, a `400`, an unparseable
-verdict — produces no verdict, and the turn goes to the algorithm's own
-default: `strong_target` in `capability` mode, `default_target`'s first model in
-`custom` mode. Exactly **one** judge call is made per consulted turn, against
-the first judge candidate, so a failure is not retried down `models.judge`: the
-turn is answered, the route source is `classifier_fail_open`, and the client
-still gets its `200`.
-
-**Sessions live in the algorithm.** `classify_trigger` retention is upstream's
-state and is held inside the router instance, which shunt builds once per
-loaded configuration. A hot reload rebuilds it, so a reload forgets which target
-each session was holding — the same property `prefill_router` has.
-`max_judge_calls` is shunt's own and is counted per `(session, agent)`, so a
-delegated child spends its own budget rather than its parent's; a request
-carrying no session id is not tracked, so the bound applies per request for it.
-The budget is charged when a judge call is sent, so a turn that needs none —
-a `new_session` or `user_turn` replay of a retained assignment — is still
-served from that assignment after the budget is spent. A turn whose judge call
-is refused is closed like a failed judge call: it takes the default above,
-under route source `classifier_fail_open`, and is recorded as judge-call outcome
-`budget_exhausted`. The classifier-form `[models.subagents]` overlay behaves
-the same way.
-
-**Probes resolve without a judge.** A `count_tokens` request never consults
-one, charges no `max_judge_calls` budget, and changes no session state. Under
-`new_session` or `user_turn` it is answered from the target the session's last
-turn was served from — under `user_turn` even when the probe's last message is
-a new user turn — and otherwise from the fail-open target: under
-`every_request`, for a session that has not been classified yet, and for a
-request with no `x-claude-code-session-id` or a delegated one with no agent id
-(`message_hash_fallback` does not apply to probes). The surfaces with no
-request body — `GET /routes`, `/v1/models` discovery, and `shunt check` —
-report the fail-open target under route source `classifier_default`.
+A judge call that fails in any way, or that `max_judge_calls` refuses, sends the
+turn to the algorithm's default — `strong_target` in `capability` mode,
+`default_target`'s first model in `custom` mode — under route source
+`classifier_fail_open`. A `count_tokens` probe never consults the judge. How
+retention, the budget, and probes behave is in the
+[LLM Classifier guide](/guides/llm-classifier/#when-the-judge-runs).
 
 Every target and every judge is an ordinary public model id under the same
 one-hop rule as the stage router's, and a judge must not resolve to a
 **passthrough** route for the reason given
-[above](#modelsrouterclassifier-optional): a judge call carries none of the
-caller's credentials, so a passthrough route has nothing to run on.
+[above](#modelsrouterclassifier-optional).
 
 #### `mode = "escalation"`
 
-The third `llm_classifier` mode starts each session on a weak target and has a
-judge read how the work is going. Each turn on a session that has not latched
-is made on `weak_target` and held. The judge then rules on the **completed**
-turn — the work the weak model actually did, not a prediction. A decline resets
-the escalate streak. An escalate verdict extends it. While the streak is below
-`confirmations`, the held weak turn is served. When it reaches `confirmations`,
-the session latches: that turn's weak answer is discarded and `strong_target`
-serves it, and every later turn of the session goes straight to
-`strong_target` with no judge call and no buffering.
+The third `llm_classifier` mode starts each session on `weak_target`, holds each
+turn, and has a judge rule on the **completed** turn. After `confirmations`
+consecutive escalate verdicts the session latches, and `strong_target` serves
+that turn and every later one. See the [Escalation guide](/guides/escalation/).
 
 ```toml
 [[models]]
@@ -998,22 +931,15 @@ three defaults, which are upstream's benchmarked configuration. The six
 `mode = "custom"` only.
 
 `weak_target` may be a **passthrough** route, although `classifier_target` may
-not: the weak turn is the client's own answer, so it carries the caller's
-credential exactly as a live turn does. A `count_tokens` probe makes no judge
-call and no gated call. It answers from `strong_target` while the session is
-latched — its last turn was served by the latch or by a confirmed escalation;
-the latch is shared by the session's delegated children and expires after an
-hour idle — and from `weak_target` otherwise. Judge calls are counted
-by `shunt.router.judge_calls{algorithm="llm_classifier"}`.
-
-See [buffered turns](#buffered-turns-escalation-and-advisor) for how the held
-turn is served, what the client sees on each outcome, and what it costs.
+not. See [buffered turns](#buffered-turns-escalation-and-advisor) for the route
+sources and failure handling of the held turn.
 
 #### `type = "composite"`
 
 A judge sets the tier a stage router falls open to, and leaves the signal
 scoring alone. The stage table takes **no `picker`** — the classifier supplies
-that tier — so a `picker` key here is a startup error.
+that tier — so a `picker` key here is a startup error. See the
+[Composite guide](/guides/composite/).
 
 ```toml
 [[models]]
@@ -1051,27 +977,14 @@ confidence_threshold = 0.5
 
 The six [per-call bounds](#per-call-bounds) go on `[models.router]`, not inside
 either sub-table. A turn the classifier cannot reach falls open to
-`stage.efficient_target`, which is upstream's rule and is also what a
-body-less surface reports. A `count_tokens` probe scores no signals and makes
-no judge call: it answers from the session's retained tier, or from
-`stage.efficient_target` when there is none. A turn whose judge call
-`max_judge_calls` refuses keeps the session's last retained tier when it has one, or else takes the
-picker's default tier, so the tier never moves between a user
-turn and its tool continuations; a turn that needs no judge call is never
-refused.
-
-Because the stage half is libsy's own stage route, its decisive turns keep the
-stage router's route sources rather than reporting as classifier decisions —
-so a composite's signal-driven turns read the same way a plain `stage_router`'s
-do.
+`stage.efficient_target`, which is also what a body-less surface reports.
 
 #### `type = "advisor"`
 
 One **executor** serves every client-visible turn. A stronger **advisor**
-reviews the executor's terminal turns — a plan before the work, or a claim that
-the task is done — before the client sees them. APPROVE releases the held turn.
-REDO discards it and sends the executor back to work with the advisor's plan.
-The advisor never serves a turn, so the client only ever sees executor output.
+reviews the executor's terminal turns before the client sees them, and either
+approves the held turn or sends the executor back to redo the work. The advisor
+never serves a turn. See the [Advisor Gate guide](/guides/advisor/).
 
 ```toml
 [[models]]
@@ -1108,50 +1021,18 @@ max_reviews = 1
 | `redo_feedback_prefix` | packaged prompt | Replaces the text placed in front of a REDO plan fed back to the executor |
 
 The six [per-call bounds](#per-call-bounds) go on `[models.router]`.
-
-**Which turns are held.** Whether a turn trips `gate_trigger` is known only once
-the turn is complete, so while the session still has review budget **every**
-executor turn is held, and the ones that do not trip the gate are served
-without a review. Once `max_reviews` is spent, or the advisor has failed three
-consults in the session (a failed consult refunds its review), the executor
-streams live with no buffering for the rest of the session.
-
-**REDO.** The held turn is discarded before any response header reaches the
-client. The discarded turn and the advisor's plan are appended to the
-conversation, and the executor is re-run. That re-run streams live.
-
 `executor_target` may be a **passthrough** route, although `advisor_target` may
-not, for the same reason as escalation's weak target. A `count_tokens` probe
-makes no review and no gated call, and always answers from `executor_target`.
-Reviews are counted by `shunt.router.judge_calls{algorithm="advisor"}`, and
-`GET /routes` lists `advisor_target` under `judges`.
+not. While the session has review budget, every executor turn is held — see
+[buffered turns](#buffered-turns-escalation-and-advisor).
 
 #### Buffered turns: escalation and advisor
 
 A **gated** turn — escalation's weak turn before the latch, or an advisor
 executor turn while the session has review budget — is made first, held, and
-served only once the verdict is in. Every other turn on these entries, and every
-turn on every other route, streams exactly as before.
-
-**The caller's mode is kept.** A `stream: true` caller's gated call streams.
-Its SSE frames are retained as they arrive and, if the turn is served, replayed
-byte for byte. A `stream: false` caller gets the single JSON message of a
-completed turn. The Anthropic adapter makes that call non-streaming. The
-OpenAI Responses adapter streams upstream on every turn, on every flavor, and
-assembles the one message from that stream under the same bounds. The
-ChatGPT/Codex backend is reported to refuse a non-streaming request; the stock
-OpenAI Platform accepts one, and there streaming keeps a single code path. The gate changes *when* the
-answer is sent, never its shape. The replayed `message_start.model` is the router's own
-id, not the executor's, on an Anthropic and an OpenAI Responses executor alike,
-so Claude Code's `/model` display and `--resume` see the id they asked for.
-Response headers are committed only when the replay starts.
-
-**Only a complete turn is served.** A held turn is servable only after its
-terminal marker: `message_stop` on a streaming call, or a complete body that
-parses as one message on a non-streaming call. A truncated `200` is never
-replayed. A turn ends at its `message_stop` frame, as the live stream does:
-nothing after it is replayed, and a connection that breaks or stays open after
-it does not cut the turn. Gated turns take the target's ordered failover chain.
+served only once the verdict is in, with response headers committed only when
+the replay starts. Every other turn streams exactly as before. How the caller's
+mode is kept, what counts as a complete turn, and what holding costs are in the
+[routing overview](/guides/routing/#held-turns).
 
 `x-gateway-route-source` — and the `source` label on
 `shunt.router.decisions` — says what happened:
@@ -1177,16 +1058,6 @@ it does not cut the turn. Gated turns take the target's ordered failover chain.
 | The gated call's upstream refuses the turn as too long for its context window: a `400` whose `error.message` — or, when the message does not match, the whole raw body, JSON or not — contains `prompt is too long`, `maximum number of tokens`, `context window`, or `context length` | The strong target serves the turn live (`escalation_fallback`) | Relayed unchanged (`gated_error`), so the client can compact |
 | The gated call's upstream answers with any other error status | Relayed to the client unchanged, as a live turn's would be, with the upstream's `retry-after` (`gated_error`), including when a `chatgpt_oauth` account pool ran out of accounts | Relayed unchanged (`gated_error`) |
 | The judge or review fails after a complete turn — a timeout, an oversized or unparseable reply, an upstream error, or `max_judge_calls` spent | The weak turn is served (`classifier_fail_open`) | With `fail_open = true`, the executor turn is served (`advisor_fail_open`); with `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`), including when `max_judge_calls` refused the review — the failed review is still counted under its outcome (e.g. `upstream_error`, `timeout`), or as `budget_exhausted` when `max_judge_calls` refused it |
-
-**What it costs.** You opt into these per entry:
-
-- On a gated turn the client receives nothing until the whole turn is complete
-  and judged, so time to first token becomes time to last token.
-- Escalation makes a judge call on every turn before the latch. A turn that
-  latches also pays for the weak call it discards.
-- A discarded weak or executor turn still consumed its upstream's quota. It is
-  the client's own answer dispatch, so it counts as `caller="client"` in
-  `shunt.requests`.
 
 #### `type = "auto"`
 
@@ -1239,21 +1110,10 @@ weights = [9, 1]
 | `affinity` | `session` | `session` keeps one session on one arm; `request` draws per request |
 
 Under `affinity = "session"` the arm is `sha256(seed ‖ model ‖ session id)`
-scaled into the weight range. Nothing is stored, so the arm survives restarts
-and is identical across replicas loading the same config — and changing `seed`,
-`targets`, or `weights` can move it. A request that sends no
-`x-claude-code-session-id` takes a fresh weighted draw instead of sharing one
-arm, so a 90/10 split stays 90/10 for clients that send no session. Under
-`affinity = "request"` every request draws, and a set `seed` makes the sequence
-reproducible.
-
-Session affinity is **stickiness, not access control.** The session id comes
-from the client, so a caller that retries ids can steer itself onto the arm it
-wants — which guards nothing, because every target is a public model id that
-same caller may simply ask for by name. Use the managed-model policy for access.
-
-Surfaces with no request body — `GET /routes`, `/v1/models` discovery, and
-`shunt check` — report the first target with a positive weight.
+scaled into the weight range; a request with no `x-claude-code-session-id` takes a
+fresh weighted draw. Session affinity is stickiness, not access control. Surfaces
+with no request body report the first target with a positive weight. See the
+[routing overview](/guides/routing/#random).
 
 #### `type = "noop"`
 
@@ -1432,11 +1292,9 @@ one.
 An overlay for **delegated work** on any `[[models]]` entry: one with a
 `[models.upstream_model]` map, one with a `[models.router]` table, or a map-less
 id that resolves through `[[routes]]`. A `Task` sub-agent, a hook agent, or a
-workflow sub-agent requesting the id is diverted to the overlay's target. The
-parent session's own turns never see the table and resolve the entry exactly as
-they did without it. The table sits on the entry rather than inside `router`
-because a fixed entry has no router table, and Switchyard's "passthrough with
-subagents" is exactly a fixed entry here.
+workflow sub-agent requesting the id is diverted to the overlay's target; the
+parent session's own turns never see the table. See the
+[Subagent Routing guide](/guides/subagents/).
 
 ```toml
 [[models]]
@@ -1459,21 +1317,15 @@ by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate =
 
 **What counts as delegated work.** A request whose `x-claude-code-request-class`
 is `subagent` or `workflow`; when that header is absent, a request carrying a
-non-blank `x-claude-code-agent-id`, which Claude Code sends on every delegated
-turn regardless of the hint gate. The class is authoritative when sent: `main`
-with an agent id is main traffic, and `compaction` and `auxiliary` are harness
-maintenance — none of the three ever takes the overlay. So on a default
-deployment, where the class and type headers are gated off, every `Task` child
-takes `target`; `by_type` needs the client to set
-`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`.
+non-blank `x-claude-code-agent-id`. `main`, `compaction`, and `auxiliary` never
+take the overlay, and `by_type` needs the client to set
+`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` — see
+[what counts as delegated work](/guides/subagents/#what-counts-as-delegated-work).
 
-**`by_type` keys** are matched exactly, case included. A built-in agent's id
-travels verbatim — `Explore`, `Plan`, `general-purpose`, `claude`, and `fork`
-(which the client only offers under `CLAUDE_CODE_FORK_SUBAGENT=1`). A project
-agent from `.claude/agents/` arrives as `custom`; its own name is never sent, so
-`custom` is the only key it can match. `teammate` is the client's literal for an
-Agent Teams member and has not been observed on the wire. A blank key, or one
-carrying whitespace, is a startup error: it could never match.
+**`by_type` keys** are matched exactly, case included, against the literal
+`x-claude-code-agent-type` values listed in the
+[Subagent Routing guide](/guides/subagents/#the-passthrough-form). A blank key, or one carrying whitespace, is a
+startup error: it could never match.
 
 **Targets** are ordinary public model ids under the same one-hop rule as router
 targets: `target` and every `by_type` value must not resolve, after the trailing
@@ -1485,25 +1337,19 @@ errors. A target matching no explicit route warns at load, as a router target
 does, and still resolves through `server.default_provider`.
 
 **No state.** The target is a function of the config and the request's headers
-alone: no session pin, no store, no judge call. On a router-backed id the child
-is diverted before the router runs, so a child's turns are never scored against
-the transcript and never touch the parent's pin. A diverted turn carries
-`x-gateway-routed-model` (the target) and `x-gateway-route-source` —
-`subagent_type` for a `by_type` hit, `subagent` for the `target` fallback — and
-is counted in `shunt.router.decisions` with `algorithm = "subagents"`. Surfaces
-with no request resolve nothing: `/v1/models` discovery and `shunt check` carry
-no per-model destination information at all, and `GET /routes` shows the
-parent's own `[[routes]]`/`[models.router]` entry only when one exists — an id
-left to `server.default_provider` appears in neither array. None of the three
-resolves the overlay's diverted target, and the overlay itself is never listed
-in the `routers` array.
+alone: no session pin, no store, no judge call. A diverted turn reports
+`x-gateway-route-source` `subagent_type` for a `by_type` hit and `subagent` for
+the `target` fallback, and is counted under `algorithm = "subagents"`. Surfaces
+with no request never resolve the overlay's diverted target, and the overlay is
+never listed in the `GET /routes` `routers` array.
 
 #### subagents `type = "llm_classifier"`
 
 The overlay's second form: instead of a fixed target, a judge reads the
 delegated task and names the group that serves it. Only `mode = "custom"`
 exists here — `mode = "capability"` is a startup error — and the keys are the
-`custom` mode's, described in full [above](#type--llm_classifier).
+`custom` mode's, described in full [above](#type--llm_classifier). See the
+[Subagent Routing guide](/guides/subagents/#the-llm_classifier-form).
 
 ```toml
 [models.subagents]
@@ -1533,25 +1379,15 @@ policy = { type = "target_selector", selector = "/target" }
 Three rules differ from the `[models.router]` form:
 
 - **`classify_trigger` defaults to `new_session`,** and `user_turn` is
-  rejected. A delegated child is one task, so its target is picked once and held
-  for the rest of it; re-judging per user turn would spend a judge call on a
-  decision that cannot change.
-- **`message_hash_fallback` must be `false`.** The classification is already
-  keyed on `(session, agent)`, so hashing the first message instead would key
-  two different children of one session onto one verdict.
-- **The parent is never classified.** What counts as delegated work is exactly
-  what it is for the `passthrough` form above, so a parent turn, a `main` turn
-  carrying an agent id, and the `compaction` and `auxiliary` classes all resolve
-  the entry as if the table were absent — and make no judge call.
+  rejected.
+- **`message_hash_fallback` must be `false`.** The classification is keyed on
+  `(session, agent)`.
+- **The parent is never classified.** A turn that is not delegated work resolves
+  the entry as if the table were absent, and makes no judge call.
 
 The six [per-call bounds](#per-call-bounds) go on this table, since it is the
-one making the calls. The judge is held to the same rules as any other:
-one hop, no passthrough route, and none of the caller's credential slots travel
-with the call. Because a delegated turn may consult it, inbound auth on such a
-turn ranges over the overlay's targets and judge as well — so a delegated turn
-that cannot authenticate is refused with zero judge calls. A `count_tokens`
-probe makes none either: it answers from the child's `(session, agent)`
-assignment when it has one, else from `default_target`'s first model.
+one making the calls. The judge is held to the same rules as any other: one hop
+and no passthrough route.
 
 ## `[sentry]` (optional)
 
