@@ -1,0 +1,78 @@
+site/src/content/docs/zh-cn/guides/subagents.mdx
+  s_daa14a0e68ee7c::t_b6bb3a6c81c390 1-129
+site/src/content/docs/zh-cn/guides/switchyard.mdx
+  s_daa14a0e68ee7c::t_155b3b07eaf03a 29-33
+  s_daa14a0e68ee7c::t_45e05571dca080 3
+  s_daa14a0e68ee7c::t_b0ee1df12f2aa9 11-12
+  s_daa14a0e68ee7c::t_95981880c37b75 118
+  s_daa14a0e68ee7c::t_489534d17cdb4e 130-146
+site/src/content/docs/zh-cn/guides/escalation.mdx
+  s_daa14a0e68ee7c::t_35d82ae9905f66 1-87
+site/src/content/docs/zh-cn/guides/composite.mdx
+  s_daa14a0e68ee7c::t_6913c7096099ae 1-66
+site/src/content/docs/zh-cn/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_bba833bc9c6a02 1-123
+site/src/content/docs/zh-cn/guides/routing.mdx
+  s_daa14a0e68ee7c::t_f145c80b2b962a 1-219
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_daa14a0e68ee7c::t_c2b8b33bd26a35 657-659
+  s_daa14a0e68ee7c::t_23fa54277a304e 1091-1094,1097
+  s_daa14a0e68ee7c::t_10c778c8611e73 784-785
+  s_daa14a0e68ee7c::t_a5bff2552fdf25 1061-1062
+  s_daa14a0e68ee7c::t_37af512186a42a 790-792
+  s_daa14a0e68ee7c::t_a91e19af7b0e91 647-650,653
+  s_daa14a0e68ee7c::t_2c63996389c6a4 505-507
+  s_daa14a0e68ee7c::t_94e514a8309fbc 703-704
+  s_daa14a0e68ee7c::t_ca26c823053655 403
+  s_daa14a0e68ee7c::t_8e9844f79add2c 568-571
+  s_daa14a0e68ee7c::t_13b6000f44106a 741
+  s_daa14a0e68ee7c::t_0d2916b3ce8ca4 1012-1013
+  s_daa14a0e68ee7c::t_9afe73ead4ac82 746-747
+  s_daa14a0e68ee7c::t_c1c4ff601cf256 424-428
+  s_daa14a0e68ee7c::t_bb691f096918df 868-869
+  s_daa14a0e68ee7c::t_545829d7013e04 1052-1055
+  s_daa14a0e68ee7c::t_9f7569ae770c33 528-531
+  s_daa14a0e68ee7c::t_6805293107378f 410-411
+  s_daa14a0e68ee7c::t_6d08de04360759 1035-1042
+  s_daa14a0e68ee7c::t_5a5ac20a0131ef 697-698
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_daa14a0e68ee7c::t_63e7118f1bc565 201-202
+  s_daa14a0e68ee7c::t_74520becd34a22 10-11
+  s_daa14a0e68ee7c::t_31ab3e5901d165 286
+  s_daa14a0e68ee7c::t_459b24ff820e17 56,61,63-64,66-73,75-76,82-144,147-148,155-156,160-161,163-170
+  s_daa14a0e68ee7c::t_87a32787c51613 321
+  s_daa14a0e68ee7c::t_63b7e13c8cb5e2 338-342
+  s_daa14a0e68ee7c::t_fb183612947682 30-38,41-42
+  s_daa14a0e68ee7c::t_94d0e56c0b7a95 216-218,222-223
+  s_daa14a0e68ee7c::t_99aed195e68153 305-306
+  s_daa14a0e68ee7c::t_fd3efbdf99b12d 183-187,189-190,194-196
+  s_8b5c69d9ca1803::t_b977d1a08a4834 224
+site/src/content/docs/zh-cn/guides/advisor.mdx
+  s_daa14a0e68ee7c::t_791e88876410bf 1-92
+README.zh-CN.md
+  s_daa14a0e68ee7c::t_77cf9a14bef6e8 229
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1634f1be7501807a3b4ae71542e02299981ddaac",
+  "prompts": {},
+  "sessions": {
+    "s_8b5c69d9ca1803": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a3b604f3-57a7-440d-9804-6c219830b1ef",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_daa14a0e68ee7c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0160baf5-b72a-408a-a008-fdbfaf9843af",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
