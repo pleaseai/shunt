@@ -1,0 +1,25 @@
+site/src/content/docs/getting-started/why-shunt.md
+  s_daa14a0e68ee7c::t_9c44b4201f0840 40
+site/src/content/docs/ko/getting-started/why-shunt.md
+  s_daa14a0e68ee7c::t_0d541e506d89b7 40
+site/src/content/docs/zh-cn/getting-started/why-shunt.md
+  s_daa14a0e68ee7c::t_200af6c4e4f9c8 40
+site/src/content/docs/ja/getting-started/why-shunt.md
+  s_daa14a0e68ee7c::t_68279775125652 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b65657617966a3610eb7c2592b42cba79518d860",
+  "prompts": {},
+  "sessions": {
+    "s_daa14a0e68ee7c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0160baf5-b72a-408a-a008-fdbfaf9843af",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
