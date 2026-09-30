@@ -194,7 +194,9 @@ the judge target's own pool quota. These rules hold for every judge:
   the request — a timeout, a `400`, an oversized or unparseable verdict, or an
   exhausted budget alike — and exactly one judge call is made per consulted turn.
   Each type's default is on its own page. The two types that judge a finished
-  turn handle a failure differently, as described under [held turns](#held-turns).
+  turn serve that turn instead: escalation serves the weak turn, and
+  [`advisor`](/guides/advisor/) serves the executor's turn unless the entry sets
+  `fail_open = false`, which fails the request with a `502`.
 - **A `count_tokens` probe never consults a judge.** It answers from the target
   the session is already holding, if any; each type's page says what it answers
   otherwise.
