@@ -1,0 +1,19 @@
+src/discovery.rs
+  s_c538e90ca6ca1d::t_a031ba42c53532 388-395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cce62f6e83c7403b695671e1847647af6f8238cc",
+  "prompts": {},
+  "sessions": {
+    "s_c538e90ca6ca1d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "95f98144-ae0d-497c-b4fb-bb8dde939359",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
