@@ -738,7 +738,7 @@ confidence_threshold = 0.5
 | `stage.tool_semantics` | — | 与 [`[models.router.tool_semantics]`](#modelsroutertool_semantics可选) 相同的四张列表,规则也相同 |
 
 六个[每次调用的上限](#每次调用的上限)放在 `[models.router]` 上,而不是放进两张子表里。
-裁判够不到的回合回落到 `stage.efficient_target`,这也是没有请求体的那些面所报告的值。
+裁判够不到的回合回落到 `stage.efficient_target`,这也是没有请求体的那些接口所报告的值。
 
 #### `type = "advisor"`
 
@@ -971,7 +971,7 @@ models entry <id> router type = "prefill_router" failed to load: <upstream error
 | :-- | :-- |
 | `prefill` | 路由器决定了这一轮 —— 通过推理或会话亲和关系 |
 | `prefill_fail_open` | 路由调用出错,请求转到默认目标:按上游的规则就是 `targets` 里的第一个 |
-| `prefill_default` | 没有请求体的表面 —— `/v1/models` 发现、`GET /routes`、模型解析 —— 没有可打分的一轮,因此报告第一个目标 |
+| `prefill_default` | 没有请求体的接口 —— `/v1/models` 发现、`GET /routes`、模型解析 —— 没有可打分的一轮,因此报告第一个目标 |
 
 `GET /routes` 会以 `algorithm: "prefill_router"` 和它的目标列出该条目。
 `shunt.stage_router.*` 指标仍然属于只看信号的路由器,不会新增 prefill 的行。

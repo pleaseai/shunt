@@ -110,7 +110,7 @@ policy = { type = "target_selector", selector = "/target" }
 `new_session` 或 `user_turn` 下,它由会话上一轮所用的目标作答 —— 在 `user_turn` 下,即使
 探测的最后一条消息是新的用户回合也是如此;其余情况由 fail-open 目标作答:`every_request`
 下、会话尚未被分类时,以及请求没有 `x-claude-code-session-id` 或被委派的请求没有 agent id
-时(`message_hash_fallback` 不适用于探测)。没有请求体的那些面 —— `GET /routes`、
+时(`message_hash_fallback` 不适用于探测)。没有请求体的那些接口 —— `GET /routes`、
 `/v1/models` 发现、`shunt check` —— 以路由来源 `classifier_default` 报告 fail-open 目标。
 
 ## 客户端看到什么
@@ -127,7 +127,7 @@ policy = { type = "target_selector", selector = "/target" }
 | `llm-classifier` | 裁判在这一轮作答,并由它的结论选定了目标 |
 | `classifier_retained` | 在 `user_turn` 或 `new_session` 下,这一轮重放了之前某一轮已经得到的目标,因此没有发出裁判调用 |
 | `classifier_fail_open` | 没有结论定夺这一轮:裁判失败、答复无法使用,或 `max_judge_calls` 拒绝了调用,于是由默认目标作答 |
-| `classifier_default` | 没有请求体的面报告了 fail-open 目标 |
+| `classifier_default` | 没有请求体的接口报告了 fail-open 目标 |
 
 ## 目标与裁判
 
