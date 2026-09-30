@@ -232,7 +232,7 @@ anthropic-sonnet55 = "claude-sonnet-5-5"
 anthropic = "claude-sonnet-5-5" # remove for a strict pin
 ```
 
-Sonnet 5.5 requests go to `primary` first. With the `anthropic` line in the model map, a failure on `primary` that advances the chain (such as a quota 429 or a 5xx) falls through to the whole pool. If another account serves the request, it runs without the earlier reasoning. The fallback is not guaranteed to succeed: when no other pool account is usable, the request still fails, and because the whole-store pool includes `primary`, it can try `primary` again. Without that line, the pin is strict: the client receives `primary`'s error instead, and nothing moves the conversation.
+Sonnet 5.5 requests go to `primary` first. With the `anthropic` line in the model map, a failure on `primary` that advances the chain (such as a quota 429 or a 5xx) falls through to the whole pool. If another account serves the request, it runs without the earlier reasoning. Because the whole-store pool includes `primary`, it can also retry `primary`; if that attempt succeeds, the reasoning is kept. The request fails only when every account the pool tries fails. Without that line, the pin is strict: the client receives `primary`'s error instead, and nothing moves the conversation.
 
 Keep these trade-offs in mind:
 
