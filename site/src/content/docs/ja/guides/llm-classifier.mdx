@@ -130,6 +130,9 @@ policy = { type = "target_selector", selector = "/target" }
 
 ## クライアントから見えるもの
 
+この節は `capability` と `custom` モードを扱います。`mode = "escalation"` は独自の
+ソースを報告し、それは [Escalation](/ja/guides/escalation/) のページに載っています。
+
 ルーティングされたターンには `x-gateway-routed-model`（ターゲット）と
 `x-gateway-route-source` が付きます。後者はターンがどのようにそのターゲットに至ったかを
 示します。`count_tokens` プローブ以外の受け付けたリクエストでは同じラベルが

@@ -115,6 +115,9 @@ policy = { type = "target_selector", selector = "/target" }
 
 ## 客户端看到什么
 
+本节针对 `capability` 与 `custom` 模式;`mode = "escalation"` 报告自己的一组来源,见
+[Escalation](/zh-cn/guides/escalation/) 页面。
+
 被路由的一轮会带上 `x-gateway-routed-model`(目标)和 `x-gateway-route-source`。后者说明
 这一轮是如何到达该目标的。对于已被接纳、且不是 `count_tokens` 探测的请求,同一个标签也是
 `shunt.router.decisions` 的 `source`,因此 `classifier_default` 从不出现在其中:
