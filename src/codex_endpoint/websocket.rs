@@ -32,7 +32,6 @@ use super::frame::{
 struct TurnContext {
     state: AppState,
     model: Option<String>,
-    pool_key: Option<String>,
     session_id: Option<String>,
     headers: HeaderMap,
     auth_header: Option<HeaderName>,
@@ -73,13 +72,9 @@ pub async fn get(
         .await;
     }
 
-    let inbound_client =
-        match authenticate_inbound(state.inbound_auth.as_deref(), &headers, &provider) {
-            Ok(client) => client,
-            Err(err) => {
-                return crate::error::into_openai_error_shape(err.into_response()).await;
-            }
-        };
+    if let Err(err) = authenticate_inbound(state.inbound_auth.as_deref(), &headers, &provider) {
+        return crate::error::into_openai_error_shape(err.into_response()).await;
+    }
 
     let mut ws = match ws {
         Ok(ws) => ws,
@@ -102,7 +97,6 @@ pub async fn get(
     ws = ws.max_message_size(4 * 1024 * 1024);
 
     let session_id = extract_session_id(&headers);
-    let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id.clone());
     let auth_header = state
         .inbound_auth
         .as_ref()
@@ -115,7 +109,6 @@ pub async fn get(
         handle_socket(
             socket,
             state,
-            pool_key,
             session_id,
             headers,
             auth_header,
@@ -128,7 +121,6 @@ pub async fn get(
 async fn handle_socket(
     socket: WebSocket,
     state: AppState,
-    pool_key: Option<String>,
     session_id: Option<String>,
     handshake_headers: HeaderMap,
     auth_header: Option<HeaderName>,
@@ -229,15 +221,9 @@ async fn handle_socket(
                         turn_headers.remove("sec-websocket-version");
                         turn_headers.remove("sec-websocket-extensions");
                         turn_headers.remove("sec-websocket-protocol");
-                        if turn_headers.contains_key("openai-beta") {
-                            turn_headers.insert(
-                                "openai-beta",
-                                "responses=experimental".parse().unwrap(),
-                            );
-                        }
+                        http_openai_beta(&mut turn_headers);
 
                         let state_clone = state.clone();
-                        let pool_key_clone = pool_key.clone();
                         let session_id_clone = session_id.clone();
                         let auth_header_clone = auth_header.clone();
                         let admin_header_clone = admin_header.clone();
@@ -248,7 +234,6 @@ async fn handle_socket(
                             run_turn(TurnContext {
                                 state: state_clone,
                                 model,
-                                pool_key: pool_key_clone,
                                 session_id: session_id_clone,
                                 headers: turn_headers,
                                 auth_header: auth_header_clone,
@@ -274,7 +259,6 @@ async fn run_turn(context: TurnContext) {
     let TurnContext {
         state,
         model,
-        pool_key,
         session_id,
         headers,
         auth_header,
@@ -303,13 +287,15 @@ async fn run_turn(context: TurnContext) {
             .await;
         return;
     };
-    if crate::codex_endpoint::authenticate_inbound(
+    // Re-authenticate every turn against the refreshed config, and key the
+    // pool with the client name *this* turn resolved: a reload can revoke the
+    // token or move it to another client, and a pool key frozen at upgrade time
+    // would keep pinning the old client's accounts.
+    let Ok(inbound_client) = crate::codex_endpoint::authenticate_inbound(
         state.inbound_auth.as_deref(),
         &headers,
         &codex_endpoint.provider,
-    )
-    .is_err()
-    {
+    ) else {
         let err_frame = build_ws_error_frame(
             401,
             "authentication_error",
@@ -321,7 +307,8 @@ async fn run_turn(context: TurnContext) {
             .send((turn_gen, Message::Text(err_frame.into())))
             .await;
         return;
-    }
+    };
+    let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id.clone());
     let max_request_bytes = state.config.server.limits.max_request_bytes;
     if body.len() > max_request_bytes {
         let err_frame = build_ws_error_frame(
@@ -592,6 +579,37 @@ async fn run_turn(context: TurnContext) {
     }
 }
 
+/// Turn the handshake's `OpenAI-Beta` into the value an HTTP Responses turn
+/// carries: drop the WebSocket-only `responses_websockets=…` selector, keep every
+/// other beta the client asked for, and make sure the HTTP `responses=` selector
+/// is present. Repeated header fields are merged, since a plain `get` would read
+/// only the first. A handshake without `OpenAI-Beta` is left without one.
+fn http_openai_beta(headers: &mut HeaderMap) {
+    let mut betas: Vec<String> = headers
+        .get_all("openai-beta")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|beta| !beta.is_empty() && !beta.starts_with("responses_websockets"))
+        .map(ToOwned::to_owned)
+        .collect();
+    if !headers.contains_key("openai-beta") {
+        return;
+    }
+    if !betas.iter().any(|beta| beta.starts_with("responses=")) {
+        betas.push("responses=experimental".to_string());
+    }
+    match betas.join(", ").parse() {
+        Ok(value) => {
+            headers.insert("openai-beta", value);
+        }
+        Err(_) => {
+            headers.remove("openai-beta");
+        }
+    }
+}
+
 fn same_origin_or_non_browser(headers: &HeaderMap) -> bool {
     let Some(origin) = headers
         .get(header::ORIGIN)
@@ -677,5 +695,44 @@ mod tests {
     fn missing_origin_is_non_browser_and_missing_host_is_rejected() {
         assert!(allowed(None, Some("127.0.0.1:3001")));
         assert!(!allowed(Some("http://127.0.0.1:3001"), None));
+    }
+
+    /// The `OpenAI-Beta` an HTTP turn forwards for handshake values `betas`
+    /// (each a separate header field), or `None` when it carries none.
+    fn http_beta(betas: &[&str]) -> Option<String> {
+        let mut headers = HeaderMap::new();
+        for beta in betas {
+            headers.append("openai-beta", beta.parse().unwrap());
+        }
+        http_openai_beta(&mut headers);
+        assert!(headers.get_all("openai-beta").iter().count() <= 1);
+        headers
+            .get("openai-beta")
+            .map(|value| value.to_str().unwrap().to_owned())
+    }
+
+    #[test]
+    fn openai_beta_swaps_only_the_websocket_selector() {
+        assert_eq!(
+            http_beta(&["responses_websockets=2026-02-06"]).as_deref(),
+            Some("responses=experimental")
+        );
+        assert_eq!(
+            http_beta(&["responses_websockets=2026-02-06, assistants=v2"]).as_deref(),
+            Some("assistants=v2, responses=experimental")
+        );
+        assert_eq!(
+            http_beta(&["responses=experimental"]).as_deref(),
+            Some("responses=experimental")
+        );
+    }
+
+    #[test]
+    fn openai_beta_merges_repeated_fields_and_stays_absent_when_absent() {
+        assert_eq!(
+            http_beta(&["responses_websockets=2026-02-06", "assistants=v2"]).as_deref(),
+            Some("assistants=v2, responses=experimental")
+        );
+        assert_eq!(http_beta(&[]), None);
     }
 }
