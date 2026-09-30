@@ -3081,10 +3081,14 @@ mod tests {
     /// is cut with the idle marker once the pool is exhausted, rather than
     /// relayed after the envelope budget. A real listener rather than a paused
     /// clock, since the send crosses a socket; the elapsed time is not
-    /// asserted, only the cut.
+    /// asserted, only the cut. The header wait shares the send-anchored clock
+    /// and yields the same marker, so the account's cooldown is what proves
+    /// the `429` was classified and the pool exhausted.
     ///
     /// Non-vacuity: pass no idle to the exhausted arm (the pre-#707 lazy map)
-    /// and the relayed error has no marker.
+    /// and the relayed error has no marker; and a header wait past the gap
+    /// (the cut the marker alone cannot tell apart) leaves the account
+    /// uncooled.
     #[tokio::test]
     async fn a_gated_pool_exhausted_on_a_stalled_429_is_cut_end_to_end() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3115,14 +3119,14 @@ mod tests {
             futures_util::future::pending::<()>().await;
             drop(socket);
         });
-        let idle = Duration::from_millis(200);
+        let idle = Duration::from_millis(500);
         let mut forward = pool_turn(
             vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")],
             false,
         );
         forward.turn.response_bounds.idle = Some(idle);
         let state = pool_state(format!("http://{address}"));
-        let error = forward_chatgpt_oauth(state, pool_route(), forward)
+        let error = forward_chatgpt_oauth(state.clone(), pool_route(), forward)
             .await
             .expect_err("an exhausted pool fails the call");
         assert_eq!(
@@ -3133,6 +3137,16 @@ mod tests {
             Some(&crate::adapters::UpstreamBodyIdle { idle }),
             "got: {}",
             error.message
+        );
+        let snapshot = state.accounts.snapshot(
+            "codex",
+            &[pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")],
+            None,
+            None,
+        );
+        assert!(
+            snapshot[0].cooldown_secs_remaining.is_some(),
+            "the 429 reached classification and rotated the account, so the cut is the exhausted read's, not the header wait's"
         );
     }
 
