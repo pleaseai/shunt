@@ -346,7 +346,7 @@ fn retry_reason(status: StatusCode) -> &'static str {
 /// wins over computed backoff; when it exceeds `max_backoff` the caller gives up
 /// cleanly instead of sleeping past budget.
 fn next_backoff(policy: &RetryPolicy, attempt: u32, headers: Option<&HeaderMap>) -> Backoff {
-    if let Some(retry_after) = headers.and_then(crate::accounts::retry_after_for_retry) {
+    if let Some(retry_after) = headers.and_then(crate::accounts::retry_after) {
         if retry_after > policy.max_backoff {
             return Backoff::ExceedsBudget;
         }
@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_clamp_does_not_hide_over_budget_deadline() {
+    fn retry_after_beyond_one_hour_is_not_shortened() {
         let policy = RetryPolicy {
             max_retries: 1,
             initial_backoff: Duration::from_secs(1),

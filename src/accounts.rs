@@ -3332,24 +3332,18 @@ pub fn classify_antigravity(status: StatusCode, headers: &HeaderMap) -> Failover
     classify(status, headers)
 }
 
+/// Parse a `Retry-After` header. The value is returned unclamped: every caller
+/// bounds it for its own purpose (account cooldowns clamp, retry policy compares
+/// it against its budget), and a clamp here would hide an over-budget deadline.
 pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
-    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
-    Some(retry_after_value(value)?.min(Duration::from_secs(3600)))
-}
-
-/// Parse a `Retry-After` value without applying the account-cooldown clamp.
-/// Retry policy uses this form so an over-budget provider deadline cannot be
-/// shortened to the one-hour cooldown ceiling before the budget decision.
-pub(crate) fn retry_after_for_retry(headers: &HeaderMap) -> Option<Duration> {
     let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
     retry_after_value(value)
 }
 
 /// Parse one bounded `Retry-After` value. Delta-seconds are rounded upward
-/// to whole seconds so a fractional value can never cause an early retry;
-/// dates in the past retain their zero-delay policy meaning. The caller that
-/// applies an account cooldown adds the one-hour cap; retry policy needs the
-/// uncapped value to decide whether the requested deadline exceeds its budget.
+/// to whole seconds so a fractional value can never cause an early retry, and
+/// saturate at `u64::MAX` seconds; dates in the past retain their zero-delay
+/// policy meaning.
 fn retry_after_value(value: &str) -> Option<Duration> {
     if value.len() > 128 {
         return None;
@@ -3369,11 +3363,13 @@ fn retry_after_value(value: &str) -> Option<Duration> {
         && !value.ends_with('.')
     {
         let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
-        let seconds = whole.parse::<u128>().ok()?;
-        let has_fraction = !fraction.is_empty() && fraction.bytes().any(|byte| byte != b'0');
-        let rounded = seconds.saturating_add(u128::from(has_fraction));
-        let seconds = rounded.min(u128::from(u64::MAX)) as u64;
-        return Some(Duration::from_secs(seconds));
+        // `whole` is a non-empty digit run, so the only parse failure is
+        // overflow — saturate instead of discarding a valid, very long delay.
+        let seconds = whole.parse::<u64>().unwrap_or(u64::MAX);
+        let has_fraction = fraction.bytes().any(|byte| byte != b'0');
+        return Some(Duration::from_secs(
+            seconds.saturating_add(u64::from(has_fraction)),
+        ));
     }
 
     let deadline = httpdate::parse_http_date(value).ok()?;
@@ -8566,17 +8562,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_decimal_retry_after_with_upward_rounding_and_clamp() {
+    fn parses_decimal_retry_after_with_upward_rounding() {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static(" 1.01 "));
         assert_eq!(retry_after(&headers), Some(Duration::from_secs(2)));
-        headers.insert(RETRY_AFTER, HeaderValue::from_static("999999999999"));
-        assert_eq!(retry_after(&headers), Some(Duration::from_secs(3600)));
-        headers.insert(
-            RETRY_AFTER,
-            HeaderValue::from_static("18446744073709551615.5"),
-        );
-        assert_eq!(retry_after(&headers), Some(Duration::from_secs(3600)));
         headers.insert(RETRY_AFTER, HeaderValue::from_static("0"));
         assert_eq!(retry_after(&headers), Some(Duration::ZERO));
         headers.insert(RETRY_AFTER, HeaderValue::from_static("0.0"));
@@ -8586,23 +8575,32 @@ mod tests {
     }
 
     #[test]
-    fn preserves_extreme_retry_after_for_retry_budget_checks() {
+    fn preserves_extreme_retry_after_unclamped_and_saturates() {
+        // Callers bound the value themselves; the parser must hand back the
+        // requested deadline so retry policy can see it exceeds its budget.
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static("7200"));
-        assert_eq!(retry_after(&headers), Some(Duration::from_secs(3600)));
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(7200)));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("999999999999"));
         assert_eq!(
-            retry_after_for_retry(&headers),
-            Some(Duration::from_secs(7200))
+            retry_after(&headers),
+            Some(Duration::from_secs(999_999_999_999))
         );
 
-        headers.insert(
-            RETRY_AFTER,
-            HeaderValue::from_static("18446744073709551615.5"),
-        );
-        assert_eq!(
-            retry_after_for_retry(&headers),
-            Some(Duration::from_secs(u64::MAX))
-        );
+        // Past u64 seconds (with or without a fraction, and past u128 too),
+        // a valid delta saturates rather than being discarded.
+        for value in [
+            "18446744073709551615.5",
+            "18446744073709551616",
+            "1234567890123456789012345678901234567890",
+        ] {
+            headers.insert(RETRY_AFTER, HeaderValue::from_static(value));
+            assert_eq!(
+                retry_after(&headers),
+                Some(Duration::from_secs(u64::MAX)),
+                "{value} must saturate"
+            );
+        }
     }
 
     #[test]
