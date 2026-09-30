@@ -1,0 +1,58 @@
+site/src/content/docs/zh-cn/guides/subagents.mdx
+  s_daa14a0e68ee7c::t_c320aa42f0831e 122-125
+site/src/content/docs/guides/stage-router.mdx
+  s_daa14a0e68ee7c::t_74fa2fadbb612d 297-302
+site/src/content/docs/ja/guides/composite.mdx
+  s_daa14a0e68ee7c::t_556cc477face6c 69-74
+site/src/content/docs/ko/guides/composite.mdx
+  s_daa14a0e68ee7c::t_430e12eb2b6ab0 70-72
+  s_daa14a0e68ee7c::t_a223acd88ff2ef 68-69,73
+site/src/content/docs/ko/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_14f71aee9782fa 127-139
+site/src/content/docs/zh-cn/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_9dac56fa71ed96 116-127
+site/src/content/docs/zh-cn/guides/stage-router.mdx
+  s_daa14a0e68ee7c::t_d10fff5a923cb9 246-250
+site/src/content/docs/guides/composite.mdx
+  s_daa14a0e68ee7c::t_4a4b08ebad25fd 72-77
+site/src/content/docs/reference/configuration.md
+  s_daa14a0e68ee7c::t_1f8cc95fd4307f 454
+site/src/content/docs/ja/guides/subagents.mdx
+  s_daa14a0e68ee7c::t_b9bbbd60fea82f 137-141
+site/src/content/docs/guides/subagents.mdx
+  s_daa14a0e68ee7c::t_bdd5cfbce0d75e 138-142
+site/src/content/docs/ja/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_0c4aaaa85a439d 131-143
+site/src/content/docs/zh-cn/guides/composite.mdx
+  s_daa14a0e68ee7c::t_2a2cd4da35ccaa 65-69
+site/src/content/docs/ja/guides/stage-router.mdx
+  s_daa14a0e68ee7c::t_81584aac7dcd0a 290-294
+site/src/content/docs/ko/guides/subagents.mdx
+  s_daa14a0e68ee7c::t_d2f947e0331bb0 130-134
+site/src/content/docs/ko/guides/stage-router.mdx
+  s_daa14a0e68ee7c::t_b8f4d2df217869 278-280,282-283
+site/src/content/docs/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_758a3d43f70f56 135-147
+site/src/content/docs/ja/reference/configuration.md
+  s_daa14a0e68ee7c::t_471f81db460b7c 320
+site/src/content/docs/ko/reference/configuration.md
+  s_daa14a0e68ee7c::t_bb43d4005990a2 339
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_daa14a0e68ee7c::t_44880c3011caf2 320
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "16ae53236b55bd9c2974639ddeccc6f70f24e46c",
+  "prompts": {},
+  "sessions": {
+    "s_daa14a0e68ee7c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0160baf5-b72a-408a-a008-fdbfaf9843af",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
