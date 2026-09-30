@@ -73,7 +73,7 @@ A turn the signals leave undecided is served from the tier the classifier set, a
 its source says how that tier was reached: `llm-classifier` when this turn's judge
 call set it, `classifier_retained` when it is the tier an earlier turn retained,
 and `classifier_fail_open` when no verdict decided the turn — including a turn
-whose judge call `max_judge_calls` refused.
+whose judge call was refused by `max_judge_calls`.
 
 Every key is in the
 [configuration reference](/reference/configuration/#type--composite); the rules
