@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.51.1](https://github.com/pleaseai/shunt/compare/v0.51.0...v0.51.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **codex:** update client identity for gpt-6.1-sol ([#720](https://github.com/pleaseai/shunt/issues/720)) ([94a620b](https://github.com/pleaseai/shunt/commit/94a620b88e89ad9bb34c02688761e393862b0fd1))
+
 ## [0.51.0](https://github.com/pleaseai/shunt/compare/v0.50.0...v0.51.0) (2026-09-30)
 
 
