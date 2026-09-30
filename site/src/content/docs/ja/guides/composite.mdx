@@ -66,5 +66,12 @@ stage 側は libsy 自身の stage ルートなので、決着したターンは
 素の `stage_router` のターンと同じように読めるということです
 （[クライアントから見えるもの](/ja/guides/stage-router/#クライアントから見えるもの)を参照）。
 
+シグナルが決めなかったターンはあるティアへ fall-open し、ソースはそのティアがどこから
+来たかを示します。このターンのジャッジ呼び出しがティアを決めたなら `llm-classifier`、
+以前のターンが保持したティアなら `classifier_retained` です。判定がターンを決めなかった
+とき — ジャッジに届かなかった、または `max_judge_calls` が呼び出しを拒否したとき — は
+ソースが `classifier_fail_open` になり、ティアは
+[ジャッジに届かないとき](#ジャッジに届かないとき)で説明したものです。
+
 すべてのキーは[設定リファレンス](/ja/reference/configuration/#type--composite)にあり、
 どのジャッジも従う規則は[ジャッジ呼び出し](/ja/guides/routing/#ジャッジ呼び出し)にあります。

@@ -132,6 +132,23 @@ probes). The surfaces with no request body — `GET /routes`, `/v1/models`
 discovery, and `shunt check` — report the fail-open target under route source
 `classifier_default`.
 
+## What the client sees
+
+This section covers the `capability` and `custom` modes; `mode = "escalation"`
+reports sources of its own, listed on the [Escalation](/guides/escalation/) page.
+
+A routed turn carries `x-gateway-routed-model` (the target) and
+`x-gateway-route-source`, which says how the turn reached it. For an admitted
+request other than a `count_tokens` probe, the same label is the `source` of
+`shunt.router.decisions`, so `classifier_default` never appears there:
+
+| Source | Meaning |
+| :-- | :-- |
+| `llm-classifier` | The judge answered this turn, and its verdict named the target |
+| `classifier_retained` | Under `user_turn` or `new_session`, the turn replayed the target an earlier turn already earned, so no judge call was made |
+| `classifier_fail_open` | No verdict decided the turn — the judge failed, its answer was unusable, or `max_judge_calls` refused the call — so the default answered |
+| `classifier_default` | A surface with no request body reported the fail-open target |
+
 ## Targets and the judge
 
 Every target and every judge is an ordinary public model id under the same

@@ -124,6 +124,23 @@ policy = { type = "target_selector", selector = "/target" }
 없는 표면 — `GET /routes`, `/v1/models` 디스커버리, `shunt check` — 은 fail-open 타깃을
 라우트 소스 `classifier_default`로 보고합니다.
 
+## 클라이언트가 보는 것
+
+이 절은 `capability`와 `custom` 모드를 다룹니다. `mode = "escalation"`은 자기 소스를
+따로 보고하며, [Escalation](/ko/guides/escalation/) 페이지에 나와 있습니다.
+
+라우팅된 턴은 `x-gateway-routed-model`(타깃)과 `x-gateway-route-source`를 실어 보냅니다.
+뒤의 헤더는 턴이 어떻게 그 타깃에 이르렀는지 알려 줍니다. `count_tokens` 프로브가 아닌
+승인된 요청이라면 같은 라벨이 `shunt.router.decisions`의 `source`가 되므로,
+`classifier_default`는 그 지표에 나타나지 않습니다.
+
+| 소스 | 의미 |
+| :-- | :-- |
+| `llm-classifier` | 이 턴에 판정 모델이 답했고, 그 판정이 타깃을 골랐습니다 |
+| `classifier_retained` | `user_turn`이나 `new_session`에서 앞선 턴이 이미 얻은 타깃을 재생했으므로 판정 호출이 없었습니다 |
+| `classifier_fail_open` | 판정이 턴을 결정하지 못했습니다. 판정 모델이 실패했거나, 답을 쓸 수 없었거나, `max_judge_calls`가 호출을 거부해 기본 타깃이 응답했습니다 |
+| `classifier_default` | 요청 본문이 없는 표면이 fail-open 타깃을 보고했습니다 |
+
 ## 타깃과 판정 모델
 
 타깃과 판정 모델은 모두 스테이지 라우터와 같은 한 홉 규칙을 지키는 평범한 공개 model

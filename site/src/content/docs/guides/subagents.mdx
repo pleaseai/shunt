@@ -135,7 +135,11 @@ else from `default_target`'s first model.
 A diverted turn carries `x-gateway-routed-model` (the target) and
 `x-gateway-route-source` — `subagent_type` for a `by_type` hit, `subagent` for the
 `target` fallback — and is counted in `shunt.router.decisions` with
-`algorithm = "subagents"`.
+`algorithm = "subagents"`. The `llm_classifier` form reports the classifier's own
+sources instead: `llm-classifier` on the turn the judge classified,
+`classifier_retained` on a later turn of that child that replays the assignment,
+and `classifier_fail_open` when no verdict decided the turn (see
+[LLM Classifier](/guides/llm-classifier/#what-the-client-sees)).
 
 Surfaces with no request resolve nothing: `/v1/models` discovery and `shunt check`
 carry no per-model destination information at all, and `GET /routes` shows the

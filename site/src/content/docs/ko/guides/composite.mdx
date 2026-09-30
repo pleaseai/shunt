@@ -65,5 +65,11 @@ stage 쪽은 libsy 자신의 stage 라우트이므로, 결정적인 턴은 class
 `stage_router`의 턴과 같은 방식으로 읽을 수 있다는 뜻입니다
 ([클라이언트가 보는 것](/ko/guides/stage-router/#클라이언트가-보는-것) 참고).
 
+신호가 결정하지 못한 턴은 어떤 티어로 fall-open하며, 소스는 그 티어가 어디서 왔는지
+알려 줍니다. 이 턴의 판정 호출이 티어를 정했으면 `llm-classifier`, 앞선 턴이 보존한
+티어면 `classifier_retained`입니다. 판정이 턴을 결정하지 못했으면 — 판정 모델에 닿지
+못했거나 `max_judge_calls`가 호출을 거부했으면 — 소스는 `classifier_fail_open`이고, 티어는
+[판정 모델에 닿지 못할 때](#판정-모델에-닿지-못할-때)에서 설명한 것입니다.
+
 모든 키는 [설정 레퍼런스](/ko/reference/configuration/#type--composite)에 있고, 모든 판정
 모델이 따르는 규칙은 [판정 호출](/ko/guides/routing/#판정-호출)에 있습니다.

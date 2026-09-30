@@ -194,6 +194,53 @@ Classification happens before the response body streams, so a mid-stream failure
 
 Anthropic-routed `POST /v1/messages/count_tokens` requests use the same pool.
 
+## Keep a Claude Sonnet 5.5 conversation on one account
+
+Anthropic binds the thinking blocks that Claude Sonnet 5.5 produces to the account that produced them ([Preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking#account-bound-thinking)). When a different account sends one of those blocks back, the API drops it before the model sees it. The request still succeeds, but the model answers without that earlier reasoning. Thinking blocks from earlier models are not affected.
+
+The pool is session-sticky, so a conversation normally stays on one account. It moves to another account in these cases:
+
+- The sticky account is near quota, cooled down, or disabled, so [proactive rotation](#selection-and-proactive-rotation) moves the session off it.
+- A response triggers a rotation under the [failover rules](#failover-rules): a quota 429, a 401 that a refresh does not fix (a setup token cannot be refreshed, so any 401 on one rotates), or a 5xx or transport failure.
+- The pool gains or loses a distinct account, for example a new `shunt login claude` store entry, which the pool picks up without a restart. The sticky account is chosen by hashing the session id over the pool's distinct accounts, so most existing sessions map to a different account.
+- The request has no `x-claude-code-session-id`, so it uses round-robin.
+
+After a move, later Sonnet 5.5 turns run without the reasoning produced on the previous account. Nothing fails. shunt does not add the `thinking-binding-controls-2026-08-01` beta header, so the response does not report the drop unless the client sends that header itself (shunt keeps the client's `anthropic-beta` values and only appends `oauth-2025-04-20` when it is missing). shunt does not log the drop.
+
+If you want every Sonnet 5.5 request on one account, give that model its own upstream scoped to that account. Account scoping uses the ordered `[[upstreams]]` form (see [Configuration](/reference/configuration/), section `[[upstreams]]`), which cannot be combined with `[providers.*]` in one config file. Store the accounts with `shunt login claude` and refer to them by name:
+
+```toml
+[server]
+default_provider = "anthropic"
+
+# Declared first, so it is tried first for every model that maps to it.
+[[upstreams]]
+name = "anthropic-sonnet55"
+provider = "anthropic"
+auth = { mode = "claude_oauth", account = "primary" }
+
+# Every other model: the whole Claude store, with the usual rotation.
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+auth = "claude_oauth"
+
+[[models]]
+id = "claude-sonnet-5-5"
+[models.upstream_model]
+anthropic-sonnet55 = "claude-sonnet-5-5"
+anthropic = "claude-sonnet-5-5" # remove for a strict pin
+```
+
+Sonnet 5.5 requests go to `primary` first. With the `anthropic` line in the model map, a failure on `primary` that advances the chain (such as a quota 429 or a 5xx) falls through to the whole pool. A turn can use only the Sonnet 5.5 reasoning produced on the account that serves it, so a turn served by another account runs without the reasoning produced on `primary`. Because the whole-store pool includes `primary`, it can also retry `primary`, which keeps the reasoning produced there. The request fails only when every account the pool tries fails. Without that line, the pin is strict: the client receives `primary`'s error instead, and nothing moves the conversation.
+
+Keep these trade-offs in mind:
+
+- Every Sonnet 5.5 session spends the same account's 5-hour and weekly quota.
+- `primary` also stays in the `anthropic` pool, which scans the whole store. To reserve it for Sonnet 5.5, scope the pool instead, for example `auth = { mode = "claude_oauth", accounts = ["backup", "team-2"] }`.
+- Quota, cooldown, and refresh state belong to the account, not the upstream. A store account listed in both upstreams shares one state and one refresh lock. An inline account table is keyed per upstream when shunt cannot identify it: it has no `uuid`, and its credential carries no `shuntAccountUuid`. Repeating such a credential inline in two upstreams splits its state and refresh lock, so refer to a store account by name instead.
+- `shunt check` does not verify that a scoped name exists in the store. A missing name fails when a request resolves the pool.
+
 ## Request and response changes
 
 For the selected account, shunt replaces client auth with:

@@ -69,6 +69,13 @@ stage router's route sources rather than reporting as classifier decisions — s
 composite's signal-driven turns read the same way a plain `stage_router`'s do (see
 [What the client sees](/guides/stage-router/#what-the-client-sees)).
 
+A turn the signals leave undecided falls open to a tier, and its source says where
+that tier came from: `llm-classifier` when this turn's judge call set it, and
+`classifier_retained` when it is the tier an earlier turn retained. When no verdict
+decided the turn — the judge was not reached, or its call was refused by
+`max_judge_calls` — the source is `classifier_fail_open`, and the tier is the one
+[When the judge is not reached](#when-the-judge-is-not-reached) describes.
+
 Every key is in the
 [configuration reference](/reference/configuration/#type--composite); the rules
 every judge follows are under [judge calls](/guides/routing/#judge-calls).

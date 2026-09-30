@@ -192,6 +192,53 @@ disabled = true              # 구성은 유지되지만 절대 선택되지 않
 
 Anthropic으로 라우팅되는 `POST /v1/messages/count_tokens` 요청도 같은 풀을 사용합니다.
 
+## Claude Sonnet 5.5 대화를 한 계정에 유지하기
+
+Anthropic은 Claude Sonnet 5.5가 만든 thinking 블록을 그 블록을 만든 계정에 묶습니다([Preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking#account-bound-thinking)). 다른 계정이 그 블록을 다시 보내면 API는 모델이 보기 전에 그 블록을 버립니다. 요청은 여전히 성공하지만, 모델은 앞선 추론 없이 답합니다. 이전 모델의 thinking 블록은 영향을 받지 않습니다.
+
+풀은 세션에 고정(session-sticky)되므로 대화는 보통 한 계정에 머뭅니다. 다음 경우에는 다른 계정으로 옮겨집니다:
+
+- 스티키 계정이 쿼터에 근접했거나, 쿨다운됐거나, 비활성화되어 [선제 로테이션](#선택과-선제-로테이션)이 세션을 그 계정에서 옮기는 경우.
+- 응답이 [페일오버 규칙](#페일오버-규칙)에 따라 로테이션을 일으키는 경우: 쿼터 429, 갱신으로 해결되지 않는 401(셋업 토큰은 갱신할 수 없으므로 그 401은 모두 로테이션함), 5xx 또는 전송 실패.
+- 풀의 서로 다른 계정 수가 바뀌는 경우. 예를 들어 `shunt login claude`로 추가한 스토어 항목은 재시작 없이 풀에 들어옵니다. 스티키 계정은 세션 ID를 풀의 서로 다른 계정 수로 해시해 고르므로, 기존 세션 대부분이 다른 계정에 배정됩니다.
+- 요청에 `x-claude-code-session-id`가 없어 라운드 로빈을 사용하는 경우.
+
+옮겨진 뒤의 Sonnet 5.5 턴은 이전 계정에서 만들어진 추론 없이 실행됩니다. 실패하는 것은 없습니다. shunt는 `thinking-binding-controls-2026-08-01` 베타 헤더를 추가하지 않으므로, 클라이언트가 이 헤더를 직접 보내지 않는 한 응답은 이 누락을 알리지 않습니다(shunt는 클라이언트의 `anthropic-beta` 값을 유지하고, `oauth-2025-04-20`이 없을 때만 덧붙입니다). shunt도 이 누락을 로그에 남기지 않습니다.
+
+모든 Sonnet 5.5 요청을 한 계정에 두려면 그 모델에 해당 계정으로 범위를 좁힌 전용 업스트림을 두세요. 계정 범위 지정은 순서가 있는 `[[upstreams]]` 형식을 사용하며([구성](/ko/reference/configuration/)의 `[[upstreams]]` 섹션 참고), 이 형식은 한 설정 파일 안에서 `[providers.*]`와 함께 쓸 수 없습니다. `shunt login claude`로 계정을 저장하고 이름으로 참조하세요:
+
+```toml
+[server]
+default_provider = "anthropic"
+
+# 먼저 선언했으므로, 이 업스트림에 매핑되는 모든 모델에서 가장 먼저 시도됩니다.
+[[upstreams]]
+name = "anthropic-sonnet55"
+provider = "anthropic"
+auth = { mode = "claude_oauth", account = "primary" }
+
+# 그 밖의 모든 모델: 평소의 로테이션을 따르는 Claude 스토어 전체.
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+auth = "claude_oauth"
+
+[[models]]
+id = "claude-sonnet-5-5"
+[models.upstream_model]
+anthropic-sonnet55 = "claude-sonnet-5-5"
+anthropic = "claude-sonnet-5-5" # 엄격하게 고정하려면 이 줄을 제거
+```
+
+Sonnet 5.5 요청은 먼저 `primary`로 갑니다. 모델 맵에 `anthropic` 줄이 있으면, 체인을 진행시키는 `primary`의 실패(쿼터 429나 5xx 등)는 풀 전체로 넘어갑니다. 각 턴은 그 턴을 처리한 계정이 만든 Sonnet 5.5 추론만 쓸 수 있으므로, 다른 계정이 처리한 턴은 `primary`에서 만든 추론 없이 실행됩니다. 스토어 전체를 쓰는 풀에는 `primary`도 들어 있으므로 `primary`를 다시 시도할 수도 있고, 그러면 `primary`에서 만든 추론은 유지됩니다. 요청은 풀이 시도한 모든 계정이 실패할 때만 실패합니다. 그 줄이 없으면 고정은 엄격해집니다: 클라이언트는 대신 `primary`의 오류를 받고, 대화를 옮기는 것은 아무것도 없습니다.
+
+다음 트레이드오프를 염두에 두세요:
+
+- 모든 Sonnet 5.5 세션이 같은 계정의 5시간 쿼터와 주간 쿼터를 소비합니다.
+- `primary`는 스토어 전체를 훑는 `anthropic` 풀에도 남아 있습니다. Sonnet 5.5 전용으로 남겨 두려면 대신 풀의 범위를 좁히세요. 예: `auth = { mode = "claude_oauth", accounts = ["backup", "team-2"] }`.
+- 쿼터, 쿨다운, 갱신 상태는 업스트림이 아니라 계정에 속합니다. 두 업스트림 모두에 나열된 스토어 계정은 하나의 상태와 하나의 리프레시 락을 공유합니다. 인라인 계정 테이블은 shunt가 계정을 식별할 수 없을 때, 즉 `uuid`가 없고 자격 증명에도 `shuntAccountUuid`가 없을 때 업스트림별로 키가 매겨집니다. 그런 자격 증명을 두 업스트림에 인라인으로 반복하면 상태와 리프레시 락이 갈라지므로, 대신 스토어 계정을 이름으로 참조하세요.
+- `shunt check`는 범위로 지정한 이름이 스토어에 있는지 검증하지 않습니다. 없는 이름은 요청이 풀을 해석할 때 실패합니다.
+
 ## 요청과 응답 변경
 
 선택된 계정에 대해 shunt는 클라이언트 인증을 다음으로 교체합니다:

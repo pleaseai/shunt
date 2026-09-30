@@ -134,7 +134,11 @@ passthrough ルート禁止、そして呼び出し元の資格情報スロッ�
 振り分けられたターンには `x-gateway-routed-model`（ターゲット）と
 `x-gateway-route-source`（`by_type` に一致したときは `subagent_type`、`target` への
 フォールバックなら `subagent`）が付き、`shunt.router.decisions` に
-`algorithm = "subagents"` として計上されます。
+`algorithm = "subagents"` として計上されます。`llm_classifier` 形式は代わりに
+classifier 自身のソースを報告します。ジャッジが分類したターンは `llm-classifier`、その
+子のその後のターンが割り当てを再生したときは `classifier_retained`、判定がターンを
+決めなかったときは `classifier_fail_open` です
+（[LLM Classifier](/ja/guides/llm-classifier/#クライアントから見えるもの)を参照）。
 
 リクエストを伴わないサーフェスは何も解決しません。`/v1/models` ディスカバリと
 `shunt check` はモデルごとの宛先情報をまったく持たず、`GET /routes` は親自身の

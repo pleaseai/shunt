@@ -128,6 +128,24 @@ policy = { type = "target_selector", selector = "/target" }
 `GET /routes`、`/v1/models` ディスカバリー、`shunt check` — は fail-open のターゲットを
 ルートソース `classifier_default` として報告します。
 
+## クライアントから見えるもの
+
+この節は `capability` と `custom` モードを扱います。`mode = "escalation"` は独自の
+ソースを報告し、それは [Escalation](/ja/guides/escalation/) のページに載っています。
+
+ルーティングされたターンには `x-gateway-routed-model`（ターゲット）と
+`x-gateway-route-source` が付きます。後者はターンがどのようにそのターゲットに至ったかを
+示します。`count_tokens` プローブ以外の受け付けたリクエストでは同じラベルが
+`shunt.router.decisions` の `source` になるため、`classifier_default` がそこに現れることは
+ありません。
+
+| ソース | 意味 |
+| :-- | :-- |
+| `llm-classifier` | このターンでジャッジが答え、その判定がターゲットを選びました |
+| `classifier_retained` | `user_turn` か `new_session` で、以前のターンがすでに得たターゲットを再生したため、ジャッジ呼び出しはありませんでした |
+| `classifier_fail_open` | 判定がターンを決めませんでした。ジャッジが失敗した、答えが使えなかった、または `max_judge_calls` が呼び出しを拒否したため、既定のターゲットが応答しました |
+| `classifier_default` | リクエストボディのない面が fail-open のターゲットを報告しました |
+
 ## ターゲットとジャッジ
 
 ターゲットもジャッジも、ステージルーターと同じ 1 ホップ規則に従う通常の公開モデル id で、
