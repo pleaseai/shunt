@@ -810,8 +810,8 @@ response headers, or for the WebSocket handshake (or a pooled connection's
 liveness check) and first event, counts toward it. shunt's own local token
 count (up to 1 second) runs while the reply is read, so a reply that arrives
 after the gap is still cut. An error response's body is read within the same
-gap, except the one a `chatgpt_oauth` account pool relays after every account
-failed, which is still bounded only by the 5-second error read. A retried request starts the gap again. A cold Antigravity
+gap. The one a `chatgpt_oauth` account pool relays after every account failed
+is read within a fresh gap, started when the last account failed. A retried request starts the gap again. A cold Antigravity
 model-catalog fetch made during one of these calls is read under the same
 bounds; a refused catalog falls back to the model id shunt would guess without
 one, and the next client turn fetches it again.

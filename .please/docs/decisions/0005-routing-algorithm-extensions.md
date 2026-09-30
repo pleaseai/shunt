@@ -691,6 +691,19 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   the retained attempt's send would charge it for the later attempts' time;
   #707 tracks reading it under a fresh gap.
 
+- **2026-09-30 (issue #707) — the pool-exhausted error body is read under a
+  fresh gap.** This removes the one exception the 2026-09-29 (#703, #704)
+  amendment above leaves. On a gated call, the body a ChatGPT-OAuth pool
+  relays once every account has failed is read under a new idle gap that
+  starts when the pool runs out of accounts, as the Anthropic adapter's gated
+  error read starts its own. The kept attempt's send stays the wrong anchor,
+  for the reason given above. A body that stalls is the call's cut, with the
+  idle marker, so an escalation entry falls back to its strong target as it
+  does on the single-account path. A body that arrives inside the gap
+  is relayed as before, with its status, `retry-after`, and message, under
+  the same 5 s and 256 KiB error-envelope bounds. Client turns read this body
+  lazily and read no clock, as before.
+
 ### 10. Verification before code
 
 Three external facts to capture live through `shunt run` before the
