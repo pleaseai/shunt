@@ -63,10 +63,12 @@ account linked to it"; from
 another account "the API drops the block before the model sees it, and the
 request succeeds". The drop is reported only under the
 `thinking-binding-controls-2026-08-01` beta header (`input_transformations`,
-`reason: "organization_binding_mismatch"`), which shunt does not send, so it is
-silent here. It matters to shunt because the Claude OAuth pool can move a
-session between accounts; the operator-facing guidance (pinning a model to one
-account) is in the site's Anthropic multi-account guide. The doc does not define
+`reason: "organization_binding_mismatch"`), which shunt does not add, so it is
+silent here unless the client sends that beta itself (the Anthropic adapter
+keeps the client's `anthropic-beta` values and only appends
+`oauth-2025-04-20`). It matters to shunt because the Claude OAuth pool can move
+a session between accounts; the operator-facing guidance (pinning a model to
+one account) is in the site's Anthropic multi-account guide. The doc does not define
 "linked account", and whether a block becomes readable again once the session
 returns to its own account is not documented — neither is measured here. Nothing
 in `thinking.rs` should strip these blocks: they are Anthropic's, and the API
