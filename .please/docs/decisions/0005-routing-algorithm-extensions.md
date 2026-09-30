@@ -708,6 +708,25 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   256 KiB error-envelope bounds. Client turns read this body
   lazily and read no clock, as before.
 
+- **2026-09-30 (the #709 review) — an error-body stall is a cut only when the
+  gap closes inside the error-envelope budget.** The 2026-09-29 (#703, #704)
+  amendment above says a stalled error body is the call's cut and is not
+  relayed after the error-envelope budget. That holds only when the gap
+  closes first. The read keeps its own 5 s budget, counted from when the read
+  starts, and a chunk moves the gap's deadline but not the budget's. On the
+  single-account HTTP path and in the pooled ChatGPT-OAuth refusal check, a
+  stalled body is therefore the call's cut, with the idle marker, only when
+  less than 5 s of the gap is left as the read starts: `gated_idle_ms` is
+  under 5 s, or the header wait used all but the last 5 s of it. Otherwise
+  the budget ends the read first. The single-account path then relays the
+  refusal with its status, its `retry-after`, and a message naming the status
+  in place of the unread body (`gated_error`). The pooled refusal check leaves
+  the `400` unjudged, so it does not rotate the pool, and relays it the same
+  way. With the default `gated_idle_ms` of 60 s, this is the usual case. The
+  2026-09-30 (#707) amendment above states the same limit for the
+  pool-exhausted read, where the fresh gap leaves `gated_idle_ms` as the only
+  factor.
+
 ### 10. Verification before code
 
 Three external facts to capture live through `shunt run` before the
