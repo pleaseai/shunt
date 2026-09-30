@@ -1,0 +1,19 @@
+tests/inbound_codex_websocket.rs
+  s_217d08c795e32c::t_ee98b84d99aa23 28,151-152,156-158,165,170,181,184,206-207,210-211,218,227,230,288,292,331,333,359,373,394,408,426,428,450,453-454,514,523,550,567,596,625-627,692,705-707,763,773,783,799,822,833,849,862,876,901
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "63a112cd19b6ed30da41edf979d4aed0939596c3",
+  "prompts": {},
+  "sessions": {
+    "s_217d08c795e32c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15d9890a-c61c-4a45-9586-f798a76e2a17",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
