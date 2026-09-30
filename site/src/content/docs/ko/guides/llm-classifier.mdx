@@ -127,8 +127,9 @@ policy = { type = "target_selector", selector = "/target" }
 ## 클라이언트가 보는 것
 
 라우팅된 턴은 `x-gateway-routed-model`(타깃)과 `x-gateway-route-source`를 실어 보냅니다.
-뒤의 헤더는 턴이 어떻게 그 타깃에 이르렀는지 알려 주며, 같은 라벨이
-`shunt.router.decisions`의 `source`가 됩니다.
+뒤의 헤더는 턴이 어떻게 그 타깃에 이르렀는지 알려 줍니다. `count_tokens` 프로브가 아닌
+승인된 요청이라면 같은 라벨이 `shunt.router.decisions`의 `source`가 되므로,
+`classifier_default`는 그 지표에 나타나지 않습니다.
 
 | 소스 | 의미 |
 | :-- | :-- |

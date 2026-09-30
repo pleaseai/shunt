@@ -132,7 +132,9 @@ policy = { type = "target_selector", selector = "/target" }
 
 ルーティングされたターンには `x-gateway-routed-model`（ターゲット）と
 `x-gateway-route-source` が付きます。後者はターンがどのようにそのターゲットに至ったかを
-示し、同じラベルが `shunt.router.decisions` の `source` になります。
+示します。`count_tokens` プローブ以外の受け付けたリクエストでは同じラベルが
+`shunt.router.decisions` の `source` になるため、`classifier_default` がそこに現れることは
+ありません。
 
 | ソース | 意味 |
 | :-- | :-- |

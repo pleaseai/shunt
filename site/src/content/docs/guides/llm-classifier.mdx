@@ -135,8 +135,9 @@ discovery, and `shunt check` — report the fail-open target under route source
 ## What the client sees
 
 A routed turn carries `x-gateway-routed-model` (the target) and
-`x-gateway-route-source`, which says how the turn reached it. The same label is
-the `source` of `shunt.router.decisions`:
+`x-gateway-route-source`, which says how the turn reached it. For an admitted
+request other than a `count_tokens` probe, the same label is the `source` of
+`shunt.router.decisions`, so `classifier_default` never appears there:
 
 | Source | Meaning |
 | :-- | :-- |

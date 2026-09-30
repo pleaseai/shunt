@@ -62,10 +62,10 @@ stage 表**不接受 `picker`** —— 那个档位由 classifier 提供 —— 
 和一个普通 `stage_router` 的回合完全一样(见
 [客户端看到什么](/zh-cn/guides/stage-router/#客户端看到什么))。
 
-信号无法定夺的一轮由 classifier 设定的档位作答,其来源说明该档位是如何得到的:这一轮的
-裁判调用设定了档位时是 `llm-classifier`,沿用之前某一轮保留的档位时是
-`classifier_retained`,没有结论定夺这一轮时是 `classifier_fail_open`。裁判调用被
-`max_judge_calls` 拒绝的一轮也是 `classifier_fail_open`。
+信号无法定夺的一轮会 fall-open 到某个档位,其来源说明该档位从何而来:这一轮的裁判调用
+设定了档位时是 `llm-classifier`,沿用之前某一轮保留的档位时是 `classifier_retained`。
+没有结论定夺这一轮时 —— 够不到裁判,或 `max_judge_calls` 拒绝了调用 —— 来源是
+`classifier_fail_open`,档位则如[够不到裁判时](#够不到裁判时)所述。
 
 每个键都在[配置参考](/zh-cn/reference/configuration/#type--composite)中;每个裁判都遵循的
 规则见[裁判调用](/zh-cn/guides/routing/#裁判调用)。
