@@ -1,0 +1,25 @@
+site/src/content/docs/ja/reference/endpoints.md
+  s_217d08c795e32c::t_9f908009a28f8b 127
+site/src/content/docs/ko/reference/endpoints.md
+  s_217d08c795e32c::t_d21708d9c1a5f5 125
+site/src/content/docs/reference/endpoints.md
+  s_217d08c795e32c::t_cc7ba586b8f7c2 161
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_217d08c795e32c::t_eb0024fc969622 120
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "069df97b7e423fa1250211c5da84d6569a739f8d",
+  "prompts": {},
+  "sessions": {
+    "s_217d08c795e32c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15d9890a-c61c-4a45-9586-f798a76e2a17",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
