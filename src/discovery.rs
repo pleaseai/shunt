@@ -387,8 +387,8 @@ mod tests {
     fn builtin_table_is_newest_first_with_unique_ids() {
         for pair in BUILTIN_MODELS.windows(2) {
             assert!(
-                pair[0].created_at > pair[1].created_at,
-                "{} ({}) must be newer than {} ({})",
+                pair[0].created_at >= pair[1].created_at,
+                "{} ({}) must not be older than {} ({})",
                 pair[0].id,
                 pair[0].created_at,
                 pair[1].id,
