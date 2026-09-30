@@ -1,0 +1,175 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+import { accountGroups } from './accounts';
+import { API, readJson } from './api';
+import { useSession } from './session';
+import type {
+  AccountRow,
+  AntigravityStoreAccount,
+  ClaudeStoreAccount,
+  CodexStoreAccount,
+  ObservedAccount,
+  PoolProvider,
+  StatusSource,
+} from './types';
+
+export type Loadable<T> =
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; data: T };
+
+/**
+ * A read whose older response can never repaint over a newer one.
+ *
+ * Every mutation handler reloads several of these tables, so two loads of the
+ * same endpoint are routinely in flight at once; without the counter the older
+ * response lands last and wins, which after a Refresh means the table falls
+ * back to the pre-probe state. The counter is bumped when a load starts and
+ * checked when it settles, so a superseded load neither renders nor blanks what
+ * the newer one drew.
+ */
+function useSequencedLoad<T>(
+  load: () => Promise<Loadable<T>>,
+): [Loadable<T>, () => Promise<void>] {
+  const [value, setValue] = useState<Loadable<T>>({ status: 'loading' });
+  const sequence = useRef(0);
+  const reload = useCallback(async () => {
+    const issued = ++sequence.current;
+    const next = await load();
+    if (issued !== sequence.current) return;
+    setValue(next);
+  }, [load]);
+  return [value, reload];
+}
+
+export interface Dashboard {
+  observed: Loadable<Map<string, AccountRow[]>>;
+  accounts: Loadable<ClaudeStoreAccount[]>;
+  codexAccounts: Loadable<CodexStoreAccount[]>;
+  antigravityAccounts: Loadable<AntigravityStoreAccount[]>;
+  pool: Loadable<PoolProvider[]>;
+  /** `null` means the section is hidden: `[server.status]` is opt-in. */
+  status: StatusSource[] | null;
+  reloadObserved: () => Promise<void>;
+  reloadAccounts: () => Promise<void>;
+  reloadCodexAccounts: () => Promise<void>;
+  reloadAntigravityAccounts: () => Promise<void>;
+  reloadPool: () => Promise<void>;
+}
+
+export function useDashboard(): Dashboard {
+  const { hideObserved } = useSession();
+
+  const loadObserved = useCallback(async (): Promise<Loadable<Map<string, AccountRow[]>>> => {
+    // Under `[server.admin] hide_observed` the endpoint answers an empty list
+    // by contract, so the read is skipped rather than made for nothing. The
+    // table still renders: managed pool accounts are not observations.
+    let observations: ObservedAccount[] = [];
+    if (!hideObserved) {
+      const observed = await readJson<{ accounts?: ObservedAccount[] }>(
+        `${API}/observed`,
+        'Failed to observe local accounts',
+      );
+      if (!observed.ok) return { status: 'error', message: observed.message };
+      observations = observed.data.accounts ?? [];
+    }
+
+    // Managed pool state only enriches this view, so each read stands alone: a
+    // transient failure on either endpoint must not discard the other's result,
+    // and neither may discard the observations themselves. `readJson` reports a
+    // failure rather than throwing, which is what keeps that true through
+    // `Promise.all`.
+    const [pool, accounts, codexAccounts] = await Promise.all([
+      readJson<{ providers?: PoolProvider[] }>(`${API}/pool`, ''),
+      readJson<{ accounts?: ClaudeStoreAccount[] }>(`${API}/accounts`, ''),
+      readJson<{ accounts?: CodexStoreAccount[] }>(`${API}/accounts/codex`, ''),
+    ]);
+
+    return {
+      status: 'ready',
+      data: accountGroups(
+        observations,
+        pool.ok ? pool.data : null,
+        accounts.ok ? accounts.data : null,
+        codexAccounts.ok ? codexAccounts.data : null,
+      ),
+    };
+  }, [hideObserved]);
+
+  const loadAccounts = useCallback(async (): Promise<Loadable<ClaudeStoreAccount[]>> => {
+    const result = await readJson<{ accounts?: ClaudeStoreAccount[] }>(
+      `${API}/accounts`,
+      'Failed to load accounts',
+    );
+    return result.ok
+      ? { status: 'ready', data: result.data.accounts ?? [] }
+      : { status: 'error', message: result.message };
+  }, []);
+
+  const loadCodexAccounts = useCallback(async (): Promise<Loadable<CodexStoreAccount[]>> => {
+    const result = await readJson<{ accounts?: CodexStoreAccount[] }>(
+      `${API}/accounts/codex`,
+      'Failed to load Codex accounts',
+    );
+    return result.ok
+      ? { status: 'ready', data: result.data.accounts ?? [] }
+      : { status: 'error', message: result.message };
+  }, []);
+
+  const loadAntigravityAccounts = useCallback(async (): Promise<
+    Loadable<AntigravityStoreAccount[]>
+  > => {
+    const result = await readJson<{ accounts?: AntigravityStoreAccount[] }>(
+      `${API}/accounts/antigravity`,
+      'Failed to load Antigravity accounts',
+    );
+    return result.ok
+      ? { status: 'ready', data: result.data.accounts ?? [] }
+      : { status: 'error', message: result.message };
+  }, []);
+
+  const loadPool = useCallback(async (): Promise<Loadable<PoolProvider[]>> => {
+    const result = await readJson<{ providers?: PoolProvider[] }>(`${API}/pool`, 'Failed to load pool');
+    return result.ok
+      ? { status: 'ready', data: result.data.providers ?? [] }
+      : { status: 'error', message: result.message };
+  }, []);
+
+  const [observed, reloadObserved] = useSequencedLoad(loadObserved);
+  const [accounts, reloadAccounts] = useSequencedLoad(loadAccounts);
+  const [codexAccounts, reloadCodexAccounts] = useSequencedLoad(loadCodexAccounts);
+  const [antigravityAccounts, reloadAntigravityAccounts] = useSequencedLoad(loadAntigravityAccounts);
+  const [pool, reloadPool] = useSequencedLoad(loadPool);
+
+  // `[server.status]` is opt-in and observation-only. Zero configured sources
+  // means the feature is off; a failed read is not worth an error row for a
+  // section that reports nothing routing consults, so both hide it.
+  const [status, setStatus] = useState<StatusSource[] | null>(null);
+
+  useEffect(() => {
+    void reloadObserved();
+    void reloadAccounts();
+    void reloadCodexAccounts();
+    void reloadAntigravityAccounts();
+    void reloadPool();
+    void (async () => {
+      const result = await readJson<{ sources?: StatusSource[] }>(`${API}/status`, '');
+      const sources = result.ok ? (result.data.sources ?? []) : [];
+      setStatus(sources.length ? sources : null);
+    })();
+  }, [reloadObserved, reloadAccounts, reloadCodexAccounts, reloadAntigravityAccounts, reloadPool]);
+
+  return {
+    observed,
+    accounts,
+    codexAccounts,
+    antigravityAccounts,
+    pool,
+    status,
+    reloadObserved,
+    reloadAccounts,
+    reloadCodexAccounts,
+    reloadAntigravityAccounts,
+    reloadPool,
+  };
+}

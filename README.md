@@ -1,5 +1,7 @@
 # shunt
 
+Offline credential import: `shunt import opencodex --dry-run` previews compatible API keys and Cursor/Command Code access tokens. Exports create new private snapshots without changing existing settings or copying refresh tokens. See [credential import](docs/credential-import.md).
+
 [![CI](https://github.com/pleaseai/shunt/actions/workflows/ci.yml/badge.svg)](https://github.com/pleaseai/shunt/actions/workflows/ci.yml)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/pleaseai/shunt?utm_source=badge)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=pleaseai_shunt&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=pleaseai_shunt)
@@ -15,7 +17,7 @@
 
 The name is the mechanism: an electrical/railway *shunt* diverts a selected part of the flow onto a parallel path. Here, a mapped model's inference is diverted to another provider while Claude Code's tools and skills stay intact.
 
-Providers for OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax China, Gemini, Antigravity, and Anthropic passthrough ship built in — several of them reusing a subscription you already pay for. Any Anthropic-Messages-compatible backend is one config table away, with no code changes. See [Providers](#providers).
+Providers for OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax China, OpenCode Zen, Gemini, Antigravity, and Anthropic passthrough ship built in — several of them reusing a subscription you already pay for. Any Anthropic-Messages-compatible backend is one config table away, with no code changes. See [Providers](#providers).
 
 > [!NOTE]
 > `shunt` is pre-1.0 software under active development. Per [SemVer](https://semver.org/#spec), `0.x` releases may include breaking changes to configuration keys, the CLI, and behavior — check the [release notes](https://github.com/pleaseai/shunt/releases) before upgrading.
@@ -30,7 +32,9 @@ brew install pleaseai/tap/shunt
 cargo install --git https://github.com/pleaseai/shunt
 ```
 
-New versions are distributed through Homebrew and prebuilt binaries (macOS/Linux, arm64/x64) attached to each [GitHub release](https://github.com/pleaseai/shunt/releases); the crates.io package stops at the last version published there. See [Installation](https://shunt.dev/getting-started/installation/) for prebuilt-binary and from-source instructions.
+New versions are distributed through Homebrew and prebuilt binaries (macOS/Linux, arm64/x64) attached to each [GitHub release](https://github.com/pleaseai/shunt/releases); the crates.io package stops at the last version published there. See [Installation](https://shunt.sh/getting-started/installation/) for prebuilt-binary and from-source instructions.
+
+The `cargo install` line above builds without the admin dashboard: its bundle needs Node.js 22.12+ and is embedded only by `--features ui`, which Homebrew and the release binaries already enable. Everything else — including the admin JSON API — is identical either way. [Installation](https://shunt.sh/getting-started/installation/) has the from-source steps.
 
 ### Run as a service (macOS/Homebrew)
 
@@ -39,8 +43,10 @@ brew services start shunt
 ```
 
 Logs go to `$(brew --prefix)/var/log/shunt.log`. `brew services stop` sends `SIGTERM`, and shunt
-drains in-flight requests before exiting; on Unix, Antigravity agent turns are terminated when
-shutdown starts so their isolated process groups cannot hold the drain open. Editing the config file
+drains in-flight requests before exiting — for up to `[server] shutdown_timeout_seconds`
+(default 30; changing this one does need a restart), after which shunt stops waiting and exits, so
+a quiet SSE stream cannot hold the process open forever. On Unix, Antigravity agent turns are terminated when shutdown starts so
+their isolated process groups cannot hold the drain open. Editing the config file
 afterwards doesn't need a restart — it [hot-reloads](docs/config-reload.md) automatically. Details:
 [Running as a service](docs/running.md#run-as-a-background-service-homebrew).
 
@@ -63,7 +69,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="gpt-5.6-sol"
 claude                                              # /model -> pick gpt-5.6-sol
 ```
 
-Unmapped models (all your `claude-*` ids) keep working exactly as before — shunt forwards them to Anthropic with your own credential. Full walkthrough: [Quickstart](https://shunt.dev/getting-started/quickstart/).
+Unmapped models (all your `claude-*` ids) keep working exactly as before — shunt forwards them to Anthropic with your own credential. Full walkthrough: [Quickstart](https://shunt.sh/getting-started/quickstart/).
 
 ### Starter configuration
 
@@ -87,7 +93,7 @@ The command is offline and read-only: it prints guidance but never edits files, 
 
 ## Providers
 
-A provider is either an ordered `[[upstreams]]` entry or a legacy `[providers.<name>]` TOML table (under YAML, an entry in the corresponding sequence or mapping). Two adapter kinds cover most upstreams: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included). A third native kind, `kind = "cursor"`, bridges Cursor's ConnectRPC/protobuf AgentService so a Cursor subscription is reachable through the same Anthropic-Messages interface.
+A provider is either an ordered `[[upstreams]]` entry or a legacy `[providers.<name>]` TOML table (under YAML, an entry in the corresponding sequence or mapping). Two adapter kinds cover most upstreams: `kind = "anthropic"` (the upstream speaks Anthropic Messages; passed through, optionally with a different key) and `kind = "responses"` (the upstream speaks the OpenAI Responses API; shunt translates Anthropic Messages ⇄ Responses, streaming included, and emulates `stop_sequences` gateway-side because the Responses API has no `stop` parameter). A third native kind, `kind = "cursor"`, bridges Cursor's ConnectRPC/protobuf AgentService so a Cursor subscription is reachable through the same Anthropic-Messages interface.
 
 Ordered upstreams enable cross-provider failover. Declaration order is the attempt order; a model's `upstream_model` map selects the participating entries and maps its public id to each backend's id:
 
@@ -111,7 +117,7 @@ anthropic-primary = "claude-opus-4-8"
 codex-fallback = "gpt-5.6-sol"
 ```
 
-This chain tries `anthropic-primary` and then `codex-fallback`. `auth` accepts either a mode string or a map; `claude_oauth` and `chatgpt_oauth` maps can narrow credentials with `account = "name"` or `accounts = [...]`. Legacy `[providers.<name>]` remains supported and becomes implicit name-sorted upstreams. Do not declare both forms: mixing `[[upstreams]]` with `[providers.*]` is a configuration error. See the [configuration reference](https://shunt.dev/reference/configuration/) for presets, failure classes, and migration details.
+This chain tries `anthropic-primary` and then `codex-fallback`. `auth` accepts either a mode string or a map; `claude_oauth` and `chatgpt_oauth` maps can narrow credentials with `account = "name"` or `accounts = [...]`. Legacy `[providers.<name>]` remains supported and becomes implicit name-sorted upstreams. Do not declare both forms: mixing `[[upstreams]]` with `[providers.*]` is a configuration error. See the [configuration reference](https://shunt.sh/reference/configuration/) for presets, failure classes, and migration details.
 
 ### Built in
 
@@ -126,15 +132,15 @@ These providers are seeded by default, so `provider = "<name>"` routes to them w
 | `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` (`shunt login xai` with a SuperGrok / X Premium+ subscription) |
 | `cursor` | `cursor` | Cursor OAuth | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 | `gemini` | `gemini` | Google OAuth | `cloudcode-pa.googleapis.com` — Google Code Assist backend; reuses `~/.gemini/oauth_creds.json` |
-| `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — Google Antigravity backend over HTTP; uses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
+| `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — Google Antigravity backend over HTTP; uses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`), or named accounts under `~/.shunt/accounts/antigravity` (`shunt login antigravity --name`, selected via `accounts = [...]`) |
 | `antigravity-cli` | `antigravity_cli` | None (local CLI) | **Deprecated.** Local `agy` binary — same backend via subprocess; superseded by `antigravity` above |
 
-Ordered `[[upstreams]]` entries additionally accept the presets `kimi`, `kimi-code`, `zhipu`, and `minimax-cn`, which fill in `kind`, `base_url`, and the default auth for those backends.
+Ordered `[[upstreams]]` entries additionally accept the presets `kimi`, `kimi-code`, `zhipu`, `minimax-cn`, and `opencode`, which fill in `kind`, `base_url`, and the default auth for those backends.
 
-Per-provider setup, model ids, and caveats live under [Providers](https://shunt.dev/guides/providers/) — including xAI's OAuth tier gate ([xAI / Grok](https://shunt.dev/guides/xai/)), Cursor's agent-mode prefixes ([Cursor](https://shunt.dev/providers/cursor/)), and Antigravity's two transports and the `kind = "antigravity"` migration ([Antigravity](https://shunt.dev/providers/antigravity/)).
+Per-provider setup, model ids, and caveats live under [Providers](https://shunt.sh/guides/providers/) — including xAI's OAuth tier gate ([xAI / Grok](https://shunt.sh/guides/xai/)), Cursor's agent-mode prefixes ([Cursor](https://shunt.sh/providers/cursor/)), and Antigravity's two transports and the `kind = "antigravity"` migration ([Antigravity](https://shunt.sh/providers/antigravity/)).
 
 > [!WARNING]
-> `antigravity-cli` is deprecated and is **arbitrary code execution**: it runs the local `agy` binary agentically with `--dangerously-skip-permissions`, as the user running shunt. Keep its `sandbox` setting on, keep the bind on loopback, and prefer the `antigravity` provider, which needs none of this. See [the deprecated transport](https://shunt.dev/guides/providers/#the-deprecated-antigravity-cli-transport).
+> `antigravity-cli` is deprecated and is **arbitrary code execution**: it runs the local `agy` binary agentically with `--dangerously-skip-permissions`, as the user running shunt. Keep its `sandbox` setting on, keep the bind on loopback, and prefer the `antigravity` provider, which needs none of this. See [the deprecated transport](https://shunt.sh/guides/providers/#the-deprecated-antigravity-cli-transport).
 
 ### Any Anthropic-compatible backend
 
@@ -149,6 +155,7 @@ One table, no code changes:
 | Zhipu (GLM China) | `https://open.bigmodel.cn/api/anthropic` | `glm-5.3`, `glm-5.3-flash` |
 | MiniMax | `https://api.minimax.io/anthropic` | see [MiniMax docs](https://platform.minimax.io/docs/token-plan/claude-code) |
 | MiniMax China | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
+| OpenCode Zen | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — curated cross-vendor catalog; reads `x-api-key` |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 
@@ -164,7 +171,7 @@ model = "kimi-k3[1m]"
 provider = "kimi"
 ```
 
-Every row above but one takes `auth = "api_key"`. **Kimi Code** is the exception: a separate, subscription-billed service from the metered Moonshot API — different host, OAuth instead of an API key, and a built-in `kimi-code` preset. That preset resolves only inside an ordered `[[upstreams]]` entry, so declare it there (it is not in the seeded provider map) and log in. See [Kimi Code](https://shunt.dev/providers/kimi/#kimi-code-oauth-subscription).
+Every row above but one takes `auth = "api_key"`. **Kimi Code** is the exception: a separate, subscription-billed service from the metered Moonshot API — different host, OAuth instead of an API key, and a built-in `kimi-code` preset. That preset resolves only inside an ordered `[[upstreams]]` entry, so declare it there (it is not in the seeded provider map) and log in. See [Kimi Code](https://shunt.sh/providers/kimi/#kimi-code-oauth-subscription).
 
 ### Reusing a subscription
 
@@ -184,27 +191,30 @@ Unless a row says otherwise, these are **off by default** — absent its config 
 
 | Feature | Enable with | Documentation |
 | :-- | :-- | :-- |
-| Anthropic multi-account pooling — sticky sessions, quota-aware rotation, predictive avoidance | `auth = "claude_oauth"` with two or more accounts; `[server.pool]` is optional tuning | [How-to](https://shunt.dev/guides/anthropic-multi-account/) |
-| Codex multi-account pooling — `x-codex-*` window tracking, slow-start ramp, re-probing | `auth = "chatgpt_oauth"` with two or more accounts; `[server.pool]` is optional tuning | [How-to](https://shunt.dev/guides/codex-multi-account/) |
-| Inbound Codex endpoint — point the **Codex CLI** at shunt and pool it, with opt-in per-model routing | `[server.codex_endpoint]` | [How-to](https://shunt.dev/guides/inbound-codex-endpoint/) |
-| Claude apps gateway login — OAuth device flow, managed settings, per-user policy | `[server.gateway]` with `public_url`, a 32-byte-or-longer JWT secret, and static users or `[server.gateway.oidc]` | [How-to](https://shunt.dev/guides/gateway-login/) |
-| Gateway telemetry ingest — verbatim OTLP relay for managed clients | a configured `[server.gateway]`, plus `[server.gateway.telemetry]` with a non-empty `forward_to` | [Reference](https://shunt.dev/reference/configuration/#servergatewaytelemetry-optional) |
-| Admin web surface — accounts and usage dashboard, browser provisioning | `[server.admin]`, `shunt dashboard setup` | [How-to](https://shunt.dev/guides/admin-remote-provisioning/) |
-| Spend-limit Admin API — organization- and user-scoped caps (stage 1 stores, does not enforce) | `[server.admin]` + `[server.spend]` | [Reference](https://shunt.dev/reference/configuration/#serverspend-optional) |
-| Client usage endpoint — sanitized, aggregated pool headroom at `GET /usage` | `[server.auth]` + `[server.usage]` | [Reference](https://shunt.dev/reference/configuration/#serverusage-optional) |
-| Claude Code CLI native usage bars — serves `GET /api/oauth/usage` | `[server.oauth_usage]`, plus `[server.auth]` or `[server.gateway]` on a non-loopback bind | [Reference](https://shunt.dev/reference/configuration/#serveroauth_usage-optional) |
-| Upstream status polling — Statuspage indicators in the dashboard and as a metric | `[server.status]` with at least one `[[server.status.sources]]` entry | [Reference](https://shunt.dev/reference/configuration/#serverstatus-optional) |
-| Bounded upstream retry — **on by default**, conservative, never mid-stream | `[providers.<name>.retry]` | [Reference](https://shunt.dev/reference/configuration/#providersnameretry) |
-| Shared-deployment limits — **on by default** (1024 concurrent, 32 MiB bodies, 120 s TTFB, device-flow rate limits); CIDR, header, and URL limits are opt-in | `[server] max_concurrent_requests`, `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [How-to](https://shunt.dev/guides/shared-gateway/) |
-| Secret references — `${VAR}` or `${file:/abs/path}` in any string value, re-resolved on hot reload (not `[sentry]`/`[otel]`, built once at startup — rotating those needs a restart) | any config string (**always on**) | [Reference](https://shunt.dev/reference/configuration/) |
-| OpenTelemetry metrics and traces | `[otel]` with a non-empty `endpoint` | [How-to](https://shunt.dev/guides/opentelemetry/) |
+| Anthropic multi-account pooling — sticky sessions, quota-aware rotation, predictive avoidance | `auth = "claude_oauth"` with two or more accounts; `[server.pool]` is optional tuning | [How-to](https://shunt.sh/guides/anthropic-multi-account/) |
+| Codex multi-account pooling — `x-codex-*` window tracking, slow-start ramp, re-probing | `auth = "chatgpt_oauth"` with two or more accounts; `[server.pool]` is optional tuning | [How-to](https://shunt.sh/guides/codex-multi-account/) |
+| Inbound Codex endpoint — point the **Codex CLI** at shunt and pool it, with opt-in per-model routing | `[server.codex_endpoint]` | [How-to](https://shunt.sh/guides/inbound-codex-endpoint/) |
+| Learned prefill routing (`type = "prefill_router"`) | compile-time opt-in — `cargo build --release --features prefill-router` (**off by default**; not in release binaries or the Homebrew formula, which are built `--features ui`), plus a `[models.router]` table with `type = "prefill_router"`, a router checkpoint on disk, and a Python environment carrying `torch` and `transformers` | [Reference](https://shunt.sh/reference/configuration/#type--prefill_router) |
+| LLM-judge routing (`type = "llm_classifier"`, `type = "composite"`) — a judge model picks the destination per turn, per `classify_trigger`; never served to the client | a `[models.router]` table with `type = "llm_classifier"` (`mode = "capability"` or `"custom"`) or `type = "composite"`, or a classifier-form `[models.subagents]` overlay | [Reference](https://shunt.sh/reference/configuration/#type--llm_classifier) |
+| Judged-turn routing (`mode = "escalation"`, `type = "advisor"`) — the answer is made first, held back, and served only after a judge or reviewer rules on the completed turn; streaming callers get it replayed once the verdict is in | a `[models.router]` table with `type = "llm_classifier"` and `mode = "escalation"`, or with `type = "advisor"` | [Reference](https://shunt.sh/reference/configuration/#type--advisor) |
+| Claude apps gateway login — OAuth device flow, managed settings, per-user policy | `[server.gateway]` with `public_url`, a 32-byte-or-longer JWT secret, and static users or `[server.gateway.oidc]` | [How-to](https://shunt.sh/guides/gateway-login/) |
+| Gateway telemetry ingest — verbatim OTLP relay for managed clients | a configured `[server.gateway]`, plus `[server.gateway.telemetry]` with a non-empty `forward_to` | [Reference](https://shunt.sh/reference/configuration/#servergatewaytelemetry-optional) |
+| Admin web surface — accounts and usage dashboard, browser provisioning | `[server.admin]` with an admin credential (`tokens_env`, `tokens_file`, or a `write_keys` entry; a `read_keys` entry alone brings the dashboard up read-only — it signs in and serves every view, but provisioning needs write) — **or** `shunt dashboard setup`, which writes the table and mints a token, but only when `[server.admin]` is absent: against an existing block it leaves your credential untouched and only adds a missing `[server.oauth_usage]`. The dashboard itself is served from a bundle only a `--features ui` build embeds — prebuilt release binaries and the Homebrew formula have it, a plain `cargo build`/`cargo install` does not | [How-to](https://shunt.sh/guides/admin-remote-provisioning/) |
+| Spend-limit Admin API — organization- and user-scoped caps (stage 1 stores, does not enforce) | `[server.admin]` with an admin credential (`tokens_env`, `tokens_file`, or a `write_keys`/`read_keys` entry — read-tier serves the GETs) + `[server.spend]` | [Reference](https://shunt.sh/reference/configuration/#serverspend-optional) |
+| Client usage endpoint — sanitized, aggregated pool headroom at `GET /usage` | `[server.auth]` with client tokens in `tokens_env` (default `SHUNT_CLIENT_TOKENS`) + `[server.usage]` | [Reference](https://shunt.sh/reference/configuration/#serverusage-optional) |
+| Claude Code CLI native usage bars — serves `GET /api/oauth/usage` | `[server.oauth_usage]`, plus `[server.auth]` (client tokens in `tokens_env`, default `SHUNT_CLIENT_TOKENS`) or `[server.gateway]` on a non-loopback bind | [Reference](https://shunt.sh/reference/configuration/#serveroauth_usage-optional) |
+| Upstream status polling — Statuspage indicators as a metric, and in the dashboard on a `--features ui` build | `[server.status]` with at least one `[[server.status.sources]]` entry | [Reference](https://shunt.sh/reference/configuration/#serverstatus-optional) |
+| Bounded upstream retry — **on by default**, conservative, never mid-stream | `[providers.<name>.retry]` | [Reference](https://shunt.sh/reference/configuration/#providersnameretry) |
+| Shared-deployment limits — **on by default** (1024 concurrent, 32 MiB bodies, 120 s TTFB, device-flow rate limits); CIDR, header, and URL limits are opt-in | `[server] max_concurrent_requests`, `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [How-to](https://shunt.sh/guides/shared-gateway/) |
+| Secret references — `${VAR}` or `${file:/abs/path}` in any string value, re-resolved on hot reload (not `[sentry]`/`[otel]`, built once at startup — rotating those needs a restart) | any config string (**always on**) | [Reference](https://shunt.sh/reference/configuration/) |
+| OpenTelemetry metrics and traces | `[otel]` with a non-empty `endpoint` | [How-to](https://shunt.sh/guides/opentelemetry/) |
 
 ## Documentation
 
-Everything for users lives at **[shunt.dev](https://shunt.dev)**:
+Everything for users lives at **[shunt.sh](https://shunt.sh)**:
 
-- [Quickstart](https://shunt.dev/getting-started/quickstart/) · [Why shunt?](https://shunt.dev/getting-started/why-shunt/) · [Providers](https://shunt.dev/guides/providers/) · [Configuration](https://shunt.dev/guides/configuration/) · [Troubleshooting](https://shunt.dev/reference/troubleshooting/)
-- **For agents:** every page has a Markdown twin (append `.md` to any URL, or use the page's *Copy Markdown* / *Open in AI* buttons), and the site publishes [`/llms.txt`](https://shunt.dev/llms.txt), [`/llms-small.txt`](https://shunt.dev/llms-small.txt), and [`/llms-full.txt`](https://shunt.dev/llms-full.txt) per the [llms.txt spec](https://llmstxt.org/).
+- [Quickstart](https://shunt.sh/getting-started/quickstart/) · [Why shunt?](https://shunt.sh/getting-started/why-shunt/) · [Providers](https://shunt.sh/guides/providers/) · [Configuration](https://shunt.sh/guides/configuration/) · [Troubleshooting](https://shunt.sh/reference/troubleshooting/)
+- **For agents:** every page has a Markdown twin (append `.md` to any URL, or use the page's *Copy Markdown* / *Open in AI* buttons), and the site publishes [`/llms.txt`](https://shunt.sh/llms.txt), [`/llms-small.txt`](https://shunt.sh/llms-small.txt), and [`/llms-full.txt`](https://shunt.sh/llms-full.txt) per the [llms.txt spec](https://llmstxt.org/).
 
 Design notes and milestone specs for contributors live in [`docs/`](docs/) — start with [`docs/implementation-plan.md`](docs/implementation-plan.md).
 
@@ -218,16 +228,21 @@ Contrast with the alternative approach (handing a `subagent_type` off to another
 
 Selectivity is driven by the **`model` id on each request**, which Claude Code already lets you choose per context: the `/model` picker for the main session, a subagent definition's `model:` frontmatter, `CLAUDE_CODE_SUBAGENT_MODEL` for all subagents, or `ANTHROPIC_CUSTOM_MODEL_OPTION` to add a custom entry to the picker. So "divert only this agent / this session" is decided in Claude Code, and shunt just honors the model id it receives — no fragile per-agent system-prompt fingerprinting. Unlike global model-swap proxies, the main session can stay on Claude while only the models you name divert.
 
+One model id can opt into deciding for itself. A [`[models.router]`](https://shunt.sh/guides/stage-router/) entry names a routing algorithm with a `type` key: `stage_router` picks per turn between a capable and an efficient target from the conversation's recent **tool-result metadata** — `tool_use.name` and `tool_result.is_error`, not prompt text — `auto` is that router under upstream's preset, `random` splits traffic across weighted targets and keeps a session on one arm, `noop` answers with an empty message for smoke tests, and `prefill_router` is a learned classifier over the latest user turn, available only from a build that opts into the off-by-default `prefill-router` cargo feature. Two types hand the decision to an **LLM judge**: [`llm_classifier`](https://shunt.sh/reference/configuration/#type--llm_classifier) routes on a verdict — `mode = "capability"` picks between a strong and a weak target on the judge's solve probability, `mode = "custom"` picks a model group named by your own prompt and JSON schema — and [`composite`](https://shunt.sh/reference/configuration/#type--composite) lets a judge set the tier a `stage_router` falls open to while leaving its signal scoring alone. Two more judge the **completed** turn before the client sees it: `llm_classifier` with [`mode = "escalation"`](https://shunt.sh/reference/configuration/#mode--escalation) serves a weak target's turn unless the judge keeps finding it in trouble, then latches the session onto a strong target, and [`advisor`](https://shunt.sh/reference/configuration/#type--advisor) has a stronger reviewer approve an executor's terminal turn or send it back to redo the work. Those turns are held until the verdict and then replayed, so the first byte arrives when the whole turn is done. A `stage_router` can also add an optional [`[models.router.classifier]`](https://shunt.sh/reference/configuration/#modelsrouterclassifier-optional) table naming a judge model, consulted only on the turns the signals leave undecided and never served to the client; a `classify_trigger` key decides when any of them consults a judge (`every_request`, `user_turn`, or `new_session`), and six `judge_*`/`gated_*`/`max_judge_calls` keys bound every internal call it makes. Every target is an ordinary public model id, so it keeps its own failover chain, pool, and adapter ([Switchyard Integration](https://shunt.sh/guides/switchyard/)). Any entry can also carry a [`[models.subagents]`](https://shunt.sh/reference/configuration/#modelssubagents-optional) overlay that sends delegated work — `Task` sub-agents, hook agents, workflow sub-agents — to a different target, optionally per agent type (`by_type = { Explore = "claude-haiku-4-5" }`), while the parent session keeps its own destination; `main`, compaction, and auxiliary turns never take it. That overlay has a second form, [`type = "llm_classifier"` with `mode = "custom"`](https://shunt.sh/reference/configuration/#subagents-type--llm_classifier), which has a judge read the delegated task and pick the child's target once per (session, agent) — the parent is never classified. Configure neither a router nor a subagents overlay and nothing changes.
+
 ## Claude Code integration (official surface)
 
 Claude Code exposes a **first-class gateway contract** behind `ANTHROPIC_BASE_URL` — `shunt` implements this rather than the fragile "hash the subagent's system prompt" heuristic that earlier Claude Code proxies rely on.
 
 - [LLM Gateway Protocol](https://code.claude.com/docs/en/llm-gateway-protocol) — the API contract: endpoints, headers and body fields to forward vs consume, feature pass-through, and attribution. A running gateway serves the machine-readable spec at `GET /protocol`. Claude Code prepends a client-version and conversation fingerprint to the system prompt; shunt forwards that attribution block unchanged, since suppressing it is the developer's call via `CLAUDE_CODE_ATTRIBUTION_HEADER=0`.
-- [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code queries `GET /v1/models?limit=1000` at startup (opt-in via `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`) and adds returned models to the `/model` picker. shunt answers with curated `[[models]]` entries plus, while `auto_include_builtin_models` stays `true`, the caller's own live catalog — fetched only when `server.default_provider` is Anthropic-kind, and falling back to a built-in snapshot when it isn't, when no credential is available, or when the fetch fails. **Constraint:** entries whose `id` doesn't begin with `claude`/`anthropic` are ignored — non-Claude models must be aliased or added manually. See [Model discovery](https://shunt.dev/guides/model-discovery/).
-- [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` adds a gateway-routed entry to the `/model` picker without replacing built-in aliases; the ID skips validation, so any string the gateway accepts works. **This is the primary way to select a non-Claude model** (e.g. `gpt-5.6-sol`), given the discovery constraint above.
-- **Tool search** (`ENABLE_TOOL_SEARCH`) — Claude Code defers MCP/LSP tool schemas and reveals them on demand, reclaiming context. Because shunt isn't a first-party Anthropic host, Claude Code keeps this **off** unless you opt in. Whether deferral then survives depends on the upstream, not on a setting alone: `claude*` and `anthropic/*` ids keep the protocol byte-for-byte, other ids have their `defer_loading` markers stripped because those hosts reject them, and the Responses path has its own three-state `tool_search` setting. See [Tool search](https://shunt.dev/guides/codex/#tool-search).
+- [Model discovery](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery) — Claude Code queries `GET /v1/models?limit=1000` at startup (opt-in via `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`) and adds returned models to the `/model` picker. shunt answers with curated `[[models]]` entries plus, while `auto_include_builtin_models` stays `true`, the caller's own live catalog — fetched only when `server.default_provider` is Anthropic-kind, and falling back to a built-in snapshot when it isn't, when no credential is available, or when the fetch fails. **Constraint:** entries whose `id` doesn't begin with `claude`/`anthropic` are ignored — non-Claude models must be aliased or added manually. See [Model discovery](https://shunt.sh/guides/model-discovery/).
+- **Gateway hint headers** (`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`) — recent Claude Code releases describe each request with `x-claude-code-*` headers. shunt reads five of them into its routing context — the session id, the delegated-agent id, the request class (`main`, `subagent`, `workflow`, `compaction`, `auxiliary`), the agent type, and the one-shot flag marking the first turn after a context compaction — and `GET /protocol` lists them as consumed. The agent-id header is **not** gated by that variable, so on a default deployment a `Task` sub-agent already keeps its own [stage-router](https://shunt.sh/guides/stage-router/) tier pin, separate from the parent session's dwell and escalations, with no client change. Setting `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` on the client additionally sends the other four, which makes the request class authoritative over that agent-id fallback and lets the router hold the turns after a compaction on the capable tier.
 
-**Design principle:** be a spec-compliant Anthropic-Messages gateway (`/v1/messages`, `/v1/models`, correct header/attribution pass-through), route by the request's `model` id, and translate Anthropic Messages ⇄ the OpenAI Responses API for mapped models — no prompt-shape heuristics that break on every Claude Code prompt change.
+- [Add a custom model option](https://code.claude.com/docs/en/model-config#add-a-custom-model-option) — `ANTHROPIC_CUSTOM_MODEL_OPTION` adds a gateway-routed entry to the `/model` picker without replacing built-in aliases; the ID skips validation, so any string the gateway accepts works. **This is the primary way to select a non-Claude model** (e.g. `gpt-5.6-sol`), given the discovery constraint above.
+- **Tool search** (`ENABLE_TOOL_SEARCH`) — Claude Code defers MCP/LSP tool schemas and reveals them on demand, reclaiming context. Because shunt isn't a first-party Anthropic host, Claude Code keeps this **off** unless you opt in. Whether deferral then survives depends on the upstream, not on a setting alone: `claude*` and `anthropic/*` ids keep the protocol byte-for-byte, other ids have their `defer_loading` markers stripped because those hosts reject them, and the Responses path has its own three-state `tool_search` setting. See [Tool search](https://shunt.sh/guides/codex/#tool-search).
+- **Auto mode's server-side classifier** (`dangerous-tool-use-*`) — auto mode asks the API to classify each tool use server-side, at no charge. shunt relays the request and its verdict untouched on Anthropic routes. Where the upstream cannot answer — a translated route, or an Anthropic-protocol third party, none of which is known to accept the field — shunt answers "could not evaluate" per action instead of returning nothing, so the client classifies just that action locally and keeps asking the server on the next turn rather than retiring the feature for the session. See [Troubleshooting](https://shunt.sh/reference/troubleshooting/).
+
+**Design principle:** be a spec-compliant Anthropic-Messages gateway (`/v1/messages`, `/v1/models`, correct header/attribution pass-through), route by the request's `model` id, and translate Anthropic Messages ⇄ the OpenAI Responses API for mapped models — no prompt-shape heuristics that break on every Claude Code prompt change. The opt-in stage router holds to the same line: it reads structured protocol fields, never the system prompt.
 
 ## Related work / prior art
 

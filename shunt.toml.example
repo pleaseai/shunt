@@ -8,6 +8,8 @@
 [server]
 bind = "127.0.0.1:3001"        # address shunt listens on (ANTHROPIC_BASE_URL points here)
 default_provider = "anthropic" # provider for any model with no route -> pass-through to Anthropic
+# shutdown_timeout_seconds = 30 # (default) first SIGTERM/SIGINT drains HTTP/SSE/WS
+                                # to this deadline; valid range 1..=3600; restart-only
 # max_concurrent_requests = 1024 # (default) inbound requests held through response-body
                                  # completion; excess is shed with 503; 0 disables
 # sse_keepalive_seconds = 30   # (default) inject an SSE `ping` after this much upstream
@@ -39,6 +41,9 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # tokens_env = "SHUNT_ADMIN_TOKENS"    # (default) env var with name:token pairs
 # session_ttl_secs = 3600              # (default) browser session lifetime
 # pending_ttl_secs = 600               # (default) provisioning-flow lifetime
+# hide_observed = false                # (default) read host CLI/app logins for
+                                       # the dashboard usage table; true never
+                                       # reads them, leaving managed accounts only
 
 # Per-credential admin keys with an id the spend audit trail records. Keys must
 # be at least 32 characters and must come from ${VAR} / ${file:...} or a SHUNT_*
@@ -82,7 +87,8 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # default_threshold_fable = 0.85 # Fable-only 7d_oi bucket
 # burn_rate_avoidance = false    # avoid projected exhaustion before reset
 # usage_refresh_seconds = 300    # (disabled by default; 0 disables) poll usage
-#                                    API for refreshable Claude accounts only;
+#                                    APIs for refreshable Claude, Codex, and
+#                                    Antigravity accounts;
 #                                    values below 60 clamp to 60, fixed at boot
 # state_path = "shunt-state.json"  # (disabled by default) persist per-account
 #                                    quota to this file so a restart warm-starts
@@ -177,15 +183,17 @@ kind = "responses"
 base_url = "https://chatgpt.com/backend-api"
 auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # request_compression = true  # default; false sends uncompressed request bodies (issue #285)
-# effort = "high"              # low|medium|high|xhigh; gpt-5.6 slugs also accept "max"
+# effort = "high"              # low|medium|high|xhigh; gpt-5.6 and gpt-6 slugs also accept "max"
 # service_tier = "fast"        # optional: opt in to Codex's "Fast" mode (docs/codex-configuration.md §9)
 # count_tokens = "tiktoken"    # default: local o200k_base count for count_tokens.
                                # "estimate" opts out (404 -> client estimates).
 # websocket = true             # EXPERIMENTAL (issue #32): reach the Codex backend
                                # over the Responses WebSocket v2 transport instead
-                               # of HTTP. Pools a connection per conversation and
-                               # reuses previous_response_id to upload only the new
-                               # input. Only honored for this ChatGPT/Codex backend;
+                               # of HTTP. Pools a connection per resolved
+                               # conversation (the x-claude-code-session-id header
+                               # or a parsed metadata session id) and reuses
+                               # previous_response_id to upload only the new input.
+                               # Only honored for this ChatGPT/Codex backend;
                                # falls back to HTTP if the socket can't be opened.
 
 # --- Optional: pool several ChatGPT accounts behind [providers.codex] instead of
@@ -288,8 +296,9 @@ provider = "openai"
 # account's live-entitled slugs. The catalog of valid Codex slugs (and the
 # reasoning levels each accepts) is openai/codex's models.json:
 #   https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json
-# The latest are gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna; older accounts may
-# only be entitled to gpt-5.5 / gpt-5.4 / gpt-5.2. See docs/m2-chatgpt-oauth.md §0.
+# The latest are gpt-6-astra / gpt-6-sol / gpt-6-luna, then gpt-5.6-sol /
+# gpt-5.6-terra / gpt-5.6-luna; older accounts may only be entitled to gpt-5.5 /
+# gpt-5.4 / gpt-5.2. See docs/m2-chatgpt-oauth.md §0.
 # [[routes]]
 # model = "gpt-5.6-sol"
 # provider = "codex"
@@ -330,3 +339,29 @@ provider = "openai"
 # model = "claude-gpt-5.6-sol-via-codex" # the alias Claude Code sends
 # provider = "codex"
 # upstream_model = "gpt-5.6-sol"         # real slug forwarded upstream (see models.json)
+
+# Content-aware tier selection (opt-in).
+#
+# A [[models]] entry carrying a
+# [models.stage_router] table names TWO destinations instead of one and lets the
+# request's recent tool-result history pick between them: errors, investigation,
+# or stalled progress route to the capable tier; routine production stays on the
+# efficient one. Both targets are ordinary model ids, so they resolve through the
+# normal ladder and keep failover, account pools, effort, and service_tier.
+# Without this table nothing changes — routing stays purely by model id.
+# [[models]]
+# id = "claude-auto"                     # must begin with claude/anthropic to reach /model
+# display_name = "Auto (stage router)"
+#
+# [models.stage_router]
+# capable_target = "claude-opus-4-8"     # hard reasoning, investigation, error recovery
+# efficient_target = "claude-sonnet-4-6" # routine work once the plan is settled
+# picker = "efficient_first"             # (default) tier used when signals are inconclusive
+# confidence_threshold = 0.5             # (default) minimum confidence to act on a signal
+# recent_turn_window = 3                 # (default) turns of tool results fed to the scorer
+# min_dwell_turns = 3                    # (default) turns held before a de-escalation may fire
+# deescalate_threshold = 0.75            # (default) stricter than the escalation threshold:
+#                                        # a tier flip forfeits the warm prompt-cache prefix
+#                                        # and any previous_response_id continuation, so
+#                                        # coming back down must clear a higher bar
+# session_ttl_seconds = 3600             # (default) how long a session's pinned tier survives

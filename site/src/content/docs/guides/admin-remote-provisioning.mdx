@@ -7,7 +7,7 @@ shunt can expose an admin-authenticated **Accounts and usage** view. It automati
 
 Observation is strictly read-only. shunt reads current access/session material only in memory and never refreshes, copies, or writes the source credential. Cursor.app's SQLite state is opened read-only. An expired source is shown as unavailable and must be renewed with its provider client. The table reports each provider's native signal: Claude's 5-hour/weekly/model-family windows, response-derived GPT/Codex windows, all Gemini Code Assist model buckets, Kimi's weekly and 5-hour limits, Grok credit/product usage, and Cursor billing-cycle/Auto + Composer/named-model usage.
 
-Managed account provisioning is a separate advanced action. Expanding **Manage pool accounts** lets you create shunt-owned Claude or Codex credentials for load-balancing. These managed copies live in `~/.shunt/accounts/` and shunt owns their refresh/writeback; they are not required merely to view local usage. Their usage is surfaced in the main table above — only provisioning and raw store metadata live behind the advanced section.
+Managed account provisioning is a separate advanced action. Expanding **Manage pool accounts** lets you create shunt-owned Claude, Codex, or Antigravity credentials for load-balancing. These managed copies live in `~/.shunt/accounts/` and shunt owns their refresh/writeback; they are not required merely to view local usage. Their usage is surfaced in the main table above — only provisioning and raw store metadata live behind the advanced section.
 
 ## Enable the admin surface
 
@@ -19,6 +19,7 @@ header = "x-shunt-admin-token"
 tokens_env = "SHUNT_ADMIN_TOKENS"
 session_ttl_secs = 3600
 pending_ttl_secs = 600
+# hide_observed = false                 # (default) scan host CLI/app logins
 ```
 
 ```bash
@@ -27,7 +28,7 @@ shunt check
 shunt run
 ```
 
-Credentials use the same comma-separated `name:token` format as `SHUNT_CLIENT_TOKENS`, but they are a separate security boundary. Do not reuse a `[server.auth]` client token as an admin token. Startup fails closed if `[server.admin]` is present but all three credential sources — its token environment variable (or `tokens_file`), `[[server.admin.write_keys]]`, and `[[server.admin.read_keys]]` — are empty or malformed. The `name:token` pairs are the **write** tier; a `read_keys` entry passes every GET on the admin surface and is refused on every mutation, the login form included.
+Credentials use the same comma-separated `name:token` format as `SHUNT_CLIENT_TOKENS`, but they are a separate security boundary. Do not reuse a `[server.auth]` client token as an admin token. Startup fails closed if `[server.admin]` is present but all three credential sources — its token environment variable (or `tokens_file`), `[[server.admin.write_keys]]`, and `[[server.admin.read_keys]]` — are empty or malformed. The `name:token` pairs are the **write** tier; a `read_keys` entry passes every GET on the admin surface and is refused on every mutation. It can sign in to the dashboard, where its session is read-only.
 
 ### Add OIDC/SSO browser login
 
@@ -53,6 +54,12 @@ The login page retains the admin-token form and adds **Sign in with SSO** (or **
 
 See the [configuration reference](/reference/configuration/#serveradmin-optional) for every key and default. The [endpoint reference](/reference/endpoints/) lists the browser and JSON routes.
 
+:::note
+`/admin` serves the dashboard from a bundle only a `--features ui` build embeds. The prebuilt release binaries and the Homebrew formula have it; a plain `cargo build` or `cargo install` does not, and answers `404` there with a body naming the feature. See [Installation](/getting-started/installation/) for the from-source build. Everything else on this page — the JSON API and the config — is identical either way.
+:::
+
+Set `hide_observed = true` when the dashboard is shared or reached remotely and should not reveal — or even read — the provider logins on the gateway host. shunt then skips host CLI/app credential discovery entirely: `GET /admin/api/observed` still requires an admin credential but returns an empty list, and the dashboard does not request it. **Accounts and usage** stays on the page and lists managed pool accounts only, since that table is also where their usage appears. The change hot-applies on config reload; a dashboard that is already open reads the flag when the page loads, so it follows the new value after a page refresh. Adding or removing `[server.admin]` itself still requires a restart.
+
 ## Provision a Claude account in the browser
 
 1. Open `/admin` and sign in with an admin token.
@@ -67,7 +74,7 @@ See the [configuration reference](/reference/configuration/#serveradmin-optional
    name = "backup"
    ```
 
-A started flow remains valid for `pending_ttl_secs` (10 minutes by default), giving the operator time to open the authorization page and paste the result. The server records the selected mode with the pending attempt, so the completion request cannot switch token types. Full OAuth stores access and refresh tokens and appears as credential kind `imported`; setup-token mode stores a static credential with kind `setup_token`. The completion response reports whether the account was stored and whether the current provider configuration makes it live.
+A started flow remains valid for `pending_ttl_secs` (10 minutes by default), giving the operator time to open the authorization page and paste the result. The server records the selected mode with the pending attempt, so the completion request cannot switch token types. From the moment you select **Start** until the flow completes, the dashboard disables the login-method radios and says why, because the pending attempt's mode is fixed when the request is issued. Selecting **Start** again does not release them; completing the flow, or reloading the page, does. Selecting **Start** also closes the authorization step already on screen, so its link and **Complete** form disappear the moment the replacement request is issued; if that replacement then fails — refused, or with no answer at all — the failure message says the earlier step was closed. A step whose code was already submitted is named only once that exchange has itself failed, because until then it may still store the account — so on a slow exchange the note is added to the failure message a moment after it appears. What is left on the server differs by case: a refused replacement leaves the earlier pending login alone for the rest of its `pending_ttl_secs`, while an unanswered one may have reached the server and, under the same account name, replaced it. Nothing on the page can reach it either way, so start the flow again. Full OAuth stores access and refresh tokens and appears as credential kind `imported`; setup-token mode stores a static credential with kind `setup_token`. The completion response reports whether the account was stored and whether the current provider configuration makes it live.
 
 Account-store changes are discovered per request, so scan-mode providers do not need a restart after an account is added or removed.
 
@@ -88,6 +95,23 @@ name = "codex-backup"
 
 `SHUNT_CODEX_TOKEN_URL` overrides the ChatGPT token endpoint for local integration testing. shunt accepts HTTPS overrides or plain HTTP loopback URLs only; leave it unset in production.
 
+## Provision an Antigravity account in the browser
+
+1. In **Add Antigravity account**, enter a lowercase account name and select **Start Antigravity login**.
+2. Open the authorize URL, sign in to the target Google account, and approve access.
+3. Google redirects the browser to `http://localhost:51121/oauth-callback`. The localhost page will normally fail to load; this is expected because the admin flow does not run a callback server in the operator's browser.
+4. Copy the **full URL from the browser address bar**, paste it into the admin page, and select **Complete Antigravity login**. The JSON API also accepts `<code>#<state>`.
+5. shunt exchanges the code, resolves the account's Code Assist project (non-fatal if it fails — retried on the account's first request), and writes a private named credential file.
+
+An empty-account `antigravity_oauth` provider, including the built-in `antigravity` provider, discovers the new store account on its next request. An explicitly configured pool needs a name-only entry:
+
+```toml
+[[providers.antigravity.accounts]]
+name = "antigravity-backup"
+```
+
+Unlike Codex, the Antigravity table also offers a **Refresh** button: it exercises the stored refresh grant on demand and reports whether the login is still alive, the same probe [Claude's Refresh button](#dead-credentials-and-the-refresh-button) runs. `SHUNT_ANTIGRAVITY_TOKEN_URL` overrides the Google token endpoint for local integration testing; leave it unset in production.
+
 ## Inspect automatic usage and managed-pool health
 
 The primary **Accounts and usage** table is automatic and grouped by provider: the provider is named once and its accounts nest beneath it. Observed logins are keyed by recognizable masked identity rather than a store filename; managed pool accounts appear alongside them under the same provider, keyed by account name. Where an observed login and a managed account hold the **same** subscription they are coalesced into a single row — one subscription is one row, labelled with the managed account name — so a pool does not make one subscription look like two.
@@ -103,21 +127,21 @@ Each row uses its provider's native signal:
 - **Grok** — overall credits and per-product usage for the Grok CLI subscription.
 - **Cursor** — billing-cycle total, Auto + Composer, and named-model usage from a read-only Cursor.app session.
 
-The collapsed advanced section shows managed account-store metadata and current pool state for each provider configured with `auth = "claude_oauth"` or `auth = "chatgpt_oauth"`. Claude managed rows include the 5-hour, shared 7-day, and `7d_oi` utilization observed from upstream responses, along with status and cooldown state. When upstream reported a reset time, each window cell also shows the time remaining until the window resets (e.g. `3d 4h`), with the absolute reset timestamp available on hover. Codex managed rows show the windows reported in `x-codex-*`; unsupported windows stay `—`.
+The collapsed advanced section shows managed account-store metadata and current pool state for each provider configured with `auth = "claude_oauth"`, `auth = "chatgpt_oauth"`, or `auth = "antigravity_oauth"`. Claude managed rows include the 5-hour, shared 7-day, and `7d_oi` utilization observed from upstream responses, along with status and cooldown state. When upstream reported a reset time, each window cell also shows the time remaining until the window resets (e.g. `3d 4h`), with the absolute reset timestamp available on hover. Codex managed rows show the windows reported in `x-codex-*`; unsupported windows stay `—`.
 
 ### Dead credentials and the Refresh button
 
 An account whose credential no operator-free retry can revive reports **Needs re-login** rather than `cooling`, in both the primary table and the advanced pool table. The distinction matters: a cooldown expires on its own after five minutes and the account is tried again, so a permanently dead credential otherwise looks identical to a quota pause — forever. The mark is set when the provider terminally rejects the refresh grant, when a credential that cannot be refreshed at all (a `token_env` token or an expired setup token) is rejected, and when a request retried with a freshly refreshed bearer is *still* rejected. It is reported independently of the cooldown and is memory-only, so a restart clears it until the account fails again. The mark follows the credential rather than the provider entry that tripped over it: when one stored account is activated by name in several provider tables, all of its rows flip together. An account that points at its own `credentials` file or `token_env` is a different credential even if it shares a name, so a failure on it marks nothing else.
 
-Recovery is to remove and re-add the account. Rows for `imported` accounts also carry a **Refresh** button, which exercises that account's refresh grant immediately and reports whether the login is still alive — useful for confirming a re-login worked without waiting for traffic. It is rate-limited because it reaches the provider's token endpoint, it always goes through the shared credential store so it cannot race the proxy's own refresh, and it **rotates the stored refresh token** exactly as ordinary use would. It returns the new expiry and never any token material. `setup_token` accounts have no refresh grant, so they answer `400` without contacting the provider.
+Recovery is to remove and re-add the account. Rows for `imported` accounts also carry a **Refresh** button, which exercises that account's refresh grant immediately and reports whether the login is still alive — useful for confirming a re-login worked without waiting for traffic. It is rate-limited because it reaches the provider's token endpoint, it always goes through the shared credential store so it cannot race the proxy's own refresh, and it **rotates the stored refresh token** exactly as ordinary use would. It returns the new expiry and never any token material. `setup_token` accounts have no refresh grant, so they answer `400` without contacting the provider. The button renders only in a write-tier session (see below).
 
 A successful probe clears the mark only when a failing grant was what set it. If the account was condemned because the provider rejected a bearer it had already issued, a working grant proves nothing about serving inference, so the mark survives and the response says so.
 
-The Claude account list exposes account name, credential kind (`setup_token` or `imported`), expiry, and UUID. The Codex list exposes account name, access-token expiry, and ChatGPT account ID. Neither endpoint returns token material. See [Anthropic Multi-Account](/guides/anthropic-multi-account/#selection-and-proactive-rotation) and [Codex Multi-Account](/guides/codex-multi-account/) for the respective selection behavior.
+The Claude account list exposes account name, credential kind (`setup_token` or `imported`), expiry, and UUID. The Codex list exposes account name, access-token expiry, and ChatGPT account ID. The Antigravity list exposes account name, access-token expiry, and email (when Google returned one). Neither endpoint returns token material. See [Anthropic Multi-Account](/guides/anthropic-multi-account/#selection-and-proactive-rotation) and [Codex Multi-Account](/guides/codex-multi-account/) for the respective selection behavior.
 
-In the dashboard the Claude table renders that expiry as a **Status** derived from the credential kind, because the raw value is the ~8-hour *access*-token deadline and means opposite things per kind. An `imported` account holds a refresh token that shunt renews on demand, so it reads **Auto-refreshes** (raw timestamp on hover) and a past timestamp there is normal, not a fault. A `setup_token` account cannot refresh at all, so its one-year expiry is actionable: **Valid until** the date while more than the refresh buffer remains, and **Expired**, styled as a danger state with a re-login hint, once it is inside that buffer or past the date. The buffer is the same five minutes routing applies (`EXPIRY_BUFFER`), so the dashboard never calls a credential usable while a routed request would already fail on the no-refresh-token path. Every row also offers a **Re-login** button, which prefills the add form above with that account's name and login method — completing the normal flow under an existing name overwrites the account in place. The Codex table carries the same **Status** column, but unconditionally: that store has no non-refreshable kind — both ways of writing into it require a refresh token — so shunt renews every Codex account and each row reads **Auto-refreshes**, again with the raw timestamp on hover. Codex rows carry the same **Re-login** button, minus the login-method preselection — ChatGPT OAuth is the only way into that store. The read-only rows in the usage table above are unaffected; those credentials are refreshed by the provider client that owns them, not by shunt.
+In the dashboard the Claude table renders that expiry as a **Status** derived from the credential kind, because the raw value is the ~8-hour *access*-token deadline and means opposite things per kind. An `imported` account holds a refresh token that shunt renews on demand, so it reads **Auto-refreshes** (raw timestamp on hover) and a past timestamp there is normal, not a fault. A `setup_token` account cannot refresh at all, so its one-year expiry is actionable: **Valid until** the date while more than the refresh buffer remains, and **Expired**, styled as a danger state with a re-login hint, once it is inside that buffer or past the date. The buffer is the same five minutes routing applies (`EXPIRY_BUFFER`), so the dashboard never calls a credential usable while a routed request would already fail on the no-refresh-token path. Every row also offers a **Re-login** button, which prefills the add form above with that account's name and login method — completing the normal flow under an existing name overwrites the account in place. The Codex and Antigravity tables carry the same **Status** column, but unconditionally: neither store has a non-refreshable kind — every way of writing into either requires a refresh token — so shunt renews every account and each row reads **Auto-refreshes**, again with the raw timestamp on hover. Codex and Antigravity rows carry the same **Re-login** button, minus the login-method preselection — OAuth is the only way into either store. Antigravity rows additionally carry the **Refresh** button described above. The read-only rows in the usage table above are unaffected; those credentials are refreshed by the provider client that owns them, not by shunt. Every row action here is write-tier. A `read_keys` login gets the same tables and the same **Status** column, but no row-action buttons and no add-account forms: `require_write` refuses those mutations server-side, so the dashboard does not offer them in the first place.
 
-For API/curl access to account metadata, pool state, provisioning, or account removal, send the admin credential in the configured header (default `x-shunt-admin-token`) or in `x-api-key` — both slots are accepted on the admin routes, never on inference routes — and use the JSON routes documented in [HTTP Endpoints](/reference/endpoints/). Header-authenticated requests do not use the browser session and are exempt from CSRF checks. Start Claude provisioning with `{ "name": "backup", "mode": "oauth" }` or `mode: "setup_token"`; omitting `mode` keeps the API's backward-compatible `setup_token` default. Start Codex provisioning with `{ "name": "codex-backup" }`, then complete it with `{ "code": "<full redirect URL or code#state>" }`.
+For API/curl access to account metadata, pool state, provisioning, or account removal, send the admin credential in the configured header (default `x-shunt-admin-token`) or in `x-api-key` — both slots are accepted on the admin routes, never on inference routes — and use the JSON routes documented in [HTTP Endpoints](/reference/endpoints/). Header-authenticated requests do not use the browser session and are exempt from CSRF checks. Start Claude provisioning with `{ "name": "backup", "mode": "oauth" }` or `mode: "setup_token"`; omitting `mode` keeps the API's backward-compatible `setup_token` default. Start Codex provisioning with `{ "name": "codex-backup" }`, then complete it with `{ "code": "<full redirect URL or code#state>" }`. Start Antigravity provisioning with `{ "name": "antigravity-backup" }`, then complete it the same way. The completion call's upstream token exchange is bounded at 30 seconds server-side: past that shunt answers `502` with `Claude token exchange timed out` (`Codex token exchange timed out` for Codex, `Antigravity token exchange timed out` for Antigravity) and stores nothing. The pending login survives a timeout, and the attempt still counts against its five-try cap, but the authorization code may already be spent upstream — recover by starting the flow again for a fresh code rather than re-posting the old one.
 
 ## CLI and SSH fallback
 
@@ -145,7 +169,7 @@ To import the host's current Codex login instead of using browser OAuth:
 shunt login codex --name codex-backup
 ```
 
-`--long-lived` remains a deprecated alias for `--mode setup-token`. The admin surface supports Claude full OAuth/setup-token provisioning and Codex ChatGPT OAuth. Existing-file imports require host access and therefore stay CLI-only.
+`--long-lived` remains a deprecated alias for `--mode setup-token`. The admin surface supports Claude full OAuth/setup-token provisioning, Codex ChatGPT OAuth, and Antigravity OAuth. Existing-file imports require host access and therefore stay CLI-only.
 
 
 

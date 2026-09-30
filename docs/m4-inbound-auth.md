@@ -166,11 +166,11 @@ request.
 | `InboundAuth::authenticate_client` | `[server.auth] header` raw, `Authorization: Bearer` payload, `x-api-key` raw |
 | `GatewayAuth::authenticate_bearer` / `authenticate_token` | `Authorization: Bearer` payload / a bare token value (reached in production only through that bearer path and through `consumed_by`) |
 | `AdminAuth::authenticate_credential` | `[server.admin] header` raw **and** `x-api-key` raw, over `write_keys`, `read_keys`, and the legacy `tokens_env`/`tokens_file` pairs alike |
-| `admin::authenticate` → `session_cookie` | the `cookie` header — a **write-tier** `shunt_admin_session` accepted when no credential header matched |
+| `admin::authenticate` → `session_cookie` | the `cookie` header — a `shunt_admin_session` accepted when no credential header matched, carrying **the tier its minting credential had** |
 
 shunt also accepts its own values, and admin credentials, out of **form bodies and query
-strings**: `admin::login_submit` (a write-tier admin credential in a form field, via
-`authenticate_login_token`), `gateway::oauth`, `gateway::device`, `gateway::idp`, `admin::oidc`,
+strings**: `admin::login_submit` (an admin credential of either tier in a form field, via
+`login_access`), `gateway::oauth`, `gateway::device`, `gateway::idp`, `admin::oidc`,
 and `auth::callback`. None of them needs a strip, and the reason is structural rather than a rule
 anyone has to remember: no forward site copies an inbound body or query string into an outbound
 request. Every upstream URL is rebuilt from config (`responses_url` and friends), and the body a
@@ -207,10 +207,10 @@ Four behavior changes came with the consolidation:
   a client sent cannot break a legitimate relay — the argument the Codex strip list already made
   for `x-shunt-token` alone.
 - **The `cookie` header is now stripped outright on every forward.** `admin::authenticate`
-  falls back to `session_cookie`, which reads a write-tier `shunt_admin_session` out of `cookie`,
-  making it an accept slot the first version of this enumeration missed — and two of the three
-  forward sites relayed it verbatim (`headers_for_route` starts from a clone of the caller's map
-  on both branches; the Codex strip list had no `cookie` entry). Whole-header removal is safe
+  falls back to `session_cookie`, which reads an accepted `shunt_admin_session` out of `cookie`
+  at whatever tier minted it, making it an accept slot the first version of this enumeration
+  missed — and two of the three forward sites relayed it verbatim
+  (`headers_for_route` starts from a clone of the caller's map on both branches; the Codex strip list had no `cookie` entry). Whole-header removal is safe
   because shunt keeps no cookie jar: `Cargo.toml` builds reqwest **without** the `cookies`
   feature and nothing in `src/` constructs a `cookie_store`/`cookie_provider`, so shunt never
   participates in upstream edge or affinity cookies (`__cf_bm`, `cf_clearance`). The mirror

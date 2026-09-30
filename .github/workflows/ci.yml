@@ -53,7 +53,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: |
+            ui/package-lock.json
+            plugins/shunt/package-lock.json
 
       - name: Install admin UI dependencies
         working-directory: ui
@@ -63,6 +65,33 @@ jobs:
         working-directory: ui
         run: npm run build
 
+      # The dashboard's behavior lives in this bundle, so its suite is a gate
+      # here rather than a local convenience. `npm run build` above only
+      # typechecks it.
+      - name: Test admin UI bundle
+        working-directory: ui
+        run: npm test
+
+      # The shunt mod answers /shunt:usage from TypeScript, not from the Rust
+      # binary, so its suite is a gate here rather than a local convenience.
+      # `claude plugin validate` (which checks the hooks module itself) needs a
+      # Claude Code binary and does not run here; the modules it cannot reach
+      # are the pure ones this suite covers.
+      - name: Install shunt mod dependencies
+        working-directory: plugins/shunt
+        run: npm ci
+
+      # `hooks/register.ts` is left out of the typecheck: it is the only module
+      # importing `claude-code`, whose types Claude Code generates locally via
+      # /plugin-types and which does not exist here (see plugins/shunt/tsconfig.json).
+      - name: Typecheck shunt mod
+        working-directory: plugins/shunt
+        run: npm run typecheck
+
+      - name: Test shunt mod
+        working-directory: plugins/shunt
+        run: npm test
+
       - name: Format check
         run: cargo fmt --all --check
 
@@ -71,6 +100,22 @@ jobs:
 
       - name: Test
         run: cargo test --all-features --workspace
+
+      # `--all-features` compiles the `#[cfg(not(feature = "ui"))]` arms out
+      # entirely, so the default build's answers — `GET /admin` reporting that
+      # this binary embeds no bundle, and the two route-inventory arms beside it
+      # — were dead source as far as CI was concerned. Scoped to the one test
+      # binary that carries those arms rather than a second full suite: the
+      # marginal cost is this crate compiled once with default features, not
+      # every test binary rebuilt. A `#[cfg(not(feature = "ui"))]` arm added to
+      # any *other* test file is not covered by this and needs its binary named
+      # here too. `prefill_router` is named for the same reason against a
+      # different feature: its `#[cfg(not(feature = "prefill-router"))]` arm is
+      # the one that proves a release binary refuses a `type = "prefill_router"`
+      # entry by naming the cargo feature, and `--all-features` compiles that
+      # arm away.
+      - name: Test default build (no ui feature)
+        run: cargo test --test router_surface --test prefill_router
 
       - name: sccache stats
         if: always()
@@ -112,7 +157,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: |
+            ui/package-lock.json
+            plugins/shunt/package-lock.json
 
       - name: Install admin UI dependencies
         working-directory: ui

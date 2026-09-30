@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    presets, AccountConfig, ApiKeyHeader, AuthMode, ConfigError, CountTokens, ProviderConfig,
-    ProviderKind, ProvidersConfig, RetryConfig,
+    expand_tilde, presets, AccountConfig, ApiKeyHeader, AuthMode, ConfigError, CountTokens,
+    ProviderConfig, ProviderKind, ProvidersConfig, RetryConfig,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -24,6 +24,10 @@ pub struct UpstreamConfig {
     /// See [`ProviderConfig::service_tier`]; Codex CLI's "Fast" mode opt-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    /// See [`ProviderConfig::classifier_model`] (`kind = "anthropic"` only);
+    /// unset by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_model: Option<String>,
     #[serde(default)]
     pub count_tokens: CountTokens,
     #[serde(default)]
@@ -42,6 +46,9 @@ pub struct UpstreamConfig {
     /// Empty by default: no prompt-derived working directory is honored.
     #[serde(default)]
     pub workspace_roots: Vec<String>,
+    /// See [`ProviderConfig::profile_dir`] (`kind = "antigravity_cli"` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_dir: Option<String>,
     /// See [`ProviderConfig::sandbox`] (`kind = "antigravity"` only). On by
     /// default; an ordered upstream must be able to opt out for the same
     /// reasons a `[providers.*]` entry can.
@@ -63,8 +70,11 @@ pub enum AuthMap {
     ApiKey {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         env: Option<String>,
-        #[serde(default)]
-        header: ApiKeyHeader,
+        /// Absent leaves the header alone, preserving a preset's choice (the
+        /// `opencode` preset sends `x-api-key`; an env-only map must not flip
+        /// it back to bearer, which zen rejects at request time).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<ApiKeyHeader>,
     },
     ClaudeOauth {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -92,7 +102,12 @@ pub enum AuthMap {
     },
     XaiOauth {},
     CursorOauth {},
-    AntigravityOauth {},
+    AntigravityOauth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accounts: Option<Vec<AccountSelection>>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -112,7 +127,9 @@ impl UpstreamAuth {
                 if env.is_some() {
                     provider.api_key_env = env;
                 }
-                provider.api_key_header = header;
+                if let Some(header) = header {
+                    provider.api_key_header = header;
+                }
             }
             Self::Map(AuthMap::ClaudeOauth { account, accounts }) => {
                 absorb_oauth_scope(upstream, AuthMode::ClaudeOauth, account, accounts, provider)?;
@@ -131,7 +148,15 @@ impl UpstreamAuth {
             }
             Self::Map(AuthMap::XaiOauth {}) => provider.auth = AuthMode::XaiOauth,
             Self::Map(AuthMap::CursorOauth {}) => provider.auth = AuthMode::CursorOauth,
-            Self::Map(AuthMap::AntigravityOauth {}) => provider.auth = AuthMode::AntigravityOauth,
+            Self::Map(AuthMap::AntigravityOauth { account, accounts }) => {
+                absorb_oauth_scope(
+                    upstream,
+                    AuthMode::AntigravityOauth,
+                    account,
+                    accounts,
+                    provider,
+                )?;
+            }
         }
         Ok(())
     }
@@ -222,9 +247,12 @@ pub(super) fn normalize(
             base_url,
             auth: preset.map_or(AuthMode::Passthrough, |preset| preset.auth),
             api_key_env: preset.and_then(|preset| preset.api_key_env.map(str::to_string)),
-            api_key_header: ApiKeyHeader::default(),
+            api_key_header: preset.map_or(super::ApiKeyHeader::default(), |preset| {
+                preset.api_key_header.unwrap_or_default()
+            }),
             effort: upstream.effort.clone(),
             service_tier: upstream.service_tier.clone(),
+            classifier_model: upstream.classifier_model.clone(),
             count_tokens: upstream.count_tokens,
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -233,6 +261,7 @@ pub(super) fn normalize(
             request_compression: upstream.request_compression,
             retry: upstream.retry,
             workspace_roots: upstream.workspace_roots.clone(),
+            profile_dir: upstream.profile_dir.clone().map(|dir| expand_tilde(&dir)),
             sandbox: upstream.sandbox,
         };
         if let Some(auth) = upstream.auth.clone() {
@@ -247,3 +276,149 @@ pub(super) fn normalize(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod antigravity_tests {
+    use super::*;
+    use figment::{
+        providers::{Format, Yaml},
+        Figment,
+    };
+
+    fn upstream(auth: &str) -> UpstreamConfig {
+        Figment::from(Yaml::string(&format!(
+            "name: agy\nkind: antigravity\nbase_url: http://localhost\nauth: {auth}\n"
+        )))
+        .extract()
+        .unwrap()
+    }
+
+    #[test]
+    fn antigravity_yaml_accounts_normalize_and_validate() {
+        let mut config = super::super::Config::default();
+        config.server.default_provider = "agy".into();
+        config.upstreams = vec![upstream(
+            "{mode: antigravity_oauth, accounts: [stored, {name: inline, credentials: /tmp/agy.json, priority: 2, disabled: true}]}"
+        )];
+        let config = config.validate().unwrap();
+        let provider = config.provider("agy").unwrap();
+        assert_eq!(provider.auth, AuthMode::AntigravityOauth);
+        assert_eq!(provider.account_scope, ["stored"]);
+        assert_eq!(provider.accounts.len(), 1);
+        assert_eq!(provider.accounts[0].name, "inline");
+        assert_eq!(
+            provider.accounts[0].credentials.as_deref(),
+            Some("/tmp/agy.json")
+        );
+        assert_eq!(provider.accounts[0].priority, 2);
+        assert!(provider.accounts[0].disabled);
+    }
+
+    #[test]
+    fn antigravity_yaml_single_account_and_shorthand() {
+        for (auth, scope) in [
+            ("antigravity_oauth", vec![]),
+            ("{mode: antigravity_oauth}", vec![]),
+            (
+                "{mode: antigravity_oauth, account: primary}",
+                vec!["primary"],
+            ),
+        ] {
+            let (providers, _) = normalize(&[upstream(auth)]).unwrap();
+            assert_eq!(providers["agy"].auth, AuthMode::AntigravityOauth);
+            assert_eq!(providers["agy"].account_scope, scope);
+            assert!(providers["agy"].accounts.is_empty());
+        }
+    }
+
+    #[test]
+    fn antigravity_toml_accounts_round_trip() {
+        let upstream: UpstreamConfig = toml::from_str(
+            r#"name = "agy"
+kind = "antigravity"
+base_url = "http://localhost"
+auth = { mode = "antigravity_oauth", accounts = ["primary", { name = "backup", token_env = "AGY_BACKUP", threshold = 0.8 }] }
+"#,
+        )
+        .unwrap();
+        let encoded = toml::to_string(&upstream).unwrap();
+        let decoded: UpstreamConfig = toml::from_str(&encoded).unwrap();
+        let (providers, _) = normalize(&[decoded]).unwrap();
+        let provider = &providers["agy"];
+        assert_eq!(provider.auth, AuthMode::AntigravityOauth);
+        assert_eq!(provider.account_scope, ["primary"]);
+        assert_eq!(
+            provider.accounts[0].token_env.as_deref(),
+            Some("AGY_BACKUP")
+        );
+        assert_eq!(provider.accounts[0].threshold, Some(0.8));
+    }
+
+    #[test]
+    fn antigravity_account_validation_rejects_invalid_and_duplicate_names() {
+        for selections in [
+            "['../escape']",
+            "['Bad']",
+            "[{name: '../escape'}]",
+            "[primary, primary]",
+            "[primary, {name: primary}]",
+            "[{name: primary}, {name: primary}]",
+        ] {
+            let mut config = super::super::Config::default();
+            config.server.default_provider = "agy".into();
+            config.upstreams = vec![upstream(&format!(
+                "{{mode: antigravity_oauth, accounts: {selections}}}"
+            ))];
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::InvalidAccountName { .. } | ConfigError::DuplicateAccountName { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn antigravity_account_validation_rejects_conflicting_sources_and_thresholds() {
+        for (fields, multiple_sources) in [
+            ("credentials: /tmp/agy.json, token_env: AGY_TOKEN", true),
+            ("threshold: 1.1", false),
+            ("threshold_5h: -0.1", false),
+            ("threshold_7d: 1.1", false),
+            ("threshold_fable: -0.1", false),
+        ] {
+            let mut config = super::super::Config::default();
+            config.server.default_provider = "agy".into();
+            config.upstreams = vec![upstream(&format!(
+                "{{mode: antigravity_oauth, accounts: [{{name: primary, {fields}}}]}}"
+            ))];
+            let error = config.validate().unwrap_err();
+            if multiple_sources {
+                assert!(matches!(
+                    error,
+                    ConfigError::AccountMultipleCredentialSources { .. }
+                ));
+            } else {
+                assert!(matches!(error, ConfigError::InvalidAccountThreshold { .. }));
+            }
+        }
+    }
+
+    #[test]
+    fn antigravity_yaml_selection_errors_are_explicit() {
+        for (auth, expected) in [
+            (
+                "{mode: antigravity_oauth, account: one, accounts: [two]}",
+                "at most one",
+            ),
+            (
+                "{mode: antigravity_oauth, accounts: []}",
+                "explicitly empty",
+            ),
+            ("{mode: antigravity_oauth, account: ' '}", "non-whitespace"),
+        ] {
+            assert!(normalize(&[upstream(auth)])
+                .unwrap_err()
+                .to_string()
+                .contains(expected));
+        }
+    }
+}

@@ -93,6 +93,11 @@ const BLUEPRINTS: &[Blueprint] = &[
         &["minimax-china"],
         "MiniMax China via MINIMAX_API_KEY"
     ),
+    upstream_blueprint!(
+        "opencode",
+        &["zen", "opencode-zen"],
+        "OpenCode Zen curated catalog via OPENCODE_API_KEY"
+    ),
 ];
 
 const GENERIC_UPSTREAM: &str = include_str!("../blueprints/upstream/_generic.md");
@@ -283,6 +288,7 @@ mod tests {
             "kimi-code",
             "zhipu",
             "minimax-cn",
+            "opencode",
         ] {
             assert!(error.contains(slug), "missing {slug:?} in {error:?}");
         }

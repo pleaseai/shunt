@@ -7,8 +7,12 @@
 //! has no Node toolchain and no bundle; release CI builds `ui/dist` and enables
 //! the feature.
 //!
-//! The three routes this module backs are registered in [`super::admin_router`]:
+//! The routes this module backs are registered in [`super::admin_router`]:
 //!
+//! - `/admin` — the mount root, which [`super::dashboard`] answers with
+//!   [`shell`] under this feature. Its `GET`/`HEAD` registration is shared with
+//!   the default build, where the same path reports that this binary embeds no
+//!   bundle rather than vanishing into an empty `404`.
 //! - `/admin/assets/{*path}` — the hashed bundle files, from `ui/dist/assets`.
 //! - `/admin/api/{*path}` — an unmatched JSON path, answered `404` in the
 //!   gateway's error shape. `/admin/api/*` is a different namespace from the
@@ -18,9 +22,13 @@
 //!   with the SPA shell so deep links survive a reload. Confined to the mount:
 //!   an unmatched path outside `/admin` still `404`s.
 //!
-//! `GET /admin` itself is untouched — it still serves the server-rendered
-//! dashboard (`super::dashboard`). Porting those views onto this bundle is the
-//! next step of the track.
+//! `GET /admin` now answers the shell as well, which completes the track: the
+//! string-literal dashboard (`super::html::dashboard_page` and
+//! `super::script`) is deleted, and the bundle is the only dashboard there is.
+//! An operator reaching `/admin` unauthenticated therefore gets a `200` shell
+//! rather than the old `303` to `/admin/login`; the bundle bootstraps over
+//! `GET /admin/api/session` and sends a `401` to the same login page
+//! (`ui/src/App.tsx`).
 //!
 //! The shell and the assets carry no operator data, so they are served without
 //! admin authentication, exactly like `/admin/login`. Everything the SPA will
@@ -73,14 +81,19 @@ pub(super) async fn asset(Path(path): Path<String>) -> Response {
 
 /// The SPA shell's Content-Security-Policy.
 ///
-/// Tighter than the server-rendered pages' policy
-/// (`super::html_body_with_form_action`), and deliberately so: those pages
-/// inline their script and style, so their policy has to allow
-/// `'unsafe-inline'`. Vite emits the bundle as an external module script and an
-/// external stylesheet under `/admin/assets/`, with nothing inline, so `'self'`
-/// is enough for both — verified against the emitted `ui/dist/index.html`, not
-/// assumed. `form-action 'none'` because the shell posts no forms; the
-/// server-rendered login flow that does is a different response.
+/// Neither policy is uniformly tighter than the login page's
+/// (`super::html_body_with_form_action`); each is as narrow as its own page
+/// allows, directive by directive.
+///
+/// `script-src`/`connect-src` are `'self'` here and `'none'` there, because
+/// this shell is the page that runs a script and calls `/admin/api/*`. They are
+/// `'self'` rather than `'unsafe-inline'` because Vite emits the bundle as an
+/// external module script and an external stylesheet under `/admin/assets/`,
+/// with nothing inline — verified against the emitted `ui/dist/index.html`, not
+/// assumed. That is also why `style-src` is `'self'` here while the login page
+/// still needs `'unsafe-inline'` for its inlined `<style>`. `form-action` is
+/// `'none'` because the shell posts no forms; the server-rendered login flow
+/// that does is a different response.
 const SHELL_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
 connect-src 'self'; img-src 'self'; form-action 'none'; base-uri 'none'; \
 frame-ancestors 'none'";

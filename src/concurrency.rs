@@ -7,7 +7,7 @@ use std::{
 use axum::{
     body::{Body, Bytes, HttpBody},
     extract::{Request, State},
-    http::{header::RETRY_AFTER, HeaderValue, StatusCode},
+    http::{header::RETRY_AFTER, HeaderValue, StatusCode, Uri},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -21,12 +21,14 @@ const OVERLOADED_MESSAGE: &str = "too many requests are already in flight";
 #[derive(Clone, Debug)]
 pub(crate) struct ConcurrencyLimit {
     permits: Arc<Semaphore>,
+    codex_endpoint_enabled: bool,
 }
 
 impl ConcurrencyLimit {
-    pub(crate) fn new(max_concurrent_requests: usize) -> Self {
+    pub(crate) fn new(max_concurrent_requests: usize, codex_endpoint_enabled: bool) -> Self {
         Self {
             permits: Arc::new(Semaphore::new(max_concurrent_requests)),
+            codex_endpoint_enabled,
         }
     }
 }
@@ -41,6 +43,7 @@ pub(crate) async fn limit_requests(
     next: Next,
 ) -> Response {
     let path = request.uri().path();
+    let codex_shape = is_codex_request(request.uri(), limit.codex_endpoint_enabled);
     // Move the `Arc` rather than cloning it: `try_acquire_owned` consumes an
     // `Arc<Semaphore>`, and axum's `State` extractor already handed us an owned
     // clone of the limiter, so cloning again would add a redundant refcount pair
@@ -54,7 +57,7 @@ pub(crate) async fn limit_requests(
             // and so never lands in `record_proxied_request` or a request span.
             tracing::debug!(path, "shedding request at inbound concurrency limit");
             crate::metrics::record_request_shed();
-            return overloaded_response(is_codex_path(path)).await;
+            return overloaded_response(codex_shape).await;
         }
     };
 
@@ -70,6 +73,17 @@ pub(crate) async fn limit_requests(
 /// would have matched and must classify by path. It reads the same constants the
 /// router registers from, so a Codex route cannot be added without also getting
 /// the correct error shape.
+pub(crate) fn is_codex_request(uri: &Uri, codex_endpoint_enabled: bool) -> bool {
+    let path = uri.path();
+    is_codex_path(path)
+        || crate::discovery::CODEX_PATHS.contains(&path)
+        || (codex_endpoint_enabled
+            && path == "/v1/models"
+            && crate::discovery::has_client_version_query(uri.query()))
+}
+
+/// Classify the unambiguous, path-only Codex routes shared by middleware that
+/// has no boot-time catalog negotiation state.
 pub(crate) fn is_codex_path(path: &str) -> bool {
     crate::codex_endpoint::PATHS.contains(&path) || crate::codex_analytics::PATHS.contains(&path)
 }
@@ -177,7 +191,7 @@ mod tests {
         http::{header::RETRY_AFTER, HeaderMap, HeaderValue, StatusCode},
         middleware,
         response::Response,
-        routing::post as post_route,
+        routing::{get as get_route, post as post_route},
         Router,
     };
     use futures_util::{stream, StreamExt};
@@ -203,13 +217,22 @@ mod tests {
                 }),
             )
             .layer(middleware::from_fn_with_state(
-                ConcurrencyLimit::new(limit),
+                ConcurrencyLimit::new(limit, false),
                 limit_requests,
             ))
     }
 
     fn limited_router(path: &'static str, limit: usize) -> Router {
         limited_router_with_calls(path, limit, Arc::new(AtomicUsize::new(0)))
+    }
+
+    fn saturated_get_router(path: &'static str, codex_endpoint_enabled: bool) -> Router {
+        Router::new()
+            .route(path, get_route(|| async { StatusCode::NO_CONTENT }))
+            .layer(middleware::from_fn_with_state(
+                ConcurrencyLimit::new(0, codex_endpoint_enabled),
+                limit_requests,
+            ))
     }
 
     async fn json_body(response: Response) -> Value {
@@ -291,6 +314,68 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
 
+    #[tokio::test]
+    async fn saturated_codex_catalog_requests_use_the_negotiated_error_shape() {
+        for uri in [
+            "/models",
+            "/backend-api/codex/models",
+            "/v1/models?client_version=",
+            "/v1/models?client_version=one&client_version=two",
+            "/v1/models?%63lient_version=0.152.0",
+        ] {
+            let route = if uri.starts_with("/v1/models?") {
+                "/v1/models"
+            } else {
+                uri
+            };
+            let response = saturated_get_router(route, true)
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+            assert_eq!(response.headers()[RETRY_AFTER], "1", "{uri}");
+            assert_eq!(
+                json_body(response).await,
+                serde_json::json!({
+                    "error": {
+                        "message": "too many requests are already in flight",
+                        "type": "overloaded_error",
+                        "code": null
+                    }
+                }),
+                "{uri}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn saturated_plain_models_request_keeps_the_anthropic_error_shape() {
+        for (uri, codex_endpoint_enabled) in [
+            ("/v1/models?limit=1000", true),
+            ("/v1/models?client_version=0.152.0", false),
+        ] {
+            let response = saturated_get_router("/v1/models", codex_endpoint_enabled)
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+            assert_eq!(response.headers()[RETRY_AFTER], "1", "{uri}");
+            assert_eq!(
+                json_body(response).await,
+                serde_json::json!({
+                    "type": "error",
+                    "error": {
+                        "type": "overloaded_error",
+                        "message": "too many requests are already in flight"
+                    }
+                }),
+                "{uri}"
+            );
+        }
+    }
+
     /// Reports end-of-stream only *after* it has been polled, while never
     /// yielding a frame. A buffering wrapper delegating `is_end_stream()` to a
     /// drained inner body looks like this. Constructed not-yet-ended so it
@@ -323,7 +408,7 @@ mod tests {
     /// limit exists to prevent.
     #[tokio::test]
     async fn pending_frame_never_releases_even_when_inner_reports_end() {
-        let limit = ConcurrencyLimit::new(1);
+        let limit = ConcurrencyLimit::new(1, false);
         let permit = limit.permits.clone().try_acquire_owned().unwrap();
         let mut body = PermitBody::new(Body::new(EndsWhilePending::default()), permit);
         assert_eq!(limit.permits.available_permits(), 0);
@@ -345,7 +430,7 @@ mod tests {
 
     #[tokio::test]
     async fn trailers_survive_the_permit_body_wrapper() {
-        let limit = ConcurrencyLimit::new(1);
+        let limit = ConcurrencyLimit::new(1, false);
         let permit = limit.permits.clone().try_acquire_owned().unwrap();
         let mut trailers = HeaderMap::new();
         trailers.insert("x-stream-checksum", HeaderValue::from_static("verified"));
@@ -391,7 +476,7 @@ mod tests {
                 }),
             )
             .layer(middleware::from_fn_with_state(
-                ConcurrencyLimit::new(1),
+                ConcurrencyLimit::new(1, false),
                 limit_requests,
             ));
 
@@ -443,7 +528,7 @@ mod tests {
                 }),
             )
             .layer(middleware::from_fn_with_state(
-                ConcurrencyLimit::new(1),
+                ConcurrencyLimit::new(1, false),
                 limit_requests,
             ));
 
@@ -483,7 +568,7 @@ mod tests {
                 }),
             )
             .layer(middleware::from_fn_with_state(
-                ConcurrencyLimit::new(3),
+                ConcurrencyLimit::new(3, false),
                 limit_requests,
             ));
 
@@ -537,7 +622,7 @@ mod tests {
                 }),
             )
             .layer(middleware::from_fn_with_state(
-                ConcurrencyLimit::new(1),
+                ConcurrencyLimit::new(1, false),
                 limit_requests,
             ));
 
@@ -585,7 +670,7 @@ mod tests {
                 }),
             )
             .layer(middleware::from_fn_with_state(
-                ConcurrencyLimit::new(1),
+                ConcurrencyLimit::new(1, false),
                 limit_requests,
             ));
 
@@ -631,7 +716,7 @@ mod tests {
                 }),
             )
             .layer(middleware::from_fn_with_state(
-                ConcurrencyLimit::new(1),
+                ConcurrencyLimit::new(1, false),
                 limit_requests,
             ))
     }
@@ -713,7 +798,7 @@ mod tests {
                     }),
                 )
                 .layer(middleware::from_fn_with_state(
-                    ConcurrencyLimit::new(1),
+                    ConcurrencyLimit::new(1, false),
                     limit_requests,
                 ));
 

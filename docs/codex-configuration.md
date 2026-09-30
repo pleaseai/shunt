@@ -180,21 +180,24 @@ For a Codex request shunt sends the Codex-CLI identity so client-version gating 
 | `authorization` | `Bearer <access_token>` |
 | `chatgpt-account-id` | `<account_id>` |
 | `originator` | `codex_cli_rs` |
-| `user-agent` | `codex_cli_rs/0.153.3` (`CODEX_USER_AGENT`) |
-| `version` | `0.153.3` (`CODEX_CLIENT_VERSION`) |
+| `user-agent` | `codex_cli_rs/0.156.0` (`CODEX_USER_AGENT`) |
+| `version` | `0.156.0` (`CODEX_CLIENT_VERSION`) |
 | `x-codex-routing-hint` | `model=<upstream_model>`, or `model=<upstream_model>;tier=<service_tier>` when a tier is set — omitted when the model can't be safely put in a header (see below) |
 | `OpenAI-Beta` | `responses=experimental` |
 | `content-type` | `application/json` |
 | `content-encoding` | `zstd` — only when the request body was compressed (see §4.5) |
 
-The `user-agent` / `version` are **pinned to openai/codex rust-v0.153.3**. If a future slug
+The `user-agent` / `version` are **pinned to openai/codex rust-v0.156.0**. If a future slug
 demands a newer client, bump `CODEX_USER_AGENT` / `CODEX_CLIENT_VERSION` in
 `src/adapters/responses/request.rs`.
 
 The identity headers — `chatgpt-account-id`, `originator`, `user-agent`, `version`, and
 `x-codex-routing-hint` — are sent **only** on the ChatGPT OAuth arm; an API-key (or any other)
-credential on a `responses` provider gets the bearer alone. `OpenAI-Beta` is gated on the provider
-flavor instead (withheld for xAI/Grok, sent otherwise), and `content-type` is always sent.
+credential on a `responses` provider gets the bearer alone. One exception: an API-key request whose
+provider host is exactly `api.openai.com` also carries regenerated `session-id`, `thread-id`,
+`x-client-request-id`, and `x-codex-window-id` when a conversation id resolves; on a routed request
+the caller's own identity headers are stripped first (see §17.5). `OpenAI-Beta` is gated on the
+provider flavor instead (withheld for xAI/Grok, sent otherwise), and `content-type` is always sent.
 
 `x-codex-routing-hint` mirrors openai/codex's `X_CODEX_ROUTING_HINT_HEADER`
 (`build_routing_hint_header`, codex-rs/core/src/client.rs), which upstream likewise suppresses for
@@ -268,15 +271,16 @@ to**, and **rejects the `gpt-*-codex` slugs** (e.g. `gpt-5.2-codex`) with a `400
 
 - The authoritative catalog of Codex slugs (and the reasoning levels each accepts) is openai/codex's
   [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-- Current listed slugs: **`gpt-6-astra`** (latest), **`gpt-5.6-sol`**, **`gpt-5.6-terra`**,
-  **`gpt-5.6-luna`** (frontier), and **`gpt-5.5`** / **`gpt-5.4`** / **`gpt-5.4-mini`** /
-  **`gpt-5.2`**. Older accounts may only be entitled to the earlier ones; a **free** account has
-  resolved to `gpt-5.5` in testing.
+- Current listed slugs: **`gpt-6-astra`**, **`gpt-6-sol`**, **`gpt-6-luna`** (latest),
+  **`gpt-5.6-sol`**, **`gpt-5.6-terra`**, **`gpt-5.6-luna`** (frontier), and **`gpt-5.5`** /
+  **`gpt-5.4`** / **`gpt-5.4-mini`** / **`gpt-5.2`**. Older accounts may only be entitled to the
+  earlier ones; a **free** account has resolved to `gpt-5.5` in testing.
 - To see what your account can use, look at what the `codex` CLI itself sends, or the live
   `/models` fetch it performs at startup.
 
 > **Client-version gating.** Some slugs carry a `minimal_client_version` (e.g. `gpt-6-astra`
-> needs ≥ 0.153.0). When the request's client identity is missing or too old the backend answers
+> needs ≥ 0.153.0; `gpt-6-sol` and `gpt-6-luna` need ≥ 0.155.0). When the request's client
+> identity is missing or too old the backend answers
 > **`Model not found <slug>`** — *not* an entitlement error. shunt avoids this by sending the
 > pinned Codex CLI headers (§4.4). See [openai/codex#31967](https://github.com/openai/codex/issues/31967).
 
@@ -403,7 +407,8 @@ window follows the id automatically, so one global value sizes the mapped subage
 main keeps its own.
 
 The **[`shunt-codex` plugin](../plugins/shunt-codex/)** ships ready-made subagents for
-`gpt-5.6-sol` / `-terra` / `-luna` (each pins its `model:` frontmatter to the slug), so you can
+`gpt-6-sol` / `-luna` and `gpt-5.6-sol` / `-terra` / `-luna` (each pins its `model:` frontmatter
+to the slug), so you can
 `@`-mention a Codex model without authoring the agent files yourself.
 
 ### 7.4 Remap the tier aliases (`haiku`/`sonnet`/`opus` → Codex)
@@ -745,10 +750,15 @@ it is a raw Responses-to-Responses passthrough. Full behavior spec:
 provider = "codex"   # default; must be a chatgpt_oauth provider (e.g. the built-in codex)
 ```
 
-Absent ⇒ none of the routes exist. Present ⇒ shunt registers three routes at boot — `POST
-/backend-api/codex/responses`, `POST /responses`, `POST /v1/responses` — all served by the named
-provider's account pool. Config validation rejects an unknown provider or one not using `auth =
-"chatgpt_oauth"` at startup.
+Absent ⇒ none of the Codex-specific routes exist. Present ⇒ shunt registers three inference
+routes at boot — `POST /backend-api/codex/responses`, `POST /responses`, `POST /v1/responses` — all
+served by the named provider's account pool, plus `GET /models` and `GET
+/backend-api/codex/models` model-catalog aliases. Codex catalog requests receive the valid empty
+fallback `{"models":[]}` rather than fabricated partial model rows. The shared `GET /v1/models`
+also returns this Codex shape when its query contains `client_version`; otherwise its Anthropic
+discovery bytes are unchanged. These catalog variants use the existing model-discovery auth gate.
+Config validation rejects an unknown provider or one not using `auth = "chatgpt_oauth"` at
+startup.
 
 ### 17.2 Point the Codex CLI at shunt
 
@@ -817,7 +827,7 @@ auto-discovered accounts, so imported store logins still get pooling.)
 - No model-based routing **by default** — every inbound request goes to the one configured
   provider, regardless of the `model` field in the body. §17.5 opts specific models out of that.
 - **Verbatim header passthrough.** The outbound path *synthesizes* the Codex identity headers of
-  §4.4 (pinned `originator`/`user-agent=codex_cli_rs/0.153.3`/`version=0.153.3`, `OpenAI-Beta`, session
+  §4.4 (pinned `originator`/`user-agent=codex_cli_rs/0.156.0`/`version=0.156.0`, `OpenAI-Beta`, session
   headers). The inbound endpoint does **not** — the client already *is* a Codex CLI, so its own
   request headers (`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) are forwarded unchanged
   and shunt swaps in **only** the pool account's `Authorization` + `chatgpt-account-id` (and strips
@@ -916,8 +926,8 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"   # when [server.auth] is configured
 ```
 
-shunt does not serve a Codex model catalog: its `GET /v1/models` discovery list is Anthropic-shaped
-and does not advertise Codex routes. The CLI learns metadata for non-OpenAI slugs the way these
+While shunt responds to Codex CLI discovery requests with the valid empty fallback `{"models":[]}`,
+it does not advertise Codex routes in its model list. The CLI learns metadata for non-OpenAI slugs the way these
 vendors document — a `~/.codex/models.json` catalog referenced by `model_catalog_json` (Mimo ships
 its own at `~/.codex/model-catalogs/model-catalogs.json`). Only the `model` value selects the shunt
 route.
@@ -926,12 +936,7 @@ Route matching is **exact and case-sensitive**, with no charset restriction, so 
 slash- or `~`-qualified vendor slugs (`MiniMax-M3`, `openai/gpt-5.6-sol`, `~openai/gpt-latest`)
 route as written.
 
-A routed request to a non-ChatGPT upstream sends only `content-type` and `accept` from the client
-(no `authorization`, `x-api-key`, `originator`, `session-id`, `x-codex-*`, or `x-shunt-*`), plus the
-identity the routed upstream itself requires (`OpenAI-Beta`, or the Grok-CLI headers for an
-`xai_oauth` route), an identity-encoded body with `model` rewritten to `upstream_model`, and one
-credential — no pool and no failover, so a 429 relays verbatim with its `retry-after`. Routes hot-reload; only toggling
-`[server.codex_endpoint]` itself needs a restart.
+A routed request to a non-ChatGPT upstream starts from a fresh header allowlist: only `content-type` (defaulted to `application/json`) and `accept` come from the client, while caller-supplied `authorization`, `x-api-key`, Codex identity/session headers, `x-codex-*`, and `x-shunt-*` are stripped. shunt adds the resolved credential and the identity the routed upstream itself requires (`OpenAI-Beta`, or the Grok-CLI header set for an `xai_oauth` route). An `api_key` route whose host is exactly `api.openai.com` also gets regenerated `session-id`, `thread-id`, `x-client-request-id`, and `x-codex-window-id` headers when the resolved conversation id is nonempty; those values never come from the caller. xAI and every other third-party OpenAI-compatible host keep the four affinity headers absent, and the API-key path does not synthesize `accept: text/event-stream`. The request uses an identity-encoded body with `model` rewritten to `upstream_model` and one credential — no pool and no failover, so a 429 relays verbatim with its `retry-after`. Routes hot-reload; only toggling `[server.codex_endpoint]` itself needs a restart.
 
 ---
 

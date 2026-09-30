@@ -11,6 +11,26 @@
 - `passthrough.rs` uses Wiremock and a real Axum server to verify gateway HTTP behavior.
 - `responses_translate.rs` verifies Anthropic Messages → OpenAI Responses request conversion and Responses SSE → Anthropic SSE conversion.
 - Prefer behavior-focused assertions over implementation-only assertions.
+- A test that touches the process environment takes the shared guard from
+  `tests/common/mod.rs` — `common::set_env(..).await` in an async test,
+  `common::set_env_blocking(..)` in a sync one — and holds it for the whole
+  body. Never call `std::env::set_var` or `std::env::remove_var` directly.
+  `setenv` may reallocate the single global `environ` array, so a write to any
+  variable can be observed by a concurrent `getenv` for an *unrelated* one as a
+  missing value; unique variable names do not help, and neither does locking
+  only the writers. That last point is why a test that only *reads* the
+  environment — including indirectly, by building a config or resolving a
+  workspace — takes the guard too. `tests/env_lock_coverage.rs` enforces the
+  ban on raw writes: it scans for the `set_var`/`remove_var` spellings, so a
+  reader that skips the guard is invisible to it. That half of the rule is held
+  up by review, not by the gate.
+- `tests/antigravity_process.rs` and `tests/env_guard.rs` hold the only reviewed
+  exceptions to that rule: the first because its values must outlive every test
+  in the binary, which a guard that restores on drop cannot express; the second
+  because seeding a pre-existing value is the one thing the guard cannot do for
+  itself. Both are bounded in `tests/env_lock_coverage.rs` by a write count
+  *and* the region the writes must stay in, so neither is a general licence —
+  do not move ordinary per-test setup into either.
 
 ## Project Structure
 
@@ -32,5 +52,7 @@
 
 - ✅ Test regressions for every discovered protocol bug.
 - ✅ Keep streaming and header-preservation tests strict.
+- ✅ Bind the environment guard to a named local (`let mut vars = ...`), never
+  to `_` — `let _ = ...` drops it before the test body runs.
 - ⚠️ Ask before replacing integration coverage with mocks that cover less behavior.
 - 🚫 Never delete or weaken tests to make a change pass.

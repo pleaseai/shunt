@@ -65,7 +65,7 @@ a restart (it registers the HTTP routes).
 
 ## Routes
 
-When opted in, shunt registers three routes, all mapping to one passthrough handler:
+When opted in, shunt registers three Responses routes mapping to one passthrough handler:
 
 | Method | Path |
 | :-- | :-- |
@@ -79,6 +79,21 @@ literal path the real ChatGPT backend uses), a base ending in `/v1` produces `/v
 a bare base produces `/responses`. Registering all three lets an operator use either CLI setup
 style (§ "Codex CLI setup" below) without shunt needing to know which one a given client chose.
 
+In addition, shunt registers dedicated Codex model discovery routes:
+
+| Method | Path |
+| :-- | :-- |
+| `GET` | `/models` |
+| `GET` | `/backend-api/codex/models` |
+
+Codex 0.152 and later also requests `<base>/models?client_version=...` and requires a Codex
+`{"models":[...]}` envelope. shunt does not synthesize partial `ModelInfo` records: the two
+Codex-only paths above return the valid fallback `{"models":[]}`. A request to the shared
+`/v1/models` path returns that same Codex fallback when the `client_version` query field is
+present, with the query marker taking precedence over Anthropic-looking headers. Without that
+query field, `/v1/models` preserves the existing Anthropic discovery response unchanged. All
+three variants pass the existing model-discovery authentication gate first, and the Codex-only
+paths remain absent when `[server.codex_endpoint]` was not enabled at boot.
 ### Client analytics sink
 
 The same opt-in also registers `POST /backend-api/codex/analytics-events/events` and
@@ -137,10 +152,13 @@ narrower path:
   So the routed request is built from scratch: only `content-type` (defaulted to
   `application/json`) and `accept` come from the client. Added to that are the resolved credential
   and whatever identity the *routed upstream itself* gates on: `OpenAI-Beta: responses=experimental`
-  under the same flavor gate the outbound path uses (skipped for xAI/Grok), and — for an
-  `xai_oauth` route — the four Grok-CLI headers the subscription chat proxy requires, shared with
-  the outbound path so the two cannot drift. Everything else is dropped by construction, so a header
-  added later cannot start reaching a third party because nobody remembered to deny it.
+  under the same flavor gate the outbound path uses (skipped for xAI/Grok), for an `xai_oauth` route
+  the four Grok-CLI headers the subscription chat proxy requires, and for an `api_key` route to the
+  stock OpenAI host (`api.openai.com` exactly) the four session-affinity headers (`session-id`,
+  `thread-id`, `x-client-request-id`, `x-codex-window-id`) generated from the resolved conversation
+  id. The client's own `session-id` and `x-codex-*` stay stripped in every case — a stock-OpenAI
+  route's headers are generated, never forwarded. Everything else is dropped by construction, so a
+  header added later cannot start reaching a third party because nobody remembered to deny it.
 - **Body `model` rewrite.** When the route's `upstream_model` differs from what the client asked
   for, shunt parses the body, replaces the top-level `model`, and re-serializes it. Every other
   field is preserved. A body that is not a JSON object cannot be rewritten and is rejected with a
@@ -194,8 +212,12 @@ the Codex CLI speaks the same wire protocol to shunt that it would speak directl
 Because the inbound client **is** a real Codex CLI (unlike the `/v1/messages` path, where shunt
 *impersonates* one), the passthrough forwards the client's **own request headers verbatim** rather
 than synthesizing them. shunt's translating path builds a fresh request with a hardcoded Codex
-identity (`originator=codex_cli_rs`, `user-agent=codex_cli_rs/0.153.3`, `version=0.153.3`,
-`OpenAI-Beta: responses=experimental`, and session/window headers derived from the session id); the
+identity (`originator=codex_cli_rs`, `user-agent=codex_cli_rs/0.156.0`, `version=0.156.0`,
+`OpenAI-Beta: responses=experimental`) and session/window headers derived from the resolved
+conversation id — a routed request that arrives with the CLI's own `thread-id`,
+`x-client-request-id`, or `x-codex-window-id` keeps those values verbatim, and only the absent
+ones are generated (`session-id` always stays shunt's resolved id, so it equals the body's
+`prompt_cache_key`); the
 inbound passthrough does **not** — it forwards whatever `version`, `originator`, `user-agent`,
 `OpenAI-Beta`, `session-id`, `thread-id`, `x-codex-window-id`, `x-codex-*`, `content-type`, and
 `accept` the Codex CLI sent, so the client's **real** version drives the backend's
@@ -359,11 +381,12 @@ shunt this way — shunt supplies the account from its own pool, not the CLI's l
   `/chat/completions` cannot serve them yet (the adapter exists, see the translation bullet below). Vendors
   that document a native Responses endpoint for the Codex CLI (Z.ai GLM, DeepSeek, Kimi Code,
   MiniMax, Mimo, OpenRouter, Vercel AI Gateway) are the supported shape; anything else is not.
-- **Model discovery for the Codex CLI.** shunt serves no Codex model catalog. Its `GET /v1/models`
-  discovery list is Anthropic-shaped and does not advertise Codex routes. The Codex CLI learns
-  non-OpenAI slugs the way these vendors document it — a `~/.codex/models.json` catalog referenced
-  by `model_catalog_json` in `~/.codex/config.toml` — while the CLI's own `model` setting is what
-  selects a shunt route. See [`codex-configuration.md` §17.5](codex-configuration.md#175-route-models-to-third-party-upstreams).
+- **Custom model discovery records for the Codex CLI.** shunt serves the valid empty fallback
+  `{"models":[]}` for Codex CLI discovery but does not synthesize custom `ModelInfo` records or
+  advertise third-party Codex routes. The Codex CLI learns non-OpenAI slugs the way these vendors
+  document it — a `~/.codex/models.json` catalog referenced by `model_catalog_json` in
+  `~/.codex/config.toml` — while the CLI's own `model` setting is what selects a shunt route.
+  See [`codex-configuration.md` §17.5](codex-configuration.md#175-route-models-to-third-party-upstreams).
 - **Translation for non-Responses upstreams.** The translation core for routing an inbound
   Responses request to an Anthropic-Messages or Chat-Completions upstream exists under
   `src/model/inbound_responses/` ([M16](m16-codex-inbound-translation.md)) but is not yet

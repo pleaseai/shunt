@@ -1,5 +1,152 @@
 # Changelog
 
+## [0.50.0](https://github.com/pleaseai/shunt/compare/v0.49.1...v0.50.0) (2026-09-30)
+
+
+### Features
+
+* **accounts:** fail over and cool down a Codex account+model on "model is not supported" ([#676](https://github.com/pleaseai/shunt/issues/676)) ([dbbb7a5](https://github.com/pleaseai/shunt/commit/dbbb7a59be51147a15314b4d3be614edf84ee408))
+* **admin:** add hide_observed to keep host logins unread ([#610](https://github.com/pleaseai/shunt/issues/610)) ([5f32b34](https://github.com/pleaseai/shunt/commit/5f32b34ce9bf9699847783f5979e5a22d97c298e))
+* **antigravity:** show grouped Gemini / Claude+GPT quota pools ([#671](https://github.com/pleaseai/shunt/issues/671)) ([d7d002a](https://github.com/pleaseai/shunt/commit/d7d002aa6c966a7cda064becb17bdb19e715d367))
+
+
+### Bug Fixes
+
+* **adapters:** bound the remaining WebSocket and Antigravity accumulations on internal calls ([#688](https://github.com/pleaseai/shunt/issues/688)) ([e1ef6ab](https://github.com/pleaseai/shunt/commit/e1ef6ab6e23452e2b2bcc9bf21d06f3d6a6aac80))
+* **responses:** bound a gated pool-exhausted error body by a fresh idle gap ([#709](https://github.com/pleaseai/shunt/issues/709)) ([8b46aa7](https://github.com/pleaseai/shunt/commit/8b46aa762d6e64a092f9bb264052308a2b5ece64))
+* **responses:** codex prompt-cache parity with the Codex CLI ([#699](https://github.com/pleaseai/shunt/issues/699)) ([03d99f1](https://github.com/pleaseai/shunt/commit/03d99f14c130ab06f775363308731fc1fe4da60e))
+* **responses:** gated-path residuals — pool retry-after, estimate overlap, error-body idle anchor ([#706](https://github.com/pleaseai/shunt/issues/706)) ([7869c60](https://github.com/pleaseai/shunt/commit/7869c609b62615506cbc7d4959d9e52ed5205d53))
+* **routing:** charge the judge budget per dispatched call, atomically and per delegated identity ([#685](https://github.com/pleaseai/shunt/issues/685)) ([9092a6e](https://github.com/pleaseai/shunt/commit/9092a6e8c38e6c47833934e3bf52233065905de6))
+* **routing:** gated-lane follow-ups — context-length escalation, retry-after, advisor budget refusal, truncated judge replies ([#700](https://github.com/pleaseai/shunt/issues/700)) ([4662ecd](https://github.com/pleaseai/shunt/commit/4662ecdf6e84452b5c6267c2e96aaf20f65bae1c))
+* **routing:** record a failed advisor review's outcome; name the overflow raw-body fallback ([#705](https://github.com/pleaseai/shunt/issues/705)) ([cf91ed6](https://github.com/pleaseai/shunt/commit/cf91ed6b7701a57982afe42f7ba5e84a01a73d37))
+* **routing:** resolve a count_tokens probe on a driven entry to the session's retained target ([#687](https://github.com/pleaseai/shunt/issues/687)) ([c8c8dc7](https://github.com/pleaseai/shunt/commit/c8c8dc75efbd49487a294a132665dc1d21284484))
+
+## [0.49.1](https://github.com/pleaseai/shunt/compare/v0.49.0...v0.49.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **responses:** honor status on wrapped Codex websocket error frames ([#675](https://github.com/pleaseai/shunt/issues/675)) ([135e1a6](https://github.com/pleaseai/shunt/commit/135e1a6b8fb225ff4490e17b305075dc82797717))
+
+## [0.49.0](https://github.com/pleaseai/shunt/compare/v0.48.0...v0.49.0) (2026-09-24)
+
+
+### Features
+
+* **routing:** buffer-and-replay lane — escalation and advisor (ADR-0005 PR 6) ([#652](https://github.com/pleaseai/shunt/issues/652)) ([2d29392](https://github.com/pleaseai/shunt/commit/2d29392a620d690501d46b5a89d1d93d1afc4fa6))
+
+
+### Bug Fixes
+
+* **adapters:** apply gated_idle_ms to Gemini, Responses HTTP, and Cursor whole-body reads ([#670](https://github.com/pleaseai/shunt/issues/670)) ([8a394f2](https://github.com/pleaseai/shunt/commit/8a394f2a6fd4271af34d9f32545118fab9ccd432))
+* **responses:** classify in-stream slow_down, overload, and policy error codes ([#661](https://github.com/pleaseai/shunt/issues/661)) ([4737bcf](https://github.com/pleaseai/shunt/commit/4737bcf51ff108463639ff586831a4b16c9ae778))
+* **routing:** enforce gated_idle_ms during the Anthropic adapter's non-streaming model rewrite ([#668](https://github.com/pleaseai/shunt/issues/668)) ([cb8b1a5](https://github.com/pleaseai/shunt/commit/cb8b1a56048764cfbef605449f206c715c7db35a)), closes [#663](https://github.com/pleaseai/shunt/issues/663)
+
+## [0.48.0](https://github.com/pleaseai/shunt/compare/v0.47.0...v0.48.0) (2026-09-23)
+
+
+### Features
+
+* **antigravity:** named-account pooling with quota failover ([#604](https://github.com/pleaseai/shunt/issues/604)) ([50a9769](https://github.com/pleaseai/shunt/commit/50a9769fe73aedadb570917775d539cae9befd84))
+* **routing:** driven lane — llm_classifier, composite, subagents classifier form (ADR-0005 PR 5) ([#646](https://github.com/pleaseai/shunt/issues/646)) ([554d51b](https://github.com/pleaseai/shunt/commit/554d51b1f96262ccc369444ae3f466a4355c5f82))
+* support GPT-6 Sol/Luna and Claude Opus 5.5 ([#658](https://github.com/pleaseai/shunt/issues/658)) ([a6a8614](https://github.com/pleaseai/shunt/commit/a6a861492935121ebd40199f1158e1aea9a801a6))
+
+
+### Bug Fixes
+
+* **routing:** admit a prefill_router turn before it is driven ([#633](https://github.com/pleaseai/shunt/issues/633)) ([#645](https://github.com/pleaseai/shunt/issues/645)) ([131e52d](https://github.com/pleaseai/shunt/commit/131e52dc24b49c29760ba3d69e029cb6e36f6a41))
+
+## [0.47.0](https://github.com/pleaseai/shunt/compare/v0.46.0...v0.47.0) (2026-09-21)
+
+
+### Features
+
+* **routing:** [models.subagents] passthrough overlay with by_type (ADR-0005 PR 3) ([#630](https://github.com/pleaseai/shunt/issues/630)) ([3133854](https://github.com/pleaseai/shunt/commit/313385467bfd468587191536835d4bcb3643f142))
+* **routing:** dependency envelope, admission before drive, internal serve, per-call bounds (ADR-0005 PR 4) ([#632](https://github.com/pleaseai/shunt/issues/632)) ([e8df7c3](https://github.com/pleaseai/shunt/commit/e8df7c3cf41f6fc28136041927fb04c342bb1baf))
+
+
+### Bug Fixes
+
+* **claude:** send Claude Code's User-Agent on OAuth token requests ([#644](https://github.com/pleaseai/shunt/issues/644)) ([100c40e](https://github.com/pleaseai/shunt/commit/100c40e889aa7af9d11405c00d21ff7060a8813b))
+* **codex:** mark a terminal refresh rejection as needs_relogin ([#617](https://github.com/pleaseai/shunt/issues/617)) ([f2144dc](https://github.com/pleaseai/shunt/commit/f2144dc798b1833082976a3c73bfe6c9e723c348))
+* **cursor:** stop re-parsing user content as a tool-call id ([#583](https://github.com/pleaseai/shunt/issues/583)) ([122afc2](https://github.com/pleaseai/shunt/commit/122afc2cb8debbef23e041eb7109aa534ac08cd1))
+
+## [0.46.0](https://github.com/pleaseai/shunt/compare/v0.45.1...v0.46.0) (2026-09-21)
+
+
+### Features
+
+* **admin:** add routed dashboard shell and routes API ([#600](https://github.com/pleaseai/shunt/issues/600)) ([9c9002c](https://github.com/pleaseai/shunt/commit/9c9002c02bdda245dfa251013c37774386958dd2))
+* **admin:** coalesce the Codex CLI login with its managed pool account ([#625](https://github.com/pleaseai/shunt/issues/625)) ([fc43035](https://github.com/pleaseai/shunt/commit/fc4303569a13886da8d9811013d6ee74b1765f4b)), closes [#623](https://github.com/pleaseai/shunt/issues/623)
+* **anthropic:** pin the auto-mode classifier request to a configured model ([#608](https://github.com/pleaseai/shunt/issues/608)) ([bd2cf38](https://github.com/pleaseai/shunt/commit/bd2cf384f3a9094eb3ab500bb50bb43ff24a6b7b))
+* **antigravity:** isolate CLI accounts with a per-provider profile_dir ([#470](https://github.com/pleaseai/shunt/issues/470)) ([c106162](https://github.com/pleaseai/shunt/commit/c1061621bf4efd31291442c65dc28b1451df48af))
+* **cli:** import OpenCodex credentials into private snapshots ([#516](https://github.com/pleaseai/shunt/issues/516)) ([1fd1946](https://github.com/pleaseai/shunt/commit/1fd194641776b5a91840505d67c418b2b5d19d7d))
+* **config:** add opt-in [models.stage_router] schema and validation ([#544](https://github.com/pleaseai/shunt/issues/544)) ([1a7ee3a](https://github.com/pleaseai/shunt/commit/1a7ee3a84e250a1f12396b899121ea7785a81170))
+* **observability:** report what the stage router decided ([#572](https://github.com/pleaseai/shunt/issues/572)) ([e66d057](https://github.com/pleaseai/shunt/commit/e66d057308ec1c9d9079bda34e6da14bf1a54d15))
+* **plugins:** add a shunt Claude Mod answering /shunt:usage ([#573](https://github.com/pleaseai/shunt/issues/573)) ([9809428](https://github.com/pleaseai/shunt/commit/98094286d8cae75e3612d42a15a455afb0ed551e))
+* **proxy:** answer Claude Code's server-side auto-mode classifier on non-Anthropic routes ([#622](https://github.com/pleaseai/shunt/issues/622)) ([dc569a6](https://github.com/pleaseai/shunt/commit/dc569a66c34632cceeb484c11f60c36dd06a8ddc))
+* **routing:** [models.router] type discriminator and the pure lane (ADR-0005 PR 2) ([#621](https://github.com/pleaseai/shunt/issues/621)) ([b000df6](https://github.com/pleaseai/shunt/commit/b000df6eadc34b58b32d864c1fbb375b837424fa))
+* **routing:** extract stage signals from Claude Code tool results ([#545](https://github.com/pleaseai/shunt/issues/545)) ([78163bd](https://github.com/pleaseai/shunt/commit/78163bdc1e4ebee0064a6b7eaba67c9644fbc943))
+* **routing:** pin stage-router tiers per session with asymmetric hysteresis ([#546](https://github.com/pleaseai/shunt/issues/546)) ([cd87ae7](https://github.com/pleaseai/shunt/commit/cd87ae74ca3bbb2b3de5ff5eb174dee4aa9cad88))
+* **routing:** route a model id by its tool-result history, opt-in ([#547](https://github.com/pleaseai/shunt/issues/547)) ([21e18b5](https://github.com/pleaseai/shunt/commit/21e18b5722accfa090986e876434a89906d70bb0))
+* **routing:** RouterContext request hints, agent-scoped pin key, child budget, compaction latch (ADR-0005 PR 1) ([#603](https://github.com/pleaseai/shunt/issues/603)) ([7995f85](https://github.com/pleaseai/shunt/commit/7995f8580740193c72523b2105127173a0c3c1d1))
+* **site:** surface the changelog in the header nav strip ([#565](https://github.com/pleaseai/shunt/issues/565)) ([9d560ac](https://github.com/pleaseai/shunt/commit/9d560acc29d147889ce96e00ae56eccd926c5255))
+
+
+### Bug Fixes
+
+* **accounts:** treat a blank session header as no session ([#568](https://github.com/pleaseai/shunt/issues/568)) ([5154078](https://github.com/pleaseai/shunt/commit/5154078b65cd98fe8d03efd97ba2fb9a7c5c0916))
+* **anthropic:** do not forward thinking signatures shunt minted itself ([#586](https://github.com/pleaseai/shunt/issues/586)) ([7c12269](https://github.com/pleaseai/shunt/commit/7c12269a52bfd3face1dc5265c3285dd8e4f1adc))
+* **cursor:** require an authoritative terminal and prefer the wire tool call id ([cb1ea7b](https://github.com/pleaseai/shunt/commit/cb1ea7bd93841c08f7b16d787e40ab5e22590247))
+* **responses:** emulate stop_sequences on the Responses path ([#607](https://github.com/pleaseai/shunt/issues/607)) ([ce10e21](https://github.com/pleaseai/shunt/commit/ce10e2199c0c6ca27d1c85a82f0a592eafc3d95a))
+* **responses:** send codex session-id headers and a raw cache key ([#627](https://github.com/pleaseai/shunt/issues/627)) ([489a643](https://github.com/pleaseai/shunt/commit/489a6438fea085dfe42c5715a9fd282610ebc247))
+* **responses:** start streaming turns before the upstream first byte ([#549](https://github.com/pleaseai/shunt/issues/549)) ([d7c5f97](https://github.com/pleaseai/shunt/commit/d7c5f97e80a06330f6a9a203064770a0979b14f1))
+* **site:** close CJK bold spans that CommonMark refused to parse ([#567](https://github.com/pleaseai/shunt/issues/567)) ([0fd3113](https://github.com/pleaseai/shunt/commit/0fd3113bf28d40e8bb4610b0f927932e9b320568))
+
+
+### Performance Improvements
+
+* **routing:** benchmark the stage-router request path ([#578](https://github.com/pleaseai/shunt/issues/578)) ([6e7ccb1](https://github.com/pleaseai/shunt/commit/6e7ccb135a2f72296a349a1bc0be067b8cdcdc8f))
+* **routing:** evict stage-router sessions in O(log n) ([#580](https://github.com/pleaseai/shunt/issues/580)) ([02feba9](https://github.com/pleaseai/shunt/commit/02feba965a87a3f26e17f73a8df2cb98337acdcf))
+
+## [0.45.1](https://github.com/pleaseai/shunt/compare/v0.45.0...v0.45.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **codex:** enable native tool search for gpt-6-astra ([#557](https://github.com/pleaseai/shunt/issues/557)) ([830584e](https://github.com/pleaseai/shunt/commit/830584e3cb650299d2774a4952706570d2a79bbf))
+
+## [0.45.0](https://github.com/pleaseai/shunt/compare/v0.44.0...v0.45.0) (2026-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **admin:** `POST /admin/login` answers `303` with a session cookie for a `[server.admin] read_keys` credential where it previously answered `401`. The session is read-tier and every mutation still answers `403`, so the cookie carries no permission the read key did not already have through the header slot -- but it carries its own lifetime. Browser sessions are validated against the in-memory session store alone, so rotating a compromised read key now stops its header credential at the next reload while its cookie goes on reading the admin surface until `session_ttl_secs` (default 1h) elapses; restart rather than reload to drop it. A deployment that treated "read keys cannot open a browser session" as a revocation property no longer has it. Dropping stale sessions on reload is tracked in #100, which this widens from write-tier credentials to both tiers.
+* **admin:** `GET /admin` answers `200` with the SPA shell instead of `303 /admin/login` when the caller is unauthenticated. The shell is one static file embedded at compile time and identical for every visitor, so it carries no operator data and needs no credential; the redirect did not disappear but moved into the bundle, which follows a `401` from `GET /admin/api/session` to the same page. A script that treated the `303` as "not signed in" must read the bootstrap endpoint instead.
+* **admin:** The admin JSON and mutation routes moved from `/admin/*` to `/admin/api/*` and the old paths were removed rather than aliased, so every scripted caller must be updated. The path gains one `/api` segment after `/admin`. A complete before/after table for all 13 routes is in the "Admin path migration" section of site/src/content/docs/reference/endpoints.md. `/admin`, `/admin/login` and `/admin/oidc/callback` are unaffected.
+
+### Features
+
+* **admin:** move the admin JSON and mutation routes to /admin/api/* ([#499](https://github.com/pleaseai/shunt/issues/499)) ([67c27ca](https://github.com/pleaseai/shunt/commit/67c27caec4bb1d6f391516cce9453cb5df73fdef))
+* **admin:** port the dashboard views onto the embedded SPA bundle ([#508](https://github.com/pleaseai/shunt/issues/508)) ([82a4b8c](https://github.com/pleaseai/shunt/commit/82a4b8c6d0ff20126762bd76ae9e82a3cbbaa9c2))
+* **admin:** scaffold the embedded admin SPA behind --features ui ([#503](https://github.com/pleaseai/shunt/issues/503)) ([84f6249](https://github.com/pleaseai/shunt/commit/84f6249017a28a920c99344299049f7b2d432860))
+* **admin:** serve the dashboard from the SPA bundle and delete the string literals ([#526](https://github.com/pleaseai/shunt/issues/526)) ([29ff675](https://github.com/pleaseai/shunt/commit/29ff67515ea8235d0ec012636970d690ef6eb146))
+* **admin:** sign read keys in to a read-only dashboard ([#541](https://github.com/pleaseai/shunt/issues/541)) ([363434b](https://github.com/pleaseai/shunt/commit/363434b1912b9794614f06b03f7418350efd8587))
+* **server:** bound graceful shutdown drain with configurable timeout ([#517](https://github.com/pleaseai/shunt/issues/517)) ([fe48249](https://github.com/pleaseai/shunt/commit/fe482498ea5d1524c42479026f519d25f829f34f))
+
+
+### Bug Fixes
+
+* **admin:** converge the dashboard state ladders and stop the add form misreporting a login ([#530](https://github.com/pleaseai/shunt/issues/530)) ([833d439](https://github.com/pleaseai/shunt/commit/833d439c8de859fa0ee4c7ad80cc303810845185))
+* **admin:** drop script-src and connect-src from the login page CSP ([#538](https://github.com/pleaseai/shunt/issues/538)) ([dc4a0fd](https://github.com/pleaseai/shunt/commit/dc4a0fd7f7e42c7c3989b5ce106374f63695da34)), closes [#525](https://github.com/pleaseai/shunt/issues/525)
+* **admin:** say when a refused start closed the authorization step ([#540](https://github.com/pleaseai/shunt/issues/540)) ([8963f7f](https://github.com/pleaseai/shunt/commit/8963f7fe626057464d6f66b73313035d79fd88d4))
+* **admin:** serialize the completions for one pending login ([#550](https://github.com/pleaseai/shunt/issues/550)) ([c917026](https://github.com/pleaseai/shunt/commit/c9170267c9ee54673b9803c428b82242091be0a4)), closes [#440](https://github.com/pleaseai/shunt/issues/440)
+* **admin:** serve the SPA shell on /admin/ as well as /admin ([#528](https://github.com/pleaseai/shunt/issues/528)) ([c7bc752](https://github.com/pleaseai/shunt/commit/c7bc752b3735e1092a483d5822f2b21f9ddafc2c))
+* **deps:** update h2 for empty-frame denial of service ([#502](https://github.com/pleaseai/shunt/issues/502)) ([c139e93](https://github.com/pleaseai/shunt/commit/c139e93aabcd1e9b7f76927f2fd9aa9cc0ecad97))
+* **discovery:** use the negotiated error shape for Codex catalog failures ([#510](https://github.com/pleaseai/shunt/issues/510)) ([dc2644a](https://github.com/pleaseai/shunt/commit/dc2644ae5dc920cc293822af94d38ee3b7538dd8))
+* **responses:** preserve optional function parameters ([#506](https://github.com/pleaseai/shunt/issues/506)) ([49813b1](https://github.com/pleaseai/shunt/commit/49813b12f74679c63d651faca0d5affc033e4363))
+* **review:** drop the cubic default flags that produced a false clean review ([#529](https://github.com/pleaseai/shunt/issues/529)) ([dcdc019](https://github.com/pleaseai/shunt/commit/dcdc0196956564db13ece8e639aea756cc0b7f5c))
+
 ## [0.44.0](https://github.com/pleaseai/shunt/compare/v0.43.0...v0.44.0) (2026-09-09)
 
 

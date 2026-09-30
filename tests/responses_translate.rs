@@ -1,13 +1,15 @@
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
-    config::ResponsesFlavor,
+    config::{Config, ResponsesFlavor},
     model::responses::{
-        anthropic_error_type, client_facing_status, map_error_value, parse_sse_events,
-        translate_request, translate_request_value, AnthropicSseMachine,
+        anthropic_error_type, backend_error_status, client_facing_status, map_error_value,
+        parse_sse_events, translate_request, translate_request_value, AnthropicSseMachine,
     },
     routing::{AdapterKind, Route},
 };
+
+mod common;
 
 fn route(model: &str) -> Route {
     Route {
@@ -21,6 +23,10 @@ fn route(model: &str) -> Route {
 }
 
 fn translate(input: Value) -> Value {
+    translate_with_session(input, None)
+}
+
+fn translate_with_session(input: Value, session_id: Option<&str>) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
     // provider "openai" is the stock Responses API (not the ChatGPT backend).
     translate_request(
@@ -28,6 +34,8 @@ fn translate(input: Value) -> Value {
         &route("gpt-5.2-codex"),
         ResponsesFlavor::OpenAi,
         false,
+        session_id,
+        true,
     )
     .unwrap()
 }
@@ -50,8 +58,8 @@ fn parsed_value_entry_point_matches_byte_wrapper_across_flavors() {
 
     for flavor in [ResponsesFlavor::OpenAi, ResponsesFlavor::Chatgpt] {
         assert_eq!(
-            translate_request_value(&request, &route, flavor, false),
-            translate_request(&body, &route, flavor, false).unwrap(),
+            translate_request_value(&request, &route, flavor, false, None, true),
+            translate_request(&body, &route, flavor, false, None, true).unwrap(),
             "parsed and byte entry points diverged for {flavor:?}"
         );
     }
@@ -135,6 +143,8 @@ fn omits_max_output_tokens_for_chatgpt_backend() {
         &route("gpt-5.2-codex"),
         ResponsesFlavor::Chatgpt,
         false,
+        None,
+        true,
     )
     .unwrap();
 
@@ -226,9 +236,9 @@ fn tool_reference_result_becomes_loaded_tool_text() {
 fn defer_loading_field_never_reaches_upstream_tools() {
     // With tool search enabled, discovered deferred tools carry
     // defer_loading:true. The Responses API doesn't know the field; the tools()
-    // rebuild must emit only type/name/description/parameters. Mark the deferred
-    // tool loaded so progressive filtering forwards it and this test stays focused
-    // on stripping the unsupported field.
+    // rebuild must emit only type/name/description/strict/parameters. Mark the
+    // deferred tool loaded so progressive filtering forwards it and this test
+    // stays focused on stripping the unsupported field.
     let actual = translate(json!({
         "model": "gpt-5.2-codex",
         "messages": [
@@ -255,6 +265,7 @@ fn defer_loading_field_never_reaches_upstream_tools() {
             "type": "function",
             "name": "mcp__github__get_me",
             "description": "Get the authenticated user",
+            "strict": false,
             "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
         }])
     );
@@ -534,6 +545,7 @@ fn translates_tools_and_tool_choice_variants() {
             "type": "function",
             "name": "run",
             "description": "Run command",
+            "strict": false,
             "parameters": {
                 "type": "object",
                 "properties": {"cmd": {"type": "string"}},
@@ -559,7 +571,129 @@ fn translates_tools_and_tool_choice_variants() {
 
 fn translate_with_flavor(input: Value, flavor: ResponsesFlavor) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
-    translate_request(&body, &route("gpt-5.2-codex"), flavor, false).unwrap()
+    translate_request(&body, &route("gpt-5.2-codex"), flavor, false, None, true).unwrap()
+}
+
+#[test]
+fn responses_tools_explicitly_disable_strict_normalization() {
+    let input_schema = json!({
+        "type": "object",
+        "properties": {
+            "required_value": {"type": "string"},
+            "optional_value": {"type": "string"},
+            "nested": {
+                "type": "object",
+                "properties": {
+                    "required_child": {"type": "integer"},
+                    "optional_child": {"type": ["string", "null"]}
+                },
+                "required": ["required_child"],
+                "additionalProperties": false
+            },
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "required_item": {"type": "boolean"},
+                        "optional_item": {"type": "number"}
+                    },
+                    "required": ["required_item"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["required_value"],
+        "additionalProperties": false
+    });
+    let eager = translate(json!({
+        "model": "gpt-5.2-codex",
+        "messages": [],
+        "tools": [{
+            "name": "probe",
+            "description": "Probe",
+            "input_schema": input_schema
+        }]
+    }));
+    assert_eq!(eager["tools"][0]["strict"], json!(false));
+    assert_eq!(eager["tools"][0]["parameters"], input_schema);
+
+    let native = native_translate(json!({
+        "model": "gpt-5.6-sol",
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "probe"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_ts", "content": [
+                    {"type": "tool_reference", "tool_name": "probe"}
+                ]}
+            ]}
+        ],
+        "tools": [
+            {
+                "name": "ToolSearch",
+                "description": "Search",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "probe",
+                "description": "Probe",
+                "input_schema": input_schema,
+                "defer_loading": true
+            }
+        ]
+    }));
+    assert_eq!(
+        native["tools"],
+        json!([{
+            "type": "tool_search",
+            "execution": "client",
+            "description": "Search",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": true
+            }
+        }])
+    );
+    assert_eq!(native["input"][1]["tools"][0]["strict"], json!(false));
+    assert_eq!(native["input"][1]["tools"][0]["parameters"], input_schema);
+}
+
+#[test]
+fn xai_and_grok_withhold_strict_on_function_tools() {
+    // `strict:false` is pinned only where acceptance is established —
+    // ChatGPT/Codex (measured 2026-09-08) and stock OpenAI (its own field).
+    // xAI/Grok reject several standard Responses fields, so it is withheld
+    // there rather than risk a 400 on every tool-carrying request.
+    let input = json!({
+        "model": "grok-4.5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"name": "Bash", "input_schema": {}}]
+    });
+    let withheld = json!([{
+        "type": "function",
+        "name": "Bash",
+        "description": "",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
+    }]);
+    for flavor in [ResponsesFlavor::Xai, ResponsesFlavor::Grok] {
+        assert_eq!(
+            translate_with_flavor(input.clone(), flavor)["tools"],
+            withheld,
+            "strict should be withheld on {flavor:?}"
+        );
+    }
+    assert_eq!(
+        translate_with_flavor(input, ResponsesFlavor::OpenAi)["tools"][0]["strict"],
+        json!(false)
+    );
 }
 
 #[test]
@@ -585,6 +719,7 @@ fn translates_hosted_web_search_tool_to_responses_web_search() {
                     "type": "function",
                     "name": "Bash",
                     "description": "",
+                    "strict": false,
                     "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
                 },
                 {
@@ -759,7 +894,8 @@ fn maps_thinking_and_route_override_to_effort() {
     let mut route = route("gpt-5.2-codex-low");
     route.effort = Some("xhigh".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.2-codex-low", "messages": []})).unwrap();
-    let override_effort = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
+    let override_effort =
+        translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None, true).unwrap();
     assert_eq!(override_effort["reasoning"]["effort"], "xhigh");
 }
 
@@ -781,7 +917,7 @@ fn emits_configured_service_tier_on_the_wire() {
     let mut route = route("gpt-5.6-sol");
     route.service_tier = Some("priority".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None, true).unwrap();
     assert_eq!(out["service_tier"], json!("priority"));
 }
 
@@ -792,7 +928,8 @@ fn emits_configured_service_tier_on_chatgpt_flavor() {
     let mut route = route("gpt-5.6-sol");
     route.service_tier = Some("flex".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::Chatgpt, false).unwrap();
+    let out =
+        translate_request(&body, &route, ResponsesFlavor::Chatgpt, false, None, true).unwrap();
     assert_eq!(out["service_tier"], json!("flex"));
 }
 
@@ -805,7 +942,7 @@ fn emits_both_effort_and_service_tier_when_both_are_configured() {
     route.effort = Some("xhigh".to_string());
     route.service_tier = Some("priority".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None, true).unwrap();
     assert_eq!(out["reasoning"]["effort"], json!("xhigh"));
     assert_eq!(out["service_tier"], json!("priority"));
 }
@@ -822,7 +959,7 @@ fn route_service_tier_default_sentinel_never_reaches_the_wire() {
     let mut route = route("gpt-5.6-sol");
     route.service_tier = Some("default".to_string());
     let body = serde_json::to_vec(&json!({"model": "gpt-5.6-sol", "messages": []})).unwrap();
-    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false).unwrap();
+    let out = translate_request(&body, &route, ResponsesFlavor::OpenAi, false, None, true).unwrap();
     assert!(out.get("service_tier").is_none());
 }
 
@@ -849,8 +986,15 @@ fn xai_omits_reasoning_and_text_without_configured_effort() {
     }))
     .unwrap();
 
-    let actual =
-        translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(
+        &body,
+        &xai_route("grok-4.3"),
+        ResponsesFlavor::Xai,
+        false,
+        None,
+        true,
+    )
+    .unwrap();
 
     assert!(
         actual.get("reasoning").is_none(),
@@ -879,7 +1023,7 @@ fn xai_never_emits_service_tier_even_when_configured() {
     }))
     .unwrap();
 
-    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false, None, true).unwrap();
 
     assert!(actual.get("service_tier").is_none());
 }
@@ -898,7 +1042,8 @@ fn grok_never_emits_service_tier_even_when_configured() {
     }))
     .unwrap();
 
-    let actual = translate_request(&body, &route, ResponsesFlavor::Grok, false).unwrap();
+    let actual =
+        translate_request(&body, &route, ResponsesFlavor::Grok, false, None, true).unwrap();
 
     assert!(actual.get("service_tier").is_none());
 }
@@ -914,8 +1059,15 @@ fn xai_honors_explicit_client_effort_without_route_config() {
     }))
     .unwrap();
 
-    let actual =
-        translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(
+        &body,
+        &xai_route("grok-4.3"),
+        ResponsesFlavor::Xai,
+        false,
+        None,
+        true,
+    )
+    .unwrap();
 
     assert_eq!(actual["reasoning"], json!({"effort": "high"}));
 
@@ -927,8 +1079,15 @@ fn xai_honors_explicit_client_effort_without_route_config() {
         "thinking": {"type": "enabled", "budget_tokens": 1024}
     }))
     .unwrap();
-    let actual =
-        translate_request(&body, &xai_route("grok-4.3"), ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(
+        &body,
+        &xai_route("grok-4.3"),
+        ResponsesFlavor::Xai,
+        false,
+        None,
+        true,
+    )
+    .unwrap();
     assert!(actual.get("reasoning").is_none());
 }
 
@@ -940,23 +1099,46 @@ fn xai_sends_reasoning_without_summary_when_effort_configured() {
     route.effort = Some("high".to_string());
     let body = serde_json::to_vec(&json!({"model": "grok-4.5", "messages": []})).unwrap();
 
-    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(&body, &route, ResponsesFlavor::Xai, false, None, true).unwrap();
 
     assert_eq!(actual["reasoning"], json!({"effort": "high"}));
 }
 
 #[test]
-fn xai_includes_encrypted_reasoning_when_thinking_enabled() {
+fn xai_includes_encrypted_reasoning_only_when_thinking_enabled() {
     let body = serde_json::to_vec(&json!({
         "thinking": {"type": "enabled"},
         "messages": [{"role": "user", "content": "hi"}]
     }))
     .unwrap();
 
-    let actual =
-        translate_request(&body, &xai_route("grok-4.5"), ResponsesFlavor::Xai, false).unwrap();
+    let actual = translate_request(
+        &body,
+        &xai_route("grok-4.5"),
+        ResponsesFlavor::Xai,
+        false,
+        None,
+        true,
+    )
+    .unwrap();
 
     assert_eq!(actual["include"], json!(["reasoning.encrypted_content"]));
+
+    // The always-on include is chatgpt-only: xAI keeps it gated on thinking.
+    let without = serde_json::to_vec(&json!({
+        "messages": [{"role": "user", "content": "hi"}]
+    }))
+    .unwrap();
+    let actual = translate_request(
+        &without,
+        &xai_route("grok-4.5"),
+        ResponsesFlavor::Xai,
+        false,
+        None,
+        true,
+    )
+    .unwrap();
+    assert!(actual.get("include").is_none());
 }
 
 #[test]
@@ -1581,12 +1763,14 @@ fn classifies_rate_limit_from_every_error_payload_shape() {
 
 #[test]
 fn backend_error_event_without_rate_limit_code_stays_gateway_error() {
-    // Only `rate_limit_exceeded` is a throttle; every other in-stream failure
-    // (content policy, server-side) keeps the 502 `api_error` gateway shape.
+    // Codes outside the throttle / overload / terminal-policy classes (the
+    // misalignment policy, server-side failures, quota exhaustion, unknown codes)
+    // keep the 502 `api_error` gateway shape.
     for code in [
         "server_error",
         "misalignment_policy_violation",
         "unknown_error",
+        "insufficient_quota",
     ] {
         let fixture = format!(
             "event: response.failed\ndata: {}\n\n",
@@ -1599,6 +1783,155 @@ fn backend_error_event_without_rate_limit_code_stays_gateway_error() {
         let (status, backend_error) = machine.take_backend_error().expect("recorded");
         assert_eq!(status, StatusCode::BAD_GATEWAY, "{code}");
         assert_eq!(backend_error["error"]["type"], "api_error", "{code}");
+    }
+}
+
+#[test]
+fn classifies_slow_down_overload_and_policy_codes() {
+    // Mirrors openai/codex rust-v0.156.0's SSE error classification: `slow_down`
+    // is a throttle (429), `server_is_overloaded` the overload (529),
+    // and `invalid_prompt` / `bio_policy` / `cyber_policy` terminal refusals
+    // (400). The streaming path must emit the same `error.type` inline.
+    let overloaded = StatusCode::from_u16(529).unwrap();
+    let cases = [
+        (
+            "slow_down",
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+        ),
+        ("server_is_overloaded", overloaded, "overloaded_error"),
+        (
+            "invalid_prompt",
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+        ),
+        (
+            "bio_policy",
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+        ),
+        (
+            "cyber_policy",
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+        ),
+    ];
+    for (code, expected_status, expected_type) in cases {
+        let fixture = format!(
+            "event: response.failed\ndata: {}\n\n",
+            json!({"type": "response.failed", "response": {"error": {"code": code, "message": "nope"}}})
+        );
+        let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+        let emitted = parse_sse_events(&fixture)
+            .into_iter()
+            .flat_map(|event| machine.apply(event))
+            .collect::<String>();
+        let (status, backend_error) = machine.take_backend_error().expect("recorded");
+        assert_eq!(status, expected_status, "{code}");
+        assert_eq!(backend_error["error"]["type"], expected_type, "{code}");
+        assert_eq!(backend_error["error"]["message"], "nope", "{code}");
+        assert!(emitted.contains("event: error"), "{code}");
+        assert!(
+            emitted.contains(&format!("\"type\":\"{expected_type}\"")),
+            "{code}: {emitted}"
+        );
+    }
+
+    // `slow_down` classifies from the plain `error` event and a bare top-level
+    // `code` as well, not only the nested `response.failed` shape.
+    for data in [
+        json!({"type": "error", "error": {"code": "slow_down", "message": "nope"}}),
+        json!({"code": "slow_down", "message": "nope"}),
+    ] {
+        assert_eq!(
+            backend_error_status(&data),
+            StatusCode::TOO_MANY_REQUESTS,
+            "{data}"
+        );
+    }
+}
+
+#[test]
+fn classifies_a_wrapped_websocket_error_by_its_status() {
+    // The Codex websocket wraps HTTP-class errors as an `error` frame carrying a
+    // top-level `status` (or `status_code`); that status maps like the same HTTP
+    // status would. A known `code` still wins, and a missing, 2xx, or
+    // non-numeric status keeps the 502 default.
+    let cases = [
+        (
+            json!({"type": "error", "status": 400, "error": {"message": "unsupported"}}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"type": "error", "status_code": 429, "error": {"message": "slow"}}),
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
+        (
+            json!({"type": "error", "status": 500, "error": {"code": "invalid_prompt"}}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"type": "error", "error": {"message": "no status"}}),
+            StatusCode::BAD_GATEWAY,
+        ),
+        (
+            json!({"type": "error", "status": 200, "error": {"message": "ok?"}}),
+            StatusCode::BAD_GATEWAY,
+        ),
+        (
+            json!({"type": "error", "status": "400", "error": {"message": "text"}}),
+            StatusCode::BAD_GATEWAY,
+        ),
+    ];
+    for (data, expected) in &cases {
+        assert_eq!(backend_error_status(data), *expected, "{data}");
+    }
+
+    // The machine maps the envelope against the same status, so `error.type`
+    // agrees with it on the non-streaming path.
+    let fixture = format!("event: error\ndata: {}\n\n", cases[0].0);
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+    for event in parse_sse_events(&fixture) {
+        let _ = machine.apply(event);
+    }
+    let (status, backend_error) = machine.take_backend_error().expect("recorded");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(backend_error["error"]["type"], "invalid_request_error");
+    assert_eq!(backend_error["error"]["message"], "unsupported");
+}
+
+#[test]
+fn in_stream_message_rewrites_survive_status_classification() {
+    // The steer and context-overflow rewrites key on the error code, not the
+    // status: both codes stay on the 502 row and keep their rewritten messages.
+    let cases = [
+        (
+            json!({"code": "misalignment_policy_violation", "message": "blocked",
+                "misalignment": {"steer": {"message": "Stop here."}}}),
+            "blocked\n\nStop here.",
+        ),
+        (
+            json!({"code": "context_length_exceeded",
+                "message": "Your input exceeds the context window of this model."}),
+            "prompt is too long",
+        ),
+    ];
+    for (error, expected_message) in cases {
+        let fixture = format!(
+            "event: response.failed\ndata: {}\n\n",
+            json!({"type": "response.failed", "response": {"error": error}})
+        );
+        let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", false, false);
+        for event in parse_sse_events(&fixture) {
+            let _ = machine.apply(event);
+        }
+        let (status, backend_error) = machine.take_backend_error().expect("recorded");
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{error}");
+        assert_eq!(backend_error["error"]["type"], "api_error", "{error}");
+        assert_eq!(
+            backend_error["error"]["message"], expected_message,
+            "{error}"
+        );
     }
 }
 
@@ -1780,6 +2113,95 @@ fn includes_encrypted_reasoning_only_when_thinking_enabled() {
     assert!(without.get("include").is_none());
 }
 
+#[test]
+fn chatgpt_always_requests_encrypted_reasoning() {
+    // The Codex CLI sends include unconditionally on the ChatGPT/Codex backend,
+    // so thinking-off turns keep the reasoning round-trip.
+    for body in [
+        json!({"messages": [{"role": "user", "content": "hi"}]}),
+        json!({"thinking": {"type": "enabled"}, "messages": [{"role": "user", "content": "hi"}]}),
+    ] {
+        let out = translate_with_flavor(body, ResponsesFlavor::Chatgpt);
+        assert_eq!(out["include"], json!(["reasoning.encrypted_content"]));
+    }
+}
+
+#[test]
+fn chatgpt_defaults_parallel_tool_calls_to_true() {
+    // codex always sends parallel_tool_calls:true on the ChatGPT/Codex backend
+    // (non-lite models); a client that omits it still gets the canonical wire
+    // shape. A client-provided value wins, and other flavors stay client-driven.
+    let absent = translate_with_flavor(
+        json!({"messages": [{"role": "user", "content": "hi"}]}),
+        ResponsesFlavor::Chatgpt,
+    );
+    assert_eq!(absent["parallel_tool_calls"], json!(true));
+
+    let client_false = translate_with_flavor(
+        json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "parallel_tool_calls": false
+        }),
+        ResponsesFlavor::Chatgpt,
+    );
+    assert_eq!(client_false["parallel_tool_calls"], json!(false));
+
+    let openai = translate(json!({"messages": [{"role": "user", "content": "hi"}]}));
+    assert!(openai.get("parallel_tool_calls").is_none());
+}
+
+#[test]
+fn chatgpt_default_keeps_an_anthropic_parallel_tool_use_disable() {
+    // Anthropic spells the same switch `tool_choice.disable_parallel_tool_use`;
+    // the chatgpt default must not turn it back on.
+    let with_choice = |disable: bool| {
+        translate_with_flavor(
+            json!({
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+                "tool_choice": {"type": "auto", "disable_parallel_tool_use": disable}
+            }),
+            ResponsesFlavor::Chatgpt,
+        )
+    };
+    assert_eq!(with_choice(true)["parallel_tool_calls"], json!(false));
+    assert_eq!(with_choice(false)["parallel_tool_calls"], json!(true));
+}
+
+#[test]
+fn chatgpt_plain_request_matches_the_captured_body() {
+    // Captured translated body: the chatgpt-flavor wire shape for a plain
+    // request, pinned by equality so the serialized body is a recorded artifact
+    // (the punch-list verify line's second half).
+    let out = translate_with_flavor(
+        json!({
+            "model": "gpt-5.2-codex",
+            "system": [{"type": "text", "text": "Be terse"}],
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 1000
+        }),
+        ResponsesFlavor::Chatgpt,
+    );
+    assert_eq!(
+        out,
+        json!({
+            "model": "gpt-5.2-codex",
+            "instructions": "Be terse",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}]
+            }],
+            "parallel_tool_calls": true,
+            "reasoning": {"effort": "medium", "summary": "auto"},
+            "text": {"verbosity": "medium"},
+            "include": ["reasoning.encrypted_content"],
+            "store": false,
+            "stream": true
+        })
+    );
+}
+
 /// End-to-end: a reasoning item streams out as a thinking block whose signature
 /// carries the encrypted state, and feeding that block back yields a Responses
 /// `reasoning` input item — preserving chain-of-thought under store:false.
@@ -1854,6 +2276,70 @@ fn streams_reasoning_as_thinking_block_and_round_trips() {
 }
 
 #[test]
+fn reasoning_without_encrypted_content_still_round_trips() {
+    // A reasoning item can arrive with no encrypted_content (and no summary).
+    // It still round-trips its id, so the next turn keeps the item instead of
+    // dropping it from the input.
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    let expected_signature = shunt::model::responses::encode_reasoning_signature("rs_1", "");
+    assert!(emitted.contains(&expected_signature));
+
+    let out = translate(json!({
+        "thinking": {"type": "enabled"},
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "", "signature": expected_signature}
+            ]}
+        ]
+    }));
+    let input = out["input"].as_array().unwrap();
+    let reasoning = input
+        .iter()
+        .find(|item| item["type"] == "reasoning")
+        .expect("reasoning input item kept");
+    assert_eq!(reasoning["id"], "rs_1");
+    assert_eq!(reasoning["encrypted_content"], "");
+}
+
+#[test]
+fn streamed_summary_without_encrypted_content_still_round_trips() {
+    // Same as above but the reasoning block is OPEN at done (a summary streamed).
+    // That half of the delta would silently lose its round-trip id if only the
+    // closed-block path were fixed.
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.reasoning_summary_text.delta\n",
+        "data: {\"delta\":\"Let me\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-5.2-codex", true, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    let expected_signature = shunt::model::responses::encode_reasoning_signature("rs_1", "");
+    assert!(emitted.contains(&expected_signature));
+    assert!(emitted.contains("\"type\":\"signature_delta\""));
+}
+
+#[test]
 fn drops_foreign_thinking_signature() {
     // A signature shunt did not produce (e.g. a genuine Anthropic one) is dropped,
     // never forwarded as a bogus reasoning item the backend would reject.
@@ -1895,11 +2381,14 @@ fn ignores_reasoning_when_thinking_disabled() {
 fn derives_prompt_cache_key_from_session_id() {
     // Claude Code packs a JSON blob into metadata.user_id; session_id is the
     // stable per-conversation key the Responses cache should be routed by.
+    // Sent raw, matching the real Codex CLI (which sends its session id
+    // verbatim): the backend derives cache affinity from the `session-id`
+    // header, and the body key must equal that header's value.
     let out = translate(json!({
         "messages": [{"role": "user", "content": "hi"}],
         "metadata": {"user_id": "{\"device_id\":\"d1\",\"session_id\":\"sess_abc\"}"}
     }));
-    assert_eq!(out["prompt_cache_key"], "shunt-sess_abc");
+    assert_eq!(out["prompt_cache_key"], "sess_abc");
 
     // No metadata -> no key sent.
     let bare = translate(json!({"messages": [{"role": "user", "content": "hi"}]}));
@@ -1911,13 +2400,60 @@ fn derives_prompt_cache_key_from_session_id() {
         "metadata": {"user_id": "plain-user"}
     }));
     let key = hashed["prompt_cache_key"].as_str().unwrap();
-    assert!(key.starts_with("shunt-"));
+    assert_eq!(key.len(), 16);
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
     // Determinism: same input -> same key.
     let again = translate(json!({
         "messages": [{"role": "user", "content": "different"}],
         "metadata": {"user_id": "plain-user"}
     }));
     assert_eq!(hashed["prompt_cache_key"], again["prompt_cache_key"]);
+}
+
+#[test]
+fn an_unheaderable_metadata_session_falls_back_to_the_hash() {
+    // A JSON-decoded session id can carry an escaped control character; it
+    // becomes the upstream affinity headers, so the derivation must fall back
+    // to the header-safe hash instead of failing the request.
+    let out = translate(json!({
+        "messages": [{"role": "user", "content": "hi"}],
+        "metadata": {"user_id": "{\"session_id\":\"bad\\nid\"}"}
+    }));
+    let key = out["prompt_cache_key"].as_str().unwrap();
+    assert_eq!(key.len(), 16);
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // Determinism: the hash is the plain-user_id fallback, same input shape.
+    let again = translate(json!({
+        "messages": [{"role": "user", "content": "other"}],
+        "metadata": {"user_id": "{\"session_id\":\"bad\\nid\"}"}
+    }));
+    assert_eq!(key, again["prompt_cache_key"].as_str().unwrap());
+}
+
+#[test]
+fn inbound_session_id_header_wins_the_prompt_cache_key() {
+    // The inbound `x-claude-code-session-id` header is the conversation id
+    // Claude Code sends on every turn; it must win over metadata so the body
+    // key always equals the `session-id` header forwarded upstream.
+    let out = translate_with_session(
+        json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "metadata": {"user_id": "{\"device_id\":\"d1\",\"session_id\":\"meta_sess\"}"}
+        }),
+        Some("hdr-sess-123"),
+    );
+    assert_eq!(out["prompt_cache_key"], "hdr-sess-123");
+
+    // An empty header is not a session id: the metadata fallback applies.
+    let fallback = translate_with_session(
+        json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "metadata": {"user_id": "{\"session_id\":\"meta_sess\"}"}
+        }),
+        Some(""),
+    );
+    assert_eq!(fallback["prompt_cache_key"], "meta_sess");
 }
 
 #[test]
@@ -2086,7 +2622,34 @@ fn reasoning_id_falls_back_to_done_event_when_added_missing() {
 /// off).
 fn native_translate(input: Value) -> Value {
     let body = serde_json::to_vec(&input).unwrap();
-    translate_request(&body, &route("gpt-5.6-sol"), ResponsesFlavor::Chatgpt, true).unwrap()
+    translate_request(
+        &body,
+        &route("gpt-5.6-sol"),
+        ResponsesFlavor::Chatgpt,
+        true,
+        None,
+        true,
+    )
+    .unwrap()
+}
+
+/// Production eligibility: the native wire is selected by
+/// [`Config::native_tool_search`], not a bypass `native = true` fixture.
+fn production_native_for(model: &str) -> bool {
+    Config::default().native_tool_search("codex", model)
+}
+
+fn translate_with_production_gate(model: &str, input: Value) -> Value {
+    let body = serde_json::to_vec(&input).unwrap();
+    translate_request(
+        &body,
+        &route(model),
+        ResponsesFlavor::Chatgpt,
+        production_native_for(model),
+        None,
+        true,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -2193,6 +2756,7 @@ fn native_tool_result_becomes_tool_search_output_with_ordered_schemas() {
                     "name": "find_issue",
                     "description": "Find an issue",
                     "defer_loading": true,
+                    "strict": false,
                     "parameters": {
                         "type": "object",
                         "properties": {"number": {"type": "integer"}},
@@ -2205,6 +2769,7 @@ fn native_tool_result_becomes_tool_search_output_with_ordered_schemas() {
                     "name": "list_issues",
                     "description": "List issues",
                     "defer_loading": true,
+                    "strict": false,
                     "parameters": {"type": "object", "properties": {}, "additionalProperties": true}
                 }
             ]
@@ -2307,6 +2872,7 @@ fn tool_reveal_grows_shim_tools_but_leaves_native_tools_stable() {
             "name": "find_issue",
             "description": "Find an issue",
             "defer_loading": true,
+            "strict": false,
             "parameters": {
                 "type": "object",
                 "properties": {"number": {"type": "integer"}},
@@ -2315,6 +2881,79 @@ fn tool_reveal_grows_shim_tools_but_leaves_native_tools_stable() {
             }
         }])
     );
+}
+
+#[test]
+fn astra_production_gate_maps_tool_search_and_keeps_prefix_stable() {
+    // Codex catalog slug `gpt-6-astra` takes the native path through
+    // [`Config::native_tool_search`]; close gpt-6 names and gpt-5.2 stay on
+    // the #43 shim. The native request/reveal fixture is the same shape as
+    // [`tool_reveal_grows_shim_tools_but_leaves_native_tools_stable`].
+    let _env = common::set_env_blocking(&[]);
+    assert!(production_native_for("gpt-6-astra"));
+    assert!(production_native_for("gpt-5.6-sol"));
+    assert!(production_native_for("gpt-5.4"));
+    assert!(!production_native_for("gpt-6-pro"));
+    assert!(!production_native_for("gpt-6-astral"));
+    assert!(!production_native_for("gpt-5.2-codex"));
+
+    let tools = json!([
+        {"name": "ToolSearch", "description": "Search", "input_schema": {"type": "object", "properties": {}}},
+        {
+            "name": "find_issue",
+            "description": "Find an issue",
+            "input_schema": {
+                "type": "object",
+                "properties": {"number": {"type": "integer"}},
+                "required": ["number"]
+            },
+            "defer_loading": true
+        }
+    ]);
+    let pre_reveal_messages: Value = json!([]);
+    let post_reveal_messages = json!([
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "call_ts", "name": "ToolSearch", "input": {"query": "find_issue"}}
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "call_ts", "content": [
+                {"type": "tool_reference", "tool_name": "find_issue"}
+            ]}
+        ]}
+    ]);
+
+    let astra_pre = translate_with_production_gate(
+        "gpt-6-astra",
+        json!({
+            "model": "gpt-6-astra", "messages": pre_reveal_messages, "tools": tools
+        }),
+    );
+    let astra_post = translate_with_production_gate(
+        "gpt-6-astra",
+        json!({
+            "model": "gpt-6-astra", "messages": post_reveal_messages, "tools": tools
+        }),
+    );
+    assert_eq!(astra_pre["tools"][0]["type"], "tool_search");
+    assert_eq!(astra_pre["tools"], astra_post["tools"]);
+    assert!(!astra_pre["tools"].to_string().contains("find_issue"));
+    assert!(!astra_post["tools"].to_string().contains("find_issue"));
+    let output_item = astra_post["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "tool_search_output")
+        .expect("post-reveal Astra input should contain a tool_search_output item");
+    assert_eq!(output_item["tools"][0]["name"], "find_issue");
+
+    let unsupported = translate_with_production_gate(
+        "gpt-6-pro",
+        json!({
+            "model": "gpt-6-pro", "messages": pre_reveal_messages, "tools": tools
+        }),
+    );
+    assert_eq!(unsupported["tools"][0]["type"], "function");
+    assert_eq!(unsupported["tools"][0]["name"], "ToolSearch");
 }
 
 #[test]
@@ -2478,6 +3117,32 @@ fn native_streamed_tool_search_call_becomes_tool_use() {
     assert!(emitted.contains("\"id\":\"call_ts\""));
     assert!(emitted.contains("github issues"));
     assert!(emitted.contains("\"stop_reason\":\"tool_use\""));
+}
+
+#[test]
+fn astra_production_gate_streamed_tool_search_call_becomes_tool_use() {
+    let _env = common::set_env_blocking(&[]);
+    let native = production_native_for("gpt-6-astra");
+    assert!(native);
+    let fixture = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"call_ts\",\"execution\":\"client\",\"status\":\"in_progress\",\"arguments\":{}}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"call_ts\",\"execution\":\"client\",\"arguments\":{\"query\":\"github issues\"}}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":3}}}\n\n"
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-6-astra", false, native);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    assert!(emitted.contains("\"type\":\"tool_use\""));
+    assert!(emitted.contains("\"name\":\"ToolSearch\""));
+    assert!(emitted.contains("\"id\":\"call_ts\""));
+    assert!(emitted.contains("github issues"));
 }
 
 #[test]

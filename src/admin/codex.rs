@@ -23,7 +23,7 @@ use super::{
     authenticate, bad_gateway, bad_request, check_csrf, cleanup_reprovisioned_pool_health,
     forget_pool_health_if_absent, internal, json_secure, remaining_account_identities,
     require_write,
-    session::{PendingAttempt, PendingKind},
+    session::{PendingAttempt, PendingKind, COMPLETION_EXCHANGE_TIMEOUT},
     too_many_requests, unauthorized,
 };
 
@@ -130,10 +130,23 @@ pub(super) async fn complete_codex_account(
         return bad_request("account name must match [a-z0-9-]+");
     }
     let key = codex_pending_key(&name);
+    // Held for the rest of the handler; see `PendingStore::lock_completion` for
+    // the interleaving this closes (#440).
+    let _completion = state.admin_stores.pending.lock_completion(&key).await;
     let pending = match state.admin_stores.pending.attempt(&key) {
         PendingAttempt::Ready(pending) => pending,
         PendingAttempt::NotFound => {
-            return bad_request("no pending login for this account; start again")
+            // Three causes share this response: no start, an expired entry, and
+            // — since a completion consumes the entry under the lock above — a
+            // concurrent completion for this account that finished first. The
+            // operator cannot tell them apart from the message, and widening it
+            // would leak whether an account exists, so the server's own timeline
+            // is where they are distinguishable (#440).
+            tracing::info!(
+                account = %name,
+                "admin: completion found no pending login (no start, expired, or consumed by a concurrent completion)"
+            );
+            return bad_request("no pending login for this account; start again");
         }
         PendingAttempt::TooManyAttempts => return bad_request("too many attempts; start again"),
     };
@@ -157,19 +170,24 @@ pub(super) async fn complete_codex_account(
         "SHUNT_CODEX_TOKEN_URL",
         codex_auth::TOKEN_URL,
     );
-    let tokens = match codex_login::exchange_code(
+    let exchange = codex_login::exchange_code(
         &state.http_client,
         &code,
         &pending.verifier,
         codex_login::REDIRECT_URI,
         &token_url,
-    )
-    .await
-    {
-        Ok(tokens) => tokens,
-        Err(error) => {
+    );
+    // Bounded because the completion lock is held across it; see
+    // `COMPLETION_EXCHANGE_TIMEOUT`.
+    let tokens = match tokio::time::timeout(COMPLETION_EXCHANGE_TIMEOUT, exchange).await {
+        Ok(Ok(tokens)) => tokens,
+        Ok(Err(error)) => {
             tracing::warn!(account = %name, %error, "admin: Codex token exchange failed");
             return bad_gateway("Codex token exchange failed");
+        }
+        Err(_elapsed) => {
+            tracing::warn!(account = %name, "admin: Codex token exchange timed out");
+            return bad_gateway("Codex token exchange timed out");
         }
     };
     let Some(refresh_token) = tokens

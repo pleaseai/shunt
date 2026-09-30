@@ -372,6 +372,7 @@ mod tests {
             utilization_7d_oi: Some(0.125),
             reset_7d_oi: Some(reset_fable),
             status: None,
+            quota_buckets: Vec::new(),
             needs_relogin: false,
         };
 

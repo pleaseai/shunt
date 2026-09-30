@@ -1,0 +1,247 @@
+---
+title: 阶段路由器
+description: 让一个模型 id 依据对话最近的 tool-result 历史(而非提示词文本)逐轮在强力档位与高效档位之间做选择。
+---
+
+`[[models]]` 条目通常只指定一个目的地。**阶段路由器**指定两个 —— 一个强力档位和一个高效
+档位 —— 并让对话决定由谁承担每一轮。错误、停滞的排查和探索性阅读会向上走;计划确定之后的
+常规产出留在下面。
+
+阶段路由器是条目 `[models.router]` 表可以取的 `type` 之一。其余三个是 `auto`(同一个路由器
+套用上游预设)、`random`(按权重、默认按会话固定的分流)和 `noop`(返回空响应,用于冒烟
+测试),四个都记录在[配置参考](/zh-cn/reference/configuration/)中。
+
+该功能需要显式启用,默认完全不生效。不配置 `[models.router]` 表,shunt 的路由与以前
+完全一致:只看请求的 `model` id,别无其他。
+
+## 它读取什么
+
+只读取请求体中**结构化的协议元数据**:
+
+- `tool_use.name` —— 助手调用了哪个工具
+- `tool_result.is_error` —— 结果是否以失败返回
+
+两者都是 Anthropic Messages 线路格式的核心字段。路由器不读系统提示、不读用户文本、也不读
+工具参数,因此不会继承那些对提示词形状做指纹识别、每逢 Claude Code 发版就失效的代理的失败
+模式。
+
+`tool_result` 块**不携带**工具名称。唯一的关联是 `tool_use_id` → `tool_use.id`,这个连接是
+整个提取器赖以立足的唯一支点。
+
+### 工具词汇
+
+shunt 知道 Claude Code 实际的工具名称,这正是它能胜过通用路由器的地方:
+
+| 类别 | 工具 |
+| :-- | :-- |
+| 观察(Observe) | `Read`、`Glob`、`Grep`、`NotebookRead`、`WebFetch`、`WebSearch`、`BashOutput` |
+| 变更(Mutate) | `Edit`、`NotebookEdit`、`Write` |
+| 计划(Plan) | `TodoWrite`、`Task`、`EnterPlanMode`、`ExitPlanMode` |
+| 未分类 | 其余全部,包括 `Bash`、`Skill`、`KillShell` 和所有 `mcp__*` 工具 |
+
+未分类的那些名字可以用 `[models.router.tool_semantics]` 自己归类:四个列表(`observe`、
+`mutate`、`plan`、`new`)在上表*之后*生效。表里已经认识的名字改不动 —— 把 `Read` 放进
+`mutate` 不是覆盖,而是启动错误。改动这些列表会在下次加载时丢弃该路由器的会话固定。
+
+包括 `ExitPlanMode` 在内的所有 `Plan` 调用都计为计划活动,而计划活动被读作探索,因此是
+往**上**推,而不是往下。只有一个名称享有超出类别的待遇:失败的 `Task` 被记为致命而非仅仅
+困难,因为那是一整个被委派的子 agent 运行的崩塌,而不是一条命令失败。对话末尾连续两次失败
+同样是致命的 —— 那意味着会话没有在恢复。
+
+`Bash` 是刻意不分类的。`git status` 是观察,`rm -rf` 是变更,`cargo test` 是事情已收敛的
+信号,而区分它们的只有 `input.command` —— 对命令字符串做分类,恰恰是本设计要避免的脆弱推断。
+
+## 它如何决策
+
+信号评分由 [NVIDIA-NeMo/Switchyard][sy] 的评分器 [`switchyard-libsy`][libsy] 负责,那是经过
+校准的部分,这里不重新实现。单个饱和信号约为 `0.46`,不足以决定一轮;两个互相印证的信号可
+达到约 `0.76`。
+
+当信号不足以定夺时,评分器会请求 LLM 裁决。**shunt 默认不设裁决模型**,而是 fall-open 到
+picker 的默认值,从而让热路径上不多出一次模型调用和一份凭据。下文的
+[裁判回退](#裁判回退)就是把这些轮次交给裁判的可选开关,而且只影响这些轮次。
+
+完整的评分公式、支撑它的公开基准结果,以及 shunt 在其之上额外加入的东西,都在
+[Switchyard 集成](/zh-cn/guides/switchyard/)。
+
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
+[sy]: https://github.com/NVIDIA-NeMo/Switchyard
+
+## 为什么下行比上行更难
+
+档位切换不是免费的,在长时间的 Claude Code 会话中代价很具体:
+
+- **提示缓存按模型分键。** 切换会丢弃已预热的前缀,并在新档位上支付一次完整的缓存写入。
+- **Codex 续接**把模型哈希进签名,因此切换会强制重传全部输入,把 shunt 刚省下的上传量原样
+  吐回去。
+- **跨提供方切换**还会丢掉会话的连接池和粘性账户槽位。
+
+所以两个方向是刻意不对称的:
+
+| 方向 | 需要满足 |
+| :-- | :-- |
+| 高效 → 强力 | 仅 `confidence_threshold`(0.5)。便宜档位应付不了的一轮,比丢掉的缓存前缀更贵。 |
+| 强力 → 高效 | `min_dwell_turns` **且** `deescalate_threshold`(0.75)**且**评分器确实做出的判断。 |
+
+fall-open 或没有工具活动的一轮是 picker 的默认值,不是证据,因此在任何方向上都无法移动档位。
+
+`capable_hold_turns`(默认 `0`)在信号把档位推上去之后,再多保持强力档位若干轮 —— 当恢复过程
+本身安静得容易被读成已经收敛时,这很有用。被保持的轮次把路由来源报告为 `capable_hold`,它同样
+不算证据,无法移动固定。
+
+### 告诉接手的模型为什么
+
+`[models.router.handoff_notes]` 只在信号改变档位的那一轮,向转发出去的请求追加一个简短的
+system 块:向上时用 `escalation_note`,向下时用 `deescalation_note`,让到岗的模型知道自己
+是在接替而不是从头开始。Claude Code 的 attribution 块是第一个 system 块,不会被动;备注放在
+最后。
+
+**每切换一次就付一次提示缓存未命中**,因为 `system` 数组属于被缓存的前缀。这是在切换本身
+已经放弃的按模型前缀之上再加的代价,也正因如此,这张表不显式打开就是关着的。
+
+## 会话固定
+
+决策按 `(模型 id, 会话 id, agent id)` 固定,两个 id 分别来自
+`x-claude-code-session-id` 和 `x-claude-code-agent-id`。两个 id 都会被哈希且从不存储。同一
+会话中使用两个带路由器的模型,它们的档位互相独立。
+
+**子 agent 拥有自己的固定。** `Task` 子任务发送父级的会话 id 和它自己的 agent id,因此读写
+一条独立的条目:它的失败不再让父级升档,它的轮次也不再计入父级的 dwell。Claude Code 在每个
+被委派的轮次上都会发送这个头,无需任何选择加入,所以默认的 shunt 部署无需改动客户端即可生
+效。子固定按自己的 4096 条预算淘汰,与 4096 个父会话分开;而每次修剪只触及自己增长的那一
+侧,因此宽扇出不会淘汰正在等待它的父级。
+
+**压缩会升档,并且升档会保持。** Claude Code 只在上下文压缩后的第一轮附带一次
+`x-claude-code-context-compacted`。shunt 把该轮按 compacted 评分,这会触发评分器的硬覆盖,
+即使压缩后的历史没有任何工具活动可读也会路由到强力档位;同时把该标记闩存到会话固定上,使其
+后的轮次得到同样的结论。只有当客户端设置了 `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` 时这个头才
+会到达 shunt(参见[客户端环境变量](/zh-cn/reference/client-environment/))。同一个变量还会
+发送 `x-claude-code-request-class`,此时由它而不是上面的 agent id 规则来判定哪些轮次属于被
+委派的工作。
+
+- 不发送会话头的调用方以无状态方式路由,这类请求上的压缩标记只对当前这一轮有效。
+- `count_tokens` 探测不记录任何内容 —— Claude Code 发送它时携带的历史落后一轮,若记录便会
+  让陈旧历史左右固定。会话一旦已被固定,探测与紧随其后的轮次读取同一份固定,因此到达相同
+  档位;而在*尚未*固定的会话上,探测按自己的历史评分,可能落在与后一轮不同的档位。
+- 固定能挺过配置热重载。但固定记得自己是在哪张路由器表下形成的:修改某个路由器,只有它自己
+  的固定会被丢弃。
+- 固定在 `session_ttl_seconds` 后过期。重启之间不持久化任何内容。压缩闩存随承载它的固定
+  一起清除 —— 在该过期时,或在热重载改变路由器表时。
+
+## 客户端看到什么
+
+被选中的档位只向上游传递。响应回报客户端请求的那个 id,因此 Claude Code 的 `/model` 显示和
+`--resume` 模型恢复继续正常工作:
+
+```
+POST /v1/messages   {"model": "claude-auto", ...}
+  → 上游收到        {"model": "claude-opus-4-8", ...}
+  → 客户端收到      {"model": "claude-auto", ...}
+```
+
+决策由两个响应头报告,无需你去推断:
+
+| 头部 | 值 |
+| :-- | :-- |
+| `x-gateway-routed-model` | 路由器选中的目标(`claude-opus-4-8`) |
+| `x-gateway-route-source` | 原因(`override`、`dimensions`、`sticky`、`no_signal`、`fall_open`、`capable_hold`、`llm-classifier`) |
+
+七个里有六个是信号标签。`llm-classifier` 只会出现在配置了下文
+[裁判回退](#裁判回退)的条目上,并且只出现在由裁判决定的那一轮;没有配置时,无法定夺的
+一轮仍然报告为 `fall_open`,也不会发出裁判调用。评分器还定义了 `ambiguous`,它不能出现
+在响应里。其他路由器类型有自己的标签(`random`、
+`random_session`、`noop`),`[models.subagents]` 覆盖层也有自己的标签(命中 `by_type` 时
+是 `subagent_type`,回退到 `target` 时是 `subagent`)。
+
+没有路由器的模型 id 不会带上这两个头,这样"被路由到高效档位"与"根本没走路由器"才能
+区分开。`count_tokens` 探测不加这两个头:在尚未固定的会话上,探测按自己落后一轮的
+历史评分,因此它的档位不一定是被测量那一轮的档位。
+
+`GET /routes` 会在 `routers` 中列出每个已配置的路由器,附带它的 `algorithm` 与 `targets`;
+对这个类型还会给出两个档位的目标,以及当没有信号做出决定时 picker 回退到的档位。启用指标后
+配置了裁判的路由器还会把它列在 `judges` 里。启用指标后
+会导出三个计数器:覆盖所有路由器类型的 `shunt.router.decisions`,以及
+`shunt.stage_router.decisions` 和 `shunt.stage_router.flips` —— 一旦配置了裁判,还会多出
+第四个 `shunt.router.judge_calls`。档位切换是昂贵事件,而决策
+计数器无法区分刚刚迁移过来的会话和本来就在那里的会话,所以 flip 单独计数。
+
+## 如何配置
+
+```toml
+[[models]]
+id = "claude-auto"                     # 要出现在 /model 中必须以 claude/anthropic 开头
+display_name = "Auto (stage router)"
+
+[models.router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+# picker = "efficient_first"
+# confidence_threshold = 0.5
+# recent_turn_window = 3
+# min_dwell_turns = 3
+# deescalate_threshold = 0.75
+# session_ttl_seconds = 3600
+# capable_hold_turns = 0
+```
+
+两个目标都是普通的公开模型 id,因此各自沿常规路由阶梯解析,并保留自己的故障转移链、账户池、
+适配器、`effort` 和 `service_tier`。目标自身也是路由器会导致启动失败,所以解析在结构上就是
+一跳。
+
+所有键都记录在[配置参考](/zh-cn/reference/configuration/)中。包含刻意排除项在内的设计记录见
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md);
+`[models.router]` 判别键和其余算法的记录见
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)。
+
+## 裁判回退
+
+信号能决定大多数轮次,但不是全部。可选的
+[`[models.router.classifier]`](/zh-cn/reference/configuration/#modelsrouterclassifier可选)
+表用来指定一个**裁判** —— 一个只在信号无法定夺的轮次被问及该轮需要哪个档位的模型。
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"    # 只被询问,从不提供
+base_threshold = 0.5           # 让任务留在高效档位的 p_solve 下限
+```
+
+不配置这张表,一切照旧:无法定夺的一轮 fall-open 到 picker 默认值。配置之后,只有那一轮
+会交给裁判。已经被 pin 占住的会话不会被裁判,`count_tokens` 探测不会被裁判,请求通过鉴权
+之前也不会发出任何裁判调用。
+
+裁判是普通的公开 model id,使用的是**它自己那条路由**的凭证而非调用方的:保留的
+`x-shunt-*` 槽位以及 `cookie`、`authorization`、`x-api-key`、`anthropic-beta` 都会在
+调用发出前被剥离。解析到 **passthrough** 上游的裁判目标之所以属于启动错误,原因正在
+于此 —— passthrough 的含义是*转发调用方自己的凭证*,而刚刚被剥离的恰恰就是这份凭证,
+于是无物可发。`auth = "none"` 的目标则没有问题:该模式表示这个端点根本不需要凭证,
+所以前面没有任何鉴权的本地或自托管裁判是受支持的配置,而不是错误。调用
+消耗的是该目标自己的账号池配额,所以请给裁判单独配一条 `[[models]]` 条目。
+
+在真正去问裁判的那些轮次里,鉴权覆盖的是整个条目 —— 被请求的 id、两个档位目标,再加上裁判,
+并且各自连整条故障转移链一起计入 —— 所以给一个应答目标全是 passthrough 的条目加上会注入凭证
+的裁判,就会让那些轮次开始要求客户端凭证。鉴权失败或被策略拒绝的请求一次裁判调用都不会发出。
+不会走到裁判的轮次,仍然只按它实际解析出的链鉴权,和没有这张表时完全一样 —— 既包括评分器自己
+定夺的那一轮,也包括被
+[`[models.subagents]`](/zh-cn/reference/configuration/#modelssubagents可选)
+覆盖层在路由器之前分流走的那一轮。
+
+`[models.router]` 上的六个键为每一次内部调用设定上限:`judge_timeout_ms`(默认 `30000`,
+同时覆盖响应头*和*响应体的端到端期限)、`judge_max_response_bytes`(`65536`)、每个会话的
+`max_judge_calls`(`8`,在裁判调用发出时扣减,因此并发回合也无法超出),以及三个 `gated_*` 键 —— 它们只约束 `escalation` 或 `advisor` 条目
+扣住的回合,所以在阶段路由器上不约束任何东西。越过上限会取消对应的上游调用。
+
+由裁判判定的轮次报告 `x-gateway-route-source: llm-classifier`,并和其他决策一样把会话
+pin 住。超时、响应过大或无法解析、上游错误、预算耗尽 —— 所有失败都按 `fall_open` 处理,
+所以裁判挂掉付出的是延迟而不是可用性。每一次调用都会带着它的结果记入
+`shunt.router.judge_calls`。
+
+## 限制
+
+- **没有轮次中途升档。** 响应头一旦提交,shunt 不会重放该轮,因此在一轮开始时选定的档位会
+  承担整轮。
+- **这个裁判只决定档位。** 其他需要裁决的类型各有自己的表:`llm_classifier`、
+  `composite` 和 `advisor` 直接配置在 `[models.router]` 上 —— 见[配置参考](/zh-cn/reference/configuration/#type--llm_classifier)。
+  只有 `llm_classifier` 的 `mode = "escalation"` 和 `advisor` 会把回合扣住等待裁决,这个裁判
+  不会。
+- **`[server.codex_endpoint]` 不在范围内**,它使用自己的路由表。

@@ -159,10 +159,13 @@ state; in-process only for editing the shared config file."
   location `Config::find_config_file` searches) and generates the
   `SHUNT_ADMIN_TOKENS` value it injects into the sidecar. Injecting that env only
   lets the sidecar *validate* the token — the embedded webview must still
-  authenticate, or `/admin` redirects to `/admin/login`. So the app logs in on the
-  operator's behalf: it POSTs the token to `/admin/login` to obtain the session
-  cookie for the webview (or attaches the admin header to webview requests). The
-  operator does no manual login either way.
+  authenticate, or the SPA it loads at `/admin` sends the operator to
+  `/admin/login` (the shell itself is served unauthenticated; the bundle
+  redirects after `GET /admin/api/session` answers `401`). So the app logs in on
+  the operator's behalf: it POSTs the token to `/admin/login` to obtain the
+  session cookie for the webview (or attaches the admin header to webview
+  requests). The operator does no manual login either way. The sidecar must also
+  be a `--features ui` build, or `/admin` has no bundle to load at all.
 
 ### Phase B — native upstream/account CRUD
 

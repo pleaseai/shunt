@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::http::{HeaderMap, HeaderName, HeaderValue};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 
 use crate::admin::AdminAuth;
 use crate::auth::inbound::{is_consumed_by_shunt, InboundAuth};
@@ -758,4 +758,255 @@ fn admin_header_pointed_at_a_shared_slot_still_strips_an_admin_credential() {
             "admin credential survived the shared slot"
         );
     }
+}
+
+/// A config routing one streaming model to a single Responses upstream —
+/// the loop path, not the multi-upstream chain. `auth = ApiKey` pins the
+/// single-credential `forward_http` path: the built-in codex provider
+/// defaults to `chatgpt_oauth`, whose committed pool stream would consult
+/// the real account store and make the test box-dependent.
+fn single_route_config(provider: &str, model: &str, base_url: String) -> Config {
+    let mut config = Config::default();
+    config.providers.insert(
+        provider.to_string(),
+        config
+            .providers
+            .get("codex")
+            .expect("codex provider is built in")
+            .clone(),
+    );
+    let provider_config = config.providers.get_mut(provider).expect("just inserted");
+    provider_config.base_url = base_url;
+    provider_config.auth = AuthMode::ApiKey;
+    provider_config.api_key_env = Some(format!("{provider}_key"));
+    config.models = vec![crate::config::ModelConfig {
+        id: model.to_string(),
+        display_name: None,
+        upstream_model: Some(
+            [(provider.to_string(), "gpt-5.2-codex".to_string())]
+                .into_iter()
+                .collect(),
+        ),
+        router: None,
+        stage_router: None,
+        subagents: None,
+    }];
+    config
+}
+
+async fn forward_streaming_turn(
+    config: Config,
+    model: &str,
+) -> (StatusCode, axum::response::Response) {
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    let body = axum::body::Body::from(
+        serde_json::json!({
+            "model": model,
+            "stream": true,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        .to_string(),
+    );
+    match super::forward(state, &uri, &headers, body, std::time::Instant::now()).await {
+        Ok(result) => result,
+        Err(error) => panic!("forward failed: {}", error.message),
+    }
+}
+
+/// A streaming Responses request through the failover loop commits before
+/// the upstream send; its `record_proxied_request` sample must come from the
+/// stream's classification (real status, real latency) and the loop's
+/// dispatch-time sample must be skipped.
+#[tokio::test]
+async fn an_early_committed_streaming_request_samples_metrics_at_classification() {
+    use axum::body::to_bytes;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let sse = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(100))
+                .set_body_string(sse.to_string()),
+        )
+        .mount(&server)
+        .await;
+    let config = single_route_config("loop-metrics-probe", "loop-metrics-model", server.uri());
+    let _env = crate::auth::shared::EnvVarGuard::set("loop-metrics-probe_key", "probe");
+    let (status, response) = forward_streaming_turn(config, "loop-metrics-model").await;
+    assert_eq!(status, StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body is readable");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("event: message_stop"), "got: {text}");
+    let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+        "loop-metrics-probe",
+        "loop-metrics-model",
+        200,
+    );
+    assert_eq!(
+        count, 1,
+        "exactly one sample: the dispatch-time record is skipped and the in-stream classification records"
+    );
+    assert!(
+        latencies.iter().all(|latency| *latency >= 50.0),
+        "the sample covers the upstream round-trip, not the near-zero commit, got {latencies:?}"
+    );
+}
+
+/// A streaming request whose upstream answers non-2xx classifies in-stream:
+/// the sample records the real status instead of the committed 200 the loop
+/// saw at dispatch.
+#[tokio::test]
+async fn an_early_committed_streaming_request_records_the_classified_status() {
+    use axum::body::to_bytes;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let config = single_route_config(
+        "loop-metrics-fail-probe",
+        "loop-metrics-fail-model",
+        server.uri(),
+    );
+    let _env = crate::auth::shared::EnvVarGuard::set("loop-metrics-fail-probe_key", "probe");
+    let (status, response) = forward_streaming_turn(config, "loop-metrics-fail-model").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the response committed before the send"
+    );
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body is readable");
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("event: error"), "got: {text}");
+    let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+        "loop-metrics-fail-probe",
+        "loop-metrics-fail-model",
+        500,
+    );
+    assert_eq!(count, 1, "the classified failure records its real status");
+    let (fake, _) = crate::metrics::proxied_request_samples_for_tests(
+        "loop-metrics-fail-probe",
+        "loop-metrics-fail-model",
+        200,
+    );
+    assert_eq!(fake, 0, "the committed 200 must not be sampled");
+}
+
+/// The ordering rule ADR-0005 §3 turns on, at the gate itself: a driven entry
+/// whose answer tiers are both passthrough but whose judge injects must still
+/// demand `[server.auth]`. Gate against the answer chain alone — which is what
+/// `check_inbound_auth` saw before the envelope — and the judge call is made on
+/// a gateway-held credential for a caller who presented none.
+#[test]
+fn an_envelope_whose_only_injecting_route_is_the_judge_demands_the_credential() {
+    let state = driven_state();
+    let envelope = crate::routing::envelope::dependency_envelope(&state.config, "claude-auto");
+    let answer_chain = crate::routing::resolve_model_chain(&state.config, "claude-auto");
+
+    // The twin, first: the answer chain on its own is pure passthrough, so it
+    // takes the `!injects_credential` early return and admits a tokenless
+    // caller. Without this the assertion below could be satisfied by a gate
+    // that rejected everything.
+    assert!(
+        answer_chain
+            .iter()
+            .all(|route| state.config.route_is_passthrough(route)),
+        "the fixture's answer tiers must both be passthrough: {answer_chain:?}"
+    );
+    assert!(
+        check_inbound_auth(&state, &answer_chain, &HeaderMap::new()).is_ok(),
+        "a passthrough-only chain lends the caller nothing, so it is not gated"
+    );
+
+    let rejected = match check_inbound_auth(&state, &envelope, &HeaderMap::new()) {
+        Ok(_) => panic!("the envelope carries the judge's injecting route"),
+        Err(error) => error,
+    };
+    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+
+    // And the same envelope with the configured token is admitted, so the
+    // rejection is about the credential and not about the envelope's shape.
+    let mut headers = HeaderMap::new();
+    headers.insert("x-shunt-token", HeaderValue::from_static(STATIC_TOKEN));
+    assert!(
+        check_inbound_auth(&state, &envelope, &headers).is_ok(),
+        "a valid client token admits the same envelope"
+    );
+}
+
+/// `claude-auto`: two passthrough answer tiers and one credential-injecting
+/// judge, with a static `[server.auth]` token configured.
+fn driven_state() -> AppState {
+    use std::collections::BTreeMap;
+
+    use crate::config::{
+        ModelConfig, RouterConfig, StageClassifierConfig, StageRouterConfig, StageRouterPicker,
+    };
+
+    fn mapped(id: &str, provider: &str) -> ModelConfig {
+        ModelConfig {
+            subagents: None,
+            id: id.to_string(),
+            display_name: None,
+            upstream_model: Some(BTreeMap::from([(
+                provider.to_string(),
+                format!("{id}-upstream"),
+            )])),
+            router: None,
+            stage_router: None,
+        }
+    }
+
+    let mut config = Config::default();
+    config.providers.get_mut("anthropic").unwrap().auth = AuthMode::Passthrough;
+    config.models = vec![
+        ModelConfig {
+            subagents: None,
+            id: "claude-auto".to_string(),
+            display_name: None,
+            upstream_model: None,
+            router: Some(RouterConfig::StageRouter(StageRouterConfig {
+                classifier: Some(StageClassifierConfig {
+                    target: "judge-alias".to_string(),
+                    base_threshold: 0.5,
+                    classify_trigger: Default::default(),
+                }),
+                ..StageRouterConfig::preset(
+                    "capable-alias".to_string(),
+                    "efficient-alias".to_string(),
+                    StageRouterPicker::EfficientFirst,
+                    crate::config::DEFAULT_CONFIDENCE_THRESHOLD,
+                )
+            })),
+            stage_router: None,
+        },
+        mapped("capable-alias", "anthropic"),
+        mapped("efficient-alias", "anthropic"),
+        // `openai` is `AuthMode::ApiKey`, so this is the one injecting route.
+        mapped("judge-alias", "openai"),
+    ];
+
+    let mut state = AppState::new(config, reqwest::Client::new()).unwrap();
+    state.inbound_auth = Some(Arc::new(static_inbound_auth()));
+    state
 }

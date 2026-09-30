@@ -10,8 +10,10 @@
 //! [`ResponseEvent`]s so the existing [`crate::model::responses::AnthropicSseMachine`]
 //! can translate them exactly as it does the HTTP SSE stream.
 //!
-//! Connections are pooled per `x-claude-code-session-id`, so turns of one
-//! conversation reuse an idle live socket instead of re-handshaking. If that
+//! Connections are pooled per the caller-supplied pool-safe turn identity —
+//! the internal key [`compose_identity_key`] builds from the client, session
+//! and agent components; the hashed user-id fallback never pools — so turns of
+//! one thread reuse an idle live socket instead of re-handshaking. If that
 //! socket is already streaming a turn, the concurrent turn opens a dedicated
 //! one-shot connection rather than waiting; it deliberately carries no
 //! continuation, while the pooled socket keeps the session's continuation state.
@@ -80,6 +82,14 @@ const POOL_IDLE_TTL: Duration = Duration::from_secs(30 * 60);
 const POOL_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 /// Hard cap on pooled connections, a backstop against unbounded session churn.
 const MAX_POOL_ENTRIES: usize = 10_000;
+/// Hard cap on window counters, the same backstop for [`WINDOWS`]: a marked
+/// turn records its counter before any connect, so turns that never complete
+/// cleanly (every WS attempt failing after the handshake, HTTP-only turns that
+/// never pool) would grow the map one entry per turn with nothing to bound it.
+/// Capacity is the ONLY expiry: a conversation's window survives any idle gap,
+/// so its post-gap turns never regress to `:0`; entries leave under pressure,
+/// via LRU on `last_touched`.
+const MAX_WINDOW_ENTRIES: usize = 10_000;
 /// Ceiling on simultaneously live overflow connections — the dedicated sockets
 /// opened when a session's pooled connection is already streaming (issue #248).
 /// Overflow is bounded by in-flight requests rather than growing over time (an
@@ -259,13 +269,131 @@ impl Drop for PoolEntry {
     }
 }
 
-/// Process-global connection pool keyed by `x-claude-code-session-id`. A std
+/// Process-global connection pool keyed by the pool-safe turn identity (the
+/// composed key from [`compose_identity_key`]; the hashed user-id fallback
+/// never reaches it). A std
 /// mutex guards only map lookups/inserts (never held across an await); each
 /// connection accepts at most one active turn, while contention uses an unpooled
 /// connection.
 static POOL: LazyLock<Mutex<HashMap<String, Arc<PoolEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static LAST_POOL_SWEEP: LazyLock<Mutex<Instant>> = LazyLock::new(|| Mutex::new(Instant::now()));
+
+/// A per-session compaction-window counter, keyed by pool key. `last_touched`
+/// orders LRU eviction only — it is never an expiry: the counter leaves the
+/// map solely when the map is at [`MAX_WINDOW_ENTRIES`], it is the stalest
+/// entry, and its key is not the one being bumped, so a conversation's window
+/// survives any idle gap and any amount of socket churn.
+struct WindowCounter {
+    value: u64,
+    last_touched: Instant,
+}
+
+/// Per-session compaction-window counters, keyed by pool key alongside
+/// [`POOL`]. Bounded by [`MAX_WINDOW_ENTRIES`] alone (LRU under pressure);
+/// entries are never expired by idleness, so a compacted conversation keeps
+/// its window for its lifetime.
+static WINDOWS: LazyLock<Mutex<HashMap<String, WindowCounter>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The separator between the components of the internal identity keys (the
+/// connection-pool key and the window-counter key). The unit separator cannot
+/// occur in a component: client, session and agent values all arrive through
+/// `HeaderValue::to_str()`, which rejects control bytes, so a composed key
+/// splits back into its components in exactly one way. The wire headers keep
+/// codex's `:`/`::` grammar; only these internal strings compose. The account
+/// prefix is operator config text, not header text — trusted to hold the same
+/// property.
+pub(crate) const KEY_COMPONENT_SEPARATOR: char = '\u{1f}';
+
+/// The internal identity key for one conversation thread:
+/// `{client}{KEY_COMPONENT_SEPARATOR}{session}{KEY_COMPONENT_SEPARATOR}{agent}`,
+/// fixed arity — the agent component is empty for a non-delegated turn, the
+/// client component empty without `x-shunt-inbound-client`. Fixed arity is
+/// what makes the bump sweep exact (see `window_for_turn`): a tail
+/// `{KEY_COMPONENT_SEPARATOR}{key}` can only align with the same
+/// (client, session, agent) triple, so no other conversation's key — however
+/// its header text concatenates — can suffix-match it.
+pub(crate) fn compose_identity_key(client: &str, session: &str, agent: &str) -> String {
+    format!("{client}{KEY_COMPONENT_SEPARATOR}{session}{KEY_COMPONENT_SEPARATOR}{agent}")
+}
+
+/// Bump the compaction-window counter for `key`. A key with no recorded
+/// window starts at 1 — the mark that calls this is the conversation's first
+/// observed compaction, and 0 is the pre-compaction default. Counter-only:
+/// the socket rotation lives in [`window_for_turn`], which sweeps the
+/// conversation's pooled sockets.
+pub(crate) fn advance_window(key: &str) -> u64 {
+    let now = Instant::now();
+    let mut windows = WINDOWS.lock().unwrap();
+    // Capacity is the only eviction: the round-0 ask was a count cap, and an
+    // idle-based expiry would reset a compacted conversation's window after a
+    // long turn gap — the divergence class F4 exists to fix. `last_touched`
+    // orders the LRU victim below, never an expiry. A bump of an existing
+    // counter never evicts: its own last_touched is its previous bump, so at
+    // a full map the stalest entry can be the very key being bumped, and
+    // dropping it (or a stalest neighbour) would reset a live window.
+    if windows.len() >= MAX_WINDOW_ENTRIES && !windows.contains_key(key) {
+        // Evict the least recently touched counter. `HashMap` iteration order
+        // is unspecified, so `keys().next()` would drop an arbitrary (possibly
+        // active) entry instead of the stalest one.
+        if let Some(oldest) = windows
+            .iter()
+            .min_by_key(|(_, counter)| counter.last_touched)
+            .map(|(key, _)| key.clone())
+        {
+            windows.remove(&oldest);
+        }
+    }
+    let slot = windows.entry(key.to_string()).or_insert(WindowCounter {
+        value: 0,
+        last_touched: now,
+    });
+    slot.value += 1;
+    slot.last_touched = now;
+    slot.value
+}
+
+/// The window id a non-compaction turn's fresh handshake carries: the
+/// conversation's current window, 0 before any compaction.
+pub(crate) fn window_for(key: &str) -> u64 {
+    let mut windows = WINDOWS.lock().unwrap();
+    let Some(counter) = windows.get_mut(key) else {
+        return 0;
+    };
+    // A read is conversation activity: refresh the liveness clock so the LRU
+    // victim under capacity pressure is a conversation nobody is talking to,
+    // never one whose turns merely stopped bumping.
+    counter.last_touched = Instant::now();
+    counter.value
+}
+
+/// The window id a turn's handshake carries, with the rotation a bump implies.
+/// The counter keys on `window_key` — the turn's composed identity key, stable
+/// across account rotation — while the bump sweeps every pooled socket of that
+/// conversation: the committed path pools under `window_key` itself and the
+/// account pool under `{account}{sep}{window_key}`, so a bump that removed
+/// only the current connection's key would leave a pre-compaction socket
+/// pooled under another account, reused the moment the sticky account
+/// changes. The sweep is exact because no component of a key contains
+/// [`KEY_COMPONENT_SEPARATOR`]: a tail `{sep}{key}` can only align with the
+/// same (client, session, agent) triple. A marked turn bumps and rotates; any
+/// other turn reads the current window; no pool key stays 0 (the HTTP
+/// transport does too, by design).
+pub(crate) fn window_for_turn(window_key: Option<&str>, compact: bool) -> u64 {
+    match (window_key, compact) {
+        (Some(key), true) => {
+            let next = advance_window(key);
+            let prefixed_tail = format!("{KEY_COMPONENT_SEPARATOR}{key}");
+            POOL.lock().unwrap().retain(|pool_key, _| {
+                pool_key.as_str() != key && !pool_key.ends_with(&prefixed_tail)
+            });
+            next
+        }
+        (Some(key), false) => window_for(key),
+        (None, _) => 0,
+    }
+}
 
 fn pool_get(key: &str) -> Option<Arc<PoolEntry>> {
     POOL.lock().unwrap().get(key).cloned()
@@ -296,7 +424,9 @@ fn pool_insert(key: String, entry: Arc<PoolEntry>) {
         *last_sweep = Instant::now();
     }
     drop(last_sweep);
-    if guard.len() >= MAX_POOL_ENTRIES {
+    // A replacement insert (the cold-start race's second connect) reuses its
+    // slot: trimming on its behalf would drop a live bystander connection.
+    if guard.len() >= MAX_POOL_ENTRIES && !guard.contains_key(&key) {
         // Evict the least recently used connection. `HashMap` iteration order is
         // unspecified, so `keys().next()` would drop an arbitrary (possibly active)
         // entry instead of the stalest one.
@@ -314,6 +444,7 @@ fn pool_insert(key: String, entry: Arc<PoolEntry>) {
 #[cfg(test)]
 pub fn clear_pool_for_tests() {
     POOL.lock().unwrap().clear();
+    WINDOWS.lock().unwrap().clear();
     *LAST_POOL_SWEEP.lock().unwrap() = Instant::now();
 }
 
@@ -321,6 +452,12 @@ pub fn clear_pool_for_tests() {
 pub fn pool_contains_for_tests(key: &str) -> bool {
     POOL.lock().unwrap().contains_key(key)
 }
+
+/// Serializes every test that touches the process-global pool or window
+/// counters — the socket-pool tests here and the pool-path test in
+/// `pool.rs`, which clears and asserts the same maps.
+#[cfg(test)]
+pub(crate) static POOL_TEST_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
 
 /// A transport or upstream error surfaced by the websocket path. `status` and
 /// `retry_after` are populated from the HTTP upgrade response when the handshake
@@ -506,6 +643,23 @@ impl Turn {
         let payload = serde_json::to_string(frame).map_err(|error| {
             CodexWsError::transport(format!("failed to encode ws frame: {error}"))
         })?;
+        // Reserve the reader's command slot before marking the turn streamed: the
+        // reservation is this function's only await, and a caller that drops the
+        // future there (a gated call's idle gap or duration bound, a client that
+        // went away) must still leave `Drop` to wake a fresh connection's reader.
+        // Marking first would drop the command unsent and skip that nudge, and
+        // the reader and its socket would leak.
+        let Ok(permit) = self.conn.commands.reserve().await else {
+            // The connection-owned reader is gone (socket dead). Evict a reused
+            // entry so the next turn on this session opens a fresh socket instead
+            // of re-probing the same dead one.
+            if self.reused {
+                if let Some(key) = &self.pool_key {
+                    invalidate_pool_entry(key, &self.conn);
+                }
+            }
+            return Err(CodexWsError::transport("codex websocket reader is gone"));
+        };
         // Past the last fallible step before dispatch: mark the turn streamed so
         // `Drop` does not also signal shutdown for the connection we are about to
         // hand to the reader, then take the slot to move it into the command.
@@ -514,27 +668,13 @@ impl Turn {
             .slot
             .take()
             .expect("turn slot is present until the turn is streamed");
-        let conn = self.conn.clone();
-        let reused = self.reused;
-        let pool_key = self.pool_key.take();
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-        let command = StartTurn {
+        permit.send(StartTurn {
             frame: Message::Text(payload.into()),
             events: tx,
             record,
             slot,
-        };
-        if conn.commands.send(command).await.is_err() {
-            // The connection-owned reader is gone (socket dead). Evict a reused
-            // entry so the next turn on this session opens a fresh socket instead
-            // of re-probing the same dead one.
-            if reused {
-                if let Some(key) = &pool_key {
-                    invalidate_pool_entry(key, &conn);
-                }
-            }
-            return Err(CodexWsError::transport("codex websocket reader is gone"));
-        }
+        });
         Ok(rx)
     }
 }
@@ -644,7 +784,14 @@ pub async fn begin(
     };
     let (conn, handshake_headers) =
         Connection::open(ws_url, headers, connection_pool_key.clone(), overflow_slot).await?;
-    let slot = conn.turn_lock.clone().lock_owned().await;
+    // Take the slot without an await: `open` has already spawned the reader, and
+    // until the `Turn` exists nothing fires its `shutdown`. A caller dropping
+    // `begin` here (a gated call's idle bound) would leak the reader and socket.
+    let slot = conn
+        .turn_lock
+        .clone()
+        .try_lock_owned()
+        .expect("a freshly opened connection's turn lock is uncontended");
     Ok(Turn {
         conn,
         handshake_headers: Some(handshake_headers),
@@ -1214,11 +1361,6 @@ fn map_handshake_error(error: tungstenite::Error) -> CodexWsError {
 mod tests {
     use super::*;
 
-    /// Serializes tests that touch the process-global connection [`POOL`]. Each
-    /// clears the whole pool, so without this they would wipe each other's pooled
-    /// entries mid-test when run in parallel.
-    static POOL_TEST_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
-
     /// Convenience for the transport tests that don't exercise continuation:
     /// acquire a connection and stream a frame with no continuation recording.
     async fn open_simple(
@@ -1229,6 +1371,189 @@ mod tests {
     ) -> Result<CodexWsEvents, CodexWsError> {
         let turn = begin(url, headers, pool_key, "codex").await?;
         turn.stream(frame, RecordPlan::none()).await
+    }
+
+    /// The composed identity keys keep the reviewer's two constructed
+    /// collisions apart, and the bump sweep's tail matches only the same
+    /// (client, session, agent) triple. Expected values hand-computed from
+    /// the separator's definition.
+    #[test]
+    fn identity_keys_separate_components_unambiguously() {
+        // N2's pair: session `s::t` with no agent vs session `s` with agent
+        // `t` — identical under `::` concatenation, distinct here.
+        assert_eq!(compose_identity_key("", "s::t", ""), "\u{1f}s::t\u{1f}");
+        assert_eq!(compose_identity_key("", "s", "t"), "\u{1f}s\u{1f}t");
+        assert_ne!(
+            compose_identity_key("", "s::t", ""),
+            compose_identity_key("", "s", "t")
+        );
+        // N1's pair: B = session `x`, agent `::s`, account-prefixed. B's key
+        // does NOT end with the sweep tail of A = session `s`, no agent
+        // (A's tail is `\u{1f}\u{1f}s\u{1f}`; B's key ends `\u{1f}::s`).
+        let a_key = compose_identity_key("", "s", "");
+        let b_key = format!(
+            "account-0{KEY_COMPONENT_SEPARATOR}{}",
+            compose_identity_key("", "x", "::s")
+        );
+        assert_eq!(b_key, "account-0\u{1f}\u{1f}x\u{1f}::s");
+        assert!(!b_key.ends_with(&format!("{KEY_COMPONENT_SEPARATOR}{a_key}")));
+        // The same triple under another account DOES end with the tail: the
+        // sweep evicts the conversation's socket under every account.
+        assert!(format!("account-1{KEY_COMPONENT_SEPARATOR}{a_key}")
+            .ends_with(&format!("{KEY_COMPONENT_SEPARATOR}{a_key}")));
+    }
+
+    /// The window counter map is capped like the pool: distinct compacted
+    /// sessions whose turns never complete cleanly (every WS turn failing
+    /// after the handshake, an HTTP-only turn never pooling) would otherwise
+    /// grow it one ~100 B entry per turn with nothing to sweep them. The cap
+    /// is spelled as a literal because the constant under test does not exist
+    /// before the fix.
+    #[tokio::test]
+    async fn window_counters_are_capped_like_the_pool() {
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        const CAP: usize = 10_000;
+        for i in 0..CAP {
+            advance_window(&format!("cap-fill-{i}"));
+        }
+        assert_eq!(advance_window("cap-final"), 1);
+        let len = WINDOWS.lock().unwrap().len();
+        assert!(
+            len <= CAP,
+            "the window counter map is capped like the pool: {len} entries"
+        );
+        assert_eq!(len, CAP, "the trim trims, and the newest entry survives");
+        assert_eq!(window_for("cap-final"), 1);
+        clear_pool_for_tests();
+    }
+
+    /// Bumping an EXISTING counter at a full map must not evict: the stalest
+    /// entry can be the very key being bumped (a long-lived conversation's
+    /// counter idles between compactions), and dropping it would reset a live
+    /// window to 1 instead of advancing it.
+    #[tokio::test]
+    async fn an_existing_window_survives_a_bump_at_capacity() {
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        for _ in 0..6 {
+            advance_window("cap-kept");
+        }
+        for i in 0..MAX_WINDOW_ENTRIES - 1 {
+            advance_window(&format!("cap-fill-{i}"));
+        }
+        assert_eq!(WINDOWS.lock().unwrap().len(), MAX_WINDOW_ENTRIES);
+        assert_eq!(
+            advance_window("cap-kept"),
+            7,
+            "the bump advances the existing counter in place"
+        );
+        assert_eq!(WINDOWS.lock().unwrap().len(), MAX_WINDOW_ENTRIES);
+        assert!(
+            WINDOWS.lock().unwrap().contains_key("cap-fill-0"),
+            "the bump of an existing key evicts no bystander"
+        );
+        clear_pool_for_tests();
+    }
+
+    /// A conversation's window survives any idle gap: winding the counter's
+    /// liveness clock backwards past the pool's idle TTL must not reset it.
+    /// The next marked turn advances the EXISTING counter (2), and a plain
+    /// turn reads it unchanged. The round-0 ask was a count cap only: an
+    /// idle-based expiry here is the divergence class F4 exists to fix,
+    /// reopened on a time trigger.
+    #[tokio::test]
+    async fn a_counter_survives_an_idle_gap_past_the_pool_ttl() {
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        assert_eq!(advance_window("sess-a"), 1);
+        WINDOWS
+            .lock()
+            .unwrap()
+            .get_mut("sess-a")
+            .expect("the bump recorded the counter")
+            .last_touched = Instant::now() - POOL_IDLE_TTL - Duration::from_secs(1);
+        assert_eq!(
+            window_for_turn(Some("sess-a"), true),
+            2,
+            "the marked turn advances the conversation's existing window"
+        );
+        assert_eq!(
+            window_for_turn(Some("sess-a"), false),
+            2,
+            "a plain turn reads the surviving window"
+        );
+        clear_pool_for_tests();
+    }
+
+    /// Pooling a DIFFERENT conversation's socket must not expire a stale
+    /// counter: conversation A idles past the pool TTL, then conversation B
+    /// completes a clean websocket turn (pool_insert runs its sweep) — A's
+    /// window still reads 1, never resetting to the pre-compaction 0.
+    #[tokio::test]
+    async fn pooling_another_conversations_socket_does_not_expire_a_stale_counter() {
+        use tokio::net::TcpListener;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        assert_eq!(advance_window("sess-a"), 1);
+        WINDOWS
+            .lock()
+            .unwrap()
+            .get_mut("sess-a")
+            .expect("the bump recorded the counter")
+            .last_touched = Instant::now() - POOL_IDLE_TTL - Duration::from_secs(1);
+        *LAST_POOL_SWEEP.lock().unwrap() =
+            Instant::now() - POOL_SWEEP_INTERVAL - Duration::from_secs(1);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
+            while let Some(message) = ws.next().await {
+                match message.unwrap() {
+                    Message::Text(_) => {
+                        for event in [
+                            r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                            r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                            r#"{"type":"response.completed","response":{}}"#,
+                        ] {
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break,
+                    other => panic!("unexpected frame: {other:?}"),
+                }
+            }
+        });
+        let url = format!("ws://{addr}/codex/responses");
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
+        let mut events = open_simple(&url, HeaderMap::new(), &frame, Some("sess-b"))
+            .await
+            .expect("B's turn connects and streams");
+        drain(&mut events).await;
+        assert!(
+            pool_contains_for_tests("sess-b"),
+            "B's clean turn pooled its socket, so pool_insert ran"
+        );
+        assert_eq!(
+            window_for("sess-a"),
+            1,
+            "A's counter survives another conversation's pool insert"
+        );
+        clear_pool_for_tests();
+        server.abort();
     }
 
     #[test]
@@ -1675,6 +2000,157 @@ mod tests {
 
         clear_pool_for_tests();
         server.abort();
+    }
+
+    /// A compaction bump evicts the pooled socket: the next turn handshakes
+    /// afresh (the mock accepts twice — a single-accept mock would refuse it),
+    /// and each bump advances the counter once per rotation.
+    #[tokio::test]
+    async fn advance_window_rotates_the_pooled_connection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let server_accepts = accepts.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (socket, _) = listener.accept().await.unwrap();
+                server_accepts.fetch_add(1, Ordering::SeqCst);
+                let mut ws = tokio_tungstenite::accept_async_with_config(
+                    socket,
+                    Some(WebSocketConfig::default()),
+                )
+                .await
+                .unwrap();
+                while let Some(message) = ws.next().await {
+                    match message.unwrap() {
+                        Message::Text(_) => {
+                            for event in [
+                                r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                                r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                                r#"{"type":"response.completed","response":{}}"#,
+                            ] {
+                                ws.send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                        Message::Pong(_) => {}
+                        Message::Close(_) => break,
+                        other => panic!("unexpected frame: {other:?}"),
+                    }
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
+
+        let turn = begin(&url, HeaderMap::new(), Some("session-1"), "codex")
+            .await
+            .expect("first turn connects");
+        let mut turn = turn.stream(&frame, RecordPlan::none()).await.unwrap();
+        drain(&mut turn).await;
+        assert!(
+            pool_contains_for_tests("session-1"),
+            "turn pools its connection"
+        );
+        assert!(
+            window_for_turn(Some("session-1"), true) == 1,
+            "first compaction bump"
+        );
+        assert!(
+            !pool_contains_for_tests("session-1"),
+            "bump evicts the socket"
+        );
+
+        let turn = begin(&url, HeaderMap::new(), Some("session-1"), "codex")
+            .await
+            .expect("second turn handshakes afresh");
+        let mut turn = turn.stream(&frame, RecordPlan::none()).await.unwrap();
+        drain(&mut turn).await;
+        assert!(
+            window_for_turn(Some("session-1"), true) == 2,
+            "second compaction bump"
+        );
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            2,
+            "each turn handshook on its own connection"
+        );
+
+        // A pool-path turn lives under the ACCOUNT-prefixed connection key
+        // while the counter keys on the unprefixed session key: the bump must
+        // still evict the socket wherever it lives.
+        let turn = begin(&url, HeaderMap::new(), Some("acct\u{1f}session-1"), "codex")
+            .await
+            .expect("third turn pools under the account key");
+        let mut turn = turn.stream(&frame, RecordPlan::none()).await.unwrap();
+        drain(&mut turn).await;
+        assert!(pool_contains_for_tests("acct\u{1f}session-1"));
+        assert!(
+            window_for_turn(Some("session-1"), true) == 3,
+            "counter bumps on the session key"
+        );
+        assert!(
+            !pool_contains_for_tests("acct\u{1f}session-1"),
+            "bump evicts the account-prefixed socket"
+        );
+
+        clear_pool_for_tests();
+        server.abort();
+    }
+
+    /// The counter starts at 1 on a key with no pooled connection (the mark
+    /// that calls it is the conversation's first observed compaction, 0 being
+    /// the pre-compaction default) and survives connection churn — the bump's
+    /// own rotation and capacity pressure both leave live counters alone — so
+    /// a later non-marked turn that opens a fresh socket still handshakes with
+    /// the current window id.
+    /// Under `POOL_TEST_LOCK`: the counters are process-global and this test
+    /// must not interleave with the rotation test's bumps.
+    #[tokio::test]
+    async fn advance_window_counter_starts_at_one_and_persists() {
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        assert_eq!(advance_window("session-1"), 1);
+        assert_eq!(window_for("session-1"), 1);
+        assert_eq!(advance_window("session-1"), 2);
+        assert_eq!(window_for("never-seen"), 0);
+        // The per-turn select: non-marked reads the current window, marked bumps,
+        // and an unpoolable session stays 0.
+        assert_eq!(window_for_turn(Some("session-1"), false), 2);
+        assert_eq!(window_for_turn(Some("session-1"), true), 3);
+        assert_eq!(window_for_turn(Some("session-1"), false), 3);
+        assert_eq!(window_for_turn(None, true), 0);
+        // A read is conversation activity: it refreshes the liveness clock, so
+        // the LRU victim under capacity pressure is never a live conversation.
+        WINDOWS
+            .lock()
+            .unwrap()
+            .get_mut("session-1")
+            .unwrap()
+            .last_touched = Instant::now() - POOL_IDLE_TTL - std::time::Duration::from_secs(1);
+        assert_eq!(window_for("session-1"), 3);
+        assert!(
+            WINDOWS
+                .lock()
+                .unwrap()
+                .get("session-1")
+                .unwrap()
+                .last_touched
+                .elapsed()
+                < std::time::Duration::from_secs(1),
+            "a read must refresh the counter's liveness clock"
+        );
+        clear_pool_for_tests();
     }
 
     /// Issue #248: a second turn already streaming on the pooled socket must not
@@ -2181,6 +2657,85 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), server)
             .await
             .expect("both cold-start sockets close during cleanup")
+            .unwrap();
+    }
+
+    /// Re-pooling a key the pool already holds (the other end of the
+    /// cold-start race) must not evict a bystander: the replacement reuses
+    /// its slot, so trimming on its behalf would drop a live connection the
+    /// race cannot reclaim.
+    #[tokio::test]
+    async fn replacing_a_pooled_connection_spares_the_lru_bystander() {
+        use tokio::net::TcpListener;
+        use tokio::task::JoinSet;
+
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        clear_pool_for_tests();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut handlers = JoinSet::new();
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                handlers.spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async_with_config(
+                        socket,
+                        Some(WebSocketConfig::default()),
+                    )
+                    .await
+                    .unwrap();
+                    while let Some(message) = ws.next().await {
+                        match message {
+                            Ok(Message::Ping(data)) => {
+                                ws.send(Message::Pong(data)).await.unwrap();
+                            }
+                            Ok(Message::Close(_)) | Err(_) => break,
+                            Ok(_) => {}
+                        }
+                    }
+                });
+            }
+            while let Some(result) = handlers.join_next().await {
+                result.unwrap();
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let victim = begin(&url, HeaderMap::new(), Some("lru-victim"), "codex")
+            .await
+            .expect("victim connection opens");
+        let filler = begin(&url, HeaderMap::new(), Some("lru-filler"), "codex")
+            .await
+            .expect("filler connection opens");
+        *victim.conn.last_used_at.lock().unwrap() = Instant::now() - Duration::from_secs(1);
+
+        pool_insert(
+            "lru-victim".to_string(),
+            PoolEntry::new(victim.conn.clone()),
+        );
+        for i in 0..MAX_POOL_ENTRIES - 2 {
+            pool_insert(format!("lru-fill-{i}"), PoolEntry::new(filler.conn.clone()));
+        }
+        pool_insert(
+            "lru-replace".to_string(),
+            PoolEntry::new(filler.conn.clone()),
+        );
+        assert_eq!(POOL.lock().unwrap().len(), MAX_POOL_ENTRIES);
+        pool_insert(
+            "lru-replace".to_string(),
+            PoolEntry::new(filler.conn.clone()),
+        );
+        assert!(
+            POOL.lock().unwrap().contains_key("lru-victim"),
+            "a replacement insert must not evict the stalest bystander"
+        );
+
+        clear_pool_for_tests();
+        drop(victim);
+        drop(filler);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("both lru-bystander sockets close during cleanup")
             .unwrap();
     }
 
@@ -2943,6 +3498,59 @@ mod tests {
             .await
             .expect("dropping a fresh turn closes its socket")
             .unwrap();
+    }
+
+    /// A fresh turn whose `stream` is dropped while it waits for the reader's
+    /// command slot (a gated call's idle gap or duration bound, a client that
+    /// went away) must still close its socket: the turn is not streamed until
+    /// the slot is reserved, so `Drop` wakes the reader to exit.
+    ///
+    /// Non-vacuity: mark the turn streamed before the slot is reserved (the
+    /// old `send(..).await` order) and the dropped future skips that nudge, the
+    /// reader keeps the socket open, and the server never sees it close.
+    #[tokio::test]
+    async fn a_fresh_turn_dropped_while_dispatching_releases_socket() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async_with_config(
+                socket,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        });
+
+        let url = format!("ws://{addr}/codex/responses");
+        let turn = begin(&url, HeaderMap::new(), None, "codex")
+            .await
+            .expect("handshake connects");
+        // Hold the reader's only command slot, so `stream` waits for it.
+        let commands = turn.conn.commands.clone();
+        let held = commands.reserve().await.expect("the reader is live");
+        let body = serde_json::json!({"model": "m", "input": []});
+        let frame = response_create_frame(&body);
+        let dispatch = tokio::time::timeout(
+            Duration::from_millis(50),
+            turn.stream(&frame, RecordPlan::none()),
+        )
+        .await;
+        assert!(dispatch.is_err(), "the dispatch waits on the held slot");
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("dropping a fresh turn mid-dispatch closes its socket")
+            .unwrap();
+        drop(held);
     }
 
     /// A turn command buffered as the reader exits (a `stream` that raced the

@@ -36,6 +36,31 @@ pub struct RuntimeState {
     /// Gateway-login JWT signer/verifier and approval users. Re-resolved on each
     /// reload while the route tree remains fixed at boot.
     pub gateway_auth: Option<Arc<GatewayAuth>>,
+    /// The built `prefill_router` algorithms, one per `[[models]]` entry that
+    /// configures one. Empty — and free — in a build without the
+    /// `prefill-router` feature, and for every config that declares none.
+    ///
+    /// Re-built on every reload rather than carried across like the
+    /// process-lifetime stores: the checkpoint path, the device, and the target
+    /// list are all config, so a reload that changed any of them must load the
+    /// new checkpoint. The consequence is that upstream's affinity map, which
+    /// lives inside the algorithm, is forgotten by a reload — a session in
+    /// flight is re-scored on its next turn instead of replaying a decision
+    /// made against a checkpoint that is no longer configured.
+    pub prefill_routers: Arc<crate::routing::prefill::PrefillRouters>,
+    /// The built driven algorithms — one per `[models.router]` of type
+    /// `llm_classifier`/`composite`, and one per classifier-form
+    /// `[models.subagents]` overlay.
+    ///
+    /// Re-built on every reload, for the same reason and with the same
+    /// consequence as `prefill_routers`: the prompt, the schema, the trigger,
+    /// and the model groups are all config, so a reload that changed any of
+    /// them must build the new algorithm — and libsy's affinity map and a
+    /// composite's retained tiers live *inside* that algorithm, so a reload
+    /// forgets them. A session in flight is classified again on its next turn
+    /// rather than replaying a verdict made against a table that is no longer
+    /// configured.
+    pub driven_routers: Arc<crate::routing::driven::DrivenRouters>,
 }
 
 /// Shared handle to the live [`RuntimeState`]. Cloning is cheap (an `Arc`); a
@@ -51,11 +76,23 @@ impl RuntimeState {
         let inbound_auth = config.resolve_inbound_auth()?;
         let admin_auth = config.resolve_admin_auth()?;
         let gateway_auth = config.resolve_gateway_auth()?;
+        // After `validate`, so a config the feature cannot serve is refused by
+        // name before anything tries to load a checkpoint for it. A failed
+        // build is an ordinary `ConfigError`, so `reload` keeps the last good
+        // config running rather than swapping in a router that cannot answer.
+        let prefill_routers = Arc::new(crate::routing::prefill::PrefillRouters::build(&config)?);
+        // Same boundary as the checkpoints above: `validate` has already
+        // constructed and dropped each of these once, so a failure here keeps
+        // the last good config running rather than swapping in an entry that
+        // cannot answer.
+        let driven_routers = Arc::new(crate::routing::driven::DrivenRouters::build(&config)?);
         Ok(Self {
             config: Arc::new(config),
             inbound_auth,
             admin_auth,
             gateway_auth,
+            prefill_routers,
+            driven_routers,
         })
     }
 }
@@ -66,7 +103,8 @@ impl RuntimeState {
 /// good config rather than going down or running open.
 ///
 /// Fields that cannot be hot-applied (`server.bind`,
-/// `server.max_concurrent_requests`, spend-limit route registration/state path,
+/// `server.max_concurrent_requests`, `server.shutdown_timeout_seconds`,
+/// spend-limit route registration/state path,
 /// `[sentry]`, `[otel]`, and enabling or disabling the optional `[server.*]` route
 /// trees) are compared against the live config and a `warn!` is logged when they
 /// change; the new values are accepted into the swapped config but only take
@@ -136,6 +174,13 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
             previous = previous.server.max_concurrent_requests,
             next = next.server.max_concurrent_requests,
             "server.max_concurrent_requests changed but requires a restart to apply; the concurrency gate is fixed at boot"
+        );
+    }
+    if previous.server.shutdown_timeout_seconds != next.server.shutdown_timeout_seconds {
+        tracing::warn!(
+            previous = previous.server.shutdown_timeout_seconds,
+            next = next.server.shutdown_timeout_seconds,
+            "server.shutdown_timeout_seconds changed but requires a restart to apply; the shutdown coordinator is fixed at boot"
         );
     }
     if previous.server.access_control != next.server.access_control {
@@ -1164,5 +1209,24 @@ mod tests {
             reloaded,
             "file watcher should have hot-reloaded the changed config"
         );
+    }
+
+    #[test]
+    fn shutdown_timeout_change_warns_but_reload_still_succeeds() {
+        let dir = temp_dir("shutdown-timeout");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+
+        std::fs::write(&path, "[server]\nshutdown_timeout_seconds = 30\n").unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+
+        std::fs::write(&path, "[server]\nshutdown_timeout_seconds = 45\n").unwrap();
+        let logs = capture_logs(|| {
+            reload(&shared, Some(&path)).expect("reload succeeds despite timeout change");
+        });
+
+        assert_eq!(shared.load().config.server.shutdown_timeout_seconds, 45);
+        assert!(logs.contains("server.shutdown_timeout_seconds changed"));
+        assert!(logs.contains("requires a restart"));
     }
 }

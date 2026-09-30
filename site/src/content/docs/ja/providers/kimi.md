@@ -197,6 +197,6 @@ curl -sS http://127.0.0.1:3001/v1/messages \
 レベルの障害として扱います — 健全なアカウントが遊んでいるのにクライアントへ 402 を渡すのではなく、その
 アカウントをクールダウンさせて次のアカウントを試します。プール内の*すべて*のアカウントが無効な場合は、
 Kimi 自身の 402 ステータスとメッセージがそのまま返るため、原因は見えたままになります。
-[管理 Web 画面](https://shunt.dev/guides/admin-remote-provisioning/)でのブラウザ経由のアカウント
+[管理 Web 画面](https://shunt.sh/guides/admin-remote-provisioning/)でのブラウザ経由のアカウント
 プロビジョニングは Kimi アカウントに対応していません — その画面のプールビューは Kimi については読み取り
 専用です。Kimi アカウントは CLI で `shunt login kimi` を使ってプロビジョニングしてください。

@@ -14,6 +14,12 @@ pub(super) struct ProviderPreset {
     pub base_url: &'static str,
     pub auth: AuthMode,
     pub api_key_env: Option<&'static str>,
+    /// Header the injected API key is sent in. `None` keeps the
+    /// [`ApiKeyHeader`](super::ApiKeyHeader) default (bearer), which is what
+    /// every existing preset uses; an `api_key` preset whose upstream reads
+    /// Anthropic's `x-api-key` instead sets it here so a preset reference
+    /// alone yields a working credential.
+    pub api_key_header: Option<super::ApiKeyHeader>,
 }
 
 pub(super) const PRESETS: &[ProviderPreset] = &[
@@ -23,6 +29,7 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.anthropic.com",
         auth: AuthMode::Passthrough,
         api_key_env: None,
+        api_key_header: None,
     },
     ProviderPreset {
         name: "codex",
@@ -30,6 +37,7 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         base_url: "https://chatgpt.com/backend-api",
         auth: AuthMode::ChatgptOauth,
         api_key_env: None,
+        api_key_header: None,
     },
     ProviderPreset {
         name: "openai",
@@ -37,6 +45,7 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.openai.com/v1",
         auth: AuthMode::ApiKey,
         api_key_env: Some("OPENAI_API_KEY"),
+        api_key_header: None,
     },
     ProviderPreset {
         name: "xai",
@@ -44,6 +53,7 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.x.ai/v1",
         auth: AuthMode::ApiKey,
         api_key_env: Some("XAI_API_KEY"),
+        api_key_header: None,
     },
     ProviderPreset {
         name: "grok",
@@ -51,6 +61,7 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         base_url: "https://cli-chat-proxy.grok.com/v1",
         auth: AuthMode::XaiOauth,
         api_key_env: None,
+        api_key_header: None,
     },
     ProviderPreset {
         name: "kimi",
@@ -58,6 +69,7 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.moonshot.ai/anthropic",
         auth: AuthMode::ApiKey,
         api_key_env: Some("MOONSHOT_API_KEY"),
+        api_key_header: None,
     },
     ProviderPreset {
         name: "cursor",
@@ -65,6 +77,7 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         base_url: "https://api2.cursor.sh",
         auth: AuthMode::CursorOauth,
         api_key_env: None,
+        api_key_header: None,
     },
     ProviderPreset {
         name: "kimi-code",
@@ -72,6 +85,7 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.kimi.com/coding",
         auth: AuthMode::KimiOauth,
         api_key_env: None,
+        api_key_header: None,
     },
     ProviderPreset {
         name: "zhipu",
@@ -79,6 +93,7 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         base_url: "https://open.bigmodel.cn/api/anthropic",
         auth: AuthMode::ApiKey,
         api_key_env: Some("ZHIPUAI_API_KEY"),
+        api_key_header: None,
     },
     ProviderPreset {
         name: "minimax-cn",
@@ -86,6 +101,17 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         base_url: "https://api.minimax.cn/anthropic",
         auth: AuthMode::ApiKey,
         api_key_env: Some("MINIMAX_API_KEY"),
+        api_key_header: None,
+    },
+    ProviderPreset {
+        name: "opencode",
+        kind: ProviderKind::Anthropic,
+        base_url: "https://opencode.ai/zen",
+        auth: AuthMode::ApiKey,
+        api_key_env: Some("OPENCODE_API_KEY"),
+        // Zen reads Anthropic-style `x-api-key` only; a bearer token is
+        // rejected as a missing key (measured against the live endpoint).
+        api_key_header: Some(super::ApiKeyHeader::XApiKey),
     },
 ];
 
@@ -128,12 +154,13 @@ mod tests {
                 "cursor",
                 "kimi-code",
                 "zhipu",
-                "minimax-cn"
+                "minimax-cn",
+                "opencode"
             ]
         );
         assert_eq!(
             available_names(),
-            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn"
+            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn, opencode"
         );
     }
 
@@ -189,5 +216,24 @@ mod tests {
         assert_eq!(minimax_cn.base_url, "https://api.minimax.cn/anthropic");
         assert_eq!(minimax_cn.auth, AuthMode::ApiKey);
         assert_eq!(minimax_cn.api_key_env, Some("MINIMAX_API_KEY"));
+    }
+
+    #[test]
+    fn opencode_preset_uses_the_zen_anthropic_surface_with_x_api_key() {
+        let opencode = find("opencode").unwrap();
+        assert_eq!(opencode.kind, ProviderKind::Anthropic);
+        assert_eq!(opencode.base_url, "https://opencode.ai/zen");
+        assert_eq!(opencode.auth, AuthMode::ApiKey);
+        assert_eq!(opencode.api_key_env, Some("OPENCODE_API_KEY"));
+        // The only preset carrying an explicit header: every other api_key
+        // preset sends a bearer, zen reads `x-api-key` only.
+        assert_eq!(
+            opencode.api_key_header,
+            Some(crate::config::ApiKeyHeader::XApiKey)
+        );
+        // Every other preset keeps the bearer default.
+        for preset in PRESETS.iter().filter(|preset| preset.name != "opencode") {
+            assert_eq!(preset.api_key_header, None);
+        }
     }
 }

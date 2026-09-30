@@ -1,25 +1,30 @@
 use axum::{
-    extract::State,
+    extract::{RawQuery, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use serde::Serialize;
 
-use crate::{auth::slots::ShuntCredentials, error::ShuntError, server::AppState};
+use crate::{
+    auth::slots::ShuntCredentials,
+    error::{into_openai_error_shape, ShuntError},
+    server::AppState,
+};
 
 pub(crate) mod upstream;
 
 /// Builtin catalog captured live from `GET https://api.anthropic.com/v1/models`
 /// on 2026-07-28, in the API's own order (`created_at` descending, newest
-/// first).
+/// first). `claude-opus-5-5` and `claude-fable-5-1` were added from the same
+/// endpoint on 2026-09-23.
 ///
-/// The upstream list is **credential-scoped**: the same endpoint returned 11
-/// entries for an `x-api-key` caller, 10 for a Claude subscription OAuth bearer
-/// (no `claude-opus-4-1-20250805`), and the reference `claude gateway` 2.1.220
-/// serves a third 10-entry variant (no `claude-opus-4-5-20251101`). This table
-/// is the **superset** of all three, so no caller loses a model it can actually
-/// reach. The cost is that a caller may see an id its own credential is not
+/// The upstream list is **credential-scoped**: on 2026-07-28 the same endpoint
+/// returned 11 entries for an `x-api-key` caller, 10 for a Claude subscription
+/// OAuth bearer (no `claude-opus-4-1-20250805`), and the reference
+/// `claude gateway` 2.1.220 served a third 10-entry variant (no
+/// `claude-opus-4-5-20251101`). This table is the **superset** of all three,
+/// so no caller loses a model it can actually reach. The cost is that a caller may see an id its own credential is not
 /// entitled to; consistent with the existing stance, that stays a runtime error
 /// rather than an upstream entitlement probe at discovery time.
 ///
@@ -32,7 +37,7 @@ struct BuiltinModel {
     max_tokens: u64,
 }
 
-/// Expands one row per model so the table reads as data rather than eleven
+/// Expands one row per model so the table reads as data rather than thirteen
 /// repetitions of the same struct literal:
 /// `id => display_name, created_at, max_input_tokens, max_tokens;`
 macro_rules! builtin_models {
@@ -48,6 +53,8 @@ macro_rules! builtin_models {
 }
 
 const BUILTIN_MODELS: &[BuiltinModel] = builtin_models![
+    "claude-opus-5-5" => "Claude Opus 5.5", "2026-09-21T16:24:00Z", 1_000_000, 128_000;
+    "claude-fable-5-1" => "Claude Fable 5.1", "2026-08-28T00:00:00Z", 1_000_000, 128_000;
     "claude-opus-5" => "Claude Opus 5", "2026-07-24T00:00:00Z", 1_000_000, 128_000;
     "claude-sonnet-5" => "Claude Sonnet 5", "2026-06-29T00:00:00Z", 1_000_000, 128_000;
     "claude-fable-5" => "Claude Fable 5", "2026-06-07T00:00:00Z", 1_000_000, 128_000;
@@ -120,17 +127,23 @@ impl ModelEntry {
     }
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    // Snapshot the live config so this response reflects the latest reload.
-    let state = state.refreshed();
+/// Codex CLI catalog paths registered only when `[server.codex_endpoint]` was
+/// enabled at boot.
+pub(crate) const CODEX_PATHS: [&str; 2] = ["/models", "/backend-api/codex/models"];
+
+async fn authentication_error(
+    state: &AppState,
+    headers: &HeaderMap,
+    codex_shape: bool,
+) -> Option<Response> {
     let static_client = state
         .inbound_auth
         .as_ref()
-        .and_then(|auth| auth.authenticate_client(&headers));
+        .and_then(|auth| auth.authenticate_client(headers));
     let gateway_identity = state
         .gateway_auth
         .as_ref()
-        .and_then(|auth| auth.authenticate_bearer(&headers));
+        .and_then(|auth| auth.authenticate_bearer(headers));
     if (state.inbound_auth.is_some() || state.gateway_auth.is_some())
         && static_client.is_none()
         && gateway_identity.is_none()
@@ -153,14 +166,23 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             }
             (None, None) => unreachable!("authentication gate requires configured auth"),
         };
-        return ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+        let response = ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
             .into_response();
+        return Some(if codex_shape {
+            into_openai_error_shape(response).await
+        } else {
+            response
+        });
     }
     if let Some(client) = static_client {
         tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
     } else if let Some(identity) = gateway_identity.as_ref() {
         tracing::info!(client = %identity.email, "gateway user authenticated for GET /v1/models");
     }
+    None
+}
+
+async fn anthropic_models(state: AppState, headers: HeaderMap) -> Response {
     let mut data: Vec<ModelEntry> = state
         .config
         .models
@@ -205,17 +227,85 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .into_response()
 }
 
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    // Snapshot the live config so this response reflects the latest reload.
+    let state = state.refreshed();
+    if let Some(response) = authentication_error(&state, &headers, false).await {
+        return response;
+    }
+    anthropic_models(state, headers).await
+}
+
+/// Negotiates the shared `/v1/models` path when the inbound Codex endpoint was
+/// enabled at boot. Codex 0.152+ identifies its strict catalog request with a
+/// `client_version` query field; without it the Anthropic discovery contract is
+/// preserved regardless of client headers.
+pub async fn get_negotiated(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(raw_query): RawQuery,
+) -> Response {
+    let state = state.refreshed();
+    let is_codex = has_client_version_query(raw_query.as_deref());
+    if let Some(response) = authentication_error(&state, &headers, is_codex).await {
+        return response;
+    }
+    if is_codex {
+        return codex_models_response();
+    }
+    anthropic_models(state, headers).await
+}
+
+/// Serves Codex-only catalog aliases. A deliberately empty list is valid for
+/// the strict Codex schema and avoids inventing incomplete `ModelInfo` rows.
+pub async fn get_codex(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let state = state.refreshed();
+    if let Some(response) = authentication_error(&state, &headers, true).await {
+        return response;
+    }
+    codex_models_response()
+}
+
+/// Whether an URL-form query contains the Codex catalog negotiation key.
+/// Values are deliberately ignored: empty and duplicate fields still identify
+/// a Codex request, matching the CLI's presence-based negotiation contract.
+pub(crate) fn has_client_version_query(raw_query: Option<&str>) -> bool {
+    raw_query.is_some_and(|query| {
+        url::form_urlencoded::parse(query.as_bytes()).any(|(key, _)| key == "client_version")
+    })
+}
+
+fn codex_models_response() -> Response {
+    Json(serde_json::json!({ "models": [] })).into_response()
+}
+
 #[cfg(test)]
 mod tests {
-    use axum::{extract::State, http::HeaderMap};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use axum::{
+        body::{to_bytes, Body},
+        extract::State,
+        http::{HeaderMap, Request, StatusCode},
+        response::Response,
+    };
     use serde_json::json;
+    use tower::ServiceExt;
 
     use crate::{
-        config::ModelConfig,
+        config::{CodexEndpointConfig, InboundAuthConfig, ModelConfig},
         server::{self, AppState},
     };
 
     use super::get;
+
+    struct OwnedEnvGuard(String);
+
+    impl Drop for OwnedEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(&self.0);
+        }
+    }
 
     #[tokio::test]
     async fn returns_configured_models_with_optional_display_name() {
@@ -229,11 +319,17 @@ mod tests {
                         "codex".to_string(),
                         "gpt-5.2".to_string(),
                     )])),
+                    router: None,
+                    stage_router: None,
+                    subagents: None,
                 },
                 ModelConfig {
                     id: "anthropic-sonnet-via-codex".to_string(),
                     display_name: None,
                     upstream_model: None,
+                    router: None,
+                    stage_router: None,
+                    subagents: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -297,6 +393,8 @@ mod tests {
             body,
             json!({
                 "data": [
+                    {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-09-21T16:24:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
+                    {"type": "model", "id": "claude-fable-5-1", "display_name": "Claude Fable 5.1", "created_at": "2026-08-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5", "created_at": "2026-07-24T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5", "created_at": "2026-06-29T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-fable-5", "display_name": "Claude Fable 5", "created_at": "2026-06-07T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
@@ -310,7 +408,7 @@ mod tests {
                     {"type": "model", "id": "claude-opus-4-1-20250805", "display_name": "Claude Opus 4.1", "created_at": "2025-08-05T00:00:00Z", "max_input_tokens": 200000, "max_tokens": 32000}
                 ],
                 "has_more": false,
-                "first_id": "claude-opus-5",
+                "first_id": "claude-opus-5-5",
                 "last_id": "claude-opus-4-1-20250805"
             })
         );
@@ -324,11 +422,17 @@ mod tests {
                     id: "claude-opus-4-8".to_string(),
                     display_name: Some("Opus Curated".to_string()),
                     upstream_model: None,
+                    router: None,
+                    stage_router: None,
+                    subagents: None,
                 },
                 ModelConfig {
                     id: "claude-custom-model".to_string(),
                     display_name: None,
                     upstream_model: None,
+                    router: None,
+                    stage_router: None,
+                    subagents: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -347,6 +451,8 @@ mod tests {
                 "data": [
                     {"type": "model", "id": "claude-opus-4-8", "display_name": "Opus Curated"},
                     {"type": "model", "id": "claude-custom-model"},
+                    {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-09-21T16:24:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
+                    {"type": "model", "id": "claude-fable-5-1", "display_name": "Claude Fable 5.1", "created_at": "2026-08-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5", "created_at": "2026-07-24T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5", "created_at": "2026-06-29T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-fable-5", "display_name": "Claude Fable 5", "created_at": "2026-06-07T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
@@ -392,6 +498,9 @@ mod tests {
                 id: "claude-opus-5".to_string(),
                 display_name: Some("Opus Curated".to_string()),
                 upstream_model: None,
+                router: None,
+                stage_router: None,
+                subagents: None,
             }],
             ..crate::config::Config::default()
         };
@@ -427,6 +536,225 @@ mod tests {
     fn router_includes_get_models_route() {
         let (_router, _shared, _state) =
             server::build_router(crate::config::Config::default()).unwrap();
+    }
+
+    fn codex_enabled_config() -> crate::config::Config {
+        let mut config = crate::config::Config {
+            auto_include_builtin_models: false,
+            models: vec![ModelConfig {
+                id: "claude-existing-contract".to_string(),
+                display_name: Some("Existing Contract".to_string()),
+                upstream_model: None,
+                router: None,
+                stage_router: None,
+                subagents: None,
+            }],
+            ..crate::config::Config::default()
+        };
+        config.server.codex_endpoint = Some(CodexEndpointConfig::default());
+        config
+    }
+
+    async fn response_bytes(response: Response) -> axum::body::Bytes {
+        to_bytes(response.into_body(), 64 * 1024).await.unwrap()
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        let body = response_bytes(response).await;
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn client_version_negotiates_codex_shape_before_header_hints() {
+        let (router, _, _) = server::build_router(codex_enabled_config()).unwrap();
+        for query in [
+            "client_version=0.152.0",
+            "client_version=",
+            "client_version&client_version=0.152.0",
+            "%63lient_version=0.152.0",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(format!("/v1/models?{query}"))
+                        .header("anthropic-version", "2023-06-01")
+                        .header("user-agent", "claude-code/2.1.0")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK, "query: {query}");
+            assert_eq!(
+                response_json(response).await,
+                json!({"models": []}),
+                "query: {query}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn absent_client_version_preserves_anthropic_contract() {
+        let (router, _, _) = server::build_router(codex_enabled_config()).unwrap();
+        let response = router
+            .oneshot(
+                Request::get("/v1/models?limit=1000")
+                    .header("user-agent", "codex-cli/0.152.0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_bytes(response).await;
+        assert_eq!(
+            body.as_ref(),
+            br#"{"data":[{"type":"model","id":"claude-existing-contract","display_name":"Existing Contract"}],"has_more":false,"first_id":"claude-existing-contract","last_id":"claude-existing-contract"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn client_version_does_not_negotiate_without_codex_opt_in() {
+        let mut config = codex_enabled_config();
+        config.server.codex_endpoint = None;
+        let (router, _, _) = server::build_router(config).unwrap();
+        let response = router
+            .oneshot(
+                Request::get("/v1/models?client_version=0.152.0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await,
+            json!({
+                "data": [{
+                    "type": "model",
+                    "id": "claude-existing-contract",
+                    "display_name": "Existing Contract"
+                }],
+                "has_more": false,
+                "first_id": "claude-existing-contract",
+                "last_id": "claude-existing-contract"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_catalog_aliases_are_opt_in() {
+        let (enabled, _, _) = server::build_router(codex_enabled_config()).unwrap();
+        let mut disabled_config = codex_enabled_config();
+        disabled_config.server.codex_endpoint = None;
+        let (disabled, _, _) = server::build_router(disabled_config).unwrap();
+
+        for path in super::CODEX_PATHS {
+            let response = enabled
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "enabled path: {path}");
+            assert_eq!(response_json(response).await, json!({"models": []}));
+
+            let response = disabled
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "disabled path: {path}"
+            );
+        }
+    }
+
+    static CODEX_AUTH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[tokio::test]
+    async fn codex_catalog_variants_share_the_model_discovery_auth_gate() {
+        let env = format!(
+            "SHUNT_TEST_CODEX_CATALOG_AUTH_{}_{}",
+            std::process::id(),
+            CODEX_AUTH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        std::env::set_var(&env, "tester:catalog-secret");
+        let _env_guard = OwnedEnvGuard(env.clone());
+        let mut config = codex_enabled_config();
+        config.server.auth = Some(InboundAuthConfig {
+            header: "x-shunt-token".to_string(),
+            tokens_env: env.clone(),
+        });
+        let (router, _, _) = server::build_router(config).unwrap();
+
+        for path in [
+            "/v1/models?client_version=0.152.0",
+            "/v1/models?client_version=",
+            "/v1/models?client_version=one&client_version=two",
+            "/v1/models?%63lient_version=0.152.0",
+            "/models",
+            "/backend-api/codex/models",
+        ] {
+            let unauthorized = router
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                unauthorized.status(),
+                StatusCode::UNAUTHORIZED,
+                "unauthorized path: {path}"
+            );
+            assert_eq!(
+                response_json(unauthorized).await,
+                json!({
+                    "error": {
+                        "message": "missing or invalid credential: this gateway requires a client token (via x-shunt-token, x-api-key, or Authorization: Bearer) for model discovery; ask the operator for one",
+                        "type": "authentication_error",
+                        "code": null
+                    }
+                }),
+                "unauthorized path: {path}"
+            );
+
+            let authorized = router
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header("authorization", "Bearer catalog-secret")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(authorized.status(), StatusCode::OK, "path: {path}");
+            assert_eq!(response_json(authorized).await, json!({"models": []}));
+        }
+
+        let unauthorized = router
+            .oneshot(
+                Request::get("/v1/models?limit=1000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response_json(unauthorized).await,
+            json!({
+                "type": "error",
+                "error": {
+                    "type": "authentication_error",
+                    "message": "missing or invalid credential: this gateway requires a client token (via x-shunt-token, x-api-key, or Authorization: Bearer) for model discovery; ask the operator for one"
+                }
+            })
+        );
     }
 
     const ADMIN_WRITE_KEY: &str = "admin-write-key-0123456789abcdef0";
@@ -476,6 +804,7 @@ mod tests {
             read_keys: Vec::new(),
             session_ttl_secs: 3600,
             pending_ttl_secs: 600,
+            hide_observed: false,
             oidc: None,
         });
         let state = AppState::new(config, reqwest::Client::new()).unwrap();

@@ -103,9 +103,11 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
   routing rules, falling back to the default provider when no `[[routes]]` or
   `[[route_prefixes]]` entry matches.
 
-  The builtin table is the **superset** of what the three observed upstream surfaces serve —
-  `x-api-key` (11 ids), Claude subscription OAuth (10, no `claude-opus-4-1-20250805`), and the
-  reference apps gateway (10, no `claude-opus-4-5-20251101`). It is a snapshot with no
+  The builtin table is the **superset** of what the three observed upstream surfaces serve. The
+  2026-07-28 capture counted `x-api-key` (11 ids), Claude subscription OAuth (10, no
+  `claude-opus-4-1-20250805`), and the reference apps gateway (10, no
+  `claude-opus-4-5-20251101`); the table now also carries `claude-opus-5-5` and
+  `claude-fable-5-1` (added 2026-09-23), for 13 rows. It is a snapshot with no
   credential behind it, so it over-advertises by design: a caller may see an id its own
   credential cannot reach, and that stays a runtime error rather than a discovery-time
   entitlement probe. A successful live fetch **supersedes** the snapshot rather than merging

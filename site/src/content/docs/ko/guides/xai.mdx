@@ -21,7 +21,7 @@ description: Claude Code 추론을 xAI의 Grok으로 라우팅하기 — SuperGr
 
 **구독** bearer는 오직 **`grok`** 프록시에서만 동작합니다 — 개발자 API(`api.x.ai`)는 이를 `402`
 (`personal-team-blocked:spending-limit`, *"…need a Grok subscription…"*)로 거부합니다.
-**API 키**는 오직 **`xai`**에서만 동작합니다. 보유한 자격 증명에 맞는 프로바이더로 Grok 슬러그를 라우팅하세요.
+**API 키**는 오직 `xai`에서만 동작합니다. 보유한 자격 증명에 맞는 프로바이더로 Grok 슬러그를 라우팅하세요.
 
 </Aside>
 
@@ -43,7 +43,7 @@ shunt add upstream xai --print | claude    # xAI 개발자 API(XAI_API_KEY)
 shunt는 Claude Code의 Anthropic Messages 요청을 OpenAI **Responses API**로 변환하여 xAI로 보내고,
 스트리밍된 응답을 다시 변환합니다. `xai` **Responses 플레이버**(xAI가 거부하는 파라미터를 제거하고,
 도구를 함수 도구로 유지)는 두 가지 방식으로 선택됩니다: **`api.x.ai` 호스트**로, 또는
-**`auth = "xai_oauth"`**로(`grok` 프록시는 x.ai 호스트가 아니므로, 그 방언은 인증을 기준으로 결정됩니다).
+`auth = "xai_oauth"`로(`grok` 프록시는 x.ai 호스트가 아니므로, 그 방언은 인증을 기준으로 결정됩니다).
 
 | 측면 | `grok` (구독) | `xai` (API 키) |
 | :-- | :-- | :-- |
@@ -74,7 +74,7 @@ shunt 자체의 device-code 로그인(RFC 8628)을 실행하세요. URL과 코�
 shunt login xai
 ```
 
-성공하면 shunt는 토큰을 **`~/.shunt/xai-auth.json`**에 `0600` 권한으로 기록하고 자동으로 갱신합니다(5분 만료
+성공하면 shunt는 토큰을 `~/.shunt/xai-auth.json`에 `0600` 권한으로 기록하고 자동으로 갱신합니다(5분 만료
 버퍼; xAI는 갱신할 때마다 refresh 토큰을 회전시키므로, shunt는 single-flight 락 아래에서 회전된 토큰을
 저장합니다). refresh 토큰이 사라졌거나 응답에 회전된 토큰이 없으면, shunt는 `shunt login xai`를 다시
 실행하라고 알려줍니다.
@@ -179,7 +179,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.6"   # [models.upstream_model], [[r
 
 <Aside type="tip" title="미리 만들어진 에이전트">
 
-**[`shunt-xai` 플러그인](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-xai)**은
+[**`shunt-xai` 플러그인**](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-xai)은
 `grok-4.6` / `grok-4.5` / `grok-build-0.1`용 서브에이전트를 제공합니다 —
 `/plugin marketplace add pleaseai/shunt` 후 `/plugin install shunt-xai@shunt`로 설치하세요.
 각 에이전트는 자신의 `model:`을 고정하므로, 그 서브에이전트만 우회하며 메인 세션은 Claude에 머뭅니다.
@@ -265,7 +265,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.6"     # /model 선택기에 추가
 | :-- | :-- |
 | 시작 시 `run shunt login xai` | `~/.shunt/xai-auth.json`이 없음(또는 잘못된 `$SHUNT_XAI_AUTH_FILE`). `shunt login xai`를 실행하세요. |
 | `xAI refresh response missing refresh_token; run shunt login xai` | 저장된 refresh 토큰이 소비/회전되어 사라졌습니다. 다시 로그인하세요. |
-| `402 … personal-team-blocked:spending-limit` / *"need a Grok subscription"* | API 크레딧 없이 **`xai`**(개발자 API) 경로에 있습니다. [console.x.ai](https://console.x.ai/)에서 크레딧을 추가하거나, 구독을 사용하려면 **`grok`**으로 라우팅하세요. |
+| `402 … personal-team-blocked:spending-limit` / *"need a Grok subscription"* | API 크레딧 없이 **`xai`**(개발자 API) 경로에 있습니다. [console.x.ai](https://console.x.ai/)에서 크레딧을 추가하거나, 구독을 사용하려면 `grok`으로 라우팅하세요. |
 | `403 … not authorized for API access` (구독 티어 게이트) | **`grok`** 경로에서 사용자의 구독 티어에 API 액세스가 포함되지 않습니다 — **재로그인은 도움이 되지 않습니다**. `XAI_API_KEY`를 설정하고 `xai` 경로를 사용하거나, [x.ai/grok](https://x.ai/grok)에서 업그레이드하세요. |
 | `refusing to send a subscription token off-origin` (`shunt check`에서) | `xai_oauth` 프로바이더의 `base_url` 호스트가 `x.ai`/`grok.com`이 아니거나, HTTPS가 아니거나, `kind = "responses"`가 아닙니다. 블록을 수정하세요. |
 | effort가 설정되었을 때 `400` | 그 Grok 슬러그가 `reasoning.effort`를 거부합니다. 해당 프로바이더/라우트에서 `effort`를 제거하세요. |

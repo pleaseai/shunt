@@ -2,24 +2,39 @@
 //! websocket-first when enabled with an HTTP fallback per account, classifying
 //! each raw upstream status to decide relay / rotate / refresh-and-retry.
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use axum::http::{HeaderValue, StatusCode};
+use futures_util::{stream, Stream, StreamExt};
+use serde_json::Value;
 
 use crate::{
     accounts::{self, FailoverAction, ReprobeReservation},
     adapters::AdapterError,
     auth::{self, codex::auth::CodexAuthStore, resolve_chatgpt_account, Credential},
     config::{AccountConfig, AuthMode},
+    model::responses::ResponseEvent,
     routing::Route,
     server::AppState,
 };
 
 use super::body::{prepare_body, PreparedBody};
-use super::context::{ForwardOptions, PoolForward, RelayOptions};
-use super::error::{mapped_upstream_error, own_error, transport_error};
+use super::codex_ws::KEY_COMPONENT_SEPARATOR;
+use super::context::{CredentialSource, ForwardOptions, PoolForward, RelayOptions, TurnOptions};
+use super::early_stream::{
+    estimated_machine_factory, http_events_stream, parsed_events, pool_streaming_response,
+    HttpSendContext, InputEstimate, PoolEvent, PoolItem,
+};
+use super::error::{
+    adapter_error_envelope, mapped_upstream_error, mapped_upstream_error_within, own_error,
+    transport_error,
+};
 use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
+use crate::proxy::chain_stream::LazyEnvelope;
 
 fn select_pool_order(
     state: &AppState,
@@ -70,6 +85,833 @@ pub(super) fn commit_reprobe_for_account(
     }
 }
 
+/// Everything the streaming pool producer needs to run the account loop inside
+/// the already-committed stream.
+pub(super) struct PoolStreamContext {
+    pub(super) state: AppState,
+    pub(super) route: Route,
+    pub(super) auth: AuthMode,
+    pub(super) session_id: Option<String>,
+    /// The composed identity key the window counter keys on, so the HTTP
+    /// transports read (and, on the mark's consumption, bump) the same
+    /// counter the websocket path does.
+    pub(super) window_key: Option<String>,
+    /// The request's one-shot compaction mark, consumed by the first send
+    /// that reaches an upstream.
+    pub(super) compact: crate::request::CompactionMark,
+    /// The delegated-turn subagent identity for the chatgpt arm's headers;
+    /// `None` for a non-delegated turn.
+    pub(super) delegation: Option<super::request::CodexDelegation>,
+    pub(super) upstream_body: std::sync::Arc<Value>,
+    pub(super) accounts_config: std::sync::Arc<Vec<AccountConfig>>,
+    pub(super) order: Vec<usize>,
+    pub(super) reprobe: Option<ReprobeReservation>,
+    pub(super) ramp_initial: Option<u32>,
+    /// Whether this pool stream owns the request's `record_proxied_request`
+    /// sample (the committed single-route paths) or the enclosing chain does.
+    pub(super) record_metrics: bool,
+    /// A pre-commit instant the sample clock starts at when the stream owns
+    /// it — the committed pool's account scan ran inside this stream — else
+    /// the first poll of the account loop.
+    pub(super) started_at: Option<std::time::Instant>,
+}
+
+/// One streaming pool turn's event feed: the account loop (admission,
+/// credential resolution, send, classification, refresh-and-retry) runs inside
+/// the stream after the early commit, and the winning account's parsed events
+/// are yielded one at a time. Every terminal failure — the TTFB timeout, a
+/// non-failover non-2xx status, or pool exhaustion — becomes the same Anthropic
+/// error envelope the pre-commit path returned as a JSON body, emitted as one
+/// terminal SSE `error` event by [`pool_streaming_response`].
+///
+/// The request-derived fields the committed streaming `chatgpt_oauth` turn
+/// needs beyond `state`/`route`: the deferred account scan, the
+/// single-credential fallback's deferred credential, and the shared
+/// translation inputs.
+pub(super) struct PoolForwardStream {
+    pub session_id: Option<String>,
+    /// The composed identity key the window counter keys on, so the HTTP
+    /// transports read (and, on the mark's consumption, bump) the same
+    /// counter the websocket path does.
+    pub window_key: Option<String>,
+    /// The request's one-shot compaction mark, consumed by the first send
+    /// that reaches an upstream.
+    pub compact: crate::request::CompactionMark,
+    /// The delegated-turn subagent identity, derived once at the adapter from
+    /// the inbound headers; `None` for a non-delegated turn.
+    pub delegation: Option<super::request::CodexDelegation>,
+    pub upstream_body: std::sync::Arc<Value>,
+    pub turn: TurnOptions,
+    pub estimate_input: Option<std::sync::Arc<Value>>,
+    pub scan: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<AccountConfig>, String>> + Send>,
+    >,
+    pub credential: CredentialSource,
+}
+
+/// The committed variant of [`forward_chatgpt_oauth`] for streaming turns
+/// without the websocket transport: the response commits before the account
+/// scan, so a slow filesystem scan or a saturated blocking pool cannot starve
+/// the client of headers and keepalive pings. The scan, the all-disabled
+/// check, the empty-scan single-credential fallback, and the pool itself all
+/// run inside the stream ([`pool_or_single_events`]).
+pub(super) async fn forward_chatgpt_oauth_stream(
+    state: AppState,
+    route: Route,
+    forward: PoolForwardStream,
+) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let PoolForwardStream {
+        session_id,
+        window_key,
+        compact,
+        delegation,
+        upstream_body,
+        turn,
+        estimate_input,
+        scan,
+        credential,
+    } = forward;
+    let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
+    let route_for_start = route.clone();
+    let single = HttpSendContext {
+        state: state.clone(),
+        route: route.clone(),
+        policy: state
+            .config
+            .provider(&route.provider)
+            .map(|provider| provider.retry.policy())
+            .unwrap_or(crate::retry::RetryPolicy::DISABLED),
+        credential: None,
+        session_id: session_id.clone(),
+        window_key: window_key.clone(),
+        compact: compact.clone(),
+        delegation: delegation.clone(),
+        upstream_body: upstream_body.clone(),
+        auth: AuthMode::ChatgptOauth,
+        codex_quota_account: None,
+    };
+    let events = pool_or_single_events(
+        scan,
+        state.clone(),
+        route.clone(),
+        session_id,
+        upstream_body,
+        single,
+        credential,
+    );
+    Ok((
+        StatusCode::OK,
+        pool_streaming_response(
+            estimated_machine_factory(turn, route_for_start, estimate_input),
+            keepalive,
+            events,
+        ),
+    ))
+}
+
+/// One committed stream for a streaming `chatgpt_oauth` turn: the account
+/// scan, the all-disabled check, the empty-scan single-credential fallback,
+/// and the pool itself all run inside the committed response, so neither a
+/// slow filesystem scan nor a saturated blocking pool can delay the commit
+/// (keepalive pings cover the wait).
+pub(super) fn pool_or_single_events(
+    scan: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<AccountConfig>, String>> + Send>,
+    >,
+    state: AppState,
+    route: Route,
+    session_id: Option<String>,
+    upstream_body: std::sync::Arc<Value>,
+    single: HttpSendContext,
+    single_credential: CredentialSource,
+) -> impl Stream<Item = Result<PoolItem, Value>> + Send + 'static {
+    type Inner = std::pin::Pin<Box<dyn Stream<Item = Result<PoolItem, Value>> + Send>>;
+    struct Init {
+        scan: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<AccountConfig>, String>> + Send>,
+        >,
+        state: AppState,
+        route: Route,
+        session_id: Option<String>,
+        window_key: Option<String>,
+        compact: crate::request::CompactionMark,
+        delegation: Option<super::request::CodexDelegation>,
+        upstream_body: std::sync::Arc<Value>,
+        single: HttpSendContext,
+        single_credential: CredentialSource,
+    }
+    enum Phase {
+        Init(Box<Init>),
+        Inner(Inner),
+        Done,
+    }
+    stream::unfold(
+        Phase::Init(Box::new(Init {
+            scan,
+            state,
+            route,
+            session_id,
+            window_key: single.window_key.clone(),
+            compact: single.compact.clone(),
+            delegation: single.delegation.clone(),
+            upstream_body,
+            single,
+            single_credential,
+        })),
+        move |phase| async move {
+            match phase {
+                Phase::Init(init) => {
+                    let attempt_started = Instant::now();
+                    let Init {
+                        scan,
+                        state,
+                        route,
+                        session_id,
+                        window_key,
+                        compact,
+                        delegation,
+                        upstream_body,
+                        single,
+                        single_credential,
+                    } = *init;
+                    let accounts = match scan.await {
+                        Ok(accounts) => accounts,
+                        Err(error) => {
+                            // A scan failure is a classified gateway
+                            // failure (502), recorded here so the committed
+                            // response does not leave the request unsampled —
+                            // the chain records the same shape for its own
+                            // scan failure.
+                            crate::metrics::record_proxied_request(
+                                &route.provider,
+                                &route.model,
+                                StatusCode::BAD_GATEWAY.as_u16(),
+                                attempt_started.elapsed().as_secs_f64() * 1000.0,
+                            );
+                            let envelope = adapter_error_envelope(own_error(error)).await;
+                            return Some((Err(envelope), Phase::Done));
+                        }
+                    };
+                    if !accounts.is_empty() && accounts.iter().all(|account| account.disabled) {
+                        crate::metrics::record_proxied_request(
+                            &route.provider,
+                            &route.model,
+                            StatusCode::BAD_GATEWAY.as_u16(),
+                            attempt_started.elapsed().as_secs_f64() * 1000.0,
+                        );
+                        let envelope = adapter_error_envelope(own_error(format!(
+                            "provider '{}' has {} account(s) but all are `disabled = true`; none are selectable",
+                            route.provider,
+                            accounts.len()
+                        )))
+                        .await;
+                        return Some((Err(envelope), Phase::Done));
+                    }
+                    let ramp_initial = state.config.storm_ramp_initial();
+                    let mut inner: Inner = if accounts.is_empty() {
+                        Box::pin(
+                            http_events_stream(
+                                single,
+                                single_credential,
+                                None,
+                                Some(attempt_started),
+                            )
+                            .map(|item| item.map(|event| PoolItem::Event(PoolEvent::Event(event)))),
+                        )
+                    } else {
+                        let accounts_config = std::sync::Arc::new(accounts);
+                        let (order, reprobe) = state.accounts.select_order_deferred(
+                            &route.provider,
+                            &accounts_config,
+                            session_id.as_deref(),
+                            Some(route.upstream_model.as_str()),
+                            state.config.server.pool.as_ref(),
+                        );
+                        Box::pin(pool_events_stream(PoolStreamContext {
+                            state,
+                            route,
+                            auth: AuthMode::ChatgptOauth,
+                            session_id,
+                            window_key,
+                            compact,
+                            delegation,
+                            upstream_body,
+                            accounts_config,
+                            order,
+                            reprobe,
+                            ramp_initial,
+                            record_metrics: true,
+                            started_at: Some(attempt_started),
+                        }))
+                    };
+                    inner.next().await.map(|item| (item, Phase::Inner(inner)))
+                }
+                Phase::Inner(mut inner) => {
+                    inner.next().await.map(|item| (item, Phase::Inner(inner)))
+                }
+                Phase::Done => None,
+            }
+        },
+    )
+}
+
+/// The winning account's admission guard rides in the relay phase so the
+/// storm-control slot
+/// stays held until the stream ends. Mirrors the ws-fallback/non-streaming
+/// loop below arm for arm; the duplication is deliberate until the websocket
+/// transport joins the early commit. The committed response
+/// cannot carry the winning account's `x-shunt-account` header — the headers
+/// go out with the synthetic start, before the account is known — so the
+/// winner is attributed with an `event: account` frame before its first
+/// relayed frame instead; the non-streaming and websocket paths still attach
+/// the header.
+pub(super) fn pool_events_stream(
+    context: PoolStreamContext,
+) -> impl Stream<Item = Result<PoolItem, Value>> + Send + 'static {
+    let PoolStreamContext {
+        state,
+        route,
+        auth,
+        session_id,
+        window_key,
+        compact,
+        delegation,
+        upstream_body,
+        accounts_config,
+        order,
+        reprobe,
+        ramp_initial,
+        record_metrics,
+        started_at,
+    } = context;
+    type Parsed = std::pin::Pin<Box<dyn Stream<Item = Result<ResponseEvent, Value>> + Send>>;
+    enum Phase {
+        NextAccount,
+        Relay {
+            parsed: Parsed,
+            guard: Option<accounts::AdmissionGuard>,
+            account: Option<String>,
+        },
+        Done,
+    }
+    let candidates = order.len();
+    stream::unfold(
+        (
+            Phase::NextAccount,
+            order.into_iter().enumerate(),
+            None::<PreparedBody>,
+            None::<reqwest::Response>,
+            reprobe,
+            started_at,
+        ),
+        move |(phase, order_iter, http_body, last_response, reprobe, attempt_started)| {
+            let state = state.clone();
+            let route = route.clone();
+            let accounts_config = accounts_config.clone();
+            let session_id = session_id.clone();
+            let window_key = window_key.clone();
+            let compact = compact.clone();
+            let delegation = delegation.clone();
+            let upstream_body = upstream_body.clone();
+            async move {
+                let mut phase = phase;
+                let mut order_iter = order_iter;
+                let mut http_body = http_body;
+                let mut last_response = last_response;
+                let mut reprobe = reprobe;
+                let mut attempt_started = attempt_started;
+                loop {
+                    match phase {
+                        Phase::Relay {
+                            mut parsed,
+                            guard,
+                            mut account,
+                        } => {
+                            // Attribute the winner once, before its first
+                            // relayed frame.
+                            if let Some(name) = account.take() {
+                                return Some((
+                                    Ok(PoolItem::Event(PoolEvent::Account(name))),
+                                    (
+                                        Phase::Relay {
+                                            parsed,
+                                            guard,
+                                            account,
+                                        },
+                                        order_iter,
+                                        http_body,
+                                        last_response,
+                                        reprobe,
+                                        attempt_started,
+                                    ),
+                                ));
+                            }
+                            match parsed.next().await {
+                                Some(Ok(event)) => {
+                                    return Some((
+                                        Ok(PoolItem::Event(PoolEvent::Event(event))),
+                                        (
+                                            Phase::Relay {
+                                                parsed,
+                                                guard,
+                                                account,
+                                            },
+                                            order_iter,
+                                            http_body,
+                                            last_response,
+                                            reprobe,
+                                            attempt_started,
+                                        ),
+                                    ));
+                                }
+                                Some(Err(envelope)) => {
+                                    return Some((
+                                        Err(envelope),
+                                        (
+                                            Phase::Done,
+                                            order_iter,
+                                            http_body,
+                                            last_response,
+                                            reprobe,
+                                            attempt_started,
+                                        ),
+                                    ));
+                                }
+                                None => return None,
+                            }
+                        }
+                        Phase::NextAccount => {
+                            // The response committed before the account loop
+                            // ran: the failover loop's dispatch-time sample
+                            // would read a fake 200 and a near-zero elapsed
+                            // (skipped via `InStreamMetrics`); the real
+                            // sample lands here, once per committed attempt,
+                            // when the pool classifies its outcome — matching
+                            // the chain's per-attempt record. The chain
+                            // builds its own pool streams with
+                            // `record_metrics: false` and records the attempt
+                            // itself. A caller that ran pre-commit work
+                            // inside the committed stream (the committed
+                            // pool's account scan) seeds the clock at that
+                            // work's start.
+                            let started = *attempt_started.get_or_insert_with(Instant::now);
+                            let record = |status: StatusCode| {
+                                if record_metrics {
+                                    crate::metrics::record_proxied_request(
+                                        &route.provider,
+                                        &route.model,
+                                        status.as_u16(),
+                                        started.elapsed().as_secs_f64() * 1000.0,
+                                    );
+                                }
+                            };
+                            let Some((position, index)) = order_iter.next() else {
+                                crate::metrics::record_pool_rotation(&route.provider, "exhausted");
+                                // Classified pre-frame exhaustion: the
+                                // committed chain advances on it exactly like
+                                // the pre-commit loop (§4) — a relayed
+                                // advance status is advance-worthy and
+                                // remembered, transport exhaustion advances
+                                // without remembering.
+                                let (status, advance, remember, envelope, retry_after) =
+                                    match last_response.take() {
+                                        Some(upstream) => {
+                                            let status = upstream.status();
+                                            let retry_after = retry_after_of(&upstream);
+                                            let envelope =
+                                                LazyEnvelope::Deferred(Box::pin(async move {
+                                                    adapter_error_envelope(
+                                                        mapped_upstream_error(
+                                                            status, upstream, auth,
+                                                        )
+                                                        .await,
+                                                    )
+                                                    .await
+                                                }));
+                                            (
+                                                status,
+                                                crate::proxy::failover::is_advance_status(status),
+                                                true,
+                                                envelope,
+                                                retry_after,
+                                            )
+                                        }
+                                        None => (
+                                            StatusCode::BAD_GATEWAY,
+                                            true,
+                                            false,
+                                            LazyEnvelope::Ready(
+                                                adapter_error_envelope(transport_error(
+                                                    "all Codex OAuth accounts failed before receiving an upstream response"
+                                                        .to_string(),
+                                                ))
+                                                .await,
+                                            ),
+                                            None,
+                                        ),
+                                    };
+                                record(status);
+                                return Some((
+                                    Ok(PoolItem::Exhausted {
+                                        status,
+                                        advance,
+                                        remember,
+                                        envelope,
+                                        retry_after,
+                                    }),
+                                    (
+                                        Phase::Done,
+                                        order_iter,
+                                        http_body,
+                                        last_response,
+                                        reprobe,
+                                        attempt_started,
+                                    ),
+                                ));
+                            };
+                            let account = &accounts_config[index];
+                            let Some((admission, credential)) = admit_and_resolve(
+                                &state,
+                                &route,
+                                account,
+                                ramp_initial,
+                                position,
+                                candidates,
+                            )
+                            .await
+                            else {
+                                cancel_reprobe_for_account(&mut reprobe, index);
+                                continue;
+                            };
+
+                            let body = match &http_body {
+                                Some(body) => body.clone(),
+                                None => {
+                                    let prepared =
+                                        prepare_body(&state, &route, upstream_body.as_ref()).await;
+                                    http_body = Some(prepared.clone());
+                                    prepared
+                                }
+                            };
+                            // Commit at the dispatch boundary (mirrors the loop):
+                            // after admission, credential, and body preparation
+                            // have all succeeded.
+                            commit_reprobe_for_account(&mut reprobe, index);
+                            let window = super::codex_ws::window_for_turn(
+                                window_key.as_deref(),
+                                compact.take(),
+                            );
+                            let upstream = match http_send(
+                                &state,
+                                &route,
+                                credential.clone(),
+                                session_id.as_deref(),
+                                delegation.as_ref(),
+                                window,
+                                body.clone(),
+                            )
+                            .await
+                            {
+                                Ok(response) => response,
+                                Err(error @ crate::upstream_timeout::SendError::Timeout) => {
+                                    let envelope =
+                                        adapter_error_envelope(error.into_adapter_error(|error| {
+                                            transport_error(error.without_url().to_string())
+                                        }))
+                                        .await;
+                                    // The TTFB timeout is the configured 504
+                                    // answer: terminal, never advanced (the
+                                    // pre-commit loop's mapping).
+                                    record(StatusCode::GATEWAY_TIMEOUT);
+                                    return Some((
+                                        Ok(PoolItem::Exhausted {
+                                            status: StatusCode::GATEWAY_TIMEOUT,
+                                            advance: false,
+                                            remember: false,
+                                            envelope: LazyEnvelope::Ready(envelope),
+                                            retry_after: None,
+                                        }),
+                                        (
+                                            Phase::Done,
+                                            order_iter,
+                                            http_body,
+                                            last_response,
+                                            reprobe,
+                                            attempt_started,
+                                        ),
+                                    ));
+                                }
+                                Err(crate::upstream_timeout::SendError::Transport(error)) => {
+                                    state.accounts.cooldown(
+                                        &route.provider,
+                                        account,
+                                        Duration::from_secs(30),
+                                        "transport",
+                                    );
+                                    tracing::warn!(
+                                        provider = %route.provider,
+                                        account = %account.name,
+                                        error = %error.without_url(),
+                                        "ChatGPT OAuth upstream request failed"
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            state.accounts.note_codex_quota(
+                                &route.provider,
+                                account,
+                                upstream.headers(),
+                            );
+                            // No idle bound: a gated (`routing::serve`)
+                            // call never takes this streaming arm.
+                            let outcome = match classify_first(
+                                &state, &route, account, upstream, None, false,
+                            )
+                            .await
+                            {
+                                Ok(outcome) => outcome,
+                                Err(error) => {
+                                    let envelope = adapter_error_envelope(error).await;
+                                    record(StatusCode::BAD_GATEWAY);
+                                    return Some((
+                                        Err(envelope),
+                                        (
+                                            Phase::Done,
+                                            order_iter,
+                                            http_body,
+                                            last_response,
+                                            reprobe,
+                                            attempt_started,
+                                        ),
+                                    ));
+                                }
+                            };
+                            match outcome {
+                                FirstOutcome::Relay(upstream) => {
+                                    let status = upstream.status();
+                                    state.accounts.mark_healthy(
+                                        &route.provider,
+                                        account,
+                                        status.is_success(),
+                                    );
+                                    if status.is_success() {
+                                        record(StatusCode::OK);
+                                        let parsed: Parsed =
+                                            Box::pin(parsed_events(upstream.bytes_stream()));
+                                        phase = Phase::Relay {
+                                            parsed,
+                                            guard: admission,
+                                            account: Some(account.name.clone()),
+                                        };
+                                    } else {
+                                        // A non-failover 4xx (e.g. 400) is a
+                                        // client error, not the account's fault:
+                                        // relay it re-shaped, as everywhere on
+                                        // this path. Terminal, carrying its
+                                        // real status for metrics.
+                                        record(status);
+                                        let retry_after = retry_after_of(&upstream);
+                                        let envelope = adapter_error_envelope(
+                                            mapped_upstream_error(status, upstream, auth).await,
+                                        )
+                                        .await;
+                                        return Some((
+                                            Ok(PoolItem::Exhausted {
+                                                status,
+                                                advance: false,
+                                                remember: true,
+                                                envelope: LazyEnvelope::Ready(envelope),
+                                                retry_after,
+                                            }),
+                                            (
+                                                Phase::Done,
+                                                order_iter,
+                                                http_body,
+                                                last_response,
+                                                reprobe,
+                                                attempt_started,
+                                            ),
+                                        ));
+                                    }
+                                }
+                                FirstOutcome::Rotate(upstream) => {
+                                    last_response = Some(upstream);
+                                }
+                                FirstOutcome::NeedRefresh(upstream) => {
+                                    let retry_credential = match force_refresh_or_cooldown(
+                                        &state,
+                                        &route,
+                                        account,
+                                        &credential,
+                                    )
+                                    .await
+                                    {
+                                        Some(credential) => credential,
+                                        None => {
+                                            last_response = Some(upstream);
+                                            continue;
+                                        }
+                                    };
+                                    // The primary send consumed the mark; this
+                                    // reads the window it left.
+                                    let window = super::codex_ws::window_for_turn(
+                                        window_key.as_deref(),
+                                        compact.take(),
+                                    );
+                                    let retry = match http_send(
+                                        &state,
+                                        &route,
+                                        retry_credential,
+                                        session_id.as_deref(),
+                                        delegation.as_ref(),
+                                        window,
+                                        body.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(response) => response,
+                                        Err(
+                                            error @ crate::upstream_timeout::SendError::Timeout,
+                                        ) => {
+                                            let envelope = adapter_error_envelope(
+                                                error.into_adapter_error(|error| {
+                                                    transport_error(error.without_url().to_string())
+                                                }),
+                                            )
+                                            .await;
+                                            // Terminal, never advanced (the
+                                            // pre-commit loop's mapping).
+                                            record(StatusCode::GATEWAY_TIMEOUT);
+                                            return Some((
+                                                Ok(PoolItem::Exhausted {
+                                                    status: StatusCode::GATEWAY_TIMEOUT,
+                                                    advance: false,
+                                                    remember: false,
+                                                    envelope: LazyEnvelope::Ready(envelope),
+                                                    retry_after: None,
+                                                }),
+                                                (
+                                                    Phase::Done,
+                                                    order_iter,
+                                                    http_body,
+                                                    last_response,
+                                                    reprobe,
+                                                    attempt_started,
+                                                ),
+                                            ));
+                                        }
+                                        Err(crate::upstream_timeout::SendError::Transport(
+                                            error,
+                                        )) => {
+                                            state.accounts.cooldown(
+                                                &route.provider,
+                                                account,
+                                                Duration::from_secs(30),
+                                                "transport",
+                                            );
+                                            tracing::warn!(
+                                                provider = %route.provider,
+                                                account = %account.name,
+                                                error = %error.without_url(),
+                                                "ChatGPT OAuth refresh retry failed"
+                                            );
+                                            last_response = Some(upstream);
+                                            continue;
+                                        }
+                                    };
+                                    state.accounts.note_codex_quota(
+                                        &route.provider,
+                                        account,
+                                        retry.headers(),
+                                    );
+                                    let outcome = match classify_retry(
+                                        &state, &route, account, retry, None, false,
+                                    )
+                                    .await
+                                    {
+                                        Ok(outcome) => outcome,
+                                        Err(error) => {
+                                            let envelope = adapter_error_envelope(error).await;
+                                            record(StatusCode::BAD_GATEWAY);
+                                            return Some((
+                                                Err(envelope),
+                                                (
+                                                    Phase::Done,
+                                                    order_iter,
+                                                    http_body,
+                                                    last_response,
+                                                    reprobe,
+                                                    attempt_started,
+                                                ),
+                                            ));
+                                        }
+                                    };
+                                    match outcome {
+                                        RetryOutcome::Relay(retry) => {
+                                            let retry_status = retry.status();
+                                            if retry_status.is_success() {
+                                                state.accounts.mark_healthy(
+                                                    &route.provider,
+                                                    account,
+                                                    true,
+                                                );
+                                                record(StatusCode::OK);
+                                                let parsed: Parsed =
+                                                    Box::pin(parsed_events(retry.bytes_stream()));
+                                                phase = Phase::Relay {
+                                                    parsed,
+                                                    guard: admission,
+                                                    account: Some(account.name.clone()),
+                                                };
+                                            } else {
+                                                let retry_after = retry_after_of(&retry);
+                                                let envelope = adapter_error_envelope(
+                                                    mapped_upstream_error(
+                                                        retry_status,
+                                                        retry,
+                                                        auth,
+                                                    )
+                                                    .await,
+                                                )
+                                                .await;
+                                                // Terminal, carrying its real
+                                                // status for metrics.
+                                                record(retry_status);
+                                                return Some((
+                                                    Ok(PoolItem::Exhausted {
+                                                        status: retry_status,
+                                                        advance: false,
+                                                        remember: true,
+                                                        envelope: LazyEnvelope::Ready(envelope),
+                                                        retry_after,
+                                                    }),
+                                                    (
+                                                        Phase::Done,
+                                                        order_iter,
+                                                        http_body,
+                                                        last_response,
+                                                        reprobe,
+                                                        attempt_started,
+                                                    ),
+                                                ));
+                                            }
+                                        }
+                                        RetryOutcome::Rotate(retry) => {
+                                            last_response = Some(retry);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Phase::Done => return None,
+                    }
+                }
+            }
+        },
+    )
+}
+
 /// Drive a Responses turn over the Codex/ChatGPT OAuth account pool (M10),
 /// mirroring the Anthropic adapter's `forward_claude_oauth` as closely as this
 /// adapter's structure allows. Each account in `order` is tried in turn:
@@ -89,6 +931,8 @@ pub(super) async fn forward_chatgpt_oauth(
     let PoolForward {
         pool_key,
         session_id,
+        compact,
+        delegation,
         upstream_body,
         accounts_config,
         turn,
@@ -114,6 +958,47 @@ pub(super) async fn forward_chatgpt_oauth(
     // Codex has no fable-scoped window, so the model only picks the shared
     // weekly bucket.
     let ws_enabled = state.config.codex_websocket_enabled(&route.provider);
+    if turn.client_wants_stream && !ws_enabled {
+        // Commit the SSE response before the account loop runs: the synthetic
+        // `message_start` feeds the client's stall watchdog while admission,
+        // credential resolution, and the send still run inside the stream. The
+        // estimate must land in that first snapshot, so encode it up front
+        // rather than overlapping it with the upstream round-trip as the
+        // loop-based paths do.
+        let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
+        let route_for_start = route.clone();
+        let (order, reprobe) = state.accounts.select_order_deferred(
+            &route.provider,
+            &accounts_config,
+            session_id.as_deref(),
+            Some(route.upstream_model.as_str()),
+            state.config.server.pool.as_ref(),
+        );
+        let events = pool_events_stream(PoolStreamContext {
+            state: state.clone(),
+            route: route.clone(),
+            auth: AuthMode::ChatgptOauth,
+            session_id,
+            window_key: pool_key.clone(),
+            compact: compact.clone(),
+            delegation,
+            upstream_body: upstream_body.clone(),
+            accounts_config: std::sync::Arc::new(accounts_config),
+            order,
+            reprobe,
+            ramp_initial: state.config.storm_ramp_initial(),
+            record_metrics: true,
+            started_at: None,
+        });
+        return Ok((
+            StatusCode::OK,
+            pool_streaming_response(
+                estimated_machine_factory(turn, route_for_start, estimate_input),
+                keepalive,
+                events,
+            ),
+        ));
+    }
     let (order, mut reprobe_reservation) = if ws_enabled {
         (
             select_pool_order(
@@ -171,30 +1056,48 @@ pub(super) async fn forward_chatgpt_oauth(
             continue;
         };
 
-        // Prefixing the pool key with the account name is the key point of
-        // this integration: without it, two accounts serving the same client
-        // session could reuse (and leak turn state across) one another's
-        // pooled websocket connection.
+        // Keying the pooled connection per account (and per turn identity, via
+        // the composed pool key) is the key point of this integration: without
+        // it, two accounts serving the same client session could reuse (and
+        // leak turn state across) one another's pooled websocket connection.
+        // The separator is [`KEY_COMPONENT_SEPARATOR`], the same one the pool
+        // key's own components use, so the bump sweep's suffix stays exact.
         let account_pool_key = pool_key
             .as_deref()
-            .map(|key| format!("{}::{key}", account.name));
+            .map(|key| format!("{}{KEY_COMPONENT_SEPARATOR}{key}", account.name));
 
         if ws_enabled {
             match forward_websocket(
                 &state,
                 &route,
-                account_pool_key.as_deref(),
+                super::websocket::WsIdentity {
+                    pool_key: account_pool_key.as_deref(),
+                    window_key: pool_key.as_deref(),
+                    session_id: session_id.as_deref(),
+                    delegation: delegation.as_ref(),
+                    // The bump is once per TURN, on the first attempt that
+                    // actually reaches an upstream: the request's one-shot
+                    // mark is consumed by the first window computation, so an
+                    // admission failure on an earlier-ranked account (which
+                    // never reaches one) does not drop the mark, and every
+                    // later attempt — websocket or HTTP, any account — reads
+                    // the already-advanced window instead of bumping again.
+                    compact: compact.clone(),
+                },
                 ForwardOptions {
                     upstream_body: upstream_body.clone(),
-                    credential: credential.clone(),
                     auth,
-                    turn,
+                    turn: turn.clone(),
                     codex_quota_account: Some(account.clone()),
                     // Each account attempt gets its own cheap Arc clone;
                     // forward_websocket spawns its own blocking encode from it,
                     // identical to the single-account path (see ForwardOptions).
                     estimate_input: estimate_input.clone(),
+                    started_at: None,
+                    window_key: pool_key.clone(),
+                    compact: compact.clone(),
                 },
+                credential.clone(),
             )
             .await
             {
@@ -220,7 +1123,6 @@ pub(super) async fn forward_chatgpt_oauth(
                 Err(error) => return Err(error),
             }
         }
-
         // Prepared once per turn and reused by every later attempt: cloning it
         // is a refcount bump, whereas re-preparing would re-serialize and
         // re-compress the same body on each rotation. Borrow rather than clone
@@ -248,14 +1150,35 @@ pub(super) async fn forward_chatgpt_oauth(
         // that never reaches this call is cancelled instead of consuming the
         // reprobe interval.
         commit_reprobe_for_account(&mut reprobe_reservation, index);
-        let upstream = match http_send(
-            &state,
-            &route,
-            credential.clone(),
-            session_id.as_deref(),
-            body.clone(),
+        // The mark is consumed by the first send that reaches an upstream on
+        // either transport: a websocket attempt earlier in this dispatch
+        // already took it, so this reads the window it left.
+        let window = super::codex_ws::window_for_turn(pool_key.as_deref(), compact.take());
+        // A gated call's idle clock starts as this account's request is sent,
+        // as on `forward_http`: the headers wait inside the first gap, and the
+        // collector carries on from the same instant rather than from after
+        // the estimate wait (#690). A stall past it is the call's cut, not a
+        // reason to rotate. `None` on every client turn.
+        let idle_since = turn
+            .response_bounds
+            .idle
+            .map(|_| tokio::time::Instant::now());
+        // The same clock bounds this attempt's error-body read (#704).
+        let clock = turn.response_bounds.idle.zip(idle_since);
+        let upstream = match crate::adapters::within_idle(
+            clock,
+            http_send(
+                &state,
+                &route,
+                credential.clone(),
+                session_id.as_deref(),
+                delegation.as_ref(),
+                window,
+                body.clone(),
+            ),
         )
         .await
+        .map_err(crate::adapters::idle_error)?
         {
             Ok(response) => response,
             Err(error @ crate::upstream_timeout::SendError::Timeout) => {
@@ -281,7 +1204,7 @@ pub(super) async fn forward_chatgpt_oauth(
         state
             .accounts
             .note_codex_quota(&route.provider, account, upstream.headers());
-        match classify_first(&state, &route, account, upstream) {
+        match classify_first(&state, &route, account, upstream, clock, false).await? {
             FirstOutcome::Relay(upstream) => {
                 // A non-401/429/5xx response means the account itself is fine,
                 // whether or not this particular request succeeded (mirrors the
@@ -292,13 +1215,15 @@ pub(super) async fn forward_chatgpt_oauth(
                     .accounts
                     .mark_healthy(&route.provider, account, status.is_success());
                 if status.is_success() {
-                    let input_tokens_estimate = take_estimate(&mut estimate_handle).await;
+                    let input_tokens_estimate = take_estimate(&mut estimate_handle);
                     let response = relay_success(
                         &state,
                         upstream,
                         turn.client_wants_stream,
                         turn.relay(&route),
                         input_tokens_estimate,
+                        turn.response_bounds,
+                        idle_since,
                     )
                     .await?;
                     let response = crate::adapters::with_admission(
@@ -314,7 +1239,7 @@ pub(super) async fn forward_chatgpt_oauth(
                 // account's fault: relay it (re-shaped into the Anthropic error
                 // envelope by mapped_upstream_error, as everywhere on this path)
                 // rather than rotating to another account.
-                return Err(mapped_upstream_error(status, upstream, auth).await);
+                return Err(mapped_upstream_error_within(status, upstream, auth, clock).await);
             }
             FirstOutcome::Rotate(upstream) => {
                 last_response = Some(upstream);
@@ -331,14 +1256,30 @@ pub(super) async fn forward_chatgpt_oauth(
                             continue;
                         }
                     };
-                let retry = match http_send(
-                    &state,
-                    &route,
-                    retry_credential,
-                    session_id.as_deref(),
-                    body.clone(),
+                // The primary send consumed the mark; this reads the window
+                // it left.
+                let window = super::codex_ws::window_for_turn(pool_key.as_deref(), compact.take());
+                // The refreshed retry is a new request: its own send starts
+                // the clock again, as the first attempt's did.
+                let retry_since = turn
+                    .response_bounds
+                    .idle
+                    .map(|_| tokio::time::Instant::now());
+                let retry_clock = turn.response_bounds.idle.zip(retry_since);
+                let retry = match crate::adapters::within_idle(
+                    retry_clock,
+                    http_send(
+                        &state,
+                        &route,
+                        retry_credential,
+                        session_id.as_deref(),
+                        delegation.as_ref(),
+                        window,
+                        body.clone(),
+                    ),
                 )
                 .await
+                .map_err(crate::adapters::idle_error)?
                 {
                     Ok(response) => response,
                     Err(error @ crate::upstream_timeout::SendError::Timeout) => {
@@ -366,18 +1307,20 @@ pub(super) async fn forward_chatgpt_oauth(
                 state
                     .accounts
                     .note_codex_quota(&route.provider, account, retry.headers());
-                match classify_retry(&state, &route, account, retry) {
+                match classify_retry(&state, &route, account, retry, retry_clock, false).await? {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
                         if retry_status.is_success() {
                             state.accounts.mark_healthy(&route.provider, account, true);
-                            let input_tokens_estimate = take_estimate(&mut estimate_handle).await;
+                            let input_tokens_estimate = take_estimate(&mut estimate_handle);
                             let response = relay_success(
                                 &state,
                                 retry,
                                 turn.client_wants_stream,
                                 turn.relay(&route),
                                 input_tokens_estimate,
+                                turn.response_bounds,
+                                retry_since,
                             )
                             .await?;
                             let response = crate::adapters::with_admission(
@@ -388,7 +1331,13 @@ pub(super) async fn forward_chatgpt_oauth(
                             // hardcoded `200` — see the relay arm above.
                             return Ok((response.status(), response));
                         }
-                        return Err(mapped_upstream_error(retry_status, retry, auth).await);
+                        return Err(mapped_upstream_error_within(
+                            retry_status,
+                            retry,
+                            auth,
+                            retry_clock,
+                        )
+                        .await);
                     }
                     RetryOutcome::Rotate(retry) => {
                         last_response = Some(retry);
@@ -399,15 +1348,45 @@ pub(super) async fn forward_chatgpt_oauth(
     }
 
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
+    Err(exhausted_error(last_response, auth, turn.response_bounds.idle).await)
+}
+
+/// The error [`forward_chatgpt_oauth`] returns once every account failed: the
+/// last upstream answer the pool kept, mapped, or a transport error when no
+/// account reached an upstream.
+///
+/// On a gated call (`idle` set) the kept body is read under a fresh gap taken
+/// here, at exhaustion, as the Anthropic adapter's gated error read does
+/// (#707). The kept attempt's own send is the wrong anchor: later accounts'
+/// sends, header waits, and refusal checks all ran after it rotated away, so
+/// its gap may have closed on their time. A stall is the call's cut, with the
+/// [`crate::adapters::UpstreamBodyIdle`] marker. `None`, every client turn,
+/// reads no clock and leaves the body lazy, as it always was.
+async fn exhausted_error(
+    last_response: Option<reqwest::Response>,
+    auth: AuthMode,
+    idle: Option<Duration>,
+) -> AdapterError {
     match last_response {
         Some(upstream) => {
             let status = upstream.status();
-            Err(mapped_upstream_error(status, upstream, auth).await)
+            let clock = idle.map(|idle| (idle, tokio::time::Instant::now()));
+            mapped_upstream_error_within(status, upstream, auth, clock).await
         }
-        None => Err(transport_error(
+        None => transport_error(
             "all Codex OAuth accounts failed before receiving an upstream response".to_string(),
-        )),
+        ),
     }
+}
+
+/// The `retry-after` an exhausting upstream response carries, read before the
+/// response moves into [`mapped_upstream_error`] — the same header that
+/// function copies onto the ordered loop's refusal (#702).
+fn retry_after_of(upstream: &reqwest::Response) -> Option<HeaderValue> {
+    upstream
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .cloned()
 }
 
 /// Relay a successful upstream Responses answer to the client, choosing SSE
@@ -415,41 +1394,47 @@ pub(super) async fn forward_chatgpt_oauth(
 /// every success arm in [`forward_chatgpt_oauth`] so each only differs in
 /// which upstream response and account produced it (mirrors how the
 /// single-account [`forward_http`] picks between [`stream_response`] and
-/// [`json_response`]).
+/// [`json_response`]). `idle_since` is when the answering request was sent,
+/// and only the non-streaming read, the one a gated call takes, uses it. The
+/// streaming relay seeds `message_start` with the estimate, so it waits for it
+/// first; the non-streaming read waits for it beside the collection (#703).
 async fn relay_success(
     state: &AppState,
     upstream: reqwest::Response,
     client_wants_stream: bool,
     relay: RelayOptions,
-    input_tokens_estimate: u64,
+    input_tokens_estimate: InputEstimate,
+    bounds: crate::adapters::ResponseBounds,
+    idle_since: Option<tokio::time::Instant>,
 ) -> Result<axum::response::Response, AdapterError> {
     if client_wants_stream {
         let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
         Ok(stream_response(
             upstream,
             relay,
-            input_tokens_estimate,
+            input_tokens_estimate.resolve().await,
             keepalive,
         ))
     } else {
-        json_response(upstream, relay).await
+        json_response(upstream, relay, input_tokens_estimate, bounds, idle_since).await
     }
 }
 
-/// Await the lazily-spawned HTTP-path tiktoken estimate handle exactly once,
-/// mirroring `forward_http`'s inline `match estimate_handle { .. }`. Factored
-/// out because the pool loop has two success arms (first attempt and
-/// refresh retry) that must consume the same handle without awaiting it
-/// twice — `JoinHandle` is not `Clone`, so `.take()` leaves a torn-down `None`
-/// behind for whichever arm does not run. Non-streaming turns never seed
-/// `message_start`, so `estimate_handle` is always `None` here already
-/// (`forward`'s gate only produces `estimate_input`, and thus a spawned
-/// handle, for streaming turns), which naturally yields `0` below.
-async fn take_estimate(estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>) -> u64 {
-    match estimate_handle.take() {
-        Some(handle) => handle.await.unwrap_or(0),
-        None => 0,
-    }
+/// Take the lazily-spawned HTTP-path tiktoken estimate handle exactly once,
+/// as the [`InputEstimate`] [`relay_success`] waits for, mirroring
+/// `forward_http`'s handoff to `json_response`. Factored out because the pool
+/// loop has two success arms (first attempt and refresh retry) that must
+/// consume the same handle without awaiting it twice — `JoinHandle` is not
+/// `Clone`, so `.take()` leaves a torn-down `None` behind for whichever arm
+/// does not run. A non-streaming turn seeds no
+/// `message_start`, so `forward`'s gate spawns a handle for one only when it
+/// carries `stop_sequences` — there the estimate is what keeps a stopped turn's
+/// final JSON from reporting `input_tokens: 0` (issue #605). Without either, the
+/// handle is `None` and this naturally yields `0`. The wait is bounded like
+/// `forward_http`'s: the committed `message_start` must not wait on the
+/// estimator (see `bounded_input_estimate`).
+fn take_estimate(estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>) -> InputEstimate {
+    estimate_handle.take().into()
 }
 
 /// Inject `x-shunt-account` naming which pool account produced the response,
@@ -523,7 +1508,11 @@ pub(super) async fn admit_and_resolve(
 /// [`CodexAuthStore::get_valid_chatgpt`] using the credential path and keep that
 /// auth-layer guard through atomic writeback. On failure the account is cooled
 /// down for 5 minutes and logged, and `None` signals the caller to rotate to the
-/// next account.
+/// next account. A *terminal* failure — the provider rejected the stored refresh
+/// grant, or there is none to send — also marks the account `needs_relogin`:
+/// this is the dominant steady state for a dead account (once its access token
+/// expires, the refresh is rejected here rather than after a 401), and without
+/// the mark it cycles through the cooldown forever reported as `Live` (#616).
 pub(super) async fn resolve_or_cooldown(
     state: &AppState,
     route: &Route,
@@ -538,10 +1527,18 @@ pub(super) async fn resolve_or_cooldown(
                 Duration::from_secs(5 * 60),
                 "auth",
             );
+            if error.is_terminal() {
+                state.accounts.mark_needs_relogin(
+                    &route.provider,
+                    account,
+                    accounts::ReloginCause::RefreshGrant,
+                );
+            }
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
-                error = %error.message,
+                error = %error.detail,
+                terminal = error.is_terminal(),
                 "failed to resolve ChatGPT OAuth account"
             );
             None
@@ -576,6 +1573,14 @@ pub(super) async fn force_refresh_or_cooldown(
             account,
             Duration::from_secs(5 * 60),
             "auth",
+        );
+        // A static credential cannot be refreshed, so a 401 here means it is
+        // expired or revoked — terminal by definition, with no grant left to
+        // retry. Mark it so the operator sees a dead account on the dashboard.
+        state.accounts.mark_needs_relogin(
+            &route.provider,
+            account,
+            accounts::ReloginCause::ServedRequest,
         );
         tracing::warn!(
             provider = %route.provider,
@@ -626,15 +1631,163 @@ pub(super) async fn force_refresh_or_cooldown(
                 Duration::from_secs(5 * 60),
                 "auth",
             );
+            // The provider will never accept this refresh token again, so the
+            // 5-minute retry loop can only repeat the same rejected grant. A
+            // transient failure (5xx, network, timeout) must not set the mark —
+            // that would report a healthy account as dead on a momentary blip.
+            if error.is_terminal() {
+                state.accounts.mark_needs_relogin(
+                    &route.provider,
+                    account,
+                    accounts::ReloginCause::RefreshGrant,
+                );
+            }
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
-                error = %error.message,
+                error = %error.detail,
+                terminal = error.is_terminal(),
                 "failed to force-refresh ChatGPT OAuth account"
             );
             None
         }
     }
+}
+
+/// The pool-rotation metric reason [`rotate_on_model_refusal`] records.
+const MODEL_NOT_SUPPORTED: &str = "model_not_supported";
+
+/// Read the head of an upstream error body so it can be checked for a model
+/// refusal. The read is bounded like the Responses adapter's error envelope
+/// read ([`crate::error::ERROR_ENVELOPE_BUDGET`] and
+/// [`crate::error::ERROR_ENVELOPE_BYTES`]), plus the gated idle gap when the
+/// caller has one (`ResponseBounds::idle`, as `json_response` honours it):
+/// `clock` is that gap and the attempt's send, so the first wait is the rest
+/// of the gap the header wait began rather than a fresh one, and each chunk
+/// refreshes it (#704). The
+/// bytes are returned only when the whole body arrived within those bounds: a
+/// body that declares or passes the cap, trips the budget, or breaks is not a
+/// refusal, and is passed on unjudged. Only an idle cut is an error: it is the
+/// caller's bound, carried back to `routing::serve` as its marker.
+///
+/// What an unjudged body becomes depends on who relays it. `verbatim` (the
+/// inbound passthrough) replays every byte read followed by whatever the
+/// upstream has not sent yet — a declared-oversized body is not read at all —
+/// so the client gets the upstream's 400 exactly as it was sent. Otherwise the
+/// body is the text the envelope read falls back to (`upstream returned
+/// {status}`): the translating path would render that anyway, and handing it
+/// the unread remainder would restart the envelope read's budget, outside the
+/// idle gap, on a body that has already spent both.
+async fn buffer_error_body(
+    upstream: reqwest::Response,
+    clock: Option<(Duration, tokio::time::Instant)>,
+    verbatim: bool,
+) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
+    let declared_oversized = upstream
+        .content_length()
+        .is_some_and(|length| length > crate::error::ERROR_ENVELOPE_BYTES as u64);
+    if declared_oversized && verbatim {
+        return Ok((upstream, None));
+    }
+    let status = upstream.status();
+    let version = upstream.version();
+    let mut headers = upstream.headers().clone();
+    let mut rest = upstream.bytes_stream();
+    let budget = tokio::time::Instant::now() + crate::error::ERROR_ENVELOPE_BUDGET;
+    let mut read = Vec::new();
+    let mut total = 0usize;
+    let mut idle_deadline = clock.map(|(idle, since)| since + idle);
+    let complete = !declared_oversized
+        && loop {
+            let wait = idle_deadline.map_or(budget, |deadline| deadline.min(budget));
+            match tokio::time::timeout_at(wait, rest.next()).await {
+                Ok(None) => break true,
+                Ok(Some(Ok(chunk))) => {
+                    idle_deadline = clock.map(|(idle, _)| tokio::time::Instant::now() + idle);
+                    total = total.saturating_add(chunk.len());
+                    read.push(Ok(chunk));
+                    if total > crate::error::ERROR_ENVELOPE_BYTES {
+                        break false;
+                    }
+                }
+                Ok(Some(Err(error))) => {
+                    read.push(Err(error));
+                    break false;
+                }
+                Err(_) => match (clock, idle_deadline) {
+                    (Some((idle, _)), Some(deadline)) if deadline < budget => {
+                        return Err(crate::adapters::idle_error(
+                            crate::adapters::UpstreamBodyIdle { idle },
+                        ));
+                    }
+                    _ => break false,
+                },
+            }
+        };
+    let (body, judged) = if complete {
+        let mut bytes = bytes::BytesMut::with_capacity(total);
+        for chunk in read.iter().flatten() {
+            bytes.extend_from_slice(chunk);
+        }
+        let bytes = bytes.freeze();
+        (reqwest::Body::from(bytes.clone()), Some(bytes))
+    } else if verbatim {
+        (
+            reqwest::Body::wrap_stream(stream::iter(read).chain(rest)),
+            None,
+        )
+    } else {
+        headers.remove(reqwest::header::CONTENT_LENGTH);
+        (
+            reqwest::Body::from(format!("upstream returned {status}")),
+            None,
+        )
+    };
+    let mut rebuilt = axum::http::Response::new(body);
+    *rebuilt.status_mut() = status;
+    *rebuilt.version_mut() = version;
+    *rebuilt.headers_mut() = headers;
+    Ok((reqwest::Response::from(rebuilt), judged))
+}
+
+/// Check a relay-classified response for the per-account model refusal
+/// ([`accounts::is_codex_model_unsupported`]). Only a 400 has its body read —
+/// every other status passes through untouched, unread. On a match the
+/// `(account, model)` pair is cooled for
+/// [`accounts::CODEX_MODEL_UNSUPPORTED_COOLDOWN`] and `true` is returned: the
+/// caller rotates, and never marks the account healthy nor cools it
+/// account-wide — the credential is fine, and other models on the account keep
+/// being served. Either way the returned response carries the body intact, so a
+/// pool that exhausts on refusals relays the upstream's own 400.
+async fn rotate_on_model_refusal(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    upstream: reqwest::Response,
+    clock: Option<(Duration, tokio::time::Instant)>,
+    verbatim: bool,
+) -> Result<(reqwest::Response, bool), AdapterError> {
+    if upstream.status() != StatusCode::BAD_REQUEST {
+        return Ok((upstream, false));
+    }
+    let (upstream, body) = buffer_error_body(upstream, clock, verbatim).await?;
+    if !body.is_some_and(|body| accounts::is_codex_model_unsupported(upstream.status(), &body)) {
+        return Ok((upstream, false));
+    }
+    state.accounts.cooldown_model(
+        &route.provider,
+        account,
+        &route.upstream_model,
+        accounts::CODEX_MODEL_UNSUPPORTED_COOLDOWN,
+        MODEL_NOT_SUPPORTED,
+    );
+    tracing::warn!(
+        provider = %route.provider,
+        account = %account.name,
+        model = %route.upstream_model,
+        "codex pool account refused the model; cooling the account for this model and rotating to the next account"
+    );
+    Ok((upstream, true))
 }
 
 /// The classification of a **first-attempt** upstream response on the Codex pool.
@@ -645,8 +1798,9 @@ pub(super) enum FirstOutcome {
     /// The account is fine — the caller marks it healthy and relays this response
     /// its own way.
     Relay(reqwest::Response),
-    /// The account failed over (already cooled down); the caller stashes this
-    /// response as the pool's last-seen and rotates.
+    /// The account failed over (already cooled down — account-wide, or for this
+    /// model alone on a model refusal); the caller stashes this response as the
+    /// pool's last-seen and rotates.
     Rotate(reqwest::Response),
     /// A 401 — the caller should force-refresh and retry this account.
     NeedRefresh(reqwest::Response),
@@ -655,16 +1809,29 @@ pub(super) enum FirstOutcome {
 /// Classify a first-attempt upstream response, applying the shared rotate cooldown.
 /// A `Relay` account is left for the caller to mark healthy so it can render the
 /// response its own way (a translating path splits success vs a non-failover 4xx;
-/// the passthrough relays verbatim).
-pub(super) fn classify_first(
+/// the passthrough relays verbatim). A 400 model refusal rotates instead
+/// ([`rotate_on_model_refusal`]); `clock` (the gated idle gap and the send it
+/// runs from) bounds that body read and its trip is the only `Err`, and `verbatim` (the passthrough) keeps an unjudged 400's body
+/// intact rather than falling back ([`buffer_error_body`]).
+pub(super) async fn classify_first(
     state: &AppState,
     route: &Route,
     account: &AccountConfig,
     upstream: reqwest::Response,
-) -> FirstOutcome {
+    clock: Option<(Duration, tokio::time::Instant)>,
+    verbatim: bool,
+) -> Result<FirstOutcome, AdapterError> {
     let status = upstream.status();
     match accounts::classify_codex(status, upstream.headers()) {
-        FailoverAction::Relay => FirstOutcome::Relay(upstream),
+        FailoverAction::Relay => {
+            let (upstream, rotate) =
+                rotate_on_model_refusal(state, route, account, upstream, clock, verbatim).await?;
+            Ok(if rotate {
+                FirstOutcome::Rotate(upstream)
+            } else {
+                FirstOutcome::Relay(upstream)
+            })
+        }
         FailoverAction::Rotate => {
             let cooldown = rotate_cooldown(status, upstream.headers());
             state.accounts.cooldown(
@@ -679,9 +1846,9 @@ pub(super) fn classify_first(
                 status = %status,
                 "codex pool account failed over; cooling down and rotating to the next account"
             );
-            FirstOutcome::Rotate(upstream)
+            Ok(FirstOutcome::Rotate(upstream))
         }
-        FailoverAction::RefreshRetry => FirstOutcome::NeedRefresh(upstream),
+        FailoverAction::RefreshRetry => Ok(FirstOutcome::NeedRefresh(upstream)),
         FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
     }
 }
@@ -698,15 +1865,19 @@ pub(super) enum RetryOutcome {
 /// Classify a refreshed-retry upstream response. A retry still rejected with 401
 /// (the refresh succeeded but the credential is still bad) or otherwise
 /// non-relayable cools the account down and rotates; only a relayable status is
-/// handed back for the caller to render. `classify_codex` returns `RefreshRetry`
-/// only for 401 (handled above) and never `PauseSame`, so only `Relay` and
-/// `Rotate` are live — the others ride `Rotate`'s arm as a defensive no-op.
-pub(super) fn classify_retry(
+/// handed back for the caller to render. A 400 model refusal rotates too, cooling
+/// only that model ([`rotate_on_model_refusal`]). `classify_codex` returns
+/// `RefreshRetry` only for 401 (handled above) and never `PauseSame`, so only
+/// `Relay` and `Rotate` are live — the others ride `Rotate`'s arm as a defensive
+/// no-op.
+pub(super) async fn classify_retry(
     state: &AppState,
     route: &Route,
     account: &AccountConfig,
     retry: reqwest::Response,
-) -> RetryOutcome {
+    clock: Option<(Duration, tokio::time::Instant)>,
+    verbatim: bool,
+) -> Result<RetryOutcome, AdapterError> {
     let retry_status = retry.status();
     if retry_status == StatusCode::UNAUTHORIZED {
         state.accounts.cooldown(
@@ -715,15 +1886,30 @@ pub(super) fn classify_retry(
             Duration::from_secs(5 * 60),
             "auth",
         );
+        // A live grant yielding a bearer the API still rejects means the
+        // account is de-authorized upstream, not momentarily unlucky.
+        state.accounts.mark_needs_relogin(
+            &route.provider,
+            account,
+            accounts::ReloginCause::ServedRequest,
+        );
         tracing::warn!(
             provider = %route.provider,
             account = %account.name,
             "codex pool account refreshed but upstream still rejected the new credential; cooling down and rotating"
         );
-        return RetryOutcome::Rotate(retry);
+        return Ok(RetryOutcome::Rotate(retry));
     }
     match accounts::classify_codex(retry_status, retry.headers()) {
-        FailoverAction::Relay => RetryOutcome::Relay(retry),
+        FailoverAction::Relay => {
+            let (retry, rotate) =
+                rotate_on_model_refusal(state, route, account, retry, clock, verbatim).await?;
+            Ok(if rotate {
+                RetryOutcome::Rotate(retry)
+            } else {
+                RetryOutcome::Relay(retry)
+            })
+        }
         FailoverAction::Rotate | FailoverAction::RefreshRetry => {
             let cooldown = rotate_cooldown(retry_status, retry.headers());
             state.accounts.cooldown(
@@ -738,7 +1924,7 @@ pub(super) fn classify_retry(
                 status = %retry_status,
                 "codex pool refresh retry did not succeed; rotating to the next account"
             );
-            RetryOutcome::Rotate(retry)
+            Ok(RetryOutcome::Rotate(retry))
         }
         FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
     }
@@ -751,12 +1937,1245 @@ mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use serde_json::json;
 
+    use super::super::context::TurnOptions;
     use super::*;
     use crate::{
         accounts::{account_key, QuotaState, StoreFamily},
         config::{Config, PoolConfig},
         routing::{AdapterKind, Route},
     };
+    use axum::http::StatusCode;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Serializes the env vars the pool-probe tests write; every test in this
+    /// module that calls `std::env::set_var` must hold it for its whole body.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn pool_route() -> Route {
+        Route {
+            provider: "codex".to_string(),
+            adapter: AdapterKind::Responses,
+            model: "gpt-5.2-codex".to_string(),
+            upstream_model: "gpt-5.2-codex".to_string(),
+            effort: None,
+            service_tier: None,
+        }
+    }
+
+    fn pool_account(name: &str, token_env: &str) -> AccountConfig {
+        AccountConfig {
+            name: name.to_string(),
+            token_env: Some(token_env.to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// The pool path wires the window keys correctly end to end: the counter
+    /// keys on the unprefixed session key while the rotation evicts the
+    /// ACCOUNT-prefixed socket, so a compaction-marked turn always handshakes
+    /// with the advanced window id. The mock records each handshake's
+    /// `x-codex-window-id`; two marked turns must produce `sess-1:1` then
+    /// `sess-1:2` on two separate sockets (a surviving pooled socket would
+    /// mean the bump failed to rotate on this path).
+    #[tokio::test]
+    async fn pool_path_advances_the_window_and_rotates_the_socket() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        use tokio::net::TcpListener;
+        use tungstenite::handshake::server::Request;
+        use tungstenite::protocol::WebSocketConfig;
+        use tungstenite::Message;
+
+        use crate::adapters::responses::codex_ws::{
+            clear_pool_for_tests, pool_contains_for_tests, window_for, POOL_TEST_LOCK,
+        };
+        use futures_util::{SinkExt, StreamExt};
+
+        let _env = ENV_LOCK.lock().await;
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let windows: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let server_windows = windows.clone();
+        let server_accepts = accepts.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                server_accepts.fetch_add(1, Ordering::SeqCst);
+                let recorder = {
+                    let server_windows = server_windows.clone();
+                    #[allow(clippy::result_large_err)]
+                    move |request: &Request,
+                          response: tungstenite::handshake::server::Response|
+                          -> Result<
+                        tungstenite::handshake::server::Response,
+                        tungstenite::handshake::server::ErrorResponse,
+                    > {
+                        server_windows.lock().unwrap().push(
+                            request
+                                .headers()
+                                .get("x-codex-window-id")
+                                .map(|value| value.to_str().unwrap().to_string())
+                                .unwrap_or_default(),
+                        );
+                        Ok(response)
+                    }
+                };
+                let mut ws = tokio_tungstenite::accept_hdr_async_with_config(
+                    socket,
+                    recorder,
+                    Some(WebSocketConfig::default()),
+                )
+                .await
+                .unwrap();
+                while let Some(message) = ws.next().await {
+                    match message.unwrap() {
+                        Message::Text(_) => {
+                            for event in [
+                                r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                                r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                                r#"{"type":"response.completed","response":{}}"#,
+                            ] {
+                                ws.send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                        Message::Pong(_) => {}
+                        Message::Close(_) => break,
+                        other => panic!("unexpected frame: {other:?}"),
+                    }
+                }
+            }
+        });
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = format!("http://{addr}");
+        config.providers.get_mut("codex").unwrap().websocket = true;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let accounts = vec![pool_account("acc-a", "SHUNT_POOL_PROBE_A")];
+
+        for expected in ["sess-1:1", "sess-1:2"] {
+            let turn = pool_turn(accounts.clone(), false);
+            let (status, _response) = forward_chatgpt_oauth(
+                state.clone(),
+                pool_route(),
+                PoolForward {
+                    pool_key: Some("sess-1".to_string()),
+                    session_id: Some("sess-1".to_string()),
+                    compact: crate::request::CompactionMark::armed(true),
+                    ..turn
+                },
+            )
+            .await
+            .expect("marked pool turn succeeds");
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                *windows.lock().unwrap().last().unwrap(),
+                expected,
+                "each marked turn handshakes with the advanced window"
+            );
+            let window_number: u64 = expected.rsplit(':').next().unwrap().parse().unwrap();
+            assert_eq!(
+                window_for("sess-1"),
+                window_number,
+                "the counter keys on the unprefixed session key, never the account key"
+            );
+            if window_number == 1 {
+                assert!(
+                    pool_contains_for_tests("acc-a\u{1f}sess-1"),
+                    "the socket pools under the account-prefixed connection key"
+                );
+            }
+        }
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            2,
+            "each turn handshook afresh"
+        );
+        clear_pool_for_tests();
+        server.abort();
+    }
+
+    /// A compaction-marked turn bumps the counter ONCE per turn, never once
+    /// per account attempt: when the first account's WS handshake is refused
+    /// and its HTTP fallback dies, the failover to the second account must
+    /// handshake with the SAME advanced window, not bump again. The mock
+    /// serves three connections: A's refused WS upgrade, A's killed HTTP
+    /// fallback, B's recorded WS turn.
+    #[tokio::test]
+    async fn pool_path_bumps_once_across_a_failover() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tungstenite::handshake::server::Request;
+        use tungstenite::protocol::WebSocketConfig;
+        use tungstenite::Message;
+
+        use crate::adapters::responses::codex_ws::{
+            clear_pool_for_tests, window_for, POOL_TEST_LOCK,
+        };
+        use futures_util::{SinkExt, StreamExt};
+
+        let _env = ENV_LOCK.lock().await;
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let windows: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let server_windows = windows.clone();
+        let server_accepts = accepts.clone();
+        let server = tokio::spawn(async move {
+            // 1: A's WS handshake, refused with 429.
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 2048];
+            let _ = socket.read(&mut buffer).await;
+            socket
+                .write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            // 2: A's HTTP fallback, killed (a transport error rotates).
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+            // 3: B's WS turn, handshake recorded and turn served.
+            let (socket, _) = listener.accept().await.unwrap();
+            server_accepts.fetch_add(3, Ordering::SeqCst);
+            let recorder = {
+                let server_windows = server_windows.clone();
+                #[allow(clippy::result_large_err)]
+                move |request: &Request,
+                      response: tungstenite::handshake::server::Response|
+                      -> Result<
+                    tungstenite::handshake::server::Response,
+                    tungstenite::handshake::server::ErrorResponse,
+                > {
+                    server_windows.lock().unwrap().push(
+                        request
+                            .headers()
+                            .get("x-codex-window-id")
+                            .map(|value| value.to_str().unwrap().to_string())
+                            .unwrap_or_default(),
+                    );
+                    Ok(response)
+                }
+            };
+            let mut ws = tokio_tungstenite::accept_hdr_async_with_config(
+                socket,
+                recorder,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
+            while let Some(message) = ws.next().await {
+                match message.unwrap() {
+                    Message::Text(_) => {
+                        for event in [
+                            r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                            r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                            r#"{"type":"response.completed","response":{}}"#,
+                        ] {
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break,
+                    other => panic!("unexpected frame: {other:?}"),
+                }
+            }
+        });
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = format!("http://{addr}");
+        config.providers.get_mut("codex").unwrap().websocket = true;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let accounts = vec![
+            pool_account("acc-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("acc-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let turn = pool_turn(accounts, false);
+        let (status, _response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                compact: crate::request::CompactionMark::armed(true),
+                ..turn
+            },
+        )
+        .await
+        .expect("marked turn succeeds on the failover account");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            *windows.lock().unwrap().last().unwrap(),
+            "sess-1:1",
+            "the failover handshake carries the once-bumped window"
+        );
+        assert_eq!(
+            window_for("sess-1"),
+            1,
+            "one compaction mark bumps exactly once, across all attempts"
+        );
+        clear_pool_for_tests();
+        server.abort();
+    }
+
+    /// A marked turn whose first-ranked account fails admission must still
+    /// bump: the mark rides the first attempt that actually reaches the
+    /// websocket, matching the committed single-route path's semantics. The
+    /// mock accepts once — the cooled account never connects, the serving
+    /// account's handshake carries the advanced window.
+    #[tokio::test]
+    async fn pool_path_bumps_when_the_first_account_fails_admission() {
+        use std::sync::{Arc, Mutex};
+        use tokio::net::TcpListener;
+        use tungstenite::handshake::server::Request;
+        use tungstenite::protocol::WebSocketConfig;
+        use tungstenite::Message;
+
+        use crate::adapters::responses::codex_ws::{
+            clear_pool_for_tests, window_for, POOL_TEST_LOCK,
+        };
+        use futures_util::{SinkExt, StreamExt};
+
+        let _env = ENV_LOCK.lock().await;
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let windows: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let server_windows = windows.clone();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let recorder = {
+                let server_windows = server_windows.clone();
+                #[allow(clippy::result_large_err)]
+                move |request: &Request,
+                      response: tungstenite::handshake::server::Response|
+                      -> Result<
+                    tungstenite::handshake::server::Response,
+                    tungstenite::handshake::server::ErrorResponse,
+                > {
+                    server_windows.lock().unwrap().push(
+                        request
+                            .headers()
+                            .get("x-codex-window-id")
+                            .map(|value| value.to_str().unwrap().to_string())
+                            .unwrap_or_default(),
+                    );
+                    Ok(response)
+                }
+            };
+            let mut ws = tokio_tungstenite::accept_hdr_async_with_config(
+                socket,
+                recorder,
+                Some(WebSocketConfig::default()),
+            )
+            .await
+            .unwrap();
+            while let Some(message) = ws.next().await {
+                match message.unwrap() {
+                    Message::Text(_) => {
+                        for event in [
+                            r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                            r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                            r#"{"type":"response.completed","response":{}}"#,
+                        ] {
+                            ws.send(Message::Text(event.to_string().into()))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break,
+                    other => panic!("unexpected frame: {other:?}"),
+                }
+            }
+        });
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = format!("http://{addr}");
+        config.providers.get_mut("codex").unwrap().websocket = true;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let accounts = vec![
+            // A never-resolving credential fails admission deterministically:
+            // the token env name is guaranteed unset, so `resolve_or_cooldown`
+            // returns None and the loop rotates before any connect. Listed
+            // first, and NO cooldown: a cooldown would demote it in the
+            // selection order instead of failing its admission.
+            pool_account("acc-a", "SHUNT_POOL_PROBE_NEVER_SET_9F3A"),
+            pool_account("acc-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let turn = pool_turn(accounts, false);
+        let (status, _response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                compact: crate::request::CompactionMark::armed(true),
+                ..turn
+            },
+        )
+        .await
+        .expect("marked turn succeeds on the serving account");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            _response.headers().get("x-shunt-account").unwrap(),
+            "acc-b",
+            "account A failed admission, so B is the account that served"
+        );
+        assert_eq!(
+            *windows.lock().unwrap().last().unwrap(),
+            "sess-1:1",
+            "the serving account's handshake carries the advanced window"
+        );
+        assert_eq!(
+            window_for("sess-1"),
+            1,
+            "the mark bumps on the first attempt that actually runs"
+        );
+        clear_pool_for_tests();
+        server.abort();
+    }
+
+    /// A compaction bump rotates the conversation's sockets under EVERY
+    /// account, not only the one serving the marked turn: a socket left
+    /// pooled on the pre-compaction window under another account is reused
+    /// the moment the sticky account changes (dbbb7a5's per-model cooldown is
+    /// one trigger). The mock serves two clean WS turns: turn 1 pools the
+    /// conversation under acc-b, turn 2 (marked, served by acc-a) must evict
+    /// acc-b's socket along with its own.
+    #[tokio::test]
+    async fn pool_path_bump_evicts_the_conversations_sockets_under_every_account() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+        use tungstenite::protocol::WebSocketConfig;
+        use tungstenite::Message;
+
+        use crate::adapters::responses::codex_ws::{
+            clear_pool_for_tests, pool_contains_for_tests, window_for, POOL_TEST_LOCK,
+        };
+        use futures_util::{SinkExt, StreamExt};
+
+        let _env = ENV_LOCK.lock().await;
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let server_accepts = accepts.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                server_accepts.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async_with_config(
+                        socket,
+                        Some(WebSocketConfig::default()),
+                    )
+                    .await
+                    .unwrap();
+                    while let Some(message) = ws.next().await {
+                        match message.unwrap() {
+                            Message::Text(_) => {
+                                for event in [
+                                    r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                                    r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                                    r#"{"type":"response.completed","response":{}}"#,
+                                ] {
+                                    ws.send(Message::Text(event.to_string().into()))
+                                        .await
+                                        .unwrap();
+                                }
+                            }
+                            Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                            Message::Pong(_) => {}
+                            Message::Close(_) => break,
+                            other => panic!("unexpected frame: {other:?}"),
+                        }
+                    }
+                });
+            }
+        });
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = format!("http://{addr}");
+        config.providers.get_mut("codex").unwrap().websocket = true;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+        // Turn 1: only acc-b is resolvable, so it serves and pools the
+        // conversation's socket under acc-b.
+        let (status, response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                ..pool_turn(vec![pool_account("acc-b", "SHUNT_POOL_PROBE_B")], false)
+            },
+        )
+        .await
+        .expect("turn 1 serves on acc-b");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            response.headers().get("x-shunt-account").unwrap(),
+            "acc-b",
+            "turn 1 is served by acc-b, the only resolvable account"
+        );
+        assert!(
+            pool_contains_for_tests("acc-b\u{1f}sess-1"),
+            "turn 1 pools the socket under acc-b"
+        );
+
+        // Turn 2: compaction-marked, served by acc-a (now resolvable, ranked
+        // first). The bump must evict acc-b's pre-compaction socket along
+        // with acc-a's own.
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let (status, _) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                compact: crate::request::CompactionMark::armed(true),
+                ..pool_turn(
+                    vec![
+                        pool_account("acc-a", "SHUNT_POOL_PROBE_A"),
+                        pool_account("acc-b", "SHUNT_POOL_PROBE_B"),
+                    ],
+                    false,
+                )
+            },
+        )
+        .await
+        .expect("marked turn serves on acc-a");
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            !pool_contains_for_tests("acc-b\u{1f}sess-1"),
+            "the bump evicts the conversation's socket under the OTHER account"
+        );
+        assert_eq!(window_for("sess-1"), 1, "one compaction mark bumps once");
+        assert!(
+            pool_contains_for_tests("acc-a\u{1f}sess-1"),
+            "the post-bump socket pools under the serving account"
+        );
+
+        clear_pool_for_tests();
+        server.abort();
+    }
+
+    fn pool_state(base_url: String) -> AppState {
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = base_url;
+        AppState::new(config, reqwest::Client::new()).unwrap()
+    }
+
+    /// A minimal unverified JWT carrying only the ChatGPT account-id claim in
+    /// the nested shape `codex::auth::jwt_account_id` reads — enough for
+    /// `resolve_chatgpt_account`'s `token_env` path, which decodes the payload
+    /// and never checks a signature or expiry.
+    fn probe_token(account_id: &str) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(
+            json!({"https://api.openai.com/auth": {"chatgpt_account_id": account_id}}).to_string(),
+        );
+        format!("e30.{payload}.e30")
+    }
+
+    fn pool_turn(accounts: Vec<AccountConfig>, stream: bool) -> PoolForward {
+        PoolForward {
+            pool_key: None,
+            session_id: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            accounts_config: accounts,
+            turn: TurnOptions {
+                client_wants_stream: stream,
+                thinking_enabled: false,
+                tool_search_native: false,
+                stop_sequences: Vec::new(),
+                response_bounds: crate::adapters::ResponseBounds::default(),
+            },
+            estimate_input: None,
+        }
+    }
+
+    /// The pool's streaming arm commits the synthetic start before any
+    /// upstream byte — the client's stall watchdog is fed while the account
+    /// loop (admission, credential resolution, the send itself) still runs.
+    #[tokio::test]
+    async fn pool_streaming_arm_commits_synthetic_start_before_any_upstream_byte() {
+        use futures_util::StreamExt;
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(30))
+                    .set_body_string(
+                        "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                         event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+                    ),
+            )
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
+        let state = pool_state(server.uri());
+        let (status, response) =
+            forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+                .await
+                .expect("streaming pool turn builds the response without upstream headers");
+        assert_eq!(status, StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(Duration::from_secs(2), body.next())
+            .await
+            .expect("first chunk arrives while the upstream is silent")
+            .expect("stream yields")
+            .expect("chunk is ok");
+        let text = String::from_utf8(first.to_vec()).expect("chunk is utf8");
+        assert!(
+            text.starts_with("event: message_start\ndata: "),
+            "got: {text}"
+        );
+        assert!(text.contains("\"id\":\"msg_"), "synthetic id, got: {text}");
+    }
+
+    /// A transport-level rotation still emits exactly one message_start, and
+    /// the relayed content flows after it.
+    #[tokio::test]
+    async fn pool_streaming_arm_rotates_and_relays_from_the_second_account() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_2\"}}\n\n\
+                 event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let accounts = vec![
+            pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let state = pool_state(server.uri());
+        let (_, response) = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+            .await
+            .expect("pool turn succeeds on the second account");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(
+            text.matches("event: message_start").count(),
+            1,
+            "got: {text}"
+        );
+        assert!(text.contains("\"id\":\"msg_"), "synthetic id, got: {text}");
+        assert!(text.contains("\"text\":\"hi\""), "got: {text}");
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock records requests")
+                .len(),
+            2,
+            "one rotation then one success"
+        );
+    }
+
+    /// Pool exhaustion surfaces as one terminal SSE error event on the
+    /// committed stream — never a synthesized completion.
+    #[tokio::test]
+    async fn pool_streaming_arm_emits_error_event_on_exhaustion() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
+        let state = pool_state(server.uri());
+        let (status, response) =
+            forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+                .await
+                .expect("pool turn commits and reports the failure in-stream");
+        assert_eq!(status, StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(text.matches("event: message_start").count(), 1);
+        assert!(text.contains("event: error\ndata: "), "got: {text}");
+        assert!(
+            text.contains("\"type\":\"api_error\""),
+            "a mapped 500 exhaustion carries the api_error envelope, got: {text}"
+        );
+        assert!(
+            !text.contains("event: message_stop"),
+            "no synthesized completion after an error, got: {text}"
+        );
+    }
+
+    /// The non-streaming arm keeps its pre-commit status relay: a 429 stays an
+    /// error response with the real status, not an early-committed stream.
+    #[tokio::test]
+    async fn pool_non_streaming_arm_keeps_the_status_relay() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")];
+        let state = pool_state(server.uri());
+        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
+            .await
+            .expect_err("non-streaming 429 stays an error response");
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    const MODEL_REFUSAL: &str =
+        "The 'gpt-5.2-codex' model is not supported when using Codex with a ChatGPT account.";
+
+    const COMPLETED_TURN: &str = "event: response.created\ndata: {\"response\":{\"id\":\"resp_2\"}}\n\n\
+         event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n\
+         event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
+
+    /// Mount a response for one pool account, told apart by the
+    /// `chatgpt-account-id` its probe token resolves to.
+    async fn mount_for_account(server: &MockServer, account_id: &str, response: ResponseTemplate) {
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::header("chatgpt-account-id", account_id))
+            .respond_with(response)
+            .mount(server)
+            .await;
+    }
+
+    /// A 400 model refusal rotates to the next account (which serves the
+    /// turn), cooling only the refusing account for that model: it is not
+    /// cooled account-wide, and another model still selects it first.
+    #[tokio::test]
+    async fn pool_rotates_off_a_model_refusal_and_cools_only_that_model() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+        let server = MockServer::start().await;
+        mount_for_account(
+            &server,
+            "acc-a",
+            ResponseTemplate::new(400).set_body_json(json!({ "detail": MODEL_REFUSAL })),
+        )
+        .await;
+        mount_for_account(
+            &server,
+            "acc-b",
+            ResponseTemplate::new(200).set_body_string(COMPLETED_TURN),
+        )
+        .await;
+        let accounts = vec![
+            pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let state = pool_state(server.uri());
+        let (status, response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            pool_turn(accounts.clone(), false),
+        )
+        .await
+        .expect("the second account serves the turn");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response.headers()["x-shunt-account"], "pool-probe-b");
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock records")
+                .len(),
+            2,
+            "one refusal then one success"
+        );
+
+        let snapshot = state.accounts.snapshot("codex", &accounts[..1], None, None);
+        assert_eq!(
+            snapshot[0].cooldown_secs_remaining, None,
+            "the refusing account is not cooled account-wide"
+        );
+        let order = |session: &str, model: &str| {
+            state
+                .accounts
+                .select_order("codex", &accounts, Some(session), Some(model), None)
+        };
+        // A session that sticks to account a, so deferring it is observable.
+        let session = (0..64)
+            .map(|n| format!("model-refusal-{n}"))
+            .find(|session| order(session, "gpt-other")[0] == 0)
+            .expect("some session sticks to account a");
+        assert_eq!(
+            order(&session, "gpt-other"),
+            vec![0, 1],
+            "another model keeps account a first"
+        );
+        assert_eq!(
+            order(&session, "gpt-5.2-codex"),
+            vec![1, 0],
+            "the refused model defers account a"
+        );
+    }
+
+    /// The same rotation on the committed streaming arm.
+    #[tokio::test]
+    async fn pool_streaming_arm_rotates_off_a_model_refusal() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+        let server = MockServer::start().await;
+        mount_for_account(
+            &server,
+            "acc-a",
+            ResponseTemplate::new(400)
+                .set_body_json(json!({ "error": { "message": MODEL_REFUSAL } })),
+        )
+        .await;
+        mount_for_account(
+            &server,
+            "acc-b",
+            ResponseTemplate::new(200).set_body_string(COMPLETED_TURN),
+        )
+        .await;
+        let accounts = vec![
+            pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let state = pool_state(server.uri());
+        let (_, response) = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("\"text\":\"hi\""), "got: {text}");
+        assert!(!text.contains("event: error"), "got: {text}");
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock records")
+                .len(),
+            2
+        );
+    }
+
+    /// Every account refusing the model exhausts the pool on the upstream's
+    /// own 400, its refusal message intact.
+    #[tokio::test]
+    async fn pool_exhausted_by_model_refusals_relays_the_refusal() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_json(json!({ "detail": MODEL_REFUSAL })),
+            )
+            .mount(&server)
+            .await;
+        let accounts = vec![
+            pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let state = pool_state(server.uri());
+        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
+            .await
+            .expect_err("an exhausted pool relays the refusal");
+        assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock records")
+                .len(),
+            2,
+            "both accounts were tried"
+        );
+        let bytes = axum::body::to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains(MODEL_REFUSAL), "got: {text}");
+    }
+
+    /// Positive twin: any other 400 is still the client's error, relayed from
+    /// the first account without rotating.
+    #[tokio::test]
+    async fn pool_relays_other_bad_requests_without_rotating() {
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+        let server = MockServer::start().await;
+        let invalid = "Invalid value for 'input'.";
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "detail": invalid })))
+            .mount(&server)
+            .await;
+        let accounts = vec![
+            pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("pool-probe-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let state = pool_state(server.uri());
+        let error = forward_chatgpt_oauth(state, pool_route(), pool_turn(accounts, false))
+            .await
+            .expect_err("a client 400 is relayed");
+        assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("mock records")
+                .len(),
+            1,
+            "no rotation on an ordinary 400"
+        );
+        let bytes = axum::body::to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        assert!(String::from_utf8_lossy(&bytes).contains(invalid));
+    }
+
+    /// On the verbatim passthrough the refusal check reads only a bounded head
+    /// of a 400: a body past the cap is left unjudged and still relayed whole,
+    /// never replaced.
+    #[tokio::test]
+    async fn an_oversized_bad_request_is_relayed_whole_and_unjudged() {
+        let server = MockServer::start().await;
+        let body = format!(
+            r#"{{"detail":"{}"}}"#,
+            "x".repeat(crate::error::ERROR_ENVELOPE_BYTES + 1024)
+        );
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(body.clone()))
+            .mount(&server)
+            .await;
+        let upstream = reqwest::Client::new()
+            .post(server.uri())
+            .send()
+            .await
+            .expect("mock answers");
+        let (relayed, judged) = buffer_error_body(upstream, None, true)
+            .await
+            .expect("no idle bound");
+        assert!(judged.is_none(), "a body past the cap is not judged");
+        assert_eq!(relayed.status(), StatusCode::BAD_REQUEST);
+        let bytes = relayed.bytes().await.expect("body is readable");
+        assert_eq!(bytes, body.as_bytes(), "every upstream byte is relayed");
+    }
+
+    /// The pooled path's case of #704: a gated attempt's `400` whose headers
+    /// arrive 250 ms after the send and whose body then stalls is cut at the
+    /// idle gap measured from the send, 300 ms, so a refusal body that would
+    /// have landed later cannot rotate the pool past the call's bound.
+    ///
+    /// Non-vacuity: start the first deadline at the read (`Instant::now() +
+    /// idle`, the pre-#704 read) and the cut lands at 550 ms, so the elapsed
+    /// assertion goes red.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_refusal_body_stalled_after_its_headers_is_cut_at_the_gap_from_the_send() {
+        let idle = Duration::from_millis(300);
+        let sent_at = tokio::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let upstream = super::super::error::tests::timed_bad_request(None);
+        let error = buffer_error_body(upstream, Some((idle, sent_at)), false)
+            .await
+            .expect_err("a body silent past the gap from the send is cut");
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle { idle }),
+            "got: {}",
+            error.message
+        );
+        assert_eq!(sent_at.elapsed(), idle, "cut at the gap from the send");
+    }
+
+    /// The twin: the same `400` whose body completes 280 ms after the send is
+    /// read whole and judged, as it always was.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_refusal_body_inside_the_gap_from_the_send_is_judged() {
+        let idle = Duration::from_millis(300);
+        let sent_at = tokio::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let body: &'static [u8] = br#"{"detail":"The model is not supported"}"#;
+        let upstream = super::super::error::tests::timed_bad_request(Some((
+            sent_at + Duration::from_millis(280),
+            body,
+        )));
+        let (relayed, judged) = buffer_error_body(upstream, Some((idle, sent_at)), false)
+            .await
+            .expect("a body inside the gap is read");
+        assert_eq!(relayed.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(judged.as_deref(), Some(body), "the whole body is judged");
+    }
+
+    /// A `429` built in-process, as a pool account's rate limit answers it,
+    /// with a `retry-after`: `body` is sent whole at its absolute instant and
+    /// then ends, and `None` is a body that never sends a byte.
+    fn timed_rate_limit(body: Option<(tokio::time::Instant, &'static [u8])>) -> reqwest::Response {
+        let chunk = futures_util::stream::once(async move {
+            let Some((at, bytes)) = body else {
+                return futures_util::future::pending().await;
+            };
+            tokio::time::sleep_until(at).await;
+            Ok::<_, std::io::Error>(bytes::Bytes::from_static(bytes))
+        });
+        reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", "7")
+                .body(reqwest::Body::wrap_stream(chunk))
+                .unwrap(),
+        )
+    }
+
+    /// #707: a gated pool whose only account answered `429` and whose kept
+    /// body never sends a byte is cut at the idle gap measured from the
+    /// exhaustion, with the idle marker, not relayed after the 5 s envelope
+    /// budget. The 500 ms before the exhaustion stands for the later accounts'
+    /// sends and header waits, and outlasts the 300 ms gap, so a gap anchored
+    /// at the kept attempt's send would cut at once.
+    ///
+    /// Non-vacuity: map the kept response lazily (the pre-#707 arm) and no
+    /// marker is set.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_pool_exhausted_on_a_stalled_429_is_cut_at_the_gap_from_exhaustion() {
+        let idle = Duration::from_millis(300);
+        let kept = timed_rate_limit(None);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let exhausted_at = tokio::time::Instant::now();
+        let error = exhausted_error(Some(kept), AuthMode::ChatgptOauth, Some(idle)).await;
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle { idle }),
+            "got: {}",
+            error.message
+        );
+        assert!(error.failure.is_none(), "a cut is not a failover");
+        assert_eq!(
+            exhausted_at.elapsed(),
+            idle,
+            "cut at the gap from exhaustion"
+        );
+    }
+
+    /// The twin: the kept `429` whose body completes 280 ms after the
+    /// exhaustion is relayed as the `429` it was, with its `retry-after` and
+    /// message.
+    ///
+    /// Non-vacuity: anchor the gap at the kept attempt's send, 500 ms earlier,
+    /// and this body is cut before it lands.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_pool_exhausted_on_a_429_inside_the_gap_relays_it() {
+        let idle = Duration::from_millis(300);
+        let message = "Rate limit reached for the account";
+        let body: &'static [u8] = br#"{"detail":"Rate limit reached for the account"}"#;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let exhausted_at = tokio::time::Instant::now();
+        let kept = timed_rate_limit(Some((exhausted_at + Duration::from_millis(280), body)));
+        let error = exhausted_error(Some(kept), AuthMode::ChatgptOauth, Some(idle)).await;
+        assert!(error
+            .response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyIdle>()
+            .is_none());
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            error.response.headers().get("retry-after"),
+            Some(&HeaderValue::from_static("7"))
+        );
+        let bytes = axum::body::to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains(message), "got: {text}");
+    }
+
+    /// A client turn (`idle = None`) is unchanged: the kept body stays lazy,
+    /// so the error returns before a stalled body sends a byte, with its
+    /// status and `retry-after`.
+    ///
+    /// Non-vacuity: read the body before returning when `idle` is `None` and
+    /// this never returns.
+    #[tokio::test(start_paused = true)]
+    async fn a_client_pool_exhausted_on_a_429_keeps_the_lazy_body() {
+        let exhausted_at = tokio::time::Instant::now();
+        let error =
+            exhausted_error(Some(timed_rate_limit(None)), AuthMode::ChatgptOauth, None).await;
+        assert_eq!(exhausted_at.elapsed(), Duration::ZERO, "nothing was read");
+        assert!(error
+            .response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyIdle>()
+            .is_none());
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            error.response.headers().get("retry-after"),
+            Some(&HeaderValue::from_static("7"))
+        );
+    }
+
+    /// End to end through [`forward_chatgpt_oauth`]: a gated call whose only
+    /// account answers `429` with headers and then a body that never arrives
+    /// is cut with the idle marker once the pool is exhausted, rather than
+    /// relayed after the envelope budget. A real listener rather than a paused
+    /// clock, since the send crosses a socket; the elapsed time is not
+    /// asserted, only the cut. The header wait shares the send-anchored clock
+    /// and yields the same marker, so the account's cooldown is what proves
+    /// the `429` was classified and the pool exhausted.
+    ///
+    /// Non-vacuity: pass no idle to the exhausted arm (the pre-#707 lazy map)
+    /// and the relayed error has no marker; and a header wait past the gap
+    /// (the cut the marker alone cannot tell apart) leaves the account
+    /// uncooled.
+    #[tokio::test]
+    async fn a_gated_pool_exhausted_on_a_stalled_429_is_cut_end_to_end() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _env = ENV_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).await.expect("read");
+                assert!(read > 0, "the request ended before its headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\n\
+                      content-length: 64\r\nretry-after: 7\r\n\r\n",
+                )
+                .await
+                .expect("write");
+            // Hold the connection open with the promised body unsent.
+            futures_util::future::pending::<()>().await;
+            drop(socket);
+        });
+        let idle = Duration::from_millis(500);
+        let mut forward = pool_turn(
+            vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")],
+            false,
+        );
+        forward.turn.response_bounds.idle = Some(idle);
+        let state = pool_state(format!("http://{address}"));
+        let error = forward_chatgpt_oauth(state.clone(), pool_route(), forward)
+            .await
+            .expect_err("an exhausted pool fails the call");
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle { idle }),
+            "got: {}",
+            error.message
+        );
+        let snapshot = state.accounts.snapshot(
+            "codex",
+            &[pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")],
+            None,
+            None,
+        );
+        assert!(
+            snapshot[0].cooldown_secs_remaining.is_some(),
+            "the 429 reached classification and rotated the account, so the cut is the exhausted read's, not the header wait's"
+        );
+    }
+
+    /// Positive twin: on the translating path an unjudged 400 falls back to the
+    /// envelope read's own text instead of handing it the unread remainder.
+    #[tokio::test]
+    async fn an_oversized_bad_request_falls_back_off_the_verbatim_path() {
+        let server = MockServer::start().await;
+        let body = format!(
+            r#"{{"detail":"{}"}}"#,
+            "x".repeat(crate::error::ERROR_ENVELOPE_BYTES + 1024)
+        );
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(body))
+            .mount(&server)
+            .await;
+        let upstream = reqwest::Client::new()
+            .post(server.uri())
+            .send()
+            .await
+            .expect("mock answers");
+        let (relayed, judged) = buffer_error_body(upstream, None, false)
+            .await
+            .expect("no idle bound");
+        assert!(judged.is_none(), "a body past the cap is not judged");
+        assert_eq!(relayed.status(), StatusCode::BAD_REQUEST);
+        let bytes = relayed.bytes().await.expect("body is readable");
+        assert_eq!(bytes, "upstream returned 400 Bad Request");
+    }
 
     #[test]
     fn websocket_gate_controls_reprobe_selection_and_stamp() {
@@ -1063,5 +3482,509 @@ mod tests {
             Some(access_token.as_str())
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A state whose provider `name` is a clone of the built-in codex
+    /// provider with `base_url` repointed — the per-test provider names keep
+    /// the global test sample store free of cross-test interference.
+    fn pool_state_with_provider(name: &str, base_url: String) -> (AppState, Route) {
+        let mut config = Config::default();
+        config.providers.insert(
+            name.to_string(),
+            config
+                .providers
+                .get("codex")
+                .expect("codex provider is built in")
+                .clone(),
+        );
+        config
+            .providers
+            .get_mut(name)
+            .expect("just inserted")
+            .base_url = base_url;
+        let mut route = pool_route();
+        route.provider = name.to_string();
+        (
+            AppState::new(config, reqwest::Client::new()).unwrap(),
+            route,
+        )
+    }
+
+    /// The committed pool stream records the request sample at
+    /// classification: one `200` with the real upstream latency once an
+    /// account relays, never the near-zero dispatch/commit time.
+    #[tokio::test]
+    async fn pool_stream_records_the_sample_at_classification() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_PROBE",
+            probe_token("acc-metrics"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_string(
+                        "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                         event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+                    ),
+            )
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-probe-a",
+            "SHUNT_POOL_METRICS_PROBE",
+        )];
+        let (state, route) = pool_state_with_provider("pool-metrics-probe", server.uri());
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and relays");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: message_stop"), "got: {text}");
+        let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 1, "exactly one sample at classification");
+        assert!(
+            latencies.iter().all(|latency| *latency >= 50.0),
+            "the sample covers the upstream round-trip, not the near-zero commit, got {latencies:?}"
+        );
+    }
+
+    /// Pool exhaustion records the classified terminal status, not the
+    /// committed 200.
+    #[tokio::test]
+    async fn pool_stream_records_the_terminal_status_on_exhaustion() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_FAIL_PROBE",
+            probe_token("acc-metrics-fail"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-fail-probe-a",
+            "SHUNT_POOL_METRICS_FAIL_PROBE",
+        )];
+        let (state, route) = pool_state_with_provider("pool-metrics-fail-probe", server.uri());
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and reports the failure in-stream");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: error"), "got: {text}");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-fail-probe",
+            "gpt-5.2-codex",
+            500,
+        );
+        assert_eq!(
+            count, 1,
+            "the classified exhaustion records its real status"
+        );
+    }
+
+    /// The chain owns its attempt's sample: a pool stream built for the
+    /// chain (`record_metrics: false`) must record nothing itself, or the
+    /// chain's per-attempt record would double-count.
+    #[tokio::test]
+    async fn a_chain_pool_stream_leaves_the_sample_to_the_chain() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_CHAIN_PROBE",
+            probe_token("acc-metrics-chain"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-chain-probe-a",
+            "SHUNT_POOL_METRICS_CHAIN_PROBE",
+        )];
+        let (state, route) = pool_state_with_provider("pool-metrics-chain-probe", server.uri());
+        let (order, reprobe) = state.accounts.select_order_deferred(
+            &route.provider,
+            &accounts,
+            None,
+            Some(route.upstream_model.as_str()),
+            state.config.server.pool.as_ref(),
+        );
+        let events = pool_events_stream(PoolStreamContext {
+            state: state.clone(),
+            route: route.clone(),
+            auth: AuthMode::ChatgptOauth,
+            session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            accounts_config: std::sync::Arc::new(accounts),
+            order,
+            reprobe,
+            ramp_initial: state.config.storm_ramp_initial(),
+            record_metrics: false,
+            started_at: None,
+        });
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert!(!collected.is_empty(), "the pool relays the account's turn");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-chain-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 0, "the chain records its attempt's sample");
+    }
+
+    /// The TTFB timeout on the committed pool stream classifies as 504 and
+    /// records the sample.
+    #[tokio::test]
+    async fn pool_stream_records_the_ttfb_timeout_status() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_TTFB_PROBE",
+            probe_token("acc-metrics-ttfb"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let accounts = vec![pool_account(
+            "pool-metrics-ttfb-probe-a",
+            "SHUNT_POOL_METRICS_TTFB_PROBE",
+        )];
+        let mut config = Config::default();
+        config.providers.insert(
+            "pool-metrics-ttfb-probe".to_string(),
+            config
+                .providers
+                .get("codex")
+                .expect("codex provider is built in")
+                .clone(),
+        );
+        config
+            .providers
+            .get_mut("pool-metrics-ttfb-probe")
+            .expect("just inserted")
+            .base_url = server.uri();
+        config.server.timeouts.upstream_ttfb_ms = 100;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let mut route = pool_route();
+        route.provider = "pool-metrics-ttfb-probe".to_string();
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and reports the timeout in-stream");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: error"), "got: {text}");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-ttfb-probe",
+            "gpt-5.2-codex",
+            504,
+        );
+        assert_eq!(count, 1, "the TTFB timeout records its 504");
+    }
+
+    /// Transport exhaustion (every account failed before a response) records
+    /// the classified 502 from the exhaustion arm, never a committed 200.
+    #[tokio::test]
+    async fn pool_stream_records_the_transport_exhaustion_status() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_METRICS_REFUSED_PROBE",
+            probe_token("acc-metrics-refused"),
+        );
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .unwrap();
+        socket
+            .bind(
+                &"127.0.0.1:0"
+                    .parse::<std::net::SocketAddr>()
+                    .unwrap()
+                    .into(),
+            )
+            .unwrap();
+        let port = socket.local_addr().unwrap().as_socket().unwrap().port();
+        let accounts = vec![pool_account(
+            "pool-metrics-refused-probe-a",
+            "SHUNT_POOL_METRICS_REFUSED_PROBE",
+        )];
+        let mut config = Config::default();
+        config.providers.insert(
+            "pool-metrics-refused-probe".to_string(),
+            config
+                .providers
+                .get("codex")
+                .expect("codex provider is built in")
+                .clone(),
+        );
+        let provider = config
+            .providers
+            .get_mut("pool-metrics-refused-probe")
+            .expect("just inserted");
+        provider.base_url = format!("http://127.0.0.1:{port}");
+        provider.retry = crate::config::RetryConfig {
+            max_retries: 0,
+            ..Default::default()
+        };
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let mut route = pool_route();
+        route.provider = "pool-metrics-refused-probe".to_string();
+        let (_, response) = forward_chatgpt_oauth(state, route, pool_turn(accounts, true))
+            .await
+            .expect("pool turn commits and reports the exhaustion in-stream");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("event: error"), "got: {text}");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-refused-probe",
+            "gpt-5.2-codex",
+            502,
+        );
+        assert_eq!(count, 1, "transport exhaustion records its 502");
+        drop(socket);
+    }
+
+    /// A scan failure inside the committed pool stream classifies as 502 and
+    /// records the sample — the committed response must not leave the
+    /// request unsampled.
+    #[tokio::test]
+    async fn pool_or_single_records_the_scan_failure_status() {
+        let (state, route) =
+            pool_state_with_provider("pool-metrics-scan-probe", "http://127.0.0.1:1".to_string());
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ChatgptOauth,
+            codex_quota_account: None,
+        };
+        let events = pool_or_single_events(
+            Box::pin(async { Err("scan failed".to_string()) }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert_eq!(collected.len(), 1, "one terminal item");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-scan-probe",
+            "gpt-5.2-codex",
+            502,
+        );
+        assert_eq!(count, 1, "the scan failure records its 502");
+    }
+
+    /// An all-disabled pool classifies as 502 and records the sample.
+    #[tokio::test]
+    async fn pool_or_single_records_the_all_disabled_status() {
+        let (state, route) = pool_state_with_provider(
+            "pool-metrics-disabled-probe",
+            "http://127.0.0.1:1".to_string(),
+        );
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ChatgptOauth,
+            codex_quota_account: None,
+        };
+        let accounts = vec![AccountConfig {
+            name: "disabled-metrics-a".to_string(),
+            disabled: true,
+            ..Default::default()
+        }];
+        let events = pool_or_single_events(
+            Box::pin(async { Ok(accounts) }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert_eq!(collected.len(), 1, "one terminal item");
+        let (count, _) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-disabled-probe",
+            "gpt-5.2-codex",
+            502,
+        );
+        assert_eq!(count, 1, "the all-disabled pool records its 502");
+    }
+
+    /// A slow successful scan is inside the committed sample: the pre-scan
+    /// start seeds the single-credential producer, so `shunt.latency` keeps
+    /// the dispatch-to-classification span the pre-commit loop records.
+    #[tokio::test]
+    async fn pool_or_single_carries_the_scan_time_into_the_single_sample() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let (state, route) =
+            pool_state_with_provider("pool-metrics-scan-latency-probe", server.uri());
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ApiKey,
+            codex_quota_account: None,
+        };
+        let events = pool_or_single_events(
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                Ok(vec![])
+            }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert!(!collected.is_empty(), "the turn relays");
+        let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-scan-latency-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 1, "one committed sample");
+        assert!(
+            latencies[0] >= 150.0,
+            "the sample must include the scan: {}ms",
+            latencies[0]
+        );
+    }
+
+    /// The pool producer's sample starts at the pre-scan instant too: the
+    /// committed pool sample covers the scan exactly like the chain's
+    /// per-attempt record.
+    #[tokio::test]
+    async fn pool_or_single_carries_the_scan_time_into_the_pool_sample() {
+        let _env = ENV_LOCK.lock().await;
+        let _token = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_POOL_SCAN_LATENCY_POOL_PROBE",
+            probe_token("pool-metrics-scan-latency-pool"),
+        );
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\n\
+                 event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+            ))
+            .mount(&server)
+            .await;
+        let (state, route) =
+            pool_state_with_provider("pool-metrics-scan-latency-pool-probe", server.uri());
+        let single = HttpSendContext {
+            state: state.clone(),
+            route: route.clone(),
+            policy: crate::retry::RetryPolicy::DISABLED,
+            credential: None,
+            session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
+            upstream_body: std::sync::Arc::new(json!({"input": []})),
+            auth: AuthMode::ChatgptOauth,
+            codex_quota_account: None,
+        };
+        let accounts = vec![pool_account(
+            "pool-metrics-scan-latency-pool-a",
+            "SHUNT_POOL_SCAN_LATENCY_POOL_PROBE",
+        )];
+        let events = pool_or_single_events(
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                Ok(accounts)
+            }),
+            state.clone(),
+            route.clone(),
+            None,
+            std::sync::Arc::new(json!({"input": []})),
+            single,
+            CredentialSource::Resolved(Credential::ApiKey {
+                value: "probe".to_string(),
+                header: crate::config::ApiKeyHeader::Bearer,
+            }),
+        );
+        use futures_util::StreamExt;
+        let collected: Vec<_> = events.collect().await;
+        assert!(!collected.is_empty(), "the pool relays the account's turn");
+        let (count, latencies) = crate::metrics::proxied_request_samples_for_tests(
+            "pool-metrics-scan-latency-pool-probe",
+            "gpt-5.2-codex",
+            200,
+        );
+        assert_eq!(count, 1, "one committed sample");
+        assert!(
+            latencies[0] >= 150.0,
+            "the sample must include the scan: {}ms",
+            latencies[0]
+        );
     }
 }

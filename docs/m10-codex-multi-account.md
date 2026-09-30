@@ -140,7 +140,8 @@ shunt classifies the upstream response before streaming its body. It never retri
 | 401 from a `token_env` account | Cannot be refreshed (the token is used verbatim); cool the account for 5 minutes and rotate. |
 | 5xx | Cool the account for 30 seconds and rotate. |
 | Credential-resolution failure (account id/tokens unresolvable before any request is sent) | Cool the account for 5 minutes and rotate. |
-| Other status (e.g. a client-error `400`) | Relay immediately as a translated client error and mark the account healthy — no rotation. |
+| `400` whose `detail`, `error.message`, or top-level `message` contains `model is not supported` (case-insensitive; issue #672) | A per-account model entitlement refusal (`The '<model>' model is not supported when using Codex with a ChatGPT account.`), a rollout gate that flaps over hours, so another account may be entitled. Cool only the *(account, model)* pair for a fixed 1 hour (`CODEX_MODEL_UNSUPPORTED_COOLDOWN`, memory-only), do **not** mark the account healthy, leave its account-wide cooldown and storm-control ramp alone, record rotation reason `model_not_supported`, and rotate. Exhaustion relays the refusal `400` with its message intact. Applies to HTTP responses only — the first attempt and the post-refresh retry, on the translating pool and the `[server.codex_endpoint]` passthrough. On the WebSocket transport (`websocket = true`) the refusal arrives as an in-stream `error` event after the turn has committed, so it is relayed without rotating. |
+| Other status (e.g. any other client-error `400`) | Relay immediately as a translated client error and mark the account healthy — no rotation. |
 
 When attempts are exhausted after receiving at least one upstream response, shunt relays a **translated Anthropic-style error envelope** built from that last response (`build_upstream_error`) — the response status (e.g. `429`) is preserved, but the body is re-shaped, not relayed verbatim. This is the opposite of M8, which relays the Anthropic pool's last upstream response byte-for-byte. If every account fails before any upstream response exists (for example, every account's credentials fail to resolve), the normal Anthropic Messages route (`/v1/messages`) returns the outer chain's gateway-owned `502 api_error` with `all upstreams failed (N attempted)`. The separate `[server.codex_endpoint]` inbound path is unaffected and retains `all Codex OAuth accounts failed before receiving an upstream response`.
 
@@ -155,13 +156,13 @@ originator: codex_cli_rs
 OpenAI-Beta: responses=experimental
 ```
 
-A pooled upstream response includes:
+A pooled upstream response identifies the winning account — non-streaming and WebSocket-streaming responses with an `x-shunt-account` response header, early-committed HTTP streaming with an `event: account` SSE frame before the relayed content (the committed `200` headers go out before the winning account is known):
 
 ```http
 x-shunt-account: backup
 ```
 
-Same caveat as M8: use neutral labels (`primary`, `backup-1`, `pool-a`) rather than names or emails on a shared gateway, since this header exposes the configured account name to clients. The final translated-error relay after pool exhaustion does not include `x-shunt-account`; a name that fails the `[a-z0-9-]+` pre-validation is silently omitted rather than causing an error.
+Same caveat as M8: use neutral labels (`primary`, `backup-1`, `pool-a`) rather than names or emails on a shared gateway, since the header and the frame expose the configured account name to clients. The final translated-error relay after pool exhaustion carries neither; a name that fails the `[a-z0-9-]+` pre-validation is silently omitted rather than causing an error.
 
 ### WebSocket transport (`websocket = true`)
 

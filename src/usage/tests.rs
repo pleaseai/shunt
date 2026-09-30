@@ -34,6 +34,7 @@ fn snapshot(
         utilization_7d_oi: None,
         reset_7d_oi: None,
         status: None,
+        quota_buckets: Vec::new(),
         needs_relogin: false,
     }
 }
@@ -361,6 +362,7 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: vec![claude_account.clone()],
             account_scope: Vec::new(),
@@ -370,6 +372,7 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
             retry: Default::default(),
             workspace_roots: Vec::new(),
             sandbox: true,
+            profile_dir: None,
         },
     );
 
@@ -504,6 +507,7 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: vec![kimi_account.clone()],
             account_scope: Vec::new(),
@@ -513,6 +517,7 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
             retry: Default::default(),
             workspace_roots: Vec::new(),
             sandbox: true,
+            profile_dir: None,
         },
     );
 

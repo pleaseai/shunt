@@ -1,0 +1,4 @@
+{
+  "description": "/shunt:usage answered from the gateway's GET /usage: the pool's per-window headroom and reset times, and the same per pooled provider",
+  "modules": ["./register.ts"]
+}

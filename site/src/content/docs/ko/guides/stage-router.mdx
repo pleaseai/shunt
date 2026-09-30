@@ -1,0 +1,278 @@
+---
+title: 스테이지 라우터
+description: model id 하나가 프롬프트 텍스트가 아니라 대화의 최근 tool-result 이력을 보고 턴마다 강한 티어와 효율 티어 중 하나를 고르게 합니다.
+---
+
+`[[models]]` 항목은 보통 목적지를 하나만 지정합니다. **스테이지 라우터**는 둘(강한 티어와
+효율 티어)을 지정하고, 어느 쪽이 각 턴을 맡을지 대화가 정하게 합니다. 오류, 진척 없는 조사,
+탐색적 읽기는 위로 올라가고, 계획이 정해진 뒤의 정형 작업은 아래에 머뭅니다.
+
+스테이지 라우터는 항목의 `[models.router]` 테이블이 가질 수 있는 `type` 중 하나입니다.
+나머지는 `auto`(같은 라우터를 업스트림 프리셋으로), `random`(가중치를 둔 세션 고정 분배),
+`noop`(빈 응답, 연결 점검용)이며, 넷 모두
+[설정 레퍼런스](/ko/reference/configuration/)에 문서화되어 있습니다.
+
+이 기능은 옵트인이며 기본적으로 비활성입니다. `[models.router]` 테이블을 설정하지
+않으면 shunt는 이전과 정확히 동일하게, 요청의 `model` id만 보고 라우팅합니다.
+
+## 무엇을 읽는가
+
+요청 본문의 **구조화된 프로토콜 메타데이터**만 읽습니다.
+
+- `tool_use.name` — 어시스턴트가 호출한 도구
+- `tool_result.is_error` — 결과가 실패로 돌아왔는지 여부
+
+둘 다 Anthropic Messages 와이어 포맷의 핵심 필드입니다. 라우터는 시스템 프롬프트도, 사용자
+텍스트도, 도구 인자도 읽지 않습니다. 따라서 프롬프트 형태를 지문 인식해서 Claude Code가
+릴리스될 때마다 깨지는 프록시들의 실패 모드를 물려받지 않습니다.
+
+`tool_result` 블록에는 도구 이름이 **없습니다**. 유일한 연결 고리는
+`tool_use_id` → `tool_use.id`이며, 이 조인이 추출기 전체가 딛고 선 단 하나의 지점입니다.
+
+### 도구 어휘
+
+shunt는 Claude Code의 실제 도구 이름을 압니다. 범용 라우터보다 잘할 수 있는 지점이 바로
+여기입니다.
+
+| 분류 | 도구 |
+| :-- | :-- |
+| 관찰(Observe) | `Read`, `Glob`, `Grep`, `NotebookRead`, `WebFetch`, `WebSearch`, `BashOutput` |
+| 변경(Mutate) | `Edit`, `NotebookEdit`, `Write` |
+| 계획(Plan) | `TodoWrite`, `Task`, `EnterPlanMode`, `ExitPlanMode` |
+| 미분류 | `Bash`, `Skill`, `KillShell`과 모든 `mcp__*` 도구를 포함한 나머지 전부 |
+
+미분류로 남은 이름은 `[models.router.tool_semantics]`로 직접 분류할 수 있습니다. 네 개의
+목록(`observe`, `mutate`, `plan`, `new`)이 위 표 *뒤에* 적용됩니다. 표가 이미 아는 이름은
+바꿀 수 없어서 `Read`를 `mutate`에 넣으면 재정의가 아니라 시작 오류입니다. 목록을 고치면
+다음 로드에서 그 라우터의 세션 고정이 사라집니다.
+
+`ExitPlanMode`를 포함한 모든 `Plan` 호출은 계획 활동으로 집계되며, 이는 탐색으로 읽혀
+아래가 아니라 **위로** 밉니다. 분류 이상의 취급을 받는 이름은 하나입니다. 실패한 `Task`는
+명령 하나가 실패한 것이 아니라 위임된 서브에이전트 실행 전체가 무너진 것이므로, 단순히
+어려운 정도가 아니라 치명적으로 채점됩니다. 대화 끝에 실패가 두 번 연속되는 것도
+치명적입니다. 세션이 회복하지 못하고 있다는 뜻이기 때문입니다.
+
+`Bash`는 의도적으로 미분류입니다. `git status`는 관찰이고 `rm -rf`는 변경이며
+`cargo test`는 작업이 정리됐다는 신호인데, 이를 가르는 것은 `input.command`뿐입니다. 명령
+문자열을 분류하는 것이야말로 이 설계가 피하려는 취약한 추론입니다.
+
+## 어떻게 결정하는가
+
+신호 채점은 [NVIDIA-NeMo/Switchyard][sy]의 스코어러인 [`switchyard-libsy`][libsy]가
+맡습니다. 캘리브레이션된 부분이라 여기서 다시 구현하지 않습니다. 포화된 신호 하나만으로는
+약 `0.46`이라 턴을 결정하지 못하고, 서로를 뒷받침하는 신호 둘이면 약 `0.76`에 도달합니다.
+
+신호가 불충분하면 스코어러는 LLM 판정을 요청합니다. **shunt는 기본적으로 판정 모델을 두지
+않고** picker 기본값으로 fall-open합니다. 덕분에 핫패스에 모델 호출과 크리덴셜이 추가되지
+않습니다. 아래 [판정 모델 폴백](#판정-모델-폴백)은 바로 그 턴만 판정 모델에게 넘기는
+옵트인입니다.
+
+전체 채점 공식, 그 근거가 된 공개 벤치마크 결과, 그리고 shunt가 그 위에 더한 것은
+[Switchyard 통합](/ko/guides/switchyard/)에 있습니다.
+
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
+[sy]: https://github.com/NVIDIA-NeMo/Switchyard
+
+## 내려오기가 올라가기보다 어려운 이유
+
+티어 전환은 공짜가 아니며, 긴 Claude Code 세션에서는 비용이 구체적입니다.
+
+- **프롬프트 캐시는 모델별 키**입니다. 전환하면 워밍된 prefix를 버리고 새 티어에서 전체
+  캐시 쓰기를 물게 됩니다.
+- **Codex continuation**은 모델을 시그니처에 해시하므로, 전환하면 전체 입력을 다시 보내게
+  되어 shunt가 방금 번 업로드 절감을 그대로 반납합니다.
+- **교차 프로바이더 전환**은 세션의 풀링된 연결과 sticky 계정 슬롯까지 버립니다.
+
+그래서 두 방향을 의도적으로 다르게 둡니다.
+
+| 방향 | 필요 조건 |
+| :-- | :-- |
+| 효율 → 강함 | `confidence_threshold`(0.5)만. 싼 티어가 감당 못 하는 턴은 버려지는 캐시 prefix보다 비쌉니다. |
+| 강함 → 효율 | `min_dwell_turns` **그리고** `deescalate_threshold`(0.75) **그리고** 스코어러가 실제로 내린 결정. |
+
+fall-open이나 도구 활동이 없는 턴은 picker 기본값이지 증거가 아니므로, 어느 방향으로도
+티어를 움직이지 못합니다.
+
+`capable_hold_turns`(기본값 `0`)는 신호가 티어를 올린 뒤 강한 티어를 몇 턴 더 붙잡아
+둡니다. 복구 과정 자체가 조용해서 정리된 상태로 읽히기 쉬울 때 쓸모가 있습니다. 붙잡힌
+턴은 라우트 소스 `capable_hold`로 보고되며, 이 역시 증거가 아니어서 고정을 움직이지
+못합니다.
+
+### 들어오는 모델에게 이유 알려주기
+
+`[models.router.handoff_notes]`는 신호가 티어를 옮긴 턴에 한해 업스트림으로 보내는 요청에
+짧은 시스템 블록을 덧붙입니다. 올라갈 때는 `escalation_note`, 내려올 때는
+`deescalation_note`를 붙여, 새로 들어온 모델이 처음부터 시작하는 것이 아니라 일을
+넘겨받았다는 사실을 알게 합니다. Claude Code의 attribution 블록은 첫 번째 시스템 블록이고
+건드리지 않으며, 노트는 맨 뒤에 들어갑니다.
+
+**전환할 때마다 프롬프트 캐시 미스를 한 번씩 치릅니다.** `system` 배열이 캐시된 프리픽스의
+일부이기 때문입니다. 전환 자체가 이미 포기하는 모델별 프리픽스에 더해지는 비용이며, 그래서
+이 테이블은 명시적으로 켜기 전까지 꺼져 있습니다.
+
+## 세션 고정
+
+결정은 `(model id, session id, agent id)` 단위로 고정되며, 두 id는 각각
+`x-claude-code-session-id`와 `x-claude-code-agent-id`에서 읽습니다. 두 id 모두 해시되고
+저장되지 않습니다. 같은 세션에서 라우터 기반 모델을 둘 쓰면 티어는 서로 독립입니다.
+
+**서브에이전트는 자기 고정을 가집니다.** `Task` 자식은 부모의 session id에 자신의 agent
+id를 함께 보내므로 별도의 항목을 읽고 씁니다. 자식의 실패가 더 이상 부모를 승급시키지
+않고, 자식의 턴이 부모의 dwell로 계산되지도 않습니다. Claude Code는 이 헤더를 옵트인 없이
+모든 위임 턴에 보내므로, 기본 shunt 배포에서 클라이언트를 바꾸지 않아도 그대로 동작합니다.
+자식 고정은 부모 세션 4096개와는 별개인 자체 예산 4096개에 대해 축출되며, 정리는 자신이
+늘어난 범위에만 닿으므로 넓은 팬아웃이 그 팬아웃을 기다리는 부모를 축출할 수 없습니다.
+
+**컴팩션은 승급시키고, 그 승급은 유지됩니다.** Claude Code는 컨텍스트 컴팩션 이후 첫 턴에만
+`x-claude-code-context-compacted`를 한 번 붙입니다. shunt는 그 턴을 compacted로 채점하는데,
+이는 스코어러의 하드 오버라이드에 도달해 컴팩션 직후 이력에 도구 활동이 전혀 없어도 강한
+티어로 라우팅됩니다. 그리고 그 플래그를 세션 고정에 걸어 두므로 뒤따르는 턴들도 같은 결론에
+도달합니다. 이 헤더는 클라이언트가 `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`을 설정했을 때만
+shunt에 도달합니다([클라이언트 환경 변수](/ko/reference/client-environment/) 참고). 같은
+변수가 `x-claude-code-request-class`도 보내며, 그때는 위의 agent id 규칙 대신 이 값이 어떤
+턴이 위임 작업인지 결정합니다.
+
+- 세션 헤더를 보내지 않는 호출자는 무상태로 라우팅되며, 그런 요청의 컴팩션 플래그는 그
+  턴에만 적용됩니다.
+- `count_tokens` 탐침은 아무것도 기록하지 않습니다. Claude Code가 한 턴 뒤처진 이력으로
+  보내기 때문에, 기록하는 탐침은 오래된 이력이 고정을 몰게 합니다. 세션이 이미 고정돼
+  있으면 탐침과 뒤따르는 턴이 같은 고정을 읽으므로 같은 티어에 도달합니다. 아직 고정되지
+  *않은* 세션에서는 탐침이 자기 이력으로 채점되므로 뒤따르는 턴과 다른 티어에 도달할 수
+  있습니다.
+- 고정은 설정 리로드를 견딥니다. 다만 고정은 자신이 만들어진 라우터 테이블을 기억하므로,
+  라우터 하나를 수정하면 그 라우터의 고정만 버려집니다.
+- 고정은 `session_ttl_seconds` 후 만료됩니다. 재시작 간에는 아무것도 영속되지 않습니다.
+  컴팩션 래치는 자신을 담은 고정과 함께 해제됩니다 — 이 만료 시점, 또는 리로드가 라우터
+  테이블을 바꿀 때입니다.
+
+## 클라이언트가 보는 것
+
+선택된 티어는 업스트림으로만 전달됩니다. 응답은 클라이언트가 요청한 id를 그대로 보고하므로
+Claude Code의 `/model` 표시와 `--resume` 모델 복원이 계속 동작합니다.
+
+```
+POST /v1/messages   {"model": "claude-auto", ...}
+  → 업스트림 수신   {"model": "claude-opus-4-8", ...}
+  → 클라이언트 수신 {"model": "claude-auto", ...}
+```
+
+결정은 응답 헤더 두 개로 보고되므로 추측할 필요가 없습니다.
+
+| 헤더 | 값 |
+| :-- | :-- |
+| `x-gateway-routed-model` | 라우터가 고른 타깃(`claude-opus-4-8`) |
+| `x-gateway-route-source` | 그 이유(`override`, `dimensions`, `sticky`, `no_signal`, `fall_open`, `capable_hold`, `llm-classifier`) |
+
+일곱 개 가운데 여섯 개는 신호 라벨입니다. `llm-classifier`는 아래
+[판정 모델 폴백](#판정-모델-폴백)을 설정한 항목에서, 판정 모델이 결정한 턴에만
+나타납니다. 설정하지 않으면 결정을 못 내린 턴은 지금처럼 `fall_open`으로 보고되고 판정
+호출도 없습니다. 스코어러는 `ambiguous` 라벨을 하나 더 정의하지만 이것은 응답에 실릴 수
+없습니다. 다른 라우터 타입은 자기 라벨(`random`, `random_session`, `noop`)을 쓰며,
+`[models.subagents]` 오버레이도 자기 라벨을 씁니다 — `by_type`이 맞으면
+`subagent_type`, `target` 폴백이면 `subagent`입니다.
+
+라우터가 없는 model id에는 둘 다 붙지 않습니다. 그래야 "효율 티어로 라우팅됨"과
+"애초에 라우터를 거치지 않음"이 구분됩니다. `count_tokens` 탐침에는 붙이지
+않습니다. 아직 고정되지 않은 세션에서는 탐침이 한 턴 뒤처진 자기 이력으로
+채점되므로, 그 티어가 측정 대상 턴의 티어라는 보장이 없기 때문입니다.
+
+`GET /routes`는 설정된 라우터를 `routers`에 모두 싣고 `algorithm`과 `targets`를 보여주며,
+이 타입에 대해서는 두 티어 타깃과 신호가 아무것도 결정하지 못했을 때 picker가 돌아가는
+티어까지 함께 보여줍니다. 판정 모델을 설정한 라우터는 그 id를 `judges`로도 함께
+보여줍니다. 메트릭을 켜면 카운터 세 개가 나갑니다 — 모든 라우터 타입을
+포괄하는 `shunt.router.decisions`, 그리고 `shunt.stage_router.decisions`와
+`shunt.stage_router.flips` — 판정 모델을 설정하면 네 번째로
+`shunt.router.judge_calls`가 더해집니다. 티어 전환이 비싼 사건이고, 결정 카운터만으로는 방금 옮겨온
+세션과 원래 거기 있던 세션을 구분할 수 없어서 flip을 따로 셉니다.
+
+## 설정
+
+```toml
+[[models]]
+id = "claude-auto"                     # /model에 노출되려면 claude/anthropic으로 시작해야 합니다
+display_name = "Auto (stage router)"
+
+[models.router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+# picker = "efficient_first"
+# confidence_threshold = 0.5
+# recent_turn_window = 3
+# min_dwell_turns = 3
+# deescalate_threshold = 0.75
+# session_ttl_seconds = 3600
+# capable_hold_turns = 0
+```
+
+두 타깃 모두 평범한 공개 model id이므로 각각 일반 라우팅 사다리를 따라 해석되고 자신의
+페일오버 체인, 계정 풀, 어댑터, `effort`, `service_tier`를 그대로 유지합니다. 타깃이 그
+자체로 라우터인 경우는 시작 오류이므로, 해석은 구조적으로 한 홉입니다.
+
+모든 키는 [설정 레퍼런스](/ko/reference/configuration/)에 문서화되어 있습니다. 의도적으로
+제외한 것까지 포함한 설계 기록은
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md)에
+있고, `[models.router]` 판별자와 나머지 알고리즘에 대한 기록은
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)에
+있습니다.
+
+## 판정 모델 폴백
+
+신호는 대부분의 턴을 결정하지만 전부는 아닙니다. 선택적인
+[`[models.router.classifier]`](/ko/reference/configuration/#modelsrouterclassifier-선택)
+테이블은 **판정 모델**을 지정합니다. 신호가 결론을 내지 못한 턴에 한해 어느 티어가
+필요한지 물어보는 모델입니다.
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"    # 물어보기만 하고 제공하지는 않습니다
+base_threshold = 0.5           # 작업을 효율 티어에 두는 p_solve 하한
+```
+
+이 테이블이 없으면 달라지는 것은 없습니다. 결론이 나지 않은 턴은 지금까지처럼 picker
+기본값으로 fall-open합니다. 테이블이 있으면 바로 그 턴만 판정 모델에게 넘어갑니다. 이미
+고정(pin)이 턴을 잡고 있는 세션은 판정하지 않고, `count_tokens` 탐침도 판정하지 않으며,
+요청이 인증을 통과하기 전에는 판정 호출을 만들지 않습니다.
+
+판정 모델은 평범한 공개 model id이고 호출자의 자격 증명이 아니라 **자기 라우트의**
+자격 증명으로 실행됩니다. 예약된 `x-shunt-*` 슬롯과 `cookie`, `authorization`,
+`x-api-key`, `anthropic-beta`는 호출이 나가기 전에 모두 제거됩니다. **passthrough**
+업스트림으로 해석되는 판정 타깃이 시작 오류인 이유가 바로 이것입니다 — passthrough는
+*호출자의 자격 증명을 그대로 전달한다*는 뜻인데, 방금 제거한 것이 바로 그 자격 증명이라
+보낼 것이 남지 않습니다. `auth = "none"` 타깃은 괜찮습니다. 이 모드는 해당 엔드포인트가
+자격 증명을 전혀 요구하지 않는다는 뜻이므로, 인증 없이 도는 로컬·자체 호스팅 판정 모델은
+오류가 아니라 지원되는 구성입니다. 호출은 그 타깃
+자신의 계정 풀 쿼터를 쓰므로, 판정 모델에는 자기 `[[models]]` 항목을 주세요.
+
+판정 모델에게 묻는 턴에서는 인증 대상이 항목 전체입니다 — 요청된 id에 두 티어 타깃과
+판정 모델을, 각각의 페일오버 체인 전체까지 포함합니다. 그래서 응답 타깃이 모두
+passthrough인 항목에 자격 증명을 주입하는 판정 모델을 더하면 그런 턴은 클라이언트 자격
+증명을 요구하게 됩니다. 인증에 실패했거나 정책이 거부한 요청은 판정 호출을 한 번도 만들지
+않습니다. 판정 모델에 닿지 않는 턴은 테이블이 없던 때와 똑같이, 실제로 해석된 체인으로만
+인증합니다 — 신호가 스스로 결정한 턴과,
+[`[models.subagents]`](/ko/reference/configuration/#modelssubagents-선택) 오버레이가
+라우터보다 먼저 돌려보낸 턴입니다.
+
+`[models.router]`의 여섯 개 키가 모든 내부 호출에 한도를 겁니다 — `judge_timeout_ms`
+(기본 `30000`, 헤더*와* 본문을 모두 덮는 종단 간 기한), `judge_max_response_bytes`
+(`65536`), 세션당 `max_judge_calls`(`8`, 판정 호출을 보낼 때 차감하므로 동시 턴도 넘길 수
+없습니다), 그리고 `gated_*` 세 개입니다. `gated_*`는
+`escalation`이나 `advisor` 항목이 붙잡아 두는 턴에만 한도를 걸기 때문에 스테이지
+라우터에서는 아무것도 제한하지 않습니다. 한도를 넘기면 업스트림 호출을 취소합니다.
+
+판정이 내려진 턴은 `x-gateway-route-source: llm-classifier`로 보고되고 다른 결정과
+똑같이 세션을 고정합니다. 타임아웃, 크기 초과나 해석 불가 응답, 업스트림 오류, 예산 소진
+등 모든 실패는 `fall_open`으로 해결되므로, 판정 모델이 죽어 있으면 지연 시간을 잃을 뿐
+가용성을 잃지는 않습니다. 각 호출은 그 결과와 함께 `shunt.router.judge_calls`로 집계
+됩니다.
+
+## 한계
+
+- **턴 중간 상향 전환은 없습니다.** 응답 헤더가 커밋된 뒤에는 shunt가 턴을 재구동하지
+  않으므로, 턴 시작 시점에 고른 티어가 그 턴 전체를 맡습니다.
+- **이 판정 모델은 티어만 결정합니다.** 판정을 쓰는 다른 타입은 각자 자기 테이블을
+  가집니다. `llm_classifier`, `composite`, `advisor`는 `[models.router]`에 직접
+  설정합니다 — [구성 레퍼런스](/ko/reference/configuration/#type--llm_classifier)를
+  보세요. 판정이 나올 때까지 턴을 붙잡아 두는 것은 `llm_classifier`의
+  `mode = "escalation"`과 `advisor`뿐이며, 이 판정 모델은 그러지 않습니다.
+- **`[server.codex_endpoint]`는 범위 밖**입니다. 자체 라우팅 테이블을 사용합니다.

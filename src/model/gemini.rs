@@ -207,7 +207,7 @@ impl GeminiSseMachine {
                         self.content.push(json!({
                             "type": "thinking",
                             "thinking": text,
-                            "signature": "gemini_thinking"
+                            "signature": crate::model::thinking_signature::GEMINI
                         }));
                     }
                 }
@@ -344,7 +344,7 @@ impl GeminiSseMachine {
                 ActiveBlockKind::Thinking => json!({
                     "type": "thinking",
                     "thinking": "",
-                    "signature": "gemini_thinking"
+                    "signature": crate::model::thinking_signature::GEMINI
                 }),
                 ActiveBlockKind::ToolUse => unreachable!(),
             };

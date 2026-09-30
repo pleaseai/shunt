@@ -23,8 +23,7 @@ use shunt::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use wiremock::{
@@ -32,11 +31,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-/// Serializes tests that mutate the process-global `CODEX_AUTH_FILE` env var.
-/// Held across each test body so one test's teardown (`remove_var`) can never
-/// unset the auth file while another test's request is still resolving the
-/// credential.
-static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+mod common;
 
 struct TestGateway {
     base_url: String,
@@ -151,9 +146,47 @@ fn write_stale_pool_state(path: &std::path::Path, account_id: &str) {
     fs::write(path, serde_json::to_vec(&state).unwrap()).unwrap();
 }
 
+/// Point `SHUNT_CODEX_ACCOUNTS_DIR` at a fresh empty dir for the test's
+/// lifetime, through the caller's guard: a host with real shunt-managed codex
+/// accounts (`~/.shunt/accounts/codex`) must not leak them into the unpooled
+/// tests' credential resolution. The guard deletes the dir on drop.
+struct EmptyAccountsDir(std::path::PathBuf);
+
+impl Drop for EmptyAccountsDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn pin_empty_accounts_dir(vars: &mut common::EnvVars) -> EmptyAccountsDir {
+    let dir = std::env::temp_dir().join(format!(
+        "shunt-ws-accounts-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
+    EmptyAccountsDir(dir)
+}
+
+/// The guard removes its directory when it drops: the suite must not
+/// accumulate empty account dirs in the system temp dir.
+#[tokio::test]
+async fn empty_accounts_dir_guard_removes_its_dir_on_drop() {
+    let mut vars = common::env_lock().await;
+    let guard = pin_empty_accounts_dir(&mut vars);
+    let dir = guard.0.clone();
+    assert!(dir.is_dir(), "dir exists while the guard lives");
+    drop(guard);
+    assert!(!dir.exists(), "dir is removed when the guard drops");
+}
+
 /// Write a codex-style `auth.json` a valid ChatGPT credential can be read from,
 /// and point `CODEX_AUTH_FILE` at it. Returns the path for cleanup.
-fn write_fake_codex_auth() -> PathBuf {
+fn write_fake_codex_auth(vars: &mut common::EnvVars) -> PathBuf {
     let unique_name = format!(
         "shunt-ws-fallback-auth-{}-{}.json",
         std::process::id(),
@@ -176,7 +209,10 @@ fn write_fake_codex_auth() -> PathBuf {
         }
     });
     std::fs::write(&path, serde_json::to_vec(&auth).unwrap()).unwrap();
-    std::env::set_var("CODEX_AUTH_FILE", &path);
+    // Through the caller's guard, not `set_var` directly: the variable has to be
+    // removed when the test ends however it ends, and the write has to happen
+    // under the same lock the caller is holding (issue #539).
+    vars.set("CODEX_AUTH_FILE", &path);
     path
 }
 
@@ -220,7 +256,8 @@ async fn websocket_handshake_failure_falls_back_to_http() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     // Upstream speaks only HTTP: it serves the Responses POST but has no websocket
     // endpoint, so the codex ws handshake (a GET upgrade) 404s and must fall back.
@@ -231,7 +268,7 @@ async fn websocket_handshake_failure_falls_back_to_http() {
         .mount(&upstream)
         .await;
 
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
 
     let mut config = Config::default();
     {
@@ -282,7 +319,6 @@ async fn websocket_handshake_failure_falls_back_to_http() {
         "the HTTP Responses endpoint was called by the fallback"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
     let _ = std::fs::remove_file(auth_path);
 }
 
@@ -291,7 +327,8 @@ async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     // Streaming variant of the fallback: codex defaults to count_tokens = tiktoken,
     // so forward() builds an input-token estimate. The ws attempt fails (HTTP-only
@@ -308,7 +345,7 @@ async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
         .mount(&upstream)
         .await;
 
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
 
     let mut config = Config::default();
     {
@@ -346,7 +383,6 @@ async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
         "message_start must carry the tiktoken estimate after ws→http fallback; got:\n{sse}"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
     let _ = std::fs::remove_file(auth_path);
 }
 
@@ -355,13 +391,21 @@ async fn streaming_ws_fallback_still_seeds_message_start_estimate() {
 /// or after a first event (streaming has begun, so a restart would duplicate
 /// output — the drop must surface as a clean error instead). `CompleteTurn`
 /// drops nothing: it streams a whole turn, including the backend's in-stream
-/// `codex.rate_limits` event.
+/// `codex.rate_limits` event. `WrappedRefusal` answers with the backend's
+/// wrapped HTTP-class `error` frame (`status: 400`) as the first event, and the
+/// HTTP half refuses the fallback with an HTTP 400 [`HTTP_REFUSAL_DETAIL`].
 #[derive(Clone, Copy)]
 enum WsDrop {
     BeforeFirstEvent,
     AfterFirstEvent,
     CompleteTurn,
+    WrappedRefusal,
 }
+
+/// The `detail` the HTTP half's refusal carries under [`WsDrop::WrappedRefusal`],
+/// distinct from the websocket frame's message so a test can tell which
+/// transport answered.
+const HTTP_REFUSAL_DETAIL: &str = "model not supported (HTTP fallback)";
 
 /// Build a codex-provider config with the websocket transport enabled, pointing
 /// both the websocket and HTTP paths at `base_url`.
@@ -439,7 +483,7 @@ async fn spawn_counted_dual_upstream(
                 tokio::spawn(serve_ws(socket, drop));
             } else {
                 hits.fetch_add(1, Ordering::SeqCst);
-                tokio::spawn(serve_http(socket));
+                tokio::spawn(serve_http(socket, drop));
             }
         }
     });
@@ -473,6 +517,13 @@ async fn serve_ws(socket: TcpStream, drop: WsDrop) {
         return;
     };
     let _ = ws.next().await; // the client's response.create frame
+    if let WsDrop::WrappedRefusal = drop {
+        let frame = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model not supported (websocket)"}}"#;
+        ws.send(Message::Text(frame.to_string().into()))
+            .await
+            .expect("mock upstream should send the wrapped error frame");
+        return;
+    }
     if let WsDrop::CompleteTurn = drop {
         for event in [
             r#"{"type":"response.created","response":{"id":"resp_ws"}}"#,
@@ -509,8 +560,19 @@ async fn serve_ws(socket: TcpStream, drop: WsDrop) {
 /// Answer an HTTP Responses `POST` with [`RESPONSES_SSE`]. Reads the full request
 /// first so the client's write completes before the reply (a `content-length`
 /// body lets the client finish reading before the socket closes).
-async fn serve_http(mut socket: TcpStream) {
+async fn serve_http(mut socket: TcpStream, drop: WsDrop) {
     drain_http_request(&mut socket).await;
+    if let WsDrop::WrappedRefusal = drop {
+        let body = serde_json::json!({"detail": HTTP_REFUSAL_DETAIL}).to_string();
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
+        let _ = socket.flush().await;
+        return;
+    }
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{}",
         RESPONSES_SSE.len(),
@@ -518,6 +580,191 @@ async fn serve_http(mut socket: TcpStream) {
     );
     let _ = socket.write_all(response.as_bytes()).await;
     let _ = socket.flush().await;
+}
+
+/// Serve complete turns per accepted socket until Close and capture each
+/// request frame. A pooled metadata session uses one socket across two turns;
+/// the hash-fallback control uses two one-turn sockets.
+async fn spawn_recording_ws_upstream(
+    expected_connections: usize,
+) -> (
+    String,
+    Arc<AtomicUsize>,
+    Arc<StdMutex<Vec<serde_json::Value>>>,
+    JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let frames = Arc::new(StdMutex::new(Vec::new()));
+    let server_accepted = Arc::clone(&accepted);
+    let server_frames = Arc::clone(&frames);
+    let server = tokio::spawn(async move {
+        let mut handlers = JoinSet::new();
+        for _ in 0..expected_connections {
+            let (socket, _) = listener.accept().await.unwrap();
+            server_accepted.fetch_add(1, Ordering::SeqCst);
+            let frames = Arc::clone(&server_frames);
+            handlers.spawn(async move {
+                let mut ws = tokio_tungstenite::accept_async_with_config(
+                    socket,
+                    Some(WebSocketConfig::default()),
+                )
+                .await
+                .unwrap();
+                while let Some(message) = ws.next().await {
+                    match message.unwrap() {
+                        Message::Text(frame) => {
+                            let frame: serde_json::Value =
+                                serde_json::from_str(frame.as_str()).unwrap();
+                            let turn = {
+                                let mut frames = frames.lock().unwrap();
+                                frames.push(frame);
+                                frames.len()
+                            };
+                            let response_id = format!("resp_{turn}");
+                            for event in [
+                                serde_json::json!({
+                                    "type": "response.created",
+                                    "response": {"id": response_id}
+                                }),
+                                serde_json::json!({
+                                    "type": "response.output_item.added",
+                                    "item": {"type": "message"}
+                                }),
+                                serde_json::json!({
+                                    "type": "response.output_text.delta",
+                                    "delta": "hello"
+                                }),
+                                serde_json::json!({"type": "response.output_text.done"}),
+                                serde_json::json!({
+                                    "type": "response.output_item.done",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "id": format!("msg_{turn}"),
+                                        "phase": "final_answer",
+                                        "status": "completed",
+                                        "content": [{
+                                            "type": "output_text",
+                                            "text": "hello",
+                                            "annotations": [],
+                                            "logprobs": []
+                                        }]
+                                    }
+                                }),
+                                serde_json::json!({
+                                    "type": "response.completed",
+                                    "response": {
+                                        "id": response_id,
+                                        "usage": {"input_tokens": 5, "output_tokens": 1}
+                                    }
+                                }),
+                            ] {
+                                ws.send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                        Message::Pong(_) => {}
+                        Message::Close(_) => break,
+                        other => panic!("unexpected frame: {other:?}"),
+                    }
+                }
+            });
+        }
+        while handlers.join_next().await.is_some() {}
+    });
+    (format!("http://{addr}"), accepted, frames, server)
+}
+
+/// Serve complete turns per accepted socket until Close and record each
+/// connection's codex identity handshake headers. Like
+/// [`spawn_recording_ws_upstream`] but capturing the upgrade request's
+/// headers, so a test can pin which thread identity each pooled socket was
+/// opened under.
+async fn spawn_handshake_recording_ws_upstream(
+    expected_connections: usize,
+) -> (
+    String,
+    Arc<AtomicUsize>,
+    Arc<StdMutex<Vec<serde_json::Value>>>,
+    JoinHandle<()>,
+) {
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+
+    const IDENTITY_HEADERS: &[&str] = &[
+        "session-id",
+        "thread-id",
+        "x-client-request-id",
+        "x-codex-window-id",
+        "x-codex-parent-thread-id",
+        "x-openai-subagent",
+    ];
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let handshakes = Arc::new(StdMutex::new(Vec::new()));
+    let server_accepted = Arc::clone(&accepted);
+    let server_handshakes = Arc::clone(&handshakes);
+    let server = tokio::spawn(async move {
+        let mut handlers = JoinSet::new();
+        for _ in 0..expected_connections {
+            let (socket, _) = listener.accept().await.unwrap();
+            server_accepted.fetch_add(1, Ordering::SeqCst);
+            let handshakes = Arc::clone(&server_handshakes);
+            handlers.spawn(async move {
+                let recorder = {
+                    let handshakes = Arc::clone(&handshakes);
+                    #[allow(clippy::result_large_err)]
+                    move |request: &Request, response: Response| -> Result<Response, tungstenite::handshake::server::ErrorResponse> {
+                        let mut recorded = serde_json::Map::new();
+                        for name in IDENTITY_HEADERS {
+                            if let Some(value) = request
+                                .headers()
+                                .get(*name)
+                                .and_then(|value| value.to_str().ok())
+                            {
+                                recorded.insert((*name).to_string(), serde_json::json!(value));
+                            }
+                        }
+                        handshakes.lock().unwrap().push(serde_json::Value::Object(recorded));
+                        Ok(response)
+                    }
+                };
+                let mut ws = tokio_tungstenite::accept_hdr_async_with_config(
+                    socket,
+                    recorder,
+                    Some(WebSocketConfig::default()),
+                )
+                .await
+                .unwrap();
+                while let Some(message) = ws.next().await {
+                    match message.unwrap() {
+                        Message::Text(_) => {
+                            for event in [
+                                r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                                r#"{"type":"response.output_text.delta","delta":"hello"}"#,
+                                r#"{"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":1}}}"#,
+                            ] {
+                                ws.send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                        Message::Pong(_) => {}
+                        Message::Close(_) => break,
+                        other => panic!("unexpected frame: {other:?}"),
+                    }
+                }
+            });
+        }
+        while handlers.join_next().await.is_some() {}
+    });
+    (format!("http://{addr}"), accepted, handshakes, server)
 }
 
 /// Read an HTTP request's headers and `content-length` body off the socket, so
@@ -557,10 +804,11 @@ async fn websocket_drop_before_first_event_falls_back_to_http() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::BeforeFirstEvent).await;
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
     let gateway = start_gateway_with(codex_ws_config(base_url)).await;
 
     let response = reqwest::Client::new()
@@ -589,7 +837,45 @@ async fn websocket_drop_before_first_event_falls_back_to_http() {
         "the fallback POSTs the turn to the HTTP endpoint exactly once (no double-send)"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
+    let _ = std::fs::remove_file(auth_path);
+}
+
+/// A pre-response refusal the backend wraps as an `error` frame with
+/// `status: 400` is re-shaped like a refused handshake rather than committed as
+/// a `502` stream: the turn falls back to HTTP, and the client receives that
+/// transport's `400 invalid_request_error` with its message.
+#[tokio::test]
+async fn websocket_wrapped_status_error_surfaces_the_refusal_status() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+
+    let (base_url, http_hits) = spawn_dual_upstream(WsDrop::WrappedRefusal).await;
+    let auth_path = write_fake_codex_auth(&mut vars);
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            r#"{"model":"codex-fallback-model","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error", "{body}");
+    assert_eq!(body["error"]["message"], HTTP_REFUSAL_DETAIL, "{body}");
+    assert_eq!(
+        http_hits.load(Ordering::SeqCst),
+        1,
+        "the wrapped refusal falls back to HTTP exactly once"
+    );
+
     let _ = std::fs::remove_file(auth_path);
 }
 
@@ -602,10 +888,11 @@ async fn websocket_rate_limits_event_records_account_quota() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::CompleteTurn).await;
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
     let gateway = start_gateway_with(codex_ws_config(base_url)).await;
 
     let response = reqwest::Client::new()
@@ -647,7 +934,6 @@ async fn websocket_rate_limits_event_records_account_quota() {
         "the in-stream rate-limit event feeds the account pool"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
     let _ = std::fs::remove_file(auth_path);
 }
 
@@ -660,10 +946,11 @@ async fn websocket_drop_after_first_event_surfaces_clean_error() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::AfterFirstEvent).await;
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
     let gateway = start_gateway_with(codex_ws_config(base_url)).await;
 
     let response = reqwest::Client::new()
@@ -700,7 +987,6 @@ async fn websocket_drop_after_first_event_surfaces_clean_error() {
         "no HTTP fallback POST is made after streaming has begun"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
     let _ = std::fs::remove_file(auth_path);
 }
 
@@ -709,14 +995,15 @@ async fn pooled_websocket_drop_after_first_event_stops_without_http_or_rotation(
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let total_hits = Arc::new(AtomicUsize::new(0));
     let (base_url, http_hits) =
         spawn_counted_dual_upstream(WsDrop::AfterFirstEvent, total_hits.clone()).await;
     let token = fake_jwt(4_000_000_000);
-    std::env::set_var("SHUNT_WS_POOL_TOKEN_A", &token);
-    std::env::set_var("SHUNT_WS_POOL_TOKEN_B", &token);
+    vars.set("SHUNT_WS_POOL_TOKEN_A", &token);
+    vars.set("SHUNT_WS_POOL_TOKEN_B", &token);
     let gateway = start_gateway_with(pooled_codex_ws_config(
         base_url,
         ["SHUNT_WS_POOL_TOKEN_A", "SHUNT_WS_POOL_TOKEN_B"],
@@ -740,9 +1027,6 @@ async fn pooled_websocket_drop_after_first_event_stops_without_http_or_rotation(
         1,
         "only the first account's websocket may be attempted"
     );
-
-    std::env::remove_var("SHUNT_WS_POOL_TOKEN_A");
-    std::env::remove_var("SHUNT_WS_POOL_TOKEN_B");
 }
 
 #[tokio::test]
@@ -755,12 +1039,13 @@ async fn websocket_pool_does_not_reprobe_restored_stale_account_on_http_fallback
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let token_a = fake_jwt_for_account(4_000_000_000, "acct-ws-restored-a");
     let token_b = fake_jwt_for_account(4_000_000_000, "acct-ws-restored-b");
-    std::env::set_var("SHUNT_WS_REPROBE_TOKEN_A", &token_a);
-    std::env::set_var("SHUNT_WS_REPROBE_TOKEN_B", &token_b);
+    vars.set("SHUNT_WS_REPROBE_TOKEN_A", &token_a);
+    vars.set("SHUNT_WS_REPROBE_TOKEN_B", &token_b);
 
     let state_dir = std::env::temp_dir().join(format!(
         "shunt-ws-reprobe-state-{}-{}",
@@ -821,9 +1106,118 @@ async fn websocket_pool_does_not_reprobe_restored_stale_account_on_http_fallback
         "WebSocket selection and its HTTP fallback must not record a probe: {logs}"
     );
 
-    std::env::remove_var("SHUNT_WS_REPROBE_TOKEN_A");
-    std::env::remove_var("SHUNT_WS_REPROBE_TOKEN_B");
     fs::remove_dir_all(state_dir).ok();
+}
+
+fn conversation_body(user_id: &str, messages: serde_json::Value) -> String {
+    serde_json::json!({
+        "model": "codex-fallback-model",
+        "max_tokens": 16,
+        "stream": false,
+        "metadata": {"user_id": user_id},
+        "messages": messages
+    })
+    .to_string()
+}
+
+async fn send_turn(base_url: &str, body: String) -> (StatusCode, String) {
+    let response = reqwest::Client::new()
+        .post(format!("{base_url}/v1/messages"))
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    (status, body)
+}
+
+#[tokio::test]
+async fn metadata_session_reuses_websocket_but_hashed_user_id_does_not() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+    let auth_path = write_fake_codex_auth(&mut vars);
+
+    let first_messages = serde_json::json!([{"role": "user", "content": "hi"}]);
+    let second_messages = serde_json::json!([
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "bye"}
+    ]);
+
+    let metadata_id = r#"{"session_id":"meta-conversation"}"#;
+    let (base_url, metadata_accepts, metadata_frames, metadata_server) =
+        spawn_recording_ws_upstream(2).await;
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+    let (status, body) = send_turn(
+        &gateway.base_url,
+        conversation_body(metadata_id, first_messages.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first metadata turn failed: {body}");
+    let (status, body) = send_turn(
+        &gateway.base_url,
+        conversation_body(metadata_id, second_messages.clone()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "second metadata turn failed: {body}"
+    );
+    let frames = metadata_frames.lock().unwrap().clone();
+    assert_eq!(
+        metadata_accepts.load(Ordering::SeqCst),
+        1,
+        "metadata session must reuse one websocket"
+    );
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[1]["previous_response_id"], "resp_1");
+    assert_eq!(
+        frames[1]["input"],
+        serde_json::json!([{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "bye"}]
+        }])
+    );
+    drop(gateway);
+    metadata_server.abort();
+
+    let plain_user = "plain-user-for-pool-control";
+    let (base_url, hash_accepts, hash_frames, hash_server) = spawn_recording_ws_upstream(2).await;
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+    let (status, body) = send_turn(
+        &gateway.base_url,
+        conversation_body(plain_user, first_messages),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first hash turn failed: {body}");
+    let (status, body) = send_turn(
+        &gateway.base_url,
+        conversation_body(plain_user, second_messages),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "second hash turn failed: {body}");
+    let frames = hash_frames.lock().unwrap().clone();
+    assert_eq!(
+        hash_accepts.load(Ordering::SeqCst),
+        2,
+        "hashed user id must keep each websocket one-shot"
+    );
+    assert_eq!(frames.len(), 2);
+    assert!(frames[1].get("previous_response_id").is_none());
+    assert_eq!(frames[1]["input"].as_array().unwrap().len(), 3);
+    assert_eq!(frames[0]["prompt_cache_key"], "3834f31dbf734510");
+    assert_eq!(frames[1]["prompt_cache_key"], "3834f31dbf734510");
+    drop(gateway);
+    hash_server.abort();
+
+    let _ = std::fs::remove_file(auth_path);
 }
 
 /// The non-streaming analogue of the mid-stream drop: a `stream:false` client
@@ -836,10 +1230,11 @@ async fn websocket_drop_after_first_event_json_surfaces_gateway_error() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = ENV_LOCK.lock().await;
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
 
     let (base_url, http_hits) = spawn_dual_upstream(WsDrop::AfterFirstEvent).await;
-    let auth_path = write_fake_codex_auth();
+    let auth_path = write_fake_codex_auth(&mut vars);
     let gateway = start_gateway_with(codex_ws_config(base_url)).await;
 
     let response = reqwest::Client::new()
@@ -863,6 +1258,316 @@ async fn websocket_drop_after_first_event_json_surfaces_gateway_error() {
         "no HTTP fallback POST is made once the turn has committed to the websocket"
     );
 
-    std::env::remove_var("CODEX_AUTH_FILE");
+    let _ = std::fs::remove_file(auth_path);
+}
+
+/// A delegated (Task child) turn must pool its websocket under the CHILD's
+/// identity and the parent's next turn must open its own: per-turn identity
+/// rides the handshake, so one shared pool key would send the parent's turn
+/// under the child's `thread-id` and subagent markers (or, once the child's
+/// socket expires, every later parent turn under them). Two turns — the child
+/// then the parent — must produce two handshakes, the child's carrying the
+/// `{session}::{agent}` identities.
+#[tokio::test]
+async fn delegated_turn_pools_its_own_websocket_and_the_parent_never_rides_it() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+    let auth_path = write_fake_codex_auth(&mut vars);
+
+    let (base_url, accepts, handshakes, server) = spawn_handshake_recording_ws_upstream(2).await;
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+
+    let body = serde_json::json!({
+        "model": "codex-fallback-model",
+        "max_tokens": 16,
+        "stream": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    })
+    .to_string();
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[
+            ("x-claude-code-session-id", "sess-delegated-1"),
+            ("x-claude-code-agent-id", "agent-7"),
+            ("x-claude-code-agent-type", "Explore"),
+        ],
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "child turn failed: {body}");
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[("x-claude-code-session-id", "sess-delegated-1")],
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "parent turn failed: {body}");
+
+    assert_eq!(
+        accepts.load(Ordering::SeqCst),
+        2,
+        "the parent turn must not ride the child's pooled websocket"
+    );
+    let handshakes = handshakes.lock().unwrap().clone();
+    let child = &handshakes[0];
+    assert_eq!(child["session-id"], "sess-delegated-1");
+    assert_eq!(child["thread-id"], "sess-delegated-1::agent-7");
+    assert_eq!(child["x-codex-parent-thread-id"], "sess-delegated-1");
+    assert_eq!(child["x-openai-subagent"], "Explore");
+    assert_eq!(child["x-client-request-id"], "sess-delegated-1::agent-7");
+    assert_eq!(child["x-codex-window-id"], "sess-delegated-1::agent-7:0");
+    let parent = &handshakes[1];
+    assert_eq!(parent["session-id"], "sess-delegated-1");
+    assert_eq!(parent["thread-id"], "sess-delegated-1");
+    assert_eq!(parent["x-client-request-id"], "sess-delegated-1");
+    assert_eq!(parent["x-codex-window-id"], "sess-delegated-1:0");
+    assert!(
+        parent.get("x-codex-parent-thread-id").is_none()
+            && parent.get("x-openai-subagent").is_none(),
+        "the parent's socket must not carry a child identity"
+    );
+
+    drop(gateway);
+    server.abort();
+    let _ = std::fs::remove_file(auth_path);
+}
+
+async fn post_messages(
+    base_url: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (StatusCode, String) {
+    let mut request = reqwest::Client::new()
+        .post(format!("{base_url}/v1/messages"))
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.body(body.to_string()).send().await.unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    (status, text)
+}
+
+/// Two DISTINCT conversations whose identity text concatenates to the same
+/// `:`-joined string — session `s::t` with no agent, and session `s` with
+/// agent `t` — must not share a pooled websocket: one internal key per
+/// (client, session, agent) triple, so the second turn opens its own socket
+/// and handshakes under its own identity instead of riding the first
+/// conversation's.
+#[tokio::test]
+async fn distinct_conversations_never_share_a_pool_key_even_when_their_text_concatenates() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+    let auth_path = write_fake_codex_auth(&mut vars);
+
+    let (base_url, accepts, handshakes, server) = spawn_handshake_recording_ws_upstream(2).await;
+    let gateway = start_gateway_with(codex_ws_config(base_url)).await;
+
+    let body = serde_json::json!({
+        "model": "codex-fallback-model",
+        "max_tokens": 16,
+        "stream": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    })
+    .to_string();
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[("x-claude-code-session-id", "s::t")],
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first conversation failed: {body}");
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[
+            ("x-claude-code-session-id", "s"),
+            ("x-claude-code-agent-id", "t"),
+        ],
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "second conversation failed: {body}");
+
+    assert_eq!(
+        accepts.load(Ordering::SeqCst),
+        2,
+        "the two conversations must pool under distinct keys"
+    );
+    let handshakes = handshakes.lock().unwrap().clone();
+    let first = &handshakes[0];
+    assert_eq!(first["session-id"], "s::t");
+    assert_eq!(first["thread-id"], "s::t");
+    assert_eq!(first["x-client-request-id"], "s::t");
+    assert_eq!(first["x-codex-window-id"], "s::t:0");
+    assert!(
+        first.get("x-codex-parent-thread-id").is_none() && first.get("x-openai-subagent").is_none(),
+        "the first conversation is not delegated"
+    );
+    let second = &handshakes[1];
+    assert_eq!(second["session-id"], "s");
+    assert_eq!(second["thread-id"], "s::t");
+    assert_eq!(second["x-codex-parent-thread-id"], "s");
+    assert_eq!(second["x-openai-subagent"], "subagent");
+    assert_eq!(second["x-client-request-id"], "s::t");
+    assert_eq!(second["x-codex-window-id"], "s::t:0");
+
+    drop(gateway);
+    server.abort();
+    let _ = std::fs::remove_file(auth_path);
+}
+
+/// The bump's sweep must match pool keys by identity, not by text suffix: a
+/// conversation whose crafted session/agent text embeds another conversation's
+/// window key (`acct-0::<x>::::<s>` ends with `::<s>`) must survive that
+/// conversation's compaction bump. Three turns: B pools its socket, A's
+/// marked turn bumps, B's next turn must still ride B's own socket (2
+/// handshakes total, not 3).
+#[tokio::test]
+async fn a_bump_does_not_evict_a_socket_whose_key_text_ends_with_the_window_key() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+
+    let token = fake_jwt(4_000_000_000);
+    vars.set("SHUNT_POOL_N1_TOKEN", &token);
+    let (base_url, accepts, handshakes, server) = spawn_handshake_recording_ws_upstream(3).await;
+    let gateway = start_gateway_with(pooled_codex_ws_config(
+        base_url,
+        ["SHUNT_POOL_N1_TOKEN", "SHUNT_POOL_N1_NEVER_SET"],
+    ))
+    .await;
+
+    let body = serde_json::json!({
+        "model": "codex-fallback-model",
+        "max_tokens": 16,
+        "stream": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    })
+    .to_string();
+    let b_headers = [
+        ("x-claude-code-session-id", "x"),
+        ("x-claude-code-agent-id", "::s"),
+    ];
+    // Turn 1: conversation B (session `x`, agent `::s`) pools its socket.
+    let (status, body) = post_messages(&gateway.base_url, &b_headers, &body).await;
+    assert_eq!(status, StatusCode::OK, "B's first turn failed: {body}");
+    // Turn 2: conversation A (session `s`) carries the compaction mark.
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[
+            ("x-claude-code-session-id", "s"),
+            ("x-claude-code-context-compacted", "auto"),
+        ],
+        &body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "A's marked turn failed: {body}");
+    // Turn 3: B again — its socket must have survived A's bump.
+    let (status, body) = post_messages(&gateway.base_url, &b_headers, &body).await;
+    assert_eq!(status, StatusCode::OK, "B's second turn failed: {body}");
+
+    assert_eq!(
+        accepts.load(Ordering::SeqCst),
+        2,
+        "A's bump must not evict B's pooled socket"
+    );
+    let handshakes = handshakes.lock().unwrap().clone();
+    assert_eq!(handshakes[0]["thread-id"], "x::::s", "B's own thread id");
+    assert_eq!(handshakes[1]["thread-id"], "s", "A's own thread id");
+
+    drop(gateway);
+    server.abort();
+}
+
+/// An HTTP turn carries the same `{session}:{window}` a websocket handshake
+/// would: the compaction mark bumps the counter on the first dispatch that
+/// reaches an upstream on EITHER transport, and a later turn of the same
+/// conversation reads the advanced window without bumping. The mock records
+/// each turn's `x-codex-window-id` header; a marked turn must send `:1` and
+/// the turn after it `:1` again.
+#[tokio::test]
+async fn an_http_turn_carries_the_advanced_window_id() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+    let auth_path = write_fake_codex_auth(&mut vars);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(RESPONSES_SSE))
+        .mount(&upstream)
+        .await;
+
+    let mut config = Config::default();
+    config.providers.get_mut("codex").unwrap().base_url = upstream.uri();
+    config.routes.push(RouteConfig {
+        model: "codex-fallback-model".to_string(),
+        provider: "codex".to_string(),
+        upstream_model: None,
+        effort: None,
+        service_tier: None,
+    });
+    let gateway = start_gateway_with(config).await;
+
+    let body = serde_json::json!({
+        "model": "codex-fallback-model",
+        "max_tokens": 16,
+        "stream": false,
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[
+            ("x-claude-code-session-id", "sess-http-window-1"),
+            ("x-claude-code-context-compacted", "auto"),
+        ],
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "marked turn failed: {body}");
+    let (status, body) = post_messages(
+        &gateway.base_url,
+        &[("x-claude-code-session-id", "sess-http-window-1")],
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "second turn failed: {body}");
+
+    let requests = upstream
+        .received_requests()
+        .await
+        .expect("mock records requests");
+    assert_eq!(requests.len(), 2, "one HTTP turn each");
+    let window = |request: &wiremock::Request| {
+        request
+            .headers
+            .get("x-codex-window-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("the turn sends the window id")
+            .to_string()
+    };
+    assert_eq!(
+        window(&requests[0]),
+        "sess-http-window-1:1",
+        "the marked HTTP turn carries the advanced window"
+    );
+    assert_eq!(
+        window(&requests[1]),
+        "sess-http-window-1:1",
+        "the next turn reads the advanced window without bumping"
+    );
+
     let _ = std::fs::remove_file(auth_path);
 }

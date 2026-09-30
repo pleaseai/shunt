@@ -26,9 +26,11 @@ Claude Code는 모든 턴을 Anthropic API로 보냅니다. `shunt`는 그 앞(`
 
 shunt는 받은 model id만 그대로 존중합니다. 취약한 에이전트별 시스템 프롬프트 지문 인식은 없습니다. 그 동일한 선택성이 shunt가 호출자가 누구인지 조사하지 않고도 개별 에이전트까지 도달합니다.
 
+model id 하나를 스스로 판단하게 만들 수도 있습니다. [스테이지 라우터](/ko/guides/stage-router/)는 강한 티어와 효율 티어를 지정하고, 대화의 최근 tool-result 메타데이터(`tool_use.name`과 `tool_result.is_error`이며 프롬프트 텍스트는 절대 아닙니다)로 턴마다 둘 중 하나를 고릅니다. 또 어떤 항목이든 [`[models.subagents]`](/ko/reference/configuration/#modelssubagents-선택) 오버레이를 실어 위임된 작업만 다른 타깃으로 보낼 수 있고, 부모 세션은 자기 목적지를 유지합니다. 둘 다 설정하지 않으면 동작은 그대로입니다.
+
 ## shunt가 구현하는 것
 
-- **`POST /v1/messages`** — 요청의 `model` id에 따라 라우팅되는 추론. 매핑되지 않은 모델은 호출자 본인의 자격 증명으로 바이트 단위 그대로 Anthropic에 전달됩니다.
+- **`POST /v1/messages`** — 요청의 `model` id에 따라 라우팅되는 추론. 매핑되지 않은 모델은 호출자 본인의 자격 증명으로 바이트 단위 그대로 Anthropic에 전달됩니다. 단, shunt가 다른 프로바이더용으로 생성한 [`thinking` signature](/ko/providers/anthropic/)만은 Anthropic이 거부하는 값이므로 제거됩니다.
 - **Anthropic Messages ⇄ OpenAI Responses 변환** — 매핑된 OpenAI 계열 모델에 대해 스트리밍을 포함하여 변환합니다.
 - **ChatGPT 구독 재사용** — `codex` 프로바이더는 Codex CLI의 `~/.codex/auth.json` 로그인을 재사용(및 자동 갱신)합니다.
 - **`GET /v1/models`** — Claude 이름 별칭에 대한 [모델 디스커버리](/ko/guides/model-discovery/).

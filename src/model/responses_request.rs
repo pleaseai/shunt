@@ -3,6 +3,9 @@ use std::collections::{HashMap, HashSet};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
+
+use axum::http::HeaderValue;
 
 use crate::config::ResponsesFlavor;
 use crate::model::responses_schema;
@@ -111,6 +114,8 @@ pub fn translate_request(
     route: &Route,
     flavor: ResponsesFlavor,
     tool_search_native: bool,
+    session_id: Option<&str>,
+    client_turn: bool,
 ) -> Result<Value, serde_json::Error> {
     let request: Value = serde_json::from_slice(body)?;
     Ok(translate_request_value(
@@ -118,6 +123,8 @@ pub fn translate_request(
         route,
         flavor,
         tool_search_native,
+        session_id,
+        client_turn,
     ))
 }
 
@@ -126,6 +133,8 @@ pub fn translate_request_value(
     route: &Route,
     flavor: ResponsesFlavor,
     tool_search_native: bool,
+    session_id: Option<&str>,
+    client_turn: bool,
 ) -> Value {
     let tool_search = ToolSearchContext::from_request(request, tool_search_native);
     let mut out = Map::new();
@@ -151,8 +160,17 @@ pub fn translate_request_value(
             out.insert("tool_choice".to_string(), tool_choice);
         }
     }
+    // The Codex CLI always sends `parallel_tool_calls: true` (non-lite models),
+    // so the chatgpt flavor defaults it to true when the client omits it,
+    // unless an Anthropic client turned the same switch off through
+    // `tool_choice.disable_parallel_tool_use`; every other flavor stays
+    // client-driven.
     if let Some(value) = request.get("parallel_tool_calls") {
         out.insert("parallel_tool_calls".to_string(), value.clone());
+    } else if flavor == ResponsesFlavor::Chatgpt {
+        let disabled =
+            request.pointer("/tool_choice/disable_parallel_tool_use") == Some(&Value::Bool(true));
+        out.insert("parallel_tool_calls".to_string(), json!(!disabled));
     }
     // Several grok models 400 on `reasoning.effort` even though they reason
     // natively, so on the xai flavor the reasoning dial stays opt-in: sent only
@@ -196,7 +214,42 @@ pub fn translate_request_value(
     // so a route can override an inherited provider-level tier -- this is the
     // one place it is stripped; the literal string must never reach the wire.
     if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
-        out.insert("text".to_string(), json!({"verbosity": "medium"}));
+        let mut text = json!({"verbosity": "medium"});
+        // A judge target on a Responses provider: libsy's codec asks for a
+        // structured verdict as Anthropic's `output_config.format`, and the
+        // Responses equivalent is `text.format`. Without the translation the
+        // judge answers in prose and every verdict is unparseable — a
+        // `classifier_fail_open` on every turn, with no error to read.
+        //
+        // `strict: false` and a fixed `name`, because neither survives the
+        // Anthropic hop either: that codec emits `{"type": "json_schema",
+        // "schema": …}` and drops the packaged name and `strict` (the live
+        // capture, "Fact (c), re-captured"). Sending `strict: true` here would
+        // hold the Responses judge to a contract the Anthropic one is not,
+        // and the schemas carry `additionalProperties: false` already.
+        // Withheld on xai/grok for the reason the whole `text` object is:
+        // that API rejects it.
+        if let (Some("json_schema"), Some(schema)) = (
+            request
+                .pointer("/output_config/format/type")
+                .and_then(Value::as_str),
+            request
+                .pointer("/output_config/format/schema")
+                .filter(|schema| schema.is_object()),
+        ) {
+            if let Some(object) = text.as_object_mut() {
+                object.insert(
+                    "format".to_string(),
+                    json!({
+                        "type": "json_schema",
+                        "name": "verdict",
+                        "schema": schema.clone(),
+                        "strict": false,
+                    }),
+                );
+            }
+        }
+        out.insert("text".to_string(), text);
         if let Some(service_tier) = &route.service_tier {
             if service_tier != "default" {
                 out.insert("service_tier".to_string(), json!(service_tier));
@@ -205,15 +258,21 @@ pub fn translate_request_value(
     }
     // With store:false the Responses backend forgets each turn's reasoning, so ask
     // for the encrypted reasoning blob and echo it back next turn (see input_items).
-    // Only when the client enabled extended thinking, which is what lets Claude Code
-    // round-trip the thinking blocks that carry the blob (see model/responses.rs).
-    if thinking_enabled(request) {
+    // The Codex CLI sends this unconditionally on the ChatGPT/Codex backend, so a
+    // CLIENT turn to that flavor forces it regardless of thinking (mirroring what
+    // the client itself sends); the other flavors keep it gated on extended
+    // thinking, which is what lets Claude Code round-trip the thinking blocks that
+    // carry the blob (see model/responses.rs). An INTERNAL call (judge,
+    // classifier, advisor — a body nobody marked as the client's turn) never
+    // forces it: its reply is parsed once and discarded, so the encrypted blobs
+    // would only inflate the reply against `judge_max_response_bytes`.
+    if thinking_enabled(request) || (flavor == ResponsesFlavor::Chatgpt && client_turn) {
         out.insert(
             "include".to_string(),
             json!(["reasoning.encrypted_content"]),
         );
     }
-    if let Some(cache_key) = prompt_cache_key(request) {
+    if let Some(cache_key) = prompt_cache_key(request, session_id) {
         out.insert("prompt_cache_key".to_string(), json!(cache_key));
     }
     // Anthropic `max_tokens` caps output; the Responses equivalent is
@@ -231,12 +290,45 @@ pub fn translate_request_value(
     Value::Object(out)
 }
 
-/// A stable per-conversation key so the Responses backend routes every turn of a
-/// session to the same prompt cache (codex uses its thread_id here). Claude Code
-/// packs `{device_id, account_uuid, session_id}` as a JSON string in
-/// `metadata.user_id`; `session_id` is the per-conversation id. Falls back to a
-/// hash of the raw user_id, or nothing when the client sends no metadata.
-fn prompt_cache_key(request: &Value) -> Option<String> {
+/// The source and value of the effective conversation identity shared by the
+/// upstream session headers and body `prompt_cache_key`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EffectiveSessionId {
+    Header(String),
+    MetadataSession(String),
+    HashedUserId(String),
+}
+
+impl EffectiveSessionId {
+    pub(crate) fn into_string(self) -> String {
+        match self {
+            Self::Header(value) | Self::MetadataSession(value) | Self::HashedUserId(value) => value,
+        }
+    }
+
+    /// Only conversation-scoped identities may reuse a WebSocket. The hash
+    /// fallback can represent every conversation belonging to one user.
+    pub(crate) fn websocket_pool_id(&self) -> Option<&str> {
+        match self {
+            Self::Header(value) | Self::MetadataSession(value) => Some(value),
+            Self::HashedUserId(_) => None,
+        }
+    }
+}
+
+/// Resolve the conversation identity from the inbound session header, then a
+/// `metadata.user_id` JSON `session_id`, then a stable hash of the raw user id.
+/// Metadata-only clients still get matching affinity headers and body keys; the
+/// provenance keeps the per-user hash out of the WebSocket connection pool.
+pub(crate) fn effective_session_identity(
+    request: &Value,
+    session_id: Option<&str>,
+) -> Option<EffectiveSessionId> {
+    // The inbound header is always header-safe: hyper rejects invalid header
+    // values at parse time, so whatever reached the handler is valid.
+    if let Some(session_id) = session_id.filter(|session_id| !session_id.is_empty()) {
+        return Some(EffectiveSessionId::Header(session_id.to_string()));
+    }
     let user_id = request
         .pointer("/metadata/user_id")
         .and_then(Value::as_str)
@@ -246,13 +338,46 @@ fn prompt_cache_key(request: &Value) -> Option<String> {
             .get("session_id")
             .and_then(Value::as_str)
             .filter(|session| !session.is_empty())
+            // A JSON-decoded value can carry an escaped control character;
+            // it becomes the upstream affinity headers, and an invalid header
+            // value would fail the whole request. The hash fallback below is
+            // hex, always header-safe, and keeps header and key equal.
+            .filter(|session| HeaderValue::from_str(session).is_ok())
         {
-            return Some(format!("shunt-{session}"));
+            return Some(EffectiveSessionId::MetadataSession(session.to_string()));
         }
     }
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(user_id, &mut hasher);
-    Some(format!("shunt-{:016x}", std::hash::Hasher::finish(&hasher)))
+    Some(EffectiveSessionId::HashedUserId(hashed_user_id(user_id)))
+}
+
+/// The value-only view of [`effective_session_identity`], for consumers that
+/// need the id string but no provenance (`prompt_cache_key`, the adapter's
+/// inner forward after the pool decision). The decision logic stays in one
+/// place; this only drops the variant.
+pub(crate) fn effective_session_id(request: &Value, session_id: Option<&str>) -> Option<String> {
+    effective_session_identity(request, session_id).map(EffectiveSessionId::into_string)
+}
+
+/// A stable per-conversation key so the Responses backend routes every turn of a
+/// session to the same prompt cache. The real Codex CLI sends its raw session id
+/// here (`codex-rs` `core/src/client.rs`), and the backend derives cache affinity
+/// from the `session-id` request header — so the key must equal that header's
+/// value, and both come from the one derivation in [`effective_session_id`].
+fn prompt_cache_key(request: &Value, session_id: Option<&str>) -> Option<String> {
+    effective_session_id(request, session_id)
+}
+
+/// The stable fallback id for a `metadata.user_id` that is not a JSON blob
+/// carrying a header-safe `session_id`. A stable hash: `DefaultHasher`'s
+/// algorithm is not pinned across rustc releases, and a rotated fallback key
+/// silently forfeits one turn's cache. sha2 is already a dependency; 8 bytes
+/// suffice for a cache-namespace id.
+fn hashed_user_id(user_id: &str) -> String {
+    let digest = Sha256::digest(user_id.as_bytes());
+    format!(
+        "{:016x}",
+        u64::from_be_bytes(digest[..8].try_into().expect("sha256 digest is 32 bytes"))
+    )
 }
 
 /// Whether the client requested extended thinking. Gates reasoning round-tripping:
@@ -268,6 +393,15 @@ fn thinking_enabled(request: &Value) -> bool {
 pub fn encode_reasoning_signature(id: &str, encrypted_content: &str) -> String {
     let payload = json!({"id": id, "enc": encrypted_content});
     URL_SAFE_NO_PAD.encode(payload.to_string())
+}
+
+/// True when `signature` is one [`encode_reasoning_signature`] produced.
+///
+/// The accept half of [`decode_reasoning_signature`] without its payload, so the
+/// Anthropic outbound strip can recognise shunt's own signatures without
+/// duplicating the encoding — see [`crate::model::thinking_signature`].
+pub fn is_reasoning_signature(signature: &str) -> bool {
+    decode_reasoning_signature(signature).is_some()
 }
 
 /// Inverse of [`encode_reasoning_signature`]. Returns `None` for signatures shunt
@@ -549,7 +683,10 @@ fn tool_search_output_item(call_id: &str, block: &Value, context: &ToolSearchCon
 /// A loadable `{type:"function", …, defer_loading:true}` spec for a revealed tool,
 /// or `None` when `name` is not a known tool (so an unknown reference is dropped
 /// rather than emitted as a malformed spec). Mirrors the wire shape codex puts in
-/// `tool_search_output.tools`, including the full normalized parameter schema.
+/// `tool_search_output.tools`, including the full normalized parameter schema;
+/// `strict:false` is shunt's addition on top of that shape (the same
+/// optional-preservation reason as `function_tool`), and the surface accepts it —
+/// measured 2026-09-10 against the ChatGPT/Codex backend, 3 reveal turns.
 fn loadable_tool_spec(name: &str, context: &ToolSearchContext) -> Option<Value> {
     let (description, input_schema) = context.schema_map.get(name)?;
     Some(json!({
@@ -557,6 +694,7 @@ fn loadable_tool_spec(name: &str, context: &ToolSearchContext) -> Option<Value> 
         "name": name,
         "description": description,
         "defer_loading": true,
+        "strict": false,
         "parameters": normalize_schema((*input_schema).clone()),
     }))
 }
@@ -773,20 +911,35 @@ fn web_search_tool(tool: &Value) -> Value {
     out
 }
 
-fn function_tool(tool: &Value) -> Value {
-    json!({
+fn function_tool(tool: &Value, flavor: ResponsesFlavor) -> Value {
+    let mut out = json!({
         "type": "function",
         "name": tool.get("name").and_then(Value::as_str).unwrap_or(""),
         "description": tool.get("description").and_then(Value::as_str).unwrap_or(""),
         "parameters": normalize_schema(tool.get("input_schema").cloned().unwrap_or_else(|| json!({})))
-    })
+    });
+    // `strict:false` keeps the schema's optional properties optional: omitted,
+    // the field is normalized toward strict mode upstream and a closed
+    // parameter object behaves as if every property were required. Withheld on
+    // xAI/Grok, which reject several standard Responses fields (`text`,
+    // `service_tier`, `reasoning.summary`) and whose acceptance of `strict` is
+    // unverified — the same rule as the web-search gate below.
+    if !matches!(flavor, ResponsesFlavor::Xai | ResponsesFlavor::Grok) {
+        out["strict"] = json!(false);
+    }
+    out
 }
 
 /// Claude Code's ToolSearch tool definition -> the Responses native
 /// client-executed `tool_search` tool. It has no `name` (the `type` is its
 /// identity), `execution` is always `"client"`, and description/parameters carry
 /// through — normalized like any function tool — so the model sees the same
-/// search contract Claude Code executes.
+/// search contract Claude Code executes. Unlike a function tool it carries no
+/// `strict`: that tool kind rejects the field (`400 Unknown parameter:
+/// 'tools[0].strict'`, measured 2026-09-10 against the ChatGPT/Codex backend),
+/// and the omission costs nothing — the ToolSearch schema has no optional
+/// properties (captured 2026-09-10: `query` and `max_results` are both
+/// required), so strict normalization cannot inflate its calls.
 fn tool_search_tool_def(tool: &Value) -> Value {
     json!({
         "type": "tool_search",
@@ -827,7 +980,7 @@ fn tools(request: &Value, flavor: ResponsesFlavor, context: &ToolSearchContext) 
                         _ => Some(web_search_tool(tool)),
                     }
                 } else {
-                    Some(function_tool(tool))
+                    Some(function_tool(tool, flavor))
                 }
             })
             .collect(),
@@ -951,9 +1104,53 @@ fn effort(request: &Value, route: &Route) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// F9's other half: a CLIENT turn to the chatgpt flavor keeps the
+    /// encrypted-reasoning include (the force exists to mirror what the Codex
+    /// CLI itself sends), and flipping the mark off drops it — the same
+    /// translation, discriminated only by the body's origin.
+    #[test]
+    fn a_client_turn_to_the_chatgpt_flavor_keeps_the_encrypted_reasoning_include() {
+        let request = serde_json::json!({
+            "model": "gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+        let route = crate::routing::Route {
+            provider: "codex".to_string(),
+            adapter: crate::routing::AdapterKind::Responses,
+            model: "gpt-5.2-codex".to_string(),
+            upstream_model: "gpt-5.2-codex".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+        let client = translate_request_value(
+            &request,
+            &route,
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+            true,
+        );
+        assert_eq!(
+            client["include"],
+            serde_json::json!(["reasoning.encrypted_content"])
+        );
+        let internal = translate_request_value(
+            &request,
+            &route,
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+            false,
+        );
+        assert!(internal.get("include").is_none());
+    }
+
     use serde_json::json;
 
-    use super::{effort, input_items, ToolSearchContext};
+    use super::{
+        effective_session_identity, effort, input_items, translate_request_value,
+        EffectiveSessionId, ResponsesFlavor, ToolSearchContext,
+    };
     use crate::routing::{AdapterKind, Route};
 
     fn codex_route() -> Route {
@@ -990,6 +1187,85 @@ mod tests {
         }
     }
 
+    /// A judge target on a Responses provider (ADR-0005 §8 PR 5). libsy asks
+    /// for the verdict as Anthropic's `output_config.format`; this is where
+    /// that becomes the Responses API's `text.format`.
+    ///
+    /// Non-vacuity: delete the `output_config.format` branch in
+    /// `translate_request_value` and the `format` assertions go red; send
+    /// `strict: true` and the last one does.
+    #[test]
+    fn maps_output_config_json_schema_to_text_format() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"target": {"type": "string"}},
+            "required": ["target"],
+            "additionalProperties": false,
+        });
+        let request = json!({
+            "messages": [],
+            "output_config": {"format": {"type": "json_schema", "schema": schema}},
+        });
+
+        let out = translate_request_value(
+            &request,
+            &codex_route(),
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+            true,
+        );
+
+        assert_eq!(out["text"]["format"]["type"], "json_schema");
+        assert_eq!(out["text"]["format"]["name"], "verdict");
+        assert_eq!(out["text"]["format"]["schema"], schema);
+        assert_eq!(out["text"]["format"]["strict"], json!(false));
+        assert_eq!(
+            out["text"]["verbosity"], "medium",
+            "the format merges into the existing text object rather than replacing it"
+        );
+    }
+
+    /// xAI rejects the whole `text` object, so the judge's schema is withheld
+    /// there exactly as `verbosity` is.
+    #[test]
+    fn withholds_the_judge_schema_on_the_xai_flavor() {
+        let request = json!({
+            "messages": [],
+            "output_config": {"format": {"type": "json_schema", "schema": {"type": "object"}}},
+        });
+
+        for flavor in [ResponsesFlavor::Xai, ResponsesFlavor::Grok] {
+            let out = translate_request_value(&request, &codex_route(), flavor, false, None, true);
+            assert!(out.get("text").is_none(), "flavor={flavor:?}");
+        }
+    }
+
+    /// A client body with no structured-output request is untouched: the
+    /// branch must not invent a `format` for ordinary traffic.
+    #[test]
+    fn leaves_text_format_alone_without_a_json_schema_request() {
+        for request in [
+            json!({"messages": []}),
+            json!({"output_config": {"effort": "high"}}),
+            json!({"output_config": {"format": {"type": "text"}}}),
+            json!({"output_config": {"format": {"type": "json_schema"}}}),
+        ] {
+            let out = translate_request_value(
+                &request,
+                &codex_route(),
+                ResponsesFlavor::Chatgpt,
+                false,
+                None,
+                true,
+            );
+            assert!(
+                out["text"].get("format").is_none(),
+                "request={request}, out={out}"
+            );
+        }
+    }
+
     #[test]
     fn passes_max_effort_through_for_gpt_5_6() {
         // gpt-5.6* accept `max` natively, so it must not fold to xhigh.
@@ -1003,6 +1279,8 @@ mod tests {
         // gpt-6* accept `max` natively, so it must not fold to xhigh.
         let request = json!({"output_config": {"effort": "max"}});
         assert_eq!(effort(&request, &codex_route_model("gpt-6-astra")), "max");
+        assert_eq!(effort(&request, &codex_route_model("gpt-6-sol")), "max");
+        assert_eq!(effort(&request, &codex_route_model("gpt-6-luna")), "max");
         assert_eq!(effort(&request, &codex_route_model("gpt-6-pro")), "max");
     }
 
@@ -1038,6 +1316,37 @@ mod tests {
         assert_eq!(items[1]["role"], "developer");
         assert_eq!(items[1]["content"][0]["type"], "input_text");
         assert_eq!(items[1]["content"][0]["text"], "SessionStart hook output");
+    }
+
+    /// Only conversation-scoped identities may pool a WebSocket: the header and
+    /// the parsed metadata session qualify, while the per-user hash fallback —
+    /// including the one an unsafe metadata session degrades to — stays
+    /// affinity-only.
+    #[test]
+    fn only_conversation_scoped_identities_pool_a_websocket() {
+        let header = effective_session_identity(&json!({}), Some("hdr")).unwrap();
+        assert_eq!(header.websocket_pool_id(), Some("hdr"));
+
+        let metadata = effective_session_identity(
+            &json!({"metadata": {"user_id": "{\"session_id\":\"meta_sess\"}"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(metadata.websocket_pool_id(), Some("meta_sess"));
+
+        let hashed =
+            effective_session_identity(&json!({"metadata": {"user_id": "plain-user"}}), None)
+                .unwrap();
+        assert!(matches!(hashed, EffectiveSessionId::HashedUserId(_)));
+        assert!(hashed.websocket_pool_id().is_none());
+
+        let unsafe_meta = effective_session_identity(
+            &json!({"metadata": {"user_id": "{\"session_id\":\"bad\\nid\"}"}}),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(unsafe_meta, EffectiveSessionId::HashedUserId(_)));
+        assert!(unsafe_meta.websocket_pool_id().is_none());
     }
 
     #[test]

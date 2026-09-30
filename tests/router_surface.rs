@@ -42,8 +42,9 @@ use shunt::{
     server,
 };
 use std::collections::BTreeSet;
-use std::sync::{Mutex, MutexGuard};
 use tower::ServiceExt;
+
+mod common;
 
 /// A method no route in the crate registers, so a response distinguishes
 /// "path exists" (`405`) from "path does not exist" (`404`).
@@ -74,25 +75,33 @@ const BASE_PATHS: [(&str, &str); 7] = [
     ("/v1/messages/count_tokens", "POST"),
 ];
 
-/// 16 paths / 18 method+path pairs — the count `docs/admin-ui-delivery.md`
+/// 18 paths / 20 method+path pairs — the count `docs/admin-ui-delivery.md`
 /// records in its "Current surface" table. Counting the `allow` column here
-/// (ignoring the `HEAD` axum adds to every `GET`) is what reproduces the 18.
+/// (ignoring the `HEAD` axum adds to every `GET`) is what reproduces the 20.
 ///
-/// Only the three server-rendered entry points keep their `/admin` spelling; the
-/// JSON reads and every mutation answer under `/admin/api` after this change. The
+/// Only the three server-rendered entry points keep their `/admin` spelling —
+/// the mount root in both of its spellings, the login page, and the OIDC
+/// callback; the JSON reads and every mutation answer under `/admin/api`. The
 /// method sets are unchanged by the move — the same handlers are registered at
 /// new paths — and `every_registered_method_set_matches_the_inventory` proves it
 /// against the live router rather than taking it on trust.
-const ADMIN_PATHS: [(&str, &str); 16] = [
+const ADMIN_PATHS: [(&str, &str); 23] = [
     ("/admin", "GET,HEAD"),
+    // The same handler under the spelling a browser or proxy produces by
+    // appending a slash. A `{*path}` segment cannot match the empty string, so
+    // without its own registration `/admin/` falls through every route in this
+    // table and in `UI_LITERAL_PATHS` (#527).
+    ("/admin/", "GET,HEAD"),
     ("/admin/login", "GET,HEAD,POST"),
     ("/admin/api/oidc/start", "POST"),
     ("/admin/oidc/callback", "GET,HEAD"),
     ("/admin/api/logout", "POST"),
+    ("/admin/api/session", "GET,HEAD"),
     ("/admin/api/accounts", "GET,HEAD"),
     ("/admin/api/observed", "GET,HEAD"),
     ("/admin/api/pool", "GET,HEAD"),
     ("/admin/api/status", "GET,HEAD"),
+    ("/admin/api/routes", "GET,HEAD"),
     ("/admin/api/accounts/claude", "POST"),
     ("/admin/api/accounts/claude/{name}/complete", "POST"),
     ("/admin/api/accounts/claude/{name}/refresh", "POST"),
@@ -100,6 +109,10 @@ const ADMIN_PATHS: [(&str, &str); 16] = [
     ("/admin/api/accounts/codex", "GET,HEAD,POST"),
     ("/admin/api/accounts/codex/{name}/complete", "POST"),
     ("/admin/api/accounts/codex/{name}", "DELETE"),
+    ("/admin/api/accounts/antigravity", "GET,HEAD,POST"),
+    ("/admin/api/accounts/antigravity/{name}/complete", "POST"),
+    ("/admin/api/accounts/antigravity/{name}/refresh", "POST"),
+    ("/admin/api/accounts/antigravity/{name}", "DELETE"),
 ];
 
 /// The five routes `--features ui` adds inside the `/admin` mount, spelled as
@@ -161,18 +174,21 @@ const SPEND_PATHS: [(&str, &str); 2] = [
     ("/v1/organizations/spend_limits/{id}", "GET,HEAD,DELETE"),
 ];
 
-/// Mirrors `codex_endpoint::PATHS` and `codex_analytics::PATHS`, which are
+/// Mirrors `codex_endpoint::PATHS`, `codex_analytics::PATHS`, and
+/// `discovery::CODEX_PATHS`, which are
 /// `pub(crate)` and so cannot be imported here. Duplicating them is deliberate:
 /// `every_indirectly_registered_path_is_documented` reads both constants back
 /// out of their defining source and compares them against this list, so a
 /// change to either one fails this test and gets re-reviewed against the path
 /// split — which is exactly the guard being installed.
-const CODEX_ENDPOINT_PATHS: [(&str, &str); 5] = [
+const CODEX_ENDPOINT_PATHS: [(&str, &str); 7] = [
     ("/backend-api/codex/responses", "POST"),
     ("/responses", "POST"),
     ("/v1/responses", "POST"),
     ("/backend-api/codex/analytics-events/events", "POST"),
     ("/codex/analytics-events/events", "POST"),
+    ("/models", "GET,HEAD"),
+    ("/backend-api/codex/models", "GET,HEAD"),
 ];
 
 const USAGE_PATHS: [(&str, &str); 2] = [("/usage", "GET,HEAD"), ("/api/oauth/usage", "GET,HEAD")];
@@ -233,17 +249,6 @@ fn method_set(allow: &str) -> BTreeSet<&str> {
         .collect()
 }
 
-/// Serializes every test in this binary that touches the process environment.
-///
-/// The per-test-unique names in [`all_surfaces_config`] stop one test's value
-/// from satisfying another test's config, but they do not make `set_var` safe
-/// on their own: the hazard is a writer racing a **reader**, and
-/// `server::build_router` reads the environment while a sibling test may be
-/// writing it. So the lock has to span the writes, the `build_router` that
-/// reads them, and the [`EnvVars`] cleanup — holding it for the writes alone
-/// would exclude nothing.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
 /// `Config::default()` with **every** optional surface enabled at once.
 ///
 /// Env-backed credentials get per-process-unique names because the process
@@ -253,29 +258,18 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// Both `state_path` values are set to an empty path — the documented opt-out
 /// — so building a router never reads or writes the operator's real
 /// `~/.shunt` state.
-fn all_surfaces_config(label: &str) -> (Config, EnvVars) {
-    // A poisoned lock only means another test panicked while holding it; the
-    // environment is still ours to use, so recover rather than cascade.
-    let guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+async fn all_surfaces_config(label: &str) -> (Config, common::EnvVars) {
+    let mut vars = common::env_lock().await;
 
     let suffix = format!("{}_{label}", std::process::id());
     let admin_env = format!("SHUNT_ROUTER_SURFACE_ADMIN_{suffix}");
     let client_env = format!("SHUNT_ROUTER_SURFACE_CLIENT_{suffix}");
     let jwt_env = format!("SHUNT_ROUTER_SURFACE_JWT_{suffix}");
     let users_env = format!("SHUNT_ROUTER_SURFACE_USERS_{suffix}");
-    std::env::set_var(&admin_env, "admin:admin-secret");
-    std::env::set_var(&client_env, "tester:client-secret");
-    std::env::set_var(&jwt_env, "0123456789abcdef0123456789abcdef");
-    std::env::set_var(&users_env, "dev@example.com:password");
-
-    // The config takes ownership of these names below, so the guard needs its
-    // own copies to remove them by.
-    let admin_env_name = admin_env.clone();
-    let client_env_name = client_env.clone();
-    let jwt_env_name = jwt_env.clone();
-    let users_env_name = users_env.clone();
+    vars.set(&admin_env, "admin:admin-secret");
+    vars.set(&client_env, "tester:client-secret");
+    vars.set(&jwt_env, "0123456789abcdef0123456789abcdef");
+    vars.set(&users_env, "dev@example.com:password");
 
     let mut config = Config::default();
 
@@ -293,6 +287,7 @@ fn all_surfaces_config(label: &str) -> (Config, EnvVars) {
         read_keys: Vec::new(),
         session_ttl_secs: 3600,
         pending_ttl_secs: 600,
+        hide_observed: false,
         oidc: None,
     });
 
@@ -338,42 +333,7 @@ fn all_surfaces_config(label: &str) -> (Config, EnvVars) {
         ..AccountConfig::default()
     }];
 
-    (
-        config,
-        EnvVars {
-            names: vec![
-                admin_env_name,
-                client_env_name,
-                jwt_env_name,
-                users_env_name,
-            ],
-            _guard: guard,
-        },
-    )
-}
-
-/// Removes the env vars [`all_surfaces_config`] set once the test holding it
-/// finishes, and holds [`ENV_LOCK`] until then so no sibling test reads the
-/// environment mid-write. The per-process-unique names already stop one test's
-/// value from satisfying another's config, so the removal itself is hygiene
-/// rather than isolation — the lock is what provides isolation — but
-/// it matches the set/remove pairing every other test file here uses
-/// (`tests/admin_surface.rs` pairs all 91 of its `set_var` calls), and keeps the
-/// variables from outliving their test for the rest of the binary's run.
-///
-/// Removal happens on drop, at the end of the test body, never at its start:
-/// clearing shared globals on entry is what breaks a neighbour mid-run.
-struct EnvVars {
-    names: Vec<String>,
-    _guard: MutexGuard<'static, ()>,
-}
-
-impl Drop for EnvVars {
-    fn drop(&mut self) {
-        for name in &self.names {
-            std::env::remove_var(name);
-        }
-    }
+    (config, vars)
 }
 
 /// `true` when the router has any route registered at `path`.
@@ -434,7 +394,7 @@ async fn allowed_methods(router: &Router, path: &str) -> String {
 /// costs no extra request and runs no handler.
 #[tokio::test]
 async fn every_registered_method_set_matches_the_inventory() {
-    let (config, _env) = all_surfaces_config("methods");
+    let (config, _env) = all_surfaces_config("methods").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for (path, documented) in all_registered_entries() {
@@ -454,14 +414,14 @@ async fn every_registered_method_set_matches_the_inventory() {
 /// panics on a duplicate path+method, but only when both trees are registered.
 #[tokio::test]
 async fn every_optional_surface_can_be_enabled_at_once() {
-    let (config, _env) = all_surfaces_config("builds");
+    let (config, _env) = all_surfaces_config("builds").await;
     let (_router, _shared, _state) =
         server::build_router(config).expect("a config enabling every optional surface builds");
 }
 
 #[tokio::test]
 async fn every_documented_path_is_registered_when_all_surfaces_are_enabled() {
-    let (config, _env) = all_surfaces_config("registered");
+    let (config, _env) = all_surfaces_config("registered").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for path in all_registered_paths() {
@@ -477,7 +437,7 @@ async fn every_documented_path_is_registered_when_all_surfaces_are_enabled() {
 /// the test above would pass just as well against a catch-all fallback.
 #[tokio::test]
 async fn no_undocumented_path_is_registered() {
-    let (config, _env) = all_surfaces_config("undocumented");
+    let (config, _env) = all_surfaces_config("undocumented").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     // Deliberately near-misses of registered paths, plus `/v1/organizations/*`
@@ -543,7 +503,7 @@ const LEGACY_ADMIN_PATHS: [&str; 13] = [
 #[cfg(not(feature = "ui"))]
 #[tokio::test]
 async fn no_legacy_admin_path_survives_the_api_split() {
-    let (config, _env) = all_surfaces_config("legacy");
+    let (config, _env) = all_surfaces_config("legacy").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for path in LEGACY_ADMIN_PATHS {
@@ -565,7 +525,7 @@ async fn no_legacy_admin_path_survives_the_api_split() {
 #[cfg(feature = "ui")]
 #[tokio::test]
 async fn every_legacy_admin_path_is_now_only_an_spa_deep_link() {
-    let (config, _env) = all_surfaces_config("legacy");
+    let (config, _env) = all_surfaces_config("legacy").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for path in LEGACY_ADMIN_PATHS {
@@ -583,7 +543,7 @@ async fn every_legacy_admin_path_is_now_only_an_spa_deep_link() {
 /// and the other two are server-rendered pages the SPA does not replace.
 #[tokio::test]
 async fn the_server_rendered_login_flow_stays_outside_the_api_namespace() {
-    let (config, _env) = all_surfaces_config("survivors");
+    let (config, _env) = all_surfaces_config("survivors").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     for path in ["/admin", "/admin/login", "/admin/oidc/callback"] {
@@ -594,11 +554,60 @@ async fn the_server_rendered_login_flow_stays_outside_the_api_namespace() {
     }
 }
 
+/// Without `--features ui` there is no bundle to serve, and `/admin` says so
+/// instead of disappearing.
+///
+/// `docs/admin-ui-delivery.md` Resolution 1 accepts that a from-source build
+/// without the feature has no dashboard, so the `404` here is the decision, not
+/// a defect. What the decision does *not* license is an empty body: dropping the
+/// route entirely would leave axum's built-in `404`, which carries nothing, and
+/// an operator who typed the documented URL would have no way to tell a missing
+/// feature from a missing `[server.admin]` block — the two have different fixes.
+/// Asserting the body names the feature is therefore the point of the test; the
+/// status alone is what both spellings share.
+///
+/// Both spellings of the mount root are asserted, because they are two separate
+/// registrations answering one handler: `/admin/` would otherwise be free to
+/// regress to axum's empty `404` while `/admin` kept its sentence (#527).
+///
+/// The sibling assertion for the feature-on build is
+/// `admin_ui::the_mount_root_serves_the_spa_shell` and its trailing-slash twin.
+#[cfg(not(feature = "ui"))]
+#[tokio::test]
+async fn the_mount_root_without_the_ui_feature_explains_the_missing_bundle() {
+    let (config, _env) = all_surfaces_config("no-ui-root").await;
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
+
+    for path in ["/admin", "/admin/"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router answers");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let body = String::from_utf8(body.to_vec()).expect("the error body is UTF-8");
+        assert!(
+            body.contains("--features ui"),
+            "{path}: the 404 must name the feature that would provide a dashboard, so it is \
+             distinguishable from an unconfigured admin surface; it reads {body:?}"
+        );
+    }
+}
+
 /// `/` is a liveness probe target as well as a landing page, so any UI work
 /// that later claims a path must leave its `HEAD` answer intact.
 #[tokio::test]
 async fn root_still_answers_head_with_every_surface_enabled() {
-    let (config, _env) = all_surfaces_config("head");
+    let (config, _env) = all_surfaces_config("head").await;
     let (router, _shared, _state) = server::build_router(config).expect("router builds");
 
     let request = Request::builder()
@@ -646,10 +655,11 @@ fn registered_literal_paths(source: &str) -> Vec<&str> {
 /// actual gate rather than a spot check.
 ///
 /// A route whose path is not a string literal at the call site is invisible to
-/// this scan. There are two such sites today — the OTLP signals in
-/// `gateway_router` and the `codex_endpoint::PATHS` / `codex_analytics::PATHS`
-/// loops in `build_router`. `every_documented_path_is_registered_when_all_surfaces_are_enabled`
-/// catches a removal or rename in either set but **not** an addition, so
+/// this scan. There are three such sites today — the OTLP signals in
+/// `gateway_router`, and the `discovery::CODEX_PATHS` and
+/// `codex_endpoint::PATHS` / `codex_analytics::PATHS` loops in `build_router`.
+/// `every_documented_path_is_registered_when_all_surfaces_are_enabled`
+/// catches a removal or rename in any of those sets but **not** an addition, so
 /// [`INDIRECT_PATH_SOURCES`] scans those definitions to close that direction.
 #[test]
 fn every_registered_literal_path_is_documented() {
@@ -675,14 +685,14 @@ fn the_source_scan_finds_every_literal_registration() {
         .iter()
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
-    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 16 admin plus
+    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 23 admin plus
     // the 5 UI routes, 7 gateway (its 3 OTLP paths come from `Signal::path()`),
     // 2 spend. The UI five are counted unconditionally: this scan reads source
     // text, and `#[cfg(feature = "ui")]` does not remove the `.route("…"`
     // literals from it.
     assert_eq!(
-        found, 39,
-        "the literal-path scan found {found} registrations, not 39; either a route was added or \
+        found, 46,
+        "the literal-path scan found {found} registrations, not 46; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }
@@ -693,7 +703,13 @@ fn the_source_scan_finds_every_literal_registration() {
 /// passes a loop variable or a method call, not a literal — so an **addition**
 /// to one of them would otherwise register a live route while every other test
 /// in this file stayed green.
-const INDIRECT_PATH_SOURCES: [(&str, &str, &str, &str); 3] = [
+const INDIRECT_PATH_SOURCES: [(&str, &str, &str, &str); 4] = [
+    (
+        "src/discovery.rs",
+        include_str!("../src/discovery.rs"),
+        "const CODEX_PATHS: [&str; ",
+        "];",
+    ),
     (
         "src/codex_endpoint.rs",
         include_str!("../src/codex_endpoint.rs"),
@@ -768,10 +784,11 @@ fn the_indirect_scan_finds_every_definition() {
         .iter()
         .map(|(_, source, open, close)| string_literals_in_block(source, open, close).len())
         .sum();
-    // 3 `codex_endpoint::PATHS` + 2 `codex_analytics::PATHS` + 3 OTLP signals.
+    // 2 `discovery::CODEX_PATHS` + 3 `codex_endpoint::PATHS` + 2
+    // `codex_analytics::PATHS` + 3 OTLP signals.
     assert_eq!(
-        found, 8,
-        "the indirect-path scan found {found} definitions, not 8; either a path was added or \
+        found, 10,
+        "the indirect-path scan found {found} definitions, not 10; either a path was added or \
          removed, or one of these sets is no longer spelled the way the scan expects"
     );
 }
@@ -847,7 +864,7 @@ fn no_router_tree_is_composed_in_from_an_unscanned_module() {
 /// Counting the skips closes that. Together with the two count assertions above
 /// and the composition guard, the invariant across the scanned files is that no
 /// registration is silently dropped: every `.route(` either resolves to a literal
-/// path that must appear in the inventory, or is one of these five indirect sites
+/// path that must appear in the inventory, or is one of these six indirect sites
 /// whose definitions [`INDIRECT_PATH_SOURCES`] reads, and the four remaining ways
 /// axum can register a path — `.route_service(`, `.nest(`, `.nest_service(`, and
 /// composing another tree in with `.merge(` — are each counted.
@@ -869,13 +886,14 @@ fn every_nonliteral_route_call_is_one_this_test_already_tracks() {
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
 
-    // The two `codex_endpoint::PATHS` / `codex_analytics::PATHS` loops in
-    // `build_router`, and the three `Signal::path()` calls in `gateway_router`.
+    // The `discovery::CODEX_PATHS`, `codex_endpoint::PATHS` and
+    // `codex_analytics::PATHS` loops in `build_router`, and the three
+    // `Signal::path()` calls in `gateway_router`.
     assert_eq!(
         calls - literals,
-        5,
+        6,
         "the scanned sources make {calls} `.route(` calls of which {literals} pass a string \
-         literal, so {} are registered indirectly — not the 5 this test tracks through \
+         literal, so {} are registered indirectly — not the 6 this test tracks through \
          INDIRECT_PATH_SOURCES. A new indirect registration must be added there, or its paths go \
          unscanned.",
         calls - literals

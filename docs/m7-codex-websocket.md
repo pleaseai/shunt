@@ -44,8 +44,11 @@ flag, with a conservative fallback that never sends wrong context.
   `response.create` frame envelope, event streaming re-encoded through the existing
   [`AnthropicSseMachine`], and handshake-error re-shaping identical to the HTTP
   path.
-- A per-`x-claude-code-session-id` connection pool with TTL/size eviction, a
-  connection-owned reader task that keeps each pooled socket responsive to
+- A per-conversation connection pool keyed on the pool-safe effective
+  conversation id (the `x-claude-code-session-id` header or a parsed metadata
+  session id, extended with a delegated turn's agent id; the hashed user-id
+  fallback never pools) with size-bounded eviction,
+  a connection-owned reader task that keeps each pooled socket responsive to
   upstream keepalive pings, a `Pong`-verified liveness probe on reuse, and
   invalidation on any error.
 - `previous_response_id` continuation (`src/adapters/responses/codex_continuation.rs`): the
@@ -110,9 +113,13 @@ reproducing attestation.**
 
 ## 5. Connection pool (`codex_ws.rs`)
 
-- Process-global `HashMap<pool_key, Arc<PoolEntry>>` keyed by
-  `x-claude-code-session-id`, namespaced by the authenticated inbound client when
-  `[server.auth]` is configured. A std mutex guards only map lookups/inserts (never
+- Process-global `HashMap<pool_key, Arc<PoolEntry>>` keyed by the pool-safe
+  effective conversation id (the `x-claude-code-session-id` header or a parsed
+  metadata session id, extended with the delegated turn's agent id so a
+  subagent's turns pool under their own child identity; the hashed user-id
+  fallback never pools), namespaced by
+  the authenticated inbound client when `[server.auth]` is configured. A std
+  mutex guards only map lookups/inserts (never
   held across an await); each connection accepts at most one active turn, while a
   concurrent turn uses a dedicated socket. On a multi-tenant deployment, enable
   inbound authentication whenever `websocket = true`; without it, session IDs are
@@ -152,8 +159,8 @@ reproducing attestation.**
   over to HTTP, preserving the transport's "never worse than plain HTTP" safety net
   without restoring a turn queue. A `shunt.codex_ws_overflow` counter (`opened` vs
   `refused`, per provider) records each admission decision, giving operators a way
-  to see whether concurrent Claude Code agents actually share one
-  `x-claude-code-session-id` pool key and how often that costs continuation reuse.
+  to see whether concurrent Claude Code agents actually share one pool key and
+  how often that costs continuation reuse.
 - **Invalidation.** Any non-clean end (error/incomplete terminal, close, transport
   error, or a rejected `previous_response_id`) evicts the connection and clears its
   continuation state. A clean `response.completed` re-pools a fresh connection and
@@ -265,7 +272,15 @@ The issue frames this as "prewarm". Two separable things:
   on a hit it replaces `input` with the delta and inserts `previous_response_id`
   (+ the turn_state echo). `commit_or_fallback` then decides from that peeked event:
   a delivered event (`Ok`) commits to the WebSocket stream; a transport error or an
-  empty stream returns `Err` so `forward()` re-drives the turn over HTTP.
+  empty stream returns `Err` so `forward()` re-drives the turn over HTTP. So does a
+  first event that is the backend's wrapped HTTP-class error frame
+  (`{"type":"error","status":400,"error":{..},"headers":{..}}`, mirroring
+  openai/codex rust-v0.156.0's `map_wrapped_websocket_error_event`): a
+  `websocket_connection_limit_reached` code falls back as a pre-header transport
+  failure, and a non-2xx `status` / `status_code` is re-shaped exactly like a
+  refused handshake (`build_upstream_error` with that status and the frame's
+  `retry-after` header). The frame's other `headers` (the `x-codex-*` quota values)
+  are not recorded as quota observations.
 - The buffered first event is replayed ahead of the channel by both the streaming
   (`stream_events_response`) and non-streaming (`json_events_response`) drivers,
   which are otherwise the WebSocket analogs of the HTTP `stream_response` /
@@ -285,9 +300,12 @@ The issue frames this as "prewarm". Two separable things:
   gateway error instead of a `200 OK` carrying the partial content collected
   before it — so a non-streaming client cannot mistake a backend failure for a
   truncated-but-successful result. The status follows the error `code`
-  (`m1-responses-translation.md` §8): an in-stream `rate_limit_exceeded` is `429`
-  `rate_limit_error`, every other code `502`; both are terminal and never replay
-  the turn on the next upstream. Symmetric with the transport-error handling
+  (`m1-responses-translation.md` §8): an in-stream `rate_limit_exceeded` or
+  `slow_down` is `429` `rate_limit_error`, `server_is_overloaded` is `529`
+  `overloaded_error`, `invalid_prompt` / `bio_policy` / `cyber_policy` are `400`
+  `invalid_request_error`, any other code on a wrapped frame carrying a non-2xx
+  `status` / `status_code` takes that status, and everything else is `502`; all are terminal and
+  never replay the turn on the next upstream. Symmetric with the transport-error handling
   above and shared by both the WebSocket and HTTP JSON paths.
 - **HTTP fallback.** Any websocket failure *before the first event reaches the
   client* — connect timeout, refused/failed handshake, a failed frame send, or a

@@ -35,6 +35,7 @@ fn snapshot(
         utilization_7d_oi: None,
         reset_7d_oi: None,
         status: None,
+        quota_buckets: Vec::new(),
         needs_relogin: false,
     }
 }

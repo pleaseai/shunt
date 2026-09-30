@@ -11,7 +11,8 @@ Shunt Claude Code to any model. A transparent gateway that diverts only the mode
   <Card title="Per-model, not global" icon="ph:sliders-horizontal">
     Routing is driven by each request's `model` id. Keep the main session on
     Claude and divert only the models you name — down to a single subagent —
-    with no prompt fingerprinting.
+    with no prompt fingerprinting. One id can opt into deciding for itself,
+    from tool-result metadata rather than prompt text.
   </Card>
   <Card title="Spec-compliant gateway" icon="ph:seal-check">
     Implements the official [Claude Code LLM gateway

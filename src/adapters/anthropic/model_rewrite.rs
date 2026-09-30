@@ -18,7 +18,27 @@ use axum::body::Bytes;
 use futures_util::{stream, Stream, StreamExt};
 use serde_json::Value;
 
+/// Ceiling on the first frame the rewriter will buffer before giving up and
+/// passing the stream through untouched.
+///
+/// Callers do not name this directly — they ask [`first_frame_ceiling`] for the
+/// bound that applies to them.
 const MAX_FIRST_FRAME_BYTES: usize = 64 * 1024;
+
+/// The first-frame scan ceiling for a caller holding `response_byte_cap`.
+///
+/// Extracted from its call sites purely so the composition is testable. The
+/// choice is invisible end-to-end: with a cap below [`MAX_FIRST_FRAME_BYTES`],
+/// an inverted `min` — or passing the constant unconditionally — still refuses
+/// the same oversized replies with the same `oversized` outcome in the same
+/// time, because the only thing that differs is peak allocation *inside* the
+/// scan, which no outcome exposes. A unit test on this function is therefore
+/// the only place that regression can be caught.
+///
+/// `None` is the client path, which is bounded by the constant alone.
+pub(super) fn first_frame_ceiling(response_byte_cap: Option<usize>) -> usize {
+    response_byte_cap.map_or(MAX_FIRST_FRAME_BYTES, |cap| cap.min(MAX_FIRST_FRAME_BYTES))
+}
 
 /// Rewrite a non-streaming Messages response body's top-level `model` to
 /// `alias` when it is present and differs. A non-JSON body, a body without a
@@ -50,9 +70,24 @@ pub(super) fn rewrite_response_model(body: Bytes, alias: &str) -> Bytes {
 /// verbatim otherwise — together with any bytes past that boundary. After the
 /// first frame the stream is a straight passthrough, so only one small frame is
 /// ever buffered.
+///
+/// `max_first_frame` is that buffer's ceiling. It exists as a parameter rather
+/// than as the [`MAX_FIRST_FRAME_BYTES`] constant alone because an internal
+/// judge call runs under `judge_max_response_bytes`, and a cap *below* 64 KiB
+/// would otherwise not bound this scan at all: the rewriter would buffer to the
+/// constant and only then hand the bytes to `routing::serve::collect_bounded`
+/// to be refused. Callers pass `min(cap, MAX_FIRST_FRAME_BYTES)`; a caller with
+/// no cap passes the constant.
+///
+/// The ceiling bounds the *buffer*, not the peak: the chunk that crosses it is
+/// appended before the check, because the bail-out forwards every byte it has
+/// read and dropping the remainder of a chunk to stay under the line would lose
+/// stream content. Peak is therefore the ceiling plus one upstream chunk, freed
+/// as soon as the bail-out emits.
 pub(super) fn rewrite_first_model_stream<S, E>(
     upstream: S,
     alias: Option<String>,
+    max_first_frame: usize,
 ) -> impl Stream<Item = Result<Bytes, E>> + Send
 where
     S: Stream<Item = Result<Bytes, E>> + Send + 'static,
@@ -87,9 +122,8 @@ where
                 match upstream.next().await {
                     Some(Ok(chunk)) => {
                         buf.extend_from_slice(&chunk);
-                        if buf.len() > MAX_FIRST_FRAME_BYTES
-                            && first_event_boundary(&buf)
-                                .is_none_or(|end| end > MAX_FIRST_FRAME_BYTES)
+                        if buf.len() > max_first_frame
+                            && first_event_boundary(&buf).is_none_or(|end| end > max_first_frame)
                         {
                             return Some((Ok(Bytes::from(buf)), (upstream, None, alias)));
                         }
@@ -166,8 +200,8 @@ mod tests {
     use futures_util::{stream, StreamExt};
 
     use super::{
-        rewrite_first_model_stream, rewrite_message_start_frame, rewrite_response_model,
-        MAX_FIRST_FRAME_BYTES,
+        first_frame_ceiling, rewrite_first_model_stream, rewrite_message_start_frame,
+        rewrite_response_model, MAX_FIRST_FRAME_BYTES,
     };
 
     type Item = Result<Bytes, std::convert::Infallible>;
@@ -177,10 +211,19 @@ mod tests {
     }
 
     async fn collect(items: Vec<Item>, alias: Option<&str>) -> String {
+        collect_within(items, alias, MAX_FIRST_FRAME_BYTES).await
+    }
+
+    async fn collect_within(
+        items: Vec<Item>,
+        alias: Option<&str>,
+        max_first_frame: usize,
+    ) -> String {
         let upstream = stream::iter(items);
-        let out: Vec<_> = rewrite_first_model_stream(upstream, alias.map(str::to_owned))
-            .collect()
-            .await;
+        let out: Vec<_> =
+            rewrite_first_model_stream(upstream, alias.map(str::to_owned), max_first_frame)
+                .collect()
+                .await;
         out.into_iter()
             .map(|item| String::from_utf8(item.unwrap().to_vec()).unwrap())
             .collect()
@@ -300,6 +343,68 @@ mod tests {
         let oversized = "x".repeat(MAX_FIRST_FRAME_BYTES + 1);
         let out = collect(vec![chunk(&oversized)], Some("claude-alias")).await;
         assert_eq!(out, oversized);
+    }
+
+    /// The ceiling composition, which nothing downstream can check.
+    ///
+    /// Each arm pins a regression that compiles and passes every other test in
+    /// this file: an inverted `min` (the cap arm would return the constant),
+    /// and an unconditional constant (same). The `None` arm is the client path,
+    /// which must keep the constant it has always had.
+    #[test]
+    fn the_first_frame_ceiling_takes_whichever_bound_is_smaller() {
+        assert_eq!(
+            first_frame_ceiling(None),
+            MAX_FIRST_FRAME_BYTES,
+            "the client path is bounded by the constant alone"
+        );
+        assert_eq!(
+            first_frame_ceiling(Some(1024)),
+            1024,
+            "a cap below the constant is the binding one"
+        );
+        assert_eq!(
+            first_frame_ceiling(Some(MAX_FIRST_FRAME_BYTES * 2)),
+            MAX_FIRST_FRAME_BYTES,
+            "a cap above the constant must not raise the scan ceiling"
+        );
+    }
+
+    /// A caller under a byte cap smaller than [`MAX_FIRST_FRAME_BYTES`] bounds
+    /// the scan at *its* cap, not at the constant.
+    ///
+    /// An internal judge call runs under `judge_max_response_bytes`. With the
+    /// constant hardcoded, a 1 KiB cap still let a nonconforming SSE reply
+    /// buffer to 64 KiB here before `collect_bounded` could refuse it — the
+    /// configured limit bounded the refusal, not the allocation. Non-vacuity:
+    /// restore the constant inside the loop and this goes red, because the
+    /// frame boundary at 4 KiB is under 64 KiB and so gets rewritten.
+    #[tokio::test]
+    async fn a_caller_cap_below_the_constant_bounds_the_scan() {
+        let filler = "x".repeat(4096);
+        let start = format!(
+            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"model\":\"upstream\",\"pad\":\"{filler}\"}}}}\n\n"
+        );
+
+        // Under the constant the frame is found and rewritten...
+        let unbounded = collect_within(
+            vec![chunk(&start)],
+            Some("claude-alias"),
+            MAX_FIRST_FRAME_BYTES,
+        )
+        .await;
+        assert!(
+            unbounded.contains("\"model\":\"claude-alias\""),
+            "the control: a 4 KiB frame is well inside the 64 KiB constant"
+        );
+
+        // ...but a 1 KiB caller cap gives up before buffering that far, and
+        // passes the bytes through untouched for the collector to refuse.
+        let bounded = collect_within(vec![chunk(&start)], Some("claude-alias"), 1024).await;
+        assert_eq!(
+            bounded, start,
+            "a cap below the constant must stop the scan at the cap"
+        );
     }
 
     #[tokio::test]

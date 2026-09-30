@@ -2857,15 +2857,62 @@ mod tests {
     /// The producer half of `a_failure_seen_before_the_timeout_still_blocks_the_cache`:
     /// the flags must survive the discarded result, not ride along inside it.
     ///
-    /// A FIFO with no writer blocks `std::fs::read` at `open`, which is the
-    /// only way to stall the batched read on demand rather than by racing a
-    /// large file against the deadline. The first candidate is a missing
-    /// file, so its failure is recorded microseconds in, and the deadline is
-    /// seconds out — not a race in any meaningful sense. The FIFO is opened
-    /// for writing the moment the call returns and **before** any assertion,
-    /// because dropping a runtime waits for its `spawn_blocking` tasks: a
-    /// panic with the read still blocked would hang teardown instead of
-    /// failing.
+    /// A FIFO is the only way to stall the batched read on demand rather than
+    /// by racing a large file against the deadline: `std::fs::read` blocks at
+    /// `open` until a writer exists, and then in `read` until every writer is
+    /// gone. The first candidate is a missing file, so its failure is recorded
+    /// microseconds in, and the deadline is seconds out — not a race in any
+    /// meaningful sense.
+    ///
+    /// The writer is opened **before** the call, and read+write rather than
+    /// write-only. Both are load-bearing, and issue #505 is what happens
+    /// without the first: dropping a runtime waits for its `spawn_blocking`
+    /// tasks, so a read left parked in `open` hangs the whole test binary —
+    /// no failure, no timeout, no output — instead of failing.
+    ///
+    /// * Opening first makes the stall a blocked `read` (a writer exists)
+    ///   rather than a blocked `open`, for as long as this test holds the
+    ///   writer — which is across the whole call. Opening
+    ///   afterwards instead made the release conditional on an `open` that
+    ///   can fail — and its `Result` was discarded, which is the hang: when
+    ///   that open fails, for whatever reason, nothing ever opens the write
+    ///   end. What fails it during a full-suite run is not established;
+    ///   `EMFILE` under fd pressure is a hypothesis, and only the discarded
+    ///   `Result` itself was reproduced.
+    /// * Failing to open now aborts before anything is blocked, so it reports
+    ///   as a failed assertion rather than stranding a read.
+    /// * `O_RDWR` never blocks. A write-only open blocks until a reader is
+    ///   present, deadlocking this thread against the task it must release.
+    ///
+    /// The fifo is unlinked **before** `drop(writer)`, and the ordering is the
+    /// whole guarantee: *the fifo's name is never visible without a writer
+    /// behind it*. The blocking closure runs on an OS thread, so the kernel
+    /// can deschedule it between recording the missing file's failure and
+    /// opening the fifo — for seconds, under exactly the full-suite load this
+    /// hang needs. Wherever it resumes, it is safe: opening while the name
+    /// still exists means a writer is still held, so it proceeds to `read`
+    /// and `drop(writer)` delivers EOF; opening after the unlink gets
+    /// `ENOENT` at once.
+    ///
+    /// Neither weaker ordering holds. Unlinking after the wait does not run
+    /// at all when the wait panics. Unlinking between `drop(writer)` and the
+    /// wait still leaves a window in which the name exists with no writer,
+    /// and an `open` that blocks in that window is never woken by the
+    /// unlink — POSIX does not wake a blocked FIFO `open` when the name goes
+    /// away.
+    ///
+    /// Reacquiring `lock` proves the blocking read actually finished:
+    /// `file_derived_plans` moves its single-flight permit into the closure
+    /// and releases it only on genuine completion.
+    ///
+    /// All of that runs **before** the assertions, and nothing in it can
+    /// panic until the read is known to be over. An assertion that fires
+    /// first would unwind past the unlink — dropping `writer` on the way out
+    /// and leaving the name with no writer behind it — so a closure that had
+    /// not reached its `open` yet would park there and hang teardown instead
+    /// of letting the failed assertion be reported. `phase` is already
+    /// computed by then, so asserting afterwards tests exactly the same
+    /// thing.
     #[cfg(unix)]
     #[tokio::test]
     async fn read_failures_survive_a_timed_out_file_phase() {
@@ -2878,6 +2925,14 @@ mod tests {
             .status()
             .expect("mkfifo must be available on unix");
         assert!(status.success(), "mkfifo failed");
+
+        // Opened before the read exists, so a failure here cannot strand it
+        // -- see the doc comment.
+        let writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&fifo)
+            .expect("the fifo writer must open before the blocking read is spawned");
 
         let accounts = vec![
             AccountConfig {
@@ -2897,8 +2952,9 @@ mod tests {
             per_account: Duration::from_secs(1),
             min_slice: Duration::from_secs(2),
         };
+        let lock = fresh_file_lock();
         let phase = file_derived_plans(
-            &fresh_file_lock(),
+            &lock,
             AuthMode::ClaudeOauth,
             &accounts,
             &budgets,
@@ -2906,16 +2962,19 @@ mod tests {
         )
         .await;
 
-        // Unblock before asserting -- see the doc comment. Opened read+write
-        // rather than write-only: a write-only open on a FIFO blocks until a
-        // reader is present, so if the blocking task had not reached this
-        // path yet the test thread would deadlock against it. `O_RDWR` never
-        // blocks, and holding it open keeps the reader's own open satisfied
-        // whenever it arrives.
-        let writer = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&fifo);
+        // Settle the read completely before asserting anything. Every
+        // statement here is panic-free until the read is known to be over,
+        // so no assertion below can unwind past the teardown and strand it.
+        //
+        // Unlink before the writer goes away, never after: the invariant is
+        // that the fifo's name is never visible without a writer behind it.
+        // Closing the last writer is then the EOF that ends the stalled read,
+        // and reacquiring the permit is the proof that it ended.
+        let _ = std::fs::remove_dir_all(&dir);
+        drop(writer);
+        let _permit = tokio::time::timeout(Duration::from_secs(5), lock.lock())
+            .await
+            .expect("the stalled read must finish once the fifo writer is closed");
 
         assert!(
             phase.read.is_none(),
@@ -2926,9 +2985,6 @@ mod tests {
             "the missing credential failed to read before the stall, and that is knowledge \
              this pass keeps even though the result was discarded"
         );
-
-        drop(writer);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A read failure observed before a *later* account's credential stalls

@@ -9,7 +9,7 @@ use axum::{
 };
 
 use crate::{
-    concurrency::is_codex_path,
+    concurrency::is_codex_request,
     config::{AccessControlConfig, LimitsConfig},
     error::{into_openai_error_shape, ShuntError, UpstreamError},
     gateway::device::client_ip,
@@ -19,13 +19,19 @@ use crate::{
 pub(crate) struct HttpTuningLayer {
     access_control: AccessControlConfig,
     limits: LimitsConfig,
+    codex_endpoint_enabled: bool,
 }
 
 impl HttpTuningLayer {
-    pub(crate) fn new(access_control: AccessControlConfig, limits: LimitsConfig) -> Self {
+    pub(crate) fn new(
+        access_control: AccessControlConfig,
+        limits: LimitsConfig,
+        codex_endpoint_enabled: bool,
+    ) -> Self {
         Self {
             access_control,
             limits,
+            codex_endpoint_enabled,
         }
     }
 }
@@ -36,7 +42,7 @@ pub(crate) async fn enforce_http_tuning(
     next: Next,
 ) -> Response {
     let path = request.uri().path();
-    let codex_shape = is_codex_path(path);
+    let codex_shape = is_codex_request(request.uri(), tuning.codex_endpoint_enabled);
     let allow_exempt = matches!(path, "/" | "/health");
     if tuning.access_control.enabled() {
         let peer = request
@@ -183,13 +189,21 @@ mod tests {
     }
 
     fn app(access_control: AccessControlConfig, limits: LimitsConfig) -> Router {
+        app_with_codex(access_control, limits, false)
+    }
+
+    fn app_with_codex(
+        access_control: AccessControlConfig,
+        limits: LimitsConfig,
+        codex_endpoint_enabled: bool,
+    ) -> Router {
         Router::new()
             .route("/", get(|| async { StatusCode::NO_CONTENT }))
             .route("/health", get(|| async { StatusCode::NO_CONTENT }))
             .route("/v1/messages", post(|| async { StatusCode::NO_CONTENT }))
             .route("/v1/responses", post(|| async { StatusCode::NO_CONTENT }))
             .layer(middleware::from_fn_with_state(
-                HttpTuningLayer::new(access_control, limits),
+                HttpTuningLayer::new(access_control, limits, codex_endpoint_enabled),
                 enforce_http_tuning,
             ))
     }
@@ -315,6 +329,24 @@ mod tests {
         let codex = body(codex).await;
         assert!(codex.get("type").is_none());
         assert_eq!(codex["error"]["type"], "permission_error");
+    }
+
+    #[tokio::test]
+    async fn catalog_access_errors_use_openai_shape() {
+        let configured = access(&[], &["192.0.2.0/24"]);
+        for path in [
+            "/models",
+            "/backend-api/codex/models",
+            "/v1/models?client_version=0.152.0",
+        ] {
+            let response = app_with_codex(configured.clone(), LimitsConfig::default(), true)
+                .oneshot(request(path, Some("192.0.2.1".parse().unwrap())))
+                .await
+                .unwrap();
+            let body = body(response).await;
+            assert!(body.get("type").is_none(), "{path}: {body}");
+            assert_eq!(body["error"]["type"], "permission_error", "{path}: {body}");
+        }
     }
 
     #[tokio::test]

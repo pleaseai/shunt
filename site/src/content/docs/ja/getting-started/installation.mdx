@@ -26,7 +26,9 @@ brew services start shunt
 ```
 
 ログは `$(brew --prefix)/var/log/shunt.log` に出力されます。`brew services stop` は `SIGTERM`
-を送信し、shunt は実行中のリクエストを完了させてから終了します。設定ファイルを変更しても再起動は不要です
+を送信し、shunt は実行中のリクエストを完了させてから終了します — 待機するのは最大で
+`[server] shutdown_timeout_seconds`(既定は 30 秒。この値の変更には再起動が必要)であり、それを過ぎると
+待機をやめて終了します。設定ファイルを変更しても再起動は不要です
 — shunt が自動的に[ホットリロード](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)します。
 詳細（設定探索パスなど）は [Running as a
 service](https://github.com/pleaseai/shunt/blob/main/docs/running.md#run-as-a-background-service-homebrew)

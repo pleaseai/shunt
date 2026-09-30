@@ -311,9 +311,11 @@ impl CursorAgentTurn {
                             .pending
                             .push_back(Err(CursorError::from_reqwest(error)));
                     }
-                    // Clean EOF: the turn ended. Validate the decoder finished on
-                    // a frame boundary so a truncated body is an error, not a
-                    // partial/empty success.
+                    // The body ended. That is not a terminal: a Connect wire
+                    // terminal marks `finished` in `ingest` and never reaches
+                    // here, so reaching it means the stream was cut before one
+                    // arrived. Report that rather than closing the turn as an
+                    // empty/partial success.
                     Ok(None) => {
                         state.finished = true;
                         state.pending.push_back(terminal_event(
@@ -341,11 +343,20 @@ impl CursorAgentTurn {
     }
 }
 
-/// Decide the terminal event when the upstream byte stream ends. A first-byte
-/// timeout with no assistant output (`timed_out && !got_output`) is an upstream
-/// stall and surfaces as an error rather than an empty success. Otherwise the
-/// decoder must have ended on a frame boundary — leftover buffered bytes mean a
-/// truncated body.
+/// Decide the terminal event when the upstream byte stream ends without a
+/// Connect wire terminal (a wire terminal ends the turn in [`ReadState::ingest`]
+/// and never reaches here).
+///
+/// Three ways to get here, in the order they are ruled out:
+/// - a first-byte timeout with no assistant output (`timed_out && !got_output`)
+///   is an upstream stall;
+/// - leftover buffered bytes mean the body was truncated mid-frame;
+/// - a clean EOF (`!timed_out`) still means the stream was cut before its
+///   terminal, so it is an error, not an empty success.
+///
+/// The one success is an idle timeout after output: the server holds the
+/// response open waiting for an exec-result the stateless bridge never sends,
+/// so going quiet there is the normal end of a turn.
 fn terminal_event(
     timed_out: bool,
     got_output: bool,
@@ -357,6 +368,9 @@ fn terminal_event(
         ));
     }
     match finish {
+        Ok(()) if !timed_out => Err(CursorError::internal(
+            "cursor: upstream EOF without an authoritative terminal",
+        )),
         Ok(()) => Ok(CursorStreamEvent::End),
         Err(error) => Err(CursorError::internal(format!("cursor frame: {error}"))),
     }
@@ -415,11 +429,23 @@ impl ReadState {
             // for an exec-result on the stream. The stateless bridge surfaces the
             // call as a tool_use pause and re-runs with the result in history, so
             // finish the turn here rather than sending an exec-result back.
-            if let Some((name, input_json)) = extract_tool_call(&payload) {
+            if let Some((name, input_json, wire_id)) = extract_tool_call(&payload) {
+                // Prefer Cursor's own call identity so the id shunt shows the
+                // client matches the one upstream used. The Anthropic `tool_use`
+                // id is the gateway's to mint, though, and the bridge is
+                // stateless -- the id only has to stay consistent between the
+                // `tool_use` and the `tool_result` the client echoes back -- so
+                // a frame without a usable id mints one instead of failing a
+                // tool call that decoded fine. This mirrors the XML recovery
+                // path, which also mints its own id (`tool_use_xml.rs`).
+                let id = wire_id.unwrap_or_else(mint_tool_use_id);
                 self.got_text = true;
                 self.finished = true;
-                self.pending
-                    .push_back(Ok(CursorStreamEvent::ToolCall { name, input_json }));
+                self.pending.push_back(Ok(CursorStreamEvent::ToolCall {
+                    id,
+                    name,
+                    input_json,
+                }));
                 return;
             }
             // A built-in tool call cannot be bridged. Fail loudly rather than
@@ -790,10 +816,21 @@ fn extract_reasoning_text(payload: &[u8]) -> Option<String> {
     extract_nested_text(payload, 4)
 }
 
+/// Mint an Anthropic `tool_use` id for a call Cursor did not identify on the
+/// wire. Matches the `toolu_` shape Anthropic clients see from the upstream
+/// this endpoint impersonates.
+fn mint_tool_use_id() -> String {
+    format!("toolu_{}", uuid::Uuid::new_v4().simple())
+}
+
 /// Decode a native MCP tool call from a response message:
 /// `exec_server_message(2) → ExecServerMessage.mcp_args(11) → McpArgs`.
-/// Returns `(tool name, input JSON)`; `tool_name`(5) wins over `name`(1).
-fn extract_tool_call(payload: &[u8]) -> Option<(String, String)> {
+/// Returns `(tool name, input JSON, wire tool_call_id)`.
+///
+/// The id rides along with the name out of the same `McpArgs` the search
+/// settled on. Reading it in a second traversal would let the two come from
+/// different entries when a payload carries more than one exec or args field.
+fn extract_tool_call(payload: &[u8]) -> Option<(String, String, Option<String>)> {
     for esm in iter_fields(payload) {
         // AgentServerMessage.exec_server_message = field 2.
         if esm.field != 2 || esm.wire != 2 {
@@ -831,14 +868,17 @@ fn extract_tool_call(payload: &[u8]) -> Option<(String, String)> {
 /// fields 7 and 11 ever carry one, so a `tool_*` id outside field 11 identifies
 /// an unbridged built-in call without enumerating Cursor's built-in catalog.
 ///
-/// The scan stays deliberately wide. Two narrower variants were built and
-/// measured against the live upstream on an identical request: pinning
-/// detection to the field position where the id was captured leaked silent
-/// turns (2 of 22), and additionally requiring the id body to be uuid-shaped
-/// leaked badly (8 of 16) -- even though every captured id satisfies that
-/// shape. The wide scan showed no silent turn in 38. A false positive fails a
-/// working turn and a miss restores the original silent truncation, so neither
-/// is free; the wide form is what the measurements support.
+/// The scan stays wide on the id body and narrow on nesting. Two variants that
+/// narrowed the *body* were built and measured against the live upstream on an
+/// identical request: pinning detection to the field position where the id was
+/// captured leaked silent turns (2 of 22), and additionally requiring the id
+/// body to be uuid-shaped leaked badly (8 of 16) -- even though every captured
+/// id satisfies that shape. Neither is used. Nesting is a separate axis: the
+/// recursive walk that once accompanied this scan re-parsed user content as
+/// protobuf and reported a tool call inside it (#426), so the scan now looks
+/// only at direct fields, where every captured id sits. A false positive fails
+/// a working turn and a miss restores the original silent truncation, so
+/// neither is free.
 fn extract_unbridged_builtin_tool_call(payload: &[u8]) -> Option<u64> {
     for esm in iter_fields(payload) {
         // AgentServerMessage.exec_server_message = field 2.
@@ -850,7 +890,7 @@ fn extract_unbridged_builtin_tool_call(payload: &[u8]) -> Option<u64> {
             if args.field == 11 || args.wire != 2 {
                 continue;
             }
-            if contains_tool_call_id(args.data, 0) {
+            if contains_tool_call_id(args.data) {
                 return Some(args.field);
             }
         }
@@ -858,41 +898,56 @@ fn extract_unbridged_builtin_tool_call(payload: &[u8]) -> Option<u64> {
     None
 }
 
-/// Whether `buf` contains a `tool_<...>` call-id string within [`MAX_TOOL_ID_SCAN_DEPTH`]
-/// levels of nesting.
+/// Whether a direct length-delimited field of `buf` is a `tool_<...>` call id.
+///
+/// The scan does not recurse. Protobuf does not distinguish a nested message
+/// from a string, so descending into a field re-parses whatever it holds --
+/// including the file contents a built-in read carries -- as wire format. Text
+/// that happens to begin with a valid tag and length followed by `tool_` then
+/// reads as a call id and fails a working turn; `\n` is `0x0a` (field 1, wire
+/// type 2) and a space is a length of 32, so a blank line before a
+/// one-space-indented `tool_` line is enough. The captured shape places the id
+/// at depth 0 -- `ExecServerMessage` field 7 = `{ 1: <path>, 2: "tool_<uuid>" }`
+/// -- so no recursion is needed to reach it.
 ///
 /// The prefix is matched on raw bytes. A length-delimited field is not required
-/// to decode as UTF-8 for its `tool_` prefix to count, which keeps the scan on
-/// the wide side the measurements above support and avoids running a full UTF-8
-/// validation over every nested field of every frame on the streaming path.
-fn contains_tool_call_id(buf: &[u8], depth: usize) -> bool {
+/// to decode as UTF-8 for its `tool_` prefix to count, which avoids running a
+/// full UTF-8 validation over every field of every frame on the streaming path.
+///
+/// A direct field can also carry user content rather than an id -- the path or
+/// body a built-in read or write operates on -- and that content may itself
+/// begin with `tool_`. Only fields no longer than [`MAX_TOOL_CALL_ID_LEN`]
+/// count, the same bound the bridged path puts on `McpArgs.tool_call_id`: a
+/// captured id is `tool_<uuid>`, 41 bytes, and file contents that start with
+/// `tool_` and still fit in 512 bytes remain the one shape this scan cannot
+/// tell from an id without the field-position knowledge the measurements
+/// above ruled out.
+fn contains_tool_call_id(buf: &[u8]) -> bool {
     for field in iter_fields(buf) {
         if field.wire != 2 {
             continue;
         }
-        if field.data.starts_with(b"tool_") {
-            return true;
-        }
-        if depth < MAX_TOOL_ID_SCAN_DEPTH && contains_tool_call_id(field.data, depth + 1) {
+        if field.data.len() <= MAX_TOOL_CALL_ID_LEN && field.data.starts_with(b"tool_") {
             return true;
         }
     }
     false
 }
 
-/// Nesting depth scanned for a `tool_*` call id. Bounds recursion on a
-/// malformed payload. Deliberately far shallower than [`MAX_PROTOBUF_VALUE_DEPTH`]
-/// (64): a call id sits a level or two under the `ExecServerMessage` field that
-/// carries it, so a deeper walk buys nothing on a well-formed frame and only
-/// does more work on a malformed one.
-const MAX_TOOL_ID_SCAN_DEPTH: usize = 8;
-
 /// Decode `McpArgs { name=1, args=2 (map<string,Value>), tool_call_id=3,
-/// tool_name=5 }` into `(name, input JSON)`. `tool_call_id` is intentionally
-/// ignored — the Anthropic tool_use id is minted by the caller.
-fn decode_mcp_args(buf: &[u8]) -> Option<(String, String)> {
+/// tool_name=5 }` into `(name, input JSON, tool_call_id)`. `tool_name`(5) wins
+/// over `name`(1).
+///
+/// `tool_call_id` is Cursor's own call identity. It is reported so the bridge
+/// can prefer it over a minted id, but it is optional: the Anthropic-side
+/// `tool_use` id belongs to the gateway, so a frame without a usable id still
+/// decodes to a tool call (see [`ReadState::ingest`]). The id is read in this
+/// same pass rather than by a second traversal so the name and the id can never
+/// be taken from different `McpArgs`.
+fn decode_mcp_args(buf: &[u8]) -> Option<(String, String, Option<String>)> {
     let mut name: Option<String> = None;
     let mut tool_name: Option<String> = None;
+    let mut tool_call_id: Option<String> = None;
     let mut args = serde_json::Map::new();
     for field in iter_fields(buf) {
         if field.wire != 2 {
@@ -901,6 +956,14 @@ fn decode_mcp_args(buf: &[u8]) -> Option<(String, String)> {
         match field.field {
             1 => name = std::str::from_utf8(field.data).ok().map(str::to_string),
             5 => tool_name = std::str::from_utf8(field.data).ok().map(str::to_string),
+            // Singular field: protobuf says the last occurrence wins, so a
+            // repeated tag overwrites rather than failing the whole call.
+            3 => {
+                tool_call_id = std::str::from_utf8(field.data)
+                    .ok()
+                    .filter(|id| !id.is_empty() && id.len() <= MAX_TOOL_CALL_ID_LEN)
+                    .map(str::to_string)
+            }
             2 => {
                 // One map<string,Value> entry: { key=1, value=2 (Value) }.
                 let mut key: Option<String> = None;
@@ -921,8 +984,17 @@ fn decode_mcp_args(buf: &[u8]) -> Option<(String, String)> {
     }
     let name = tool_name.or(name)?;
     let input_json = serde_json::to_string(&serde_json::Value::Object(args)).ok()?;
-    Some((name, input_json))
+    Some((name, input_json, tool_call_id))
 }
+
+/// Longest `McpArgs.tool_call_id` shunt will echo onto the Anthropic `tool_use`
+/// id, and the longest direct field the unbridged built-in scan
+/// ([`contains_tool_call_id`]) will read as a call id. Observed ids are
+/// `tool_<uuid>`; the cap bounds what an upstream can push into a
+/// client-visible field, and on the unbridged scan it excludes only content
+/// longer than the cap -- a shorter field that begins with `tool_` still
+/// counts. A longer id is treated as absent, not fatal.
+const MAX_TOOL_CALL_ID_LEN: usize = 512;
 
 /// Maximum `google.protobuf.Value` nesting shunt will decode. Bounds recursion
 /// so a hostile/malformed deeply-nested payload cannot overflow the stack
@@ -1134,11 +1206,10 @@ mod tests {
     }
 
     #[test]
-    fn terminal_event_clean_eof_ends_even_without_output() {
-        assert!(matches!(
-            super::terminal_event(false, false, Ok(())),
-            Ok(CursorStreamEvent::End)
-        ));
+    fn cursor_terminal_tracer_clean_eof_requires_authoritative_terminal() {
+        for got_output in [false, true] {
+            assert!(super::terminal_event(false, got_output, Ok(())).is_err());
+        }
     }
 
     #[test]
@@ -1352,7 +1423,7 @@ mod tests {
             mcp_args.extend(field_ld(2, &entry));
         }
         let payload = field_ld(2, &field_ld(11, &mcp_args));
-        let (name, input_json) = extract_tool_call(&payload).expect("tool call decoded");
+        let (name, input_json, _) = extract_tool_call(&payload).expect("tool call decoded");
         assert_eq!(name, "Read");
         let input: serde_json::Value = serde_json::from_str(&input_json).unwrap();
         assert_eq!(input["file_path"], serde_json::json!("/tmp/x"));
@@ -1402,6 +1473,60 @@ mod tests {
     }
 
     #[test]
+    fn user_content_that_parses_as_protobuf_is_not_a_tool_call() {
+        // A built-in file read carries the file's contents. Protobuf does not
+        // distinguish a nested message from a string, so a scan that recursed
+        // would re-parse that content as wire format. This body is ordinary
+        // text -- a blank line, then a line indented one space -- whose bytes
+        // also form a valid tag (0x0a = field 1, wire 2) and length (0x20 = 32)
+        // followed by `tool_`. Recursing here reports a tool call in the user's
+        // own data and fails a working turn (#426).
+        let content = "\n tool_call_id_example_abcdefghijk";
+        let builtin = field_str(1, content);
+        let payload = field_ld(2, &field_ld(7, &builtin));
+
+        assert_eq!(
+            extract_unbridged_builtin_tool_call(&payload),
+            None,
+            "file content must not be re-parsed as a tool call"
+        );
+    }
+
+    #[test]
+    fn long_content_beginning_with_tool_prefix_is_not_a_tool_call() {
+        // The direct fields of a built-in call carry its arguments as well as
+        // its id, and an argument can be file content that itself begins with
+        // `tool_` -- a module whose first line is `tool_registry = {}`. The
+        // prefix alone cannot tell that apart from an id; the length can, since
+        // a captured id is `tool_<uuid>` and the scan shares the bridged path's
+        // MAX_TOOL_CALL_ID_LEN cap. Content past that cap is not an id, and the
+        // same shape at id length still is, so the cap narrows without leaking.
+        let mut content = String::from("tool_registry = {}\n");
+        while content.len() <= super::MAX_TOOL_CALL_ID_LEN {
+            content.push_str("# ...\n");
+        }
+        let payload = field_ld(2, &field_ld(7, &field_str(1, &content)));
+        assert_eq!(
+            extract_unbridged_builtin_tool_call(&payload),
+            None,
+            "long content beginning with tool_ must not be read as a call id"
+        );
+    }
+
+    #[test]
+    fn short_content_beginning_with_tool_prefix_is_still_a_tool_call() {
+        // The same shape at id length is still read as a call: the cap is the
+        // only narrowing, so this is the residual case the doc on
+        // MAX_TOOL_CALL_ID_LEN names.
+        let payload = field_ld(2, &field_ld(7, &field_str(1, "tool_registry = {}\n")));
+        assert_eq!(
+            extract_unbridged_builtin_tool_call(&payload),
+            Some(7),
+            "an id-length tool_ field is still detected: the cap is the only narrowing"
+        );
+    }
+
+    #[test]
     fn plain_text_frame_is_not_reported_as_unbridged() {
         // A frame with no tool_* id anywhere must not trip the detector.
         let payload = field_ld(2, &field_ld(10, &field_str(1, "just some text")));
@@ -1414,7 +1539,7 @@ mod tests {
         let mut mcp_args = field_str(1, "fallback");
         mcp_args.extend(field_str(5, "Preferred"));
         let payload = field_ld(2, &field_ld(11, &mcp_args));
-        let (name, _) = extract_tool_call(&payload).expect("tool call decoded");
+        let (name, ..) = extract_tool_call(&payload).expect("tool call decoded");
         assert_eq!(name, "Preferred");
     }
 
@@ -1450,6 +1575,7 @@ mod tests {
 
     fn tool_call_frame(name: &str, args: &[(&str, serde_json::Value)]) -> Bytes {
         let mut mcp_args = field_str(5, name);
+        mcp_args.extend(field_str(3, "call_authentic_fixture"));
         for (key, value) in args {
             let mut entry = field_str(1, key);
             entry.extend(field_ld(2, &encode_protobuf_value(value)));
@@ -1526,7 +1652,9 @@ mod tests {
         let (name, input_json) = events
             .iter()
             .find_map(|event| match event {
-                Ok(CursorStreamEvent::ToolCall { name, input_json }) => Some((name, input_json)),
+                Ok(CursorStreamEvent::ToolCall {
+                    name, input_json, ..
+                }) => Some((name, input_json)),
                 _ => None,
             })
             .expect("tool call event should be present");
@@ -1534,6 +1662,77 @@ mod tests {
         let input: serde_json::Value = serde_json::from_str(input_json).unwrap();
         assert_eq!(input["file_path"], serde_json::json!("/tmp/x"));
         assert_eq!(input["limit"].as_f64(), Some(5.0));
+    }
+
+    #[tokio::test]
+    async fn tool_call_without_wire_id_still_calls_with_a_minted_id() {
+        // The wire id is preferred, not required: the Anthropic `tool_use` id is
+        // the gateway's to mint, and the stateless bridge only needs it to stay
+        // consistent with the `tool_result` the client echoes back. A decodable
+        // call must not be turned into an error just because Cursor omitted its
+        // own identity.
+        let args = field_str(5, "Read");
+        let frame = connect_frame(&field_ld(2, &field_ld(11, &args)));
+        let events: Vec<_> = turn_from_frames(frame.to_vec())
+            .await
+            .into_event_stream()
+            .collect()
+            .await;
+
+        assert_eq!(events.len(), 1);
+        let Ok(CursorStreamEvent::ToolCall { id, name, .. }) = &events[0] else {
+            panic!("expected a tool call, got {:?}", events[0]);
+        };
+        assert_eq!(name, "Read");
+        assert!(
+            id.starts_with("toolu_"),
+            "a minted id should carry the Anthropic shape, got {id}"
+        );
+    }
+
+    #[test]
+    fn wire_tool_call_id_is_read_from_the_same_args_as_the_name() {
+        // Two exec entries: the first carries no bridgeable `McpArgs` at all, so
+        // the name comes from the second. Reading the id in a separate traversal
+        // that stops at the first exec would pair the name with a different
+        // (or no) id.
+        let mut payload = field_ld(2, &field_ld(7, &field_str(1, "/etc/hostname")));
+        let mut mcp_args = field_str(5, "Read");
+        mcp_args.extend(field_str(3, "tool_6ce2d7dc-b8a9-4000-9000-000000000000"));
+        payload.extend(field_ld(2, &field_ld(11, &mcp_args)));
+
+        let (name, _, wire_id) = extract_tool_call(&payload).expect("tool call decoded");
+        assert_eq!(name, "Read");
+        assert_eq!(
+            wire_id.as_deref(),
+            Some("tool_6ce2d7dc-b8a9-4000-9000-000000000000")
+        );
+    }
+
+    #[test]
+    fn duplicate_tool_call_id_takes_the_last_value() {
+        // Singular protobuf field: the last occurrence wins. Rejecting the call
+        // outright would fail a turn that decodes fine.
+        let mut mcp_args = field_str(5, "Read");
+        mcp_args.extend(field_str(3, "tool_first"));
+        mcp_args.extend(field_str(3, "tool_last"));
+        let payload = field_ld(2, &field_ld(11, &mcp_args));
+
+        let (_, _, wire_id) = extract_tool_call(&payload).expect("tool call decoded");
+        assert_eq!(wire_id.as_deref(), Some("tool_last"));
+    }
+
+    #[test]
+    fn oversized_tool_call_id_is_treated_as_absent() {
+        // An upstream must not be able to push an unbounded string into a
+        // client-visible id. Too long is "no usable id", not a failed call.
+        let mut mcp_args = field_str(5, "Read");
+        mcp_args.extend(field_str(3, &"t".repeat(super::MAX_TOOL_CALL_ID_LEN + 1)));
+        let payload = field_ld(2, &field_ld(11, &mcp_args));
+
+        let (name, _, wire_id) = extract_tool_call(&payload).expect("tool call decoded");
+        assert_eq!(name, "Read");
+        assert_eq!(wire_id, None);
     }
 
     #[tokio::test]
@@ -1566,7 +1765,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn event_stream_treats_clean_eof_as_end() {
+    async fn cursor_terminal_tracer_event_stream_rejects_clean_eof() {
         let events: Vec<_> = turn_from_frames(Vec::new())
             .await
             .into_event_stream()
@@ -1574,7 +1773,11 @@ mod tests {
             .await;
 
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], Ok(CursorStreamEvent::End)));
+        assert!(events[0]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("EOF without an authoritative terminal"));
     }
 
     #[tokio::test]

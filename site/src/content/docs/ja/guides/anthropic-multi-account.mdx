@@ -115,7 +115,7 @@ admin web インターフェースを通じてストア管理アカウントを�
 ## 選択とプロアクティブなローテーション
 
 - `x-claude-code-session-id` がある場合：安定したハッシュがスティッキーなアカウントを選びます。そのアカウントが利用可能で切り替えしきい値未満なら、shunt はそれを先頭に保ちます。
-- ヘッダーがない場合：プロバイダーごとに独自のラウンドロビンカウンターを持ちます。
+- ヘッダーがない場合、または空の値で送られた場合：プロバイダーごとに独自のラウンドロビンカウンターを持ちます。空の値はひとつの会話ではないため、固定のアカウント 1 つにハッシュされず、このローテーションを共有します。
 - `claude_oauth` アカウントプールが処理するすべての上流レスポンスで、shunt は次のヘッダーが存在すれば記録します。
   - `anthropic-ratelimit-unified-5h-utilization`、`anthropic-ratelimit-unified-7d-utilization`、`anthropic-ratelimit-unified-7d_oi-utilization`
   - `anthropic-ratelimit-unified-5h-reset`、`anthropic-ratelimit-unified-7d-reset`、`anthropic-ratelimit-unified-7d_oi-reset`（Unix 秒）

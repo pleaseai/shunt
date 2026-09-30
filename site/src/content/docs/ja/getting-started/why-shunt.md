@@ -26,9 +26,11 @@ Claude Code はすべてのターンを Anthropic API へ送信します。`shun
 
 shunt は受け取ったモデル id を尊重するだけです — エージェントごとのシステムプロンプトの脆いフィンガープリンティングは不要です。その同じ選択性が、shunt が呼び出し元を一切詮索することなく、個々のエージェントにまで届きます。
 
+モデル id をひとつ、自分で判断させることもできます。[ステージルーター](/ja/guides/stage-router/)は強力なティアと効率的なティアを指定し、会話の直近の tool-result メタデータ（`tool_use.name` と `tool_result.is_error` であり、プロンプトのテキストでは決してありません）からターンごとにどちらかを選びます。どのエントリも [`[models.subagents]`](/ja/reference/configuration/#modelssubagentsオプション) オーバーレイを併せて持て、委譲された作業だけを別のターゲットへ送り、親セッションは自分の宛先を保ちます。どちらも設定しなければ挙動は変わりません。
+
 ## shunt が実装するもの
 
-- **`POST /v1/messages`** — 推論。リクエストの `model` id に従ってルーティングされます。マッピングされていないモデルは、呼び出し元自身の認証情報を使ってバイト単位でそのまま Anthropic へ転送されます。
+- **`POST /v1/messages`** — 推論。リクエストの `model` id に従ってルーティングされます。マッピングされていないモデルは、呼び出し元自身の認証情報を使ってバイト単位でそのまま Anthropic へ転送されます。ただし shunt が他のプロバイダー向けに生成した [`thinking` の signature](/ja/providers/anthropic/) だけは、Anthropic が拒否する値のため取り除かれます。
 - **Anthropic Messages ⇄ OpenAI Responses 変換** — マッピングされた OpenAI ファミリーのモデル向け。ストリーミングを含みます。
 - **ChatGPT サブスクリプションの再利用** — `codex` プロバイダーは Codex CLI の `~/.codex/auth.json` ログインを再利用（かつ自動リフレッシュ）します。
 - **`GET /v1/models`** — Claude 命名のエイリアス向けの [model discovery](/ja/guides/model-discovery/)。

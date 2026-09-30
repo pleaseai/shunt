@@ -14,9 +14,11 @@ use thiserror::Error;
 mod admin_keys;
 mod http_tuning;
 mod presets;
+mod router;
 mod secrets;
 mod session;
 mod spend;
+mod subagents;
 mod upstreams;
 
 pub use admin_keys::{AdminAccess, AdminCredential, AdminKey, AdminKeyring};
@@ -24,9 +26,23 @@ pub use http_tuning::{
     AccessControlConfig, LimitsConfig, RateLimitConfig, RateLimitsConfig, TimeoutsConfig,
 };
 pub use presets::{provider_presets, ProviderPresetView};
+pub use router::{
+    AdvisorGateTrigger, AdvisorRouterConfig, AutoRouterConfig, CallBounds,
+    CapabilityClassifierConfig, ClassifierPolicy, ClassifyTrigger, CompositeClassifierConfig,
+    CompositeRouterConfig, CompositeStageConfig, CompositeTrigger, CustomClassifierConfig,
+    EscalationClassifierConfig, EscalationJudgeTable, HandoffNotesConfig, LlmClassifierConfig,
+    PrefillRouterConfig, RandomAffinity, RandomRouterConfig, RouterConfig, StageClassifierConfig,
+    StageRouterConfig, StageRouterPicker, ToolSemanticsConfig, DEFAULT_BASE_THRESHOLD,
+    DEFAULT_CONFIDENCE_THRESHOLD, DEFAULT_DEESCALATE_THRESHOLD, DEFAULT_GATED_IDLE_MS,
+    DEFAULT_GATED_MAX_BYTES, DEFAULT_GATED_MAX_DURATION_MS, DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+    DEFAULT_JUDGE_TIMEOUT_MS, DEFAULT_MAX_JUDGE_CALLS, DEFAULT_MAX_OUTPUT_TOKENS,
+};
 pub use secrets::Secret;
 pub use session::GatewaySessionConfig;
 pub use spend::{GroupLimitMode, SpendConfig, SpendEnforcementConfig};
+pub use subagents::{
+    PassthroughSubagentsConfig, SubagentsClassifierConfig, SubagentsConfig, SubagentsCustomConfig,
+};
 pub use upstreams::{AccountSelection, AuthMap, UpstreamAuth, UpstreamConfig};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -147,6 +163,11 @@ pub struct ServerConfig {
     /// `0` disables injection (M5).
     #[serde(default = "default_sse_keepalive_seconds")]
     pub sse_keepalive_seconds: u64,
+    /// Seconds to wait for in-flight requests and connections to drain after
+    /// the first shutdown signal before forcing termination. `0` and values
+    /// above 3600 are rejected by validation.
+    #[serde(default = "default_shutdown_timeout_seconds")]
+    pub shutdown_timeout_seconds: u64,
     /// Maximum inbound client requests in flight at once on the limited routes
     /// (`/` and `/health` are merged outside the gate and always answer). `0`
     /// disables the limit. Over-limit requests are shed with 503 rather than
@@ -179,6 +200,12 @@ fn default_max_concurrent_requests() -> usize {
     1024
 }
 
+fn default_shutdown_timeout_seconds() -> u64 {
+    30
+}
+
+pub(crate) const MAX_SHUTDOWN_TIMEOUT_SECONDS: u64 = 3600;
+
 /// Upper bound accepted for `[server] max_concurrent_requests`, mirroring
 /// `tokio::sync::Semaphore::MAX_PERMITS` (`usize::MAX >> 3`). Tokio's
 /// `Semaphore::new` asserts on this, so validating it here turns a boot-time
@@ -206,9 +233,10 @@ pub struct PoolConfig {
     /// Avoid an account projected to exhaust a soft threshold before reset.
     #[serde(default)]
     pub burn_rate_avoidance: bool,
-    /// Poll Claude's `/api/oauth/usage` and Codex's `/wham/usage` every N
-    /// seconds for refreshable accounts. Unset or `0` disables polling;
-    /// positive values below 60 are clamped to 60 seconds.
+    /// Poll Claude's `/api/oauth/usage`, Codex's `/wham/usage`, and
+    /// Antigravity's `retrieveUserQuotaSummary` every N seconds for refreshable
+    /// accounts. Unset or `0` disables polling; positive values below 60 are
+    /// clamped to 60 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_refresh_seconds: Option<u64>,
     /// Persist the pool's per-account quota state to this file so a restart
@@ -411,7 +439,9 @@ pub struct AdminConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub write_keys: Vec<AdminKey>,
     /// Read-only keys: they pass every GET on the admin and spend surfaces and
-    /// are refused on every mutation, including the browser login form.
+    /// are refused on every mutation. They sign in to the dashboard too — the
+    /// session records the tier it was minted with, so a read key's session is
+    /// refused on a mutation exactly as the header credential is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub read_keys: Vec<AdminKey>,
     /// Browser session lifetime after login.
@@ -420,6 +450,11 @@ pub struct AdminConfig {
     /// Pending-login lifetime (time to open the authorize URL and paste back).
     #[serde(default = "default_admin_pending_ttl_secs")]
     pub pending_ttl_secs: u64,
+    /// When true, skip host CLI/app credential discovery. `GET /admin/api/observed`
+    /// still authenticates but returns an empty list without reading those
+    /// files, and the dashboard's usage table lists managed pool accounts only.
+    #[serde(default)]
+    pub hide_observed: bool,
     /// Optional external identity provider for browser sign-in.
     #[serde(default)]
     pub oidc: Option<AdminOidcConfig>,
@@ -1231,10 +1266,13 @@ fn validate_idp_url(
 
 /// `[server.codex_endpoint]` — opt-in inbound OpenAI Responses (Codex) endpoint.
 /// When present, shunt registers `POST /backend-api/codex/responses`,
-/// `POST /responses`, and `POST /v1/responses`, and proxies each request through
-/// the named provider's ChatGPT/Codex account pool without translating it to or
-/// from Anthropic Messages (a raw passthrough). Absent ⇒ none of those routes
-/// exist. See `docs/m11-inbound-codex-endpoint.md`.
+/// `POST /responses`, and `POST /v1/responses`, plus the Codex CLI model-catalog
+/// aliases, and proxies each inference request through the configured
+/// Responses-compatible provider without translating it to or from Anthropic
+/// Messages (a raw passthrough). The default provider is the ChatGPT/Codex
+/// account pool; exact `routes` entries may select other providers. Absent ⇒
+/// none of those routes exist. See
+/// `docs/m11-inbound-codex-endpoint.md`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CodexEndpointConfig {
     /// Which `chatgpt_oauth` provider's account pool serves inbound Responses
@@ -1469,6 +1507,29 @@ pub struct ProviderConfig {
     /// `Config::normalize_service_tiers`. Off by default (opt-in).
     #[serde(default)]
     pub service_tier: Option<String>,
+    /// Upstream model id for Claude Code's auto-mode permission classifier
+    /// request (`kind = "anthropic"` only).
+    ///
+    /// The classifier is identified by its request shape alone — the opening
+    /// sentence of its system prompt, the same predicate
+    /// [`crate::adapters::anthropic`] uses to restore the identity block — so
+    /// this only ever moves that one request and never ordinary traffic. Claude
+    /// Code picks the classifier's model from its Sonnet tier alias, which is
+    /// what makes the request follow `ANTHROPIC_DEFAULT_SONNET_MODEL` on the
+    /// client side; this key is the gateway-side equivalent, and unlike the
+    /// environment variable it moves the classifier without changing what
+    /// `sonnet` resolves to for the rest of the session.
+    ///
+    /// Deliberately a model *remap within this provider*, not a route. The
+    /// classifier request depends on `stop_sequences`: while the Responses
+    /// translation still dropped that field, a classifier pointed at a
+    /// Responses upstream retried its first stage and added seconds to every
+    /// permission check. The `model::stop_sequences` scanner now emulates them
+    /// gateway-side (issue #605), so that failure no longer applies — the key
+    /// stays an in-provider remap regardless. Off by default — an unset key
+    /// leaves the classifier on whatever model the client asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_model: Option<String>,
     /// How `POST /v1/messages/count_tokens` is answered for this provider.
     #[serde(default)]
     pub count_tokens: CountTokens,
@@ -1551,6 +1612,22 @@ pub struct ProviderConfig {
     /// is used.
     #[serde(default)]
     pub workspace_roots: Vec<String>,
+    /// Private state directory for the Antigravity CLI child process
+    /// (`kind = "antigravity_cli"` only).
+    ///
+    /// `agy` resolves its whole state tree — credentials included — through
+    /// `HOME`, so pointing each provider entry at its own directory gives it
+    /// its own Google account and lets several be pooled concurrently. Ambient
+    /// `GOOGLE_*`/`GEMINI_*` variables are also stripped from the child
+    /// environment, so the gateway host's own configuration cannot silently
+    /// change which account — and whose billing — serves a request.
+    ///
+    /// Each directory needs its own one-time `agy` sign-in. Unset (the default)
+    /// preserves the previous behavior: the CLI inherits the gateway's
+    /// environment and its single ambient `~/.gemini` profile. A leading `~`
+    /// is expanded.
+    #[serde(default, deserialize_with = "deserialize_optional_credentials_path")]
+    pub profile_dir: Option<String>,
     /// Run the Antigravity CLI with `--sandbox` (`kind = "antigravity_cli"` only).
     ///
     /// On by default. Without it, `--dangerously-skip-permissions` leaves an
@@ -1766,7 +1843,7 @@ where
     Option::<String>::deserialize(deserializer).map(|path| path.map(|path| expand_tilde(&path)))
 }
 
-fn expand_tilde(path: &str) -> String {
+pub(crate) fn expand_tilde(path: &str) -> String {
     let Some(suffix) = path.strip_prefix("~/") else {
         return path.to_string();
     };
@@ -1902,14 +1979,20 @@ fn model_supports_tool_search(model: &str) -> bool {
     // must be followed by a non-digit (or end of string), so "gpt-5.4" matches
     // but an undocumented "gpt-5.40" does not silently borrow 5.4's flag and get
     // a native wire shape its backend may reject.
-    ["gpt-5.4", "gpt-5.5", "gpt-5.6"].iter().any(|family| {
+    let gpt5 = ["gpt-5.4", "gpt-5.5", "gpt-5.6"].iter().any(|family| {
         model.match_indices(family).any(|(index, matched)| {
             model[index + matched.len()..]
                 .chars()
                 .next()
                 .is_none_or(|next| !next.is_ascii_digit())
         })
-    })
+    });
+    if gpt5 {
+        return true;
+    }
+    // Codex catalog gpt-6 slugs (`supports_search_tool: true`), matched
+    // exactly: the catalog lists no gpt-6 family, only these slugs.
+    matches!(model, "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna")
 }
 
 /// Whether `host` belongs to xAI (`x.ai` or any subdomain). Used both to gate
@@ -1947,7 +2030,9 @@ pub fn host_is_anthropic(host: &str) -> bool {
 /// Whether `host` is the stock OpenAI Responses API host, exactly
 /// (`api.openai.com`, no subdomains). Used by [`Config::native_tool_search`]
 /// to decide whether an "auto" (unset `tool_search`) provider may default to
-/// the native protocol. Unlike `host_is_xai`/`host_is_cursor`/
+/// the native protocol, by the api-key affinity gate in
+/// `adapters::responses::request`, and by the shared client's redirect
+/// policy. Unlike `host_is_xai`/`host_is_cursor`/
 /// `host_is_anthropic`, which widen to any subdomain to avoid leaking a
 /// subscription bearer off one operator's origin, this check is narrowed to
 /// the single documented Responses endpoint on purpose: other `openai.com`
@@ -1955,7 +2040,7 @@ pub fn host_is_anthropic(host: &str) -> bool {
 /// products with no guarantee they implement `tool_search` items the same
 /// way, so trusting the whole domain would risk silently promoting an
 /// unverified host to the native wire shape.
-fn host_is_openai(host: &str) -> bool {
+pub(crate) fn host_is_openai(host: &str) -> bool {
     host == "api.openai.com"
 }
 
@@ -2043,12 +2128,212 @@ pub struct ModelConfig {
     pub display_name: Option<String>,
     #[serde(default)]
     pub upstream_model: Option<BTreeMap<String, String>>,
+    /// Opt-in routing algorithm for this id (ADR-0005 §2). `skip_serializing_if`
+    /// is load-bearing, not cosmetic: `Config::load` round-trips
+    /// `Serialized::defaults(Self::default())` through figment, and a `None`
+    /// serialized as an explicit null would fail the table's own deserializer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router: Option<RouterConfig>,
+    /// Opt-in overlay for delegated work (ADR-0005 §5): a `Task` child, hook
+    /// agent, or workflow sub-agent requesting this id is diverted to the
+    /// overlay's target, while the parent's own turns resolve the entry as if
+    /// the table were absent. Sits on the entry, not inside `router`, because
+    /// a fixed entry has no router table and is the common host for it; the
+    /// two may coexist. Same `skip_serializing_if` rationale as `router`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<SubagentsConfig>,
+    /// The removed `[models.stage_router]` table, accepted only so the load can
+    /// *reject* it by name.
+    ///
+    /// `ModelConfig` has no `deny_unknown_fields` — a `[[models]]` entry is
+    /// also discovery metadata and tolerates keys shunt does not read — so
+    /// without this field a config still writing the old table would load with
+    /// the router silently absent and route every request to the default
+    /// provider. Deserialized as [`serde::de::IgnoredAny`] because the contents
+    /// are never read: validation only needs to know the table was written, and
+    /// parsing it into the new type would have to succeed first to report that.
+    ///
+    /// `skip_serializing` keeps it out of the figment defaults round-trip.
+    #[serde(default, skip_serializing)]
+    pub stage_router: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RoutePrefixConfig {
     pub prefix: String,
     pub provider: String,
+}
+
+/// Whether a `[[models]]` entry declares a routing policy of its own — a
+/// `[models.router]` table or a `[models.subagents]` overlay — as opposed to
+/// being a fixed destination. The one-hop rule (ADR-0005 §2) forbids any router
+/// or overlay target from resolving to such an entry: the resolver hops once
+/// and reads the target as a plain id, so the target's own policy would never
+/// run.
+fn names_a_policy(model: &ModelConfig) -> bool {
+    model.router.is_some() || model.subagents.is_some()
+}
+
+/// Fail-closed checks for `[models.router]` with `type = "random"`.
+///
+/// The three weight rules mirror libsy's own `RandomClassifier::new`, which
+/// returns the same errors at construction time — except that shunt raises them
+/// at load rather than on the first request, so a typo fails `shunt check`
+/// instead of the turn that happens to draw.
+fn validate_random_router(model_id: &str, random: &RandomRouterConfig) -> Result<(), ConfigError> {
+    if random.targets.is_empty() {
+        return Err(ConfigError::EmptyRandomTargets {
+            model: model_id.to_string(),
+        });
+    }
+    let Some(weights) = random.weights.as_ref() else {
+        return Ok(());
+    };
+    if weights.len() != random.targets.len() {
+        return Err(ConfigError::RandomWeightCount {
+            model: model_id.to_string(),
+            weights: weights.len(),
+            targets: random.targets.len(),
+        });
+    }
+    for weight in weights {
+        // `!(finite && >= 0)` rather than a negated range so NaN, which compares
+        // false against every bound, is rejected rather than silently admitted.
+        if !(weight.is_finite() && *weight >= 0.0) {
+            return Err(ConfigError::InvalidRandomWeight {
+                model: model_id.to_string(),
+                value: *weight,
+            });
+        }
+    }
+    if !weights.iter().any(|weight| *weight > 0.0) {
+        return Err(ConfigError::NoPositiveRandomWeight {
+            model: model_id.to_string(),
+        });
+    }
+    // Every weight being finite does not make their sum finite: `[1e308, 1e308]`
+    // passes the loop above and totals `+inf`. `arm` scales each draw by that
+    // total, so an infinite one makes every `point < weight` test false and
+    // collapses the advertised split onto the last enabled target — a silent
+    // 100/0 rather than a load failure.
+    if !weights.iter().sum::<f64>().is_finite() {
+        return Err(ConfigError::RandomWeightTotal {
+            model: model_id.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Fail-closed checks for `[models.router] type = "prefill_router"`.
+///
+/// Compiled in both builds for the reason `validate_router`'s call site gives.
+/// Nothing here touches the checkpoint: `shunt check` must stay a pure config
+/// verdict that needs neither Python nor the file present, so the checkpoint is
+/// only opened when `RuntimeState::from_config` builds the algorithm.
+fn validate_prefill_router(
+    model_id: &str,
+    prefill: &PrefillRouterConfig,
+) -> Result<(), ConfigError> {
+    let invalid = |key, reason| ConfigError::InvalidPrefillRouter {
+        model: model_id.to_string(),
+        key,
+        reason,
+    };
+    if prefill.targets.is_empty() {
+        return Err(invalid("targets", "must list at least one target"));
+    }
+    // Upstream's `PrefillRouter::new` rejects a repeated target too, but only
+    // once the checkpoint is loaded — which needs Python, a file on disk, and a
+    // build that has the feature. Compared after `strip_context_window_hint`,
+    // like the recursion check above: `"x[1m]"` and `"x"` resolve to one id, so
+    // a list carrying both binds two checkpoint heads to the same destination.
+    for (index, target) in prefill.targets.iter().enumerate() {
+        let resolved = crate::routing::strip_context_window_hint(target);
+        if prefill.targets[..index]
+            .iter()
+            .any(|earlier| crate::routing::strip_context_window_hint(earlier) == resolved)
+        {
+            return Err(invalid("targets", "must not repeat a target"));
+        }
+    }
+    if prefill.checkpoint.as_os_str().is_empty() {
+        return Err(invalid("checkpoint", "must not be empty"));
+    }
+    for (key, value) in [
+        ("max_length", prefill.max_length),
+        ("batch_size", prefill.batch_size),
+    ] {
+        if value == Some(0) {
+            return Err(invalid(key, "must be greater than 0"));
+        }
+    }
+    Ok(())
+}
+
+/// Fail-closed checks for `[models.router.tool_semantics]`.
+///
+/// The categories are additive, so a name the *built-in* vocabulary already
+/// classifies as Observe, Mutate, or Plan is rejected rather than quietly
+/// ignored: `crate::routing::stage::vocabulary::classify` consults the built-in
+/// table first, so an operator who writes `mutate = ["Read"]` would otherwise
+/// get a config that loads and does nothing. Only the names the built-in table
+/// leaves as `Other` — `Bash`, `Skill`, every `mcp__*` server tool — are the
+/// operator's to categorise.
+fn validate_tool_semantics(
+    model_id: &str,
+    semantics: &ToolSemanticsConfig,
+) -> Result<(), ConfigError> {
+    let mut seen: Vec<(String, &'static str)> = Vec::new();
+    for (category, names) in semantics.categories() {
+        for name in names {
+            if name.trim().is_empty() {
+                return Err(ConfigError::EmptyToolSemanticsName {
+                    model: model_id.to_string(),
+                    category,
+                });
+            }
+            // Matching is an exact `eq_ignore_ascii_case` against the tool name
+            // the client sent, and no Claude Code tool name carries whitespace.
+            // So `" Read "` would pass every other check here — it is not blank,
+            // and `classify_builtin` does not recognize it either, so it does
+            // not even trip the builtin-collision guard below — and then match
+            // nothing at runtime. Silently classifying no tool is exactly what
+            // that guard exists to prevent, so reject the name rather than
+            // trimming it: an operator who wrote a space meant a name, and
+            // guessing which one is how the two diverge again later.
+            if name.chars().any(char::is_whitespace) {
+                return Err(ConfigError::InvalidToolSemanticsName {
+                    model: model_id.to_string(),
+                    name: name.clone(),
+                    category,
+                });
+            }
+            if crate::routing::stage::vocabulary::classify_builtin(name)
+                != crate::routing::stage::vocabulary::ToolCategory::Other
+            {
+                return Err(ConfigError::BuiltinToolSemanticsName {
+                    model: model_id.to_string(),
+                    name: name.clone(),
+                    category,
+                });
+            }
+            // Matching is ASCII case-insensitive, so the duplicate check has to
+            // be too: `["bash"]` and `["Bash"]` in two categories are one name
+            // with two meanings, and the lookup would answer whichever list it
+            // reached first.
+            let normalized = name.to_ascii_lowercase();
+            if let Some((_, first)) = seen.iter().find(|(seen, _)| *seen == normalized) {
+                return Err(ConfigError::DuplicateToolSemanticsName {
+                    model: model_id.to_string(),
+                    name: name.clone(),
+                    first,
+                    second: category,
+                });
+            }
+            seen.push((normalized, category));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -2166,8 +2451,12 @@ pub enum ConfigError {
     AntigravityLegacyTableMissingAuth,
     #[error("{0}")]
     AntigravityMigrationRequired(String),
-    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", or \"kimi_oauth\"")]
+    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", \"kimi_oauth\", or \"antigravity_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
+    #[error("providers.{provider}.classifier_model requires kind = \"anthropic\"; it remaps Claude Code's auto-mode classifier request within the provider, and only the anthropic adapter carries that request shape")]
+    ClassifierModelWrongKind { provider: String },
+    #[error("providers.{provider}.classifier_model must not be empty")]
+    EmptyClassifierModel { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but kind is not \"anthropic\"")]
     ClaudeOauthWrongKind { provider: String },
     #[error("providers.{provider} uses auth = \"claude_oauth\" but base_url host {host} is not anthropic.com; refusing to send a subscription token off-origin")]
@@ -2192,6 +2481,8 @@ pub enum ConfigError {
     InvalidAccountName { provider: String, name: String },
     #[error("providers.{provider}.accounts account \"{name}\" sets both credentials and token_env; set at most one credential source")]
     AccountMultipleCredentialSources { provider: String, name: String },
+    #[error("providers.{provider}.accounts account \"{name}\" sets token_env, but Antigravity accounts require a credential file containing a project id; use `credentials`, or omit the account entirely to use the default account store")]
+    AntigravityAccountTokenEnv { provider: String, name: String },
     #[error("server.pool.{key} must be between 0.0 and 1.0, got {value}")]
     InvalidPoolThreshold { key: &'static str, value: f64 },
     #[error("[server.status].sources[{index}].provider must not be empty")]
@@ -2255,9 +2546,136 @@ pub enum ConfigError {
     EmptyModelUpstream { model: String, provider: String },
     #[error("model {model} is declared both in [[routes]] and in a [[models]] upstream_model entry; remove one")]
     ModelRouteConflict { model: String },
+    #[error("models entry {model} uses the removed [models.stage_router] table; write [models.router] with type = \"stage_router\"")]
+    RemovedStageRouterTable { model: String },
+    #[error("models entry {model} has both a router and an upstream_model map; a router picks its own target, so the two are mutually exclusive")]
+    RouterWithUpstreamMap { model: String },
+    #[error("models entry {model} router {key} must not be empty")]
+    EmptyRouterTarget { model: String, key: String },
+    #[error("models entry {model} router targets {target}, which carries its own [models.router] or [models.subagents] table; a router target must be a concrete model")]
+    RouterRecursion { model: String, target: String },
+    #[error("models entry {model} subagents {key} must not be empty")]
+    EmptySubagentsTarget { model: String, key: String },
+    #[error("models entry {model} subagents {key} targets {target}, which carries its own [models.router] or [models.subagents] table; an overlay target must be a concrete model")]
+    SubagentsRecursion {
+        model: String,
+        key: String,
+        target: String,
+    },
+    #[error("models entry {model} subagents by_type key {key:?} is blank, carries whitespace, or carries a byte outside visible ASCII; keys are matched exactly against the x-claude-code-agent-type header value, and no agent type on the wire is blank or carries whitespace, while a value carrying a byte outside visible ASCII is one the header parser drops entirely — either way the key could never match")]
+    InvalidSubagentsType { model: String, key: String },
+    #[error("models entry {model} has a subagents table but its id ends with a [1m] or [1M] context-window hint; clients strip that hint before model matching, so the entry is unreachable")]
+    SubagentsContextWindowHint { model: String },
+    #[error("models entry {model} router type = \"prefill_router\" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)")]
+    PrefillRouterFeatureDisabled { model: String },
+    #[error("models entry {model} router {key} {reason}")]
+    InvalidPrefillRouter {
+        model: String,
+        key: &'static str,
+        reason: &'static str,
+    },
+    #[error("models entry {model} router type = \"prefill_router\" failed to load: {message}")]
+    PrefillRouterLoad { model: String, message: String },
+    #[error(
+        "models entry {model} router {key} is {value}; it must be greater than 0.0 and at most 1.0"
+    )]
+    InvalidStageRouterThreshold {
+        model: String,
+        key: &'static str,
+        value: f64,
+    },
+    #[error("models entry {model} router recent_turn_window must be at least 1")]
+    InvalidStageRouterWindow { model: String },
+    #[error("model \"{model}\": [models.router] {key} must be at least 1")]
+    ZeroCallBound { model: String, key: &'static str },
+    #[error("model \"{model}\": judge target {key} = \"{target}\" resolves to passthrough upstream \"{provider}\"; a judge runs only on a credential the gateway injects")]
+    PassthroughJudgeTarget {
+        model: String,
+        key: String,
+        target: String,
+        provider: String,
+    },
+    #[error("models entry {model} router threshold_step is {value}; it must be finite, at least 0.0, and leave base_threshold + 2 * threshold_step at most 1.0")]
+    InvalidThresholdStep { model: String, value: f64 },
+    #[error("models entry {model} classifier recent_turn_window must be at least 1; omit the key for the narrow judge that sees the opening task and the latest follow-up")]
+    InvalidClassifierWindow { model: String },
+    #[error("models entry {model} classifier max_output_tokens must be at least 1")]
+    ZeroMaxOutputTokens { model: String },
+    #[error("models entry {model} classifier models.{group} is missing or empty; a custom classifier needs both `any` (the runtime model list) and `judge` (what it consults)")]
+    MissingClassifierGroup { model: String, group: &'static str },
+    #[error("models entry {model} classifier models.{group} lists {target}, which is not in models.any; every answer group's members must be runtime models (models.judge is exempt: it is consulted, never served)")]
+    ClassifierTargetNotInAny {
+        model: String,
+        group: String,
+        target: String,
+    },
+    #[error("models entry {model} classifier default_target {group:?} must name a configured, non-empty model group other than `judge`")]
+    InvalidClassifierDefaultTarget { model: String, group: String },
+    #[error("models entry {model} classifier response_schema must be a JSON object: {message}")]
+    InvalidResponseSchema { model: String, message: String },
+    #[error("models entry {model} classifier prompt {reason}")]
+    InvalidClassifierPrompt { model: String, reason: &'static str },
+    #[error("models entry {model} classifier message_hash_fallback = true requires classify_trigger = \"new_session\"; any other trigger re-decides before the hash could hold an assignment")]
+    MessageHashFallbackTrigger { model: String },
+    #[error("models entry {model} subagents classify_trigger = \"user_turn\" is not supported for sub-agent routing; a delegated agent is classified per (session, agent), not per user turn")]
+    SubagentsClassifierTrigger { model: String },
+    #[error("models entry {model} subagents message_hash_fallback must be false; the overlay keys on (session, agent), and hashing the first user message would merge two agents with the same opening prompt")]
+    SubagentsMessageHashFallback { model: String },
+    #[error("models entry {model} driven router could not be constructed: {message}")]
+    DrivenRouterBuild { model: String, message: String },
+    #[error("models entry {model} advisor router: {reason}")]
+    InvalidAdvisorGatePattern { model: String, reason: &'static str },
+    #[error("models entry {model} random router targets must not be empty")]
+    EmptyRandomTargets { model: String },
+    #[error("models entry {model} random router has {weights} weights but {targets} targets; weights follow target order, one per target")]
+    RandomWeightCount {
+        model: String,
+        weights: usize,
+        targets: usize,
+    },
+    #[error(
+        "models entry {model} random router weights must be finite and nonnegative (got {value})"
+    )]
+    InvalidRandomWeight { model: String, value: f64 },
+    #[error("models entry {model} random router requires at least one weight must be positive")]
+    NoPositiveRandomWeight { model: String },
+    #[error(
+        "models entry {model} random router weights sum to a non-finite total; lower the weights so their sum stays within f64 range"
+    )]
+    RandomWeightTotal { model: String },
+    #[error("models entry {model} router tool_semantics.{category} contains an empty tool name")]
+    EmptyToolSemanticsName {
+        model: String,
+        category: &'static str,
+    },
+    #[error(
+        "models entry {model} router tool_semantics.{category} tool name {name:?} contains whitespace; tool names are matched exactly and no tool name contains a space"
+    )]
+    InvalidToolSemanticsName {
+        model: String,
+        name: String,
+        category: &'static str,
+    },
+    #[error("models entry {model} router lists tool {name} in both tool_semantics.{first} and tool_semantics.{second}")]
+    DuplicateToolSemanticsName {
+        model: String,
+        name: String,
+        first: &'static str,
+        second: &'static str,
+    },
+    #[error("models entry {model} router lists tool {name} under tool_semantics.{category}, but it already has built-in semantics and cannot be reclassified")]
+    BuiltinToolSemanticsName {
+        model: String,
+        name: String,
+        category: &'static str,
+    },
+    #[error("models entry {model} router handoff_notes {key} must not be empty")]
+    EmptyHandoffNote { model: String, key: &'static str },
     #[error("models entry {model} has an upstream_model map but its id ends with a [1m] or [1M] context-window hint; clients strip that hint before model matching, so the entry is unreachable")]
     ModelUpstreamContextWindowHint { model: String },
-    #[error("duplicate [[models]] id {model}; ids must be unique when any matching entry has an upstream_model map")]
+    #[error("models entry {model} has a router table but its id ends with a [1m] or [1M] context-window hint; clients strip that hint before model matching, so the entry is unreachable")]
+    RouterContextWindowHint { model: String },
+    #[error("duplicate [[models]] id {model}; ids must be unique when any matching entry has an upstream_model map or a router table")]
     DuplicateModelId { model: String },
     #[error("route prefix {prefix} references unknown provider: {provider}")]
     UnknownPrefixProvider { prefix: String, provider: String },
@@ -2390,6 +2808,8 @@ pub enum ConfigError {
         max_concurrent_requests: usize,
         limit: usize,
     },
+    #[error("server.shutdown_timeout_seconds must be between 1 and {limit}, got {seconds}")]
+    InvalidShutdownTimeout { seconds: u64, limit: u64 },
     #[error("server.access_control.{field}[{index}] is not a valid CIDR `{value}`: {message}")]
     InvalidAccessControlCidr {
         field: &'static str,
@@ -2424,6 +2844,59 @@ pub enum ConfigError {
 }
 
 impl ProviderConfig {
+    pub fn store_family(&self) -> Option<crate::accounts::StoreFamily> {
+        use crate::accounts::StoreFamily;
+
+        match self.auth {
+            AuthMode::ClaudeOauth => Some(StoreFamily::Claude),
+            AuthMode::ChatgptOauth => Some(StoreFamily::Chatgpt),
+            AuthMode::KimiOauth => Some(StoreFamily::Kimi),
+            AuthMode::AntigravityOauth => Some(StoreFamily::Antigravity),
+            _ => None,
+        }
+    }
+
+    pub async fn resolve_pool_accounts(&self) -> Result<Vec<AccountConfig>, String> {
+        use crate::auth::{antigravity, claude, codex, kimi};
+
+        let Some(family) = self.store_family() else {
+            return Ok(Vec::new());
+        };
+        let (label, dir, scan): (_, _, fn() -> std::io::Result<Vec<AccountConfig>>) =
+            match self.auth {
+                AuthMode::ClaudeOauth => (
+                    "Claude",
+                    claude::store::default_accounts_dir(),
+                    claude::store::scan_accounts,
+                ),
+                AuthMode::ChatgptOauth => (
+                    "codex",
+                    codex::store::default_accounts_dir(),
+                    codex::store::scan_accounts,
+                ),
+                AuthMode::KimiOauth => (
+                    "Kimi",
+                    kimi::store::default_accounts_dir(),
+                    kimi::store::scan_accounts,
+                ),
+                AuthMode::AntigravityOauth => (
+                    "Antigravity",
+                    antigravity::store::default_accounts_dir(),
+                    antigravity::store::scan_accounts,
+                ),
+                _ => unreachable!(),
+            };
+        crate::auth::shared::resolve_pool_accounts(
+            label,
+            &self.accounts,
+            &self.account_scope,
+            family,
+            dir,
+            scan,
+        )
+        .await
+    }
+
     fn anthropic(base_url: &str) -> Self {
         Self {
             kind: ProviderKind::Anthropic,
@@ -2433,6 +2906,7 @@ impl ProviderConfig {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -2441,6 +2915,7 @@ impl ProviderConfig {
             request_compression: true,
             retry: RetryConfig::default(),
             workspace_roots: Vec::new(),
+            profile_dir: None,
             sandbox: true,
         }
     }
@@ -2457,6 +2932,7 @@ impl ProviderConfig {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -2465,6 +2941,7 @@ impl ProviderConfig {
             request_compression: true,
             retry: RetryConfig::default(),
             workspace_roots: Vec::new(),
+            profile_dir: None,
             sandbox: true,
         }
     }
@@ -2481,6 +2958,7 @@ impl ProviderConfig {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -2489,6 +2967,7 @@ impl ProviderConfig {
             request_compression: true,
             retry: RetryConfig::default(),
             workspace_roots: Vec::new(),
+            profile_dir: None,
             sandbox: true,
         }
     }
@@ -2505,6 +2984,7 @@ impl ProviderConfig {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: Vec::new(),
             account_scope: Vec::new(),
@@ -2513,6 +2993,7 @@ impl ProviderConfig {
             request_compression: true,
             retry: RetryConfig::default(),
             workspace_roots: Vec::new(),
+            profile_dir: None,
             sandbox: true,
         }
     }
@@ -2551,6 +3032,7 @@ impl Default for Config {
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     service_tier: None,
+                    classifier_model: None,
                     count_tokens: CountTokens::default(),
                     accounts: Vec::new(),
                     account_scope: Vec::new(),
@@ -2559,6 +3041,7 @@ impl Default for Config {
                     request_compression: true,
                     retry: RetryConfig::default(),
                     workspace_roots: Vec::new(),
+                    profile_dir: None,
                     sandbox: true,
                 },
             ),
@@ -2623,6 +3106,7 @@ impl Default for Config {
                     api_key_header: ApiKeyHeader::Bearer,
                     effort: None,
                     service_tier: None,
+                    classifier_model: None,
                     count_tokens: CountTokens::default(),
                     accounts: Vec::new(),
                     account_scope: Vec::new(),
@@ -2631,6 +3115,7 @@ impl Default for Config {
                     request_compression: true,
                     retry: RetryConfig::default(),
                     workspace_roots: Vec::new(),
+                    profile_dir: None,
                     sandbox: true,
                 },
             ),
@@ -2650,6 +3135,7 @@ impl Default for Config {
                 status: None,
                 sse_keepalive_seconds: default_sse_keepalive_seconds(),
                 max_concurrent_requests: default_max_concurrent_requests(),
+                shutdown_timeout_seconds: default_shutdown_timeout_seconds(),
                 access_control: AccessControlConfig::default(),
                 limits: LimitsConfig::default(),
                 timeouts: TimeoutsConfig::default(),
@@ -2909,6 +3395,10 @@ impl Config {
         // defensive validation and `shunt check` also call `validate`, so
         // keeping it there would repeat the same warning on every validation.
         config.warn_reprobe_seconds_below_floor();
+        config.warn_router_targets_unresolvable();
+        config.warn_router_threshold_inversion();
+        config.warn_router_identical_targets();
+        config.warn_router_shadows_exact_route();
         // One aggregated warning per load naming every `Secret` field whose
         // value was written literally in the config file — never the value
         // itself. A `Secret` populated from an env override, a `${...}`
@@ -3216,6 +3706,12 @@ impl Config {
                 limit: MAX_CONCURRENT_REQUESTS_LIMIT,
             });
         }
+        if !(1..=MAX_SHUTDOWN_TIMEOUT_SECONDS).contains(&self.server.shutdown_timeout_seconds) {
+            return Err(ConfigError::InvalidShutdownTimeout {
+                seconds: self.server.shutdown_timeout_seconds,
+                limit: MAX_SHUTDOWN_TIMEOUT_SECONDS,
+            });
+        }
         self.server.access_control.validate()?;
         if self.server.limits.max_request_bytes == 0 {
             return Err(ConfigError::InvalidMaxRequestBytes);
@@ -3422,6 +3918,24 @@ impl Config {
             // Bounded-retry sanity (issue #48): the bounds check lives on
             // RetryConfig so the invariant travels with the type.
             provider.retry.validate(name)?;
+            // `classifier_model` is read only by the anthropic adapter, and it
+            // is a remap *within* this provider — a value on any other kind
+            // would silently do nothing, so say so at boot rather than leave the
+            // operator to infer it from a classifier that never moved. Empty is
+            // rejected for the same reason: it is a typo that would otherwise
+            // rewrite the request's `model` to the empty string.
+            if let Some(classifier_model) = &provider.classifier_model {
+                if provider.kind != ProviderKind::Anthropic {
+                    return Err(ConfigError::ClassifierModelWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                if classifier_model.trim().is_empty() {
+                    return Err(ConfigError::EmptyClassifierModel {
+                        provider: name.clone(),
+                    });
+                }
+            }
             // A cursor_oauth provider injects the operator's stored Cursor
             // subscription bearer, so — like xai_oauth below — its base_url must
             // stay on a Cursor host over https, never a gateway or plaintext
@@ -3518,10 +4032,13 @@ impl Config {
                     }
                 }
             }
-            if !provider.accounts.is_empty()
+            if (!provider.accounts.is_empty() || !provider.account_scope.is_empty())
                 && !matches!(
                     provider.auth,
-                    AuthMode::ClaudeOauth | AuthMode::ChatgptOauth | AuthMode::KimiOauth
+                    AuthMode::ClaudeOauth
+                        | AuthMode::ChatgptOauth
+                        | AuthMode::KimiOauth
+                        | AuthMode::AntigravityOauth
                 )
             {
                 return Err(ConfigError::AccountsRequireOauthProvider {
@@ -3663,25 +4180,47 @@ impl Config {
                 }
             }
             let mut account_names = HashSet::new();
-            for account in &provider.accounts {
-                if account.name.is_empty()
-                    || !account.name.bytes().all(|byte| {
-                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
-                    })
-                {
+            // Bare `accounts = ["..."]` entries are matched by exact name
+            // against the scanned store, and the scan (`account_files`) skips
+            // every file whose stem fails `validate_account_name`. A scope
+            // entry that fails it therefore can never match on any pool: it
+            // would pass `shunt check`, then fail the first routed request
+            // with "account scope references missing store account". Reject
+            // it here, where the operator sees it.
+            for account_name in provider
+                .account_scope
+                .iter()
+                .chain(provider.accounts.iter().map(|account| &account.name))
+            {
+                if crate::auth::shared::validate_account_name(account_name).is_err() {
                     return Err(ConfigError::InvalidAccountName {
                         provider: name.clone(),
-                        name: account.name.clone(),
+                        name: account_name.clone(),
                     });
                 }
-                if !account_names.insert(&account.name) {
+                if !account_names.insert(account_name) {
                     return Err(ConfigError::DuplicateAccountName {
+                        provider: name.clone(),
+                        name: account_name.clone(),
+                    });
+                }
+            }
+            for account in &provider.accounts {
+                if account.credentials.is_some() && account.token_env.is_some() {
+                    return Err(ConfigError::AccountMultipleCredentialSources {
                         provider: name.clone(),
                         name: account.name.clone(),
                     });
                 }
-                if account.credentials.is_some() && account.token_env.is_some() {
-                    return Err(ConfigError::AccountMultipleCredentialSources {
+                // `resolve_antigravity_account` (`src/auth/mod.rs`) always
+                // rejects a `token_env` Antigravity account at request time —
+                // a bearer alone carries no Code Assist project id — so a
+                // config admitting one here would only fail later, as a
+                // per-request 503 instead of a boot-time error. Kimi
+                // legitimately supports `token_env`, so this is scoped to
+                // Antigravity only.
+                if provider.auth == AuthMode::AntigravityOauth && account.token_env.is_some() {
+                    return Err(ConfigError::AntigravityAccountTokenEnv {
                         provider: name.clone(),
                         name: account.name.clone(),
                     });
@@ -3850,13 +4389,54 @@ impl Config {
         }
         let mut model_ids = HashSet::new();
         let mut model_upstream_ids = HashSet::new();
+        let mut model_router_ids = HashSet::new();
         for model in &self.models {
             let duplicate_id = !model_ids.insert(&model.id);
+            // Mutual exclusivity first, so an entry declaring both reports that
+            // rather than whichever router field happens to fail validation
+            // next. Both checks sit above the `upstream_model` arm below, which
+            // `continue`s past every entry that has no map — a router entry is
+            // exactly such an entry, so checking either later would never run
+            // for it.
+            // The removed table first: an entry that still writes it has no
+            // `router` at all, so every check below would pass and the id would
+            // silently route to the default provider.
+            if model.stage_router.is_some() {
+                return Err(ConfigError::RemovedStageRouterTable {
+                    model: model.id.clone(),
+                });
+            }
+            if model.router.is_some() && model.upstream_model.is_some() {
+                return Err(ConfigError::RouterWithUpstreamMap {
+                    model: model.id.clone(),
+                });
+            }
+            if let Some(router) = &model.router {
+                self.validate_router(&model.id, router)?;
+            }
+            if let Some(subagents) = &model.subagents {
+                self.validate_subagents(&model.id, subagents)?;
+            }
             let Some(upstream_models) = &model.upstream_model else {
-                if duplicate_id && model_upstream_ids.contains(&model.id) {
+                // Two map-less entries may share an id while both are pure
+                // discovery metadata: neither one changes how the id resolves,
+                // so `duplicate_map_less_model_ids_remain_valid` keeps that
+                // tolerated. A `router` or `subagents` entry is not metadata —
+                // it names a routing policy — so a duplicate on either side
+                // leaves two policies for one public id, settled by declaration
+                // order once the resolver reads the table.
+                let declares_policy = names_a_policy(model);
+                if duplicate_id
+                    && (model_upstream_ids.contains(&model.id)
+                        || model_router_ids.contains(&model.id)
+                        || declares_policy)
+                {
                     return Err(ConfigError::DuplicateModelId {
                         model: model.id.clone(),
                     });
+                }
+                if declares_policy {
+                    model_router_ids.insert(&model.id);
                 }
                 continue;
             };
@@ -3939,6 +4519,514 @@ impl Config {
         Ok(self)
     }
 
+    /// Fail-closed checks for one `[models.router]` table, whatever its type.
+    ///
+    /// Recursion is a one-hop check, not a graph walk: a router target may never
+    /// itself be a router, so no longer cycle can exist. Self-targeting is the
+    /// degenerate case of that same rule and is caught by it. Every id compared
+    /// here goes through `strip_context_window_hint` first, because that is what
+    /// `resolve_model_chain` matches on — a predicate that normalized
+    /// differently would enforce the rule on the written string while routing
+    /// resolved a different one.
+    ///
+    /// Judge targets ([`RouterConfig::named_judges`]) are held to the same
+    /// one-hop rule as answer targets, and **additionally** must resolve to
+    /// credential-injecting routes: a judge call carries no caller credential
+    /// (ADR-0005 §3), so a passthrough judge would have nothing to run on.
+    fn validate_router(&self, model_id: &str, router: &RouterConfig) -> Result<(), ConfigError> {
+        // First, before every other complaint about this table. A release
+        // binary cannot route a `prefill_router` entry at all, so "the feature
+        // is off" is the only actionable thing to say about it — reporting an
+        // empty `targets` list or a `[1m]` id first would send the operator to
+        // fix a key that still would not load.
+        #[cfg(not(feature = "prefill-router"))]
+        if matches!(router, RouterConfig::PrefillRouter(_)) {
+            return Err(ConfigError::PrefillRouterFeatureDisabled {
+                model: model_id.to_string(),
+            });
+        }
+        // Suffix, not substring: `strip_context_window_hint` only strips a
+        // trailing hint, so an id merely containing `[1m]` mid-string is an
+        // ordinary id that routes by its literal name. Same predicate the
+        // `upstream_model` arm uses on `model.id`, but its own error: mutual
+        // exclusivity is enforced by the caller, so an entry reaching here has a
+        // router table and provably no upstream_model map.
+        if crate::routing::strip_context_window_hint(model_id) != model_id {
+            return Err(ConfigError::RouterContextWindowHint {
+                model: model_id.to_string(),
+            });
+        }
+        // The one-hop rule, over every id the algorithm can name — answer
+        // targets and judges alike. The enumeration lives on
+        // `RouterConfig::named_targets`/`named_judges` so a new type cannot
+        // reach this check with a destination the rule never saw.
+        for (key, target) in router
+            .named_targets()
+            .into_iter()
+            .chain(router.named_judges())
+        {
+            if target.trim().is_empty() {
+                return Err(ConfigError::EmptyRouterTarget {
+                    model: model_id.to_string(),
+                    key: key.into_owned(),
+                });
+            }
+            // `resolve_model_chain` strips the context-window hint before it
+            // matches a `[[models]]` id, so this comparison has to strip it too.
+            // A target written `"<a router>[1m]"` is not equal to that router's
+            // id as written but resolves to it, which would leave the
+            // router-may-not-target-a-router rule satisfied only on paper.
+            let resolved = crate::routing::strip_context_window_hint(target);
+            if self
+                .models
+                .iter()
+                .any(|other| other.id == resolved && names_a_policy(other))
+            {
+                return Err(ConfigError::RouterRecursion {
+                    model: model_id.to_string(),
+                    // Report the target as the operator wrote it, hint included.
+                    target: target.to_string(),
+                });
+            }
+        }
+        if let Some(stage) = router.stage() {
+            self.validate_stage_router(model_id, stage)?;
+        }
+        if let RouterConfig::Random(random) = router {
+            validate_random_router(model_id, random)?;
+        }
+        // Compiled into both builds, but only reached by the one that can run
+        // the algorithm: the early return above refuses a `prefill_router`
+        // entry outright when the feature is off, so these key-level verdicts
+        // are what a from-source build reports and a release binary never gets
+        // as far as.
+        if let RouterConfig::PrefillRouter(prefill) = router {
+            validate_prefill_router(model_id, prefill)?;
+        }
+        match router {
+            RouterConfig::LlmClassifier(classifier) => {
+                self.validate_llm_classifier(model_id, classifier)?
+            }
+            RouterConfig::Composite(composite) => self.validate_composite(model_id, composite)?,
+            RouterConfig::Advisor(advisor) => self.validate_advisor(model_id, advisor)?,
+            _ => {}
+        }
+        // Last, and only after every key-level verdict: upstream's own
+        // constructor is the authority on a rule shunt does not spell, and its
+        // message names libsy's field rather than the operator's key — so it
+        // must not be what an operator sees for a mistake shunt can describe
+        // itself.
+        crate::routing::driven::check_buildable(router).map_err(|message| {
+            ConfigError::DrivenRouterBuild {
+                model: model_id.to_string(),
+                message,
+            }
+        })?;
+        Ok(())
+    }
+
+    /// Fail-closed checks for one `[models.subagents]` table (ADR-0005 §5, §11).
+    ///
+    /// The same one-hop rule as [`Self::validate_router`], over every target the
+    /// overlay can name — `target` and each `by_type` value — with the same
+    /// `strip_context_window_hint` normalization, and for the same reason: the
+    /// resolver hops exactly once from the overlay to its target, so a target
+    /// that carries its own router or overlay would be resolved as a plain id
+    /// and silently lose the policy it declares.
+    ///
+    /// `by_type` keys are matched byte-for-byte against the
+    /// `x-claude-code-agent-type` value, so a key that is blank or carries
+    /// whitespace *anywhere* is rejected rather than trimmed: no agent type on
+    /// the wire contains a space, so such a key could never match, and the
+    /// operator meant some type — guessing which is how the config and the
+    /// wire drift apart.
+    fn validate_subagents(
+        &self,
+        model_id: &str,
+        subagents: &SubagentsConfig,
+    ) -> Result<(), ConfigError> {
+        if crate::routing::strip_context_window_hint(model_id) != model_id {
+            return Err(ConfigError::SubagentsContextWindowHint {
+                model: model_id.to_string(),
+            });
+        }
+        for agent_type in subagents.agent_types() {
+            if agent_type.is_empty()
+                || agent_type.chars().any(char::is_whitespace)
+                || agent_type
+                    .bytes()
+                    .any(|byte| !(0x20..=0x7e).contains(&byte))
+            {
+                return Err(ConfigError::InvalidSubagentsType {
+                    model: model_id.to_string(),
+                    key: agent_type.to_string(),
+                });
+            }
+        }
+        // Judges chained after targets, exactly as `validate_router` chains
+        // them: the one-hop rule is about what the resolver would do with an
+        // id, and it would do the same thing with a judge id.
+        for (key, target) in subagents
+            .named_targets()
+            .into_iter()
+            .chain(subagents.named_judges())
+        {
+            if target.trim().is_empty() {
+                return Err(ConfigError::EmptySubagentsTarget {
+                    model: model_id.to_string(),
+                    key: key.into_owned(),
+                });
+            }
+            let resolved = crate::routing::strip_context_window_hint(target);
+            if self
+                .models
+                .iter()
+                .any(|other| other.id == resolved && names_a_policy(other))
+            {
+                return Err(ConfigError::SubagentsRecursion {
+                    model: model_id.to_string(),
+                    key: key.into_owned(),
+                    target: target.to_string(),
+                });
+            }
+        }
+        if let Some(classifier) = subagents.classifier() {
+            self.validate_subagents_classifier(model_id, classifier)?;
+        }
+        Ok(())
+    }
+
+    /// The stage-specific keys, shared by `type = "stage_router"` and the
+    /// `type = "auto"` preset.
+    fn validate_stage_router(
+        &self,
+        model_id: &str,
+        router: &StageRouterConfig,
+    ) -> Result<(), ConfigError> {
+        for (key, value) in [
+            ("confidence_threshold", router.confidence_threshold),
+            ("deescalate_threshold", router.deescalate_threshold()),
+        ]
+        .into_iter()
+        .chain(router.classifier.as_ref().map(|classifier| {
+            // The judge's own gate, held to the same range as the signal
+            // scorer's: it is the same kind of number, so it reuses the same
+            // error with the key the operator wrote.
+            ("classifier.base_threshold", classifier.base_threshold)
+        })) {
+            // `!(0.0 < v && v <= 1.0)` rather than a negated range so NaN, which
+            // compares false against every bound, is rejected too.
+            if !(value > 0.0 && value <= 1.0) {
+                return Err(ConfigError::InvalidStageRouterThreshold {
+                    model: model_id.to_string(),
+                    key,
+                    value,
+                });
+            }
+        }
+        // Runs for `auto` too. Its preset writes the six defaults, all
+        // non-zero, so the check is inert there rather than skipped — a
+        // skipped check is one a later preset change could quietly outgrow.
+        CallBounds::validate(model_id, router.bound_keys())?;
+        if let Some(classifier) = &router.classifier {
+            self.validate_judge_is_injecting(model_id, "classifier.target", &classifier.target)?;
+        }
+        if router.recent_turn_window == 0 {
+            return Err(ConfigError::InvalidStageRouterWindow {
+                model: model_id.to_string(),
+            });
+        }
+        validate_tool_semantics(model_id, &router.tool_semantics)?;
+        if let Some(notes) = &router.handoff_notes {
+            if notes.escalation_note.trim().is_empty() {
+                return Err(ConfigError::EmptyHandoffNote {
+                    model: model_id.to_string(),
+                    key: "escalation_note",
+                });
+            }
+            if notes
+                .deescalation_note
+                .as_ref()
+                .is_some_and(|note| note.trim().is_empty())
+            {
+                return Err(ConfigError::EmptyHandoffNote {
+                    model: model_id.to_string(),
+                    key: "deescalation_note",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Reject a judge whose effective chain contains a passthrough route.
+    ///
+    /// A judge call is made with every inbound credential slot removed —
+    /// reserved slots plus both `SHARED_SLOTS` names, unconditionally
+    /// (ADR-0005 §3) — so it can only run on a credential the gateway itself
+    /// injects. A passthrough route has none: the call would reach the upstream
+    /// unauthenticated, or worse, carry a credential that was presented for a
+    /// different origin. Every member of the chain is checked, not just the
+    /// primary, because failover reaches all of them; and the chain is resolved
+    /// through the full ladder, so a judge id that names no `[[models]]` entry
+    /// is judged on `server.default_provider`'s route, which is where it would
+    /// actually land.
+    ///
+    /// Called from `validate_stage_router`, which runs after
+    /// `normalize_upstreams` has materialised `self.providers` — the map
+    /// `route_is_passthrough` reads.
+    pub(crate) fn validate_judge_is_injecting(
+        &self,
+        model_id: &str,
+        key: &str,
+        target: &str,
+    ) -> Result<(), ConfigError> {
+        for route in crate::routing::resolve_model_chain(self, target) {
+            if self.route_is_passthrough(&route) {
+                return Err(ConfigError::PassthroughJudgeTarget {
+                    model: model_id.to_string(),
+                    key: key.to_string(),
+                    target: target.to_string(),
+                    provider: route.provider,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a route's provider forwards the caller's own upstream credential
+    /// (`AuthMode::Passthrough`) rather than injecting a gateway-held one. An
+    /// unknown provider is treated as credential-injecting (fail closed).
+    ///
+    /// Lives on `Config` rather than on the request path because two callers
+    /// now need it and only one of them has an `AppState`: the inbound auth
+    /// gate (`proxy::failover::is_passthrough_route`, a one-line delegate to
+    /// this) and config validation, which has no request at all. One definition
+    /// keeps the two from drifting — a judge validation that disagreed with the
+    /// auth gate about what "passthrough" means would accept configs the gate
+    /// then refuses to serve.
+    ///
+    /// A noop route is never passthrough, whatever an operator named a
+    /// provider. Its `provider` is the literal `"noop"`, which normally names
+    /// no `[providers.*]` entry and so already fails closed — but a provider an
+    /// operator happened to call `noop` would otherwise flip this to true and
+    /// drop `[server.auth]` for the route. Deciding on the adapter instead
+    /// makes that impossible rather than unlikely.
+    ///
+    /// Antigravity is never passthrough, whatever its `auth` says. The
+    /// exemption exists because a passthrough route lends the caller nothing —
+    /// their own credential goes upstream, so gating it behind `[server.auth]`
+    /// would protect nothing. That reasoning does not survive contact with this
+    /// kind: the adapter ignores the caller's credential entirely and runs the
+    /// operator's local `agy` with `--dangerously-skip-permissions`. Since
+    /// `AuthMode::Passthrough` is also the default when `auth` is omitted,
+    /// honouring it here would let anyone reach a protected gateway and execute
+    /// code as the user running shunt.
+    pub fn route_is_passthrough(&self, route: &crate::routing::Route) -> bool {
+        if route.adapter == crate::routing::AdapterKind::Noop {
+            return false;
+        }
+        self.provider(&route.provider).is_some_and(|provider| {
+            provider.auth == AuthMode::Passthrough && provider.kind != ProviderKind::AntigravityCli
+        })
+    }
+
+    /// The stage table and classifier of a driven `[[models]]` entry, looked up
+    /// by its advertised id.
+    ///
+    /// `None` for every id that names no entry, names one with no router, or
+    /// names a router on the pure lane — which is the answer the request path
+    /// needs before it does anything driven-lane-shaped at all (compute an
+    /// envelope, mint an admitted context, construct a driver). `id` is
+    /// expected already stripped of a `[1m]` hint, the same normalization
+    /// `resolve_chain` matches on.
+    pub fn driven_stage(&self, id: &str) -> Option<(&StageRouterConfig, &StageClassifierConfig)> {
+        self.models
+            .iter()
+            .find(|model| model.id == id)?
+            .router
+            .as_ref()?
+            .stage_classifier()
+    }
+
+    /// Warns once at load for every `[models.router]` target or judge — of any
+    /// type — that matches no `[[models]]`, `[[routes]]`, or
+    /// `[[route_prefixes]]` entry.
+    ///
+    /// Not an error, and deliberately not part of [`Config::validate_router`]:
+    /// resolution always falls back to `server.default_provider`, so the target
+    /// still routes — it is just very likely not what the operator meant.
+    ///
+    /// Emitted at the successful load boundary rather than from `validate`, the
+    /// same split [`Config::warn_reprobe_seconds_below_floor`] uses. That is
+    /// **once per load, not once per process**: `reload::reload` calls
+    /// `Config::load`, so a hot reload that leaves the problem in place warns
+    /// again. What the split buys is that validation stays side-effect free —
+    /// `validate` runs strictly more often than `load` does (`Config::load`
+    /// calls it, `RuntimeState::from_config` calls it again on every reload, and
+    /// `shunt check` calls it), so warning from there would multiply the same
+    /// line per reload rather than emit it once.
+    fn warn_router_targets_unresolvable(&self) {
+        for model in &self.models {
+            // Router targets, the judges a driven router consults, and
+            // overlay targets alike: an overlay target that lands on the
+            // default provider is the same misconfiguration, and so is a judge
+            // that does — it is a model call like any other.
+            let targets = model
+                .router
+                .iter()
+                .flat_map(|router| router.targets().into_iter().chain(router.judges()))
+                .chain(model.subagents.iter().flat_map(|subagents| {
+                    // Targets *and* judges: a classifier-form overlay consults
+                    // its own judge on the gateway's credential, so a judge id
+                    // that silently lands on the default provider is the same
+                    // misconfiguration as a target that does.
+                    subagents
+                        .named_targets()
+                        .into_iter()
+                        .chain(subagents.named_judges())
+                        .map(|(_, target)| target)
+                }));
+            for target in targets {
+                // Same normalization the validation and the resolver apply.
+                let resolved = crate::routing::strip_context_window_hint(target);
+                // A `[[models]]` entry routes its own id only when it carries
+                // an `upstream_model` map: `resolve_model_chain` returns from
+                // that arm in that case alone and otherwise falls through to
+                // `[[routes]]`, `[[route_prefixes]]`, and the default provider.
+                // A map-less entry is discovery metadata, so counting it here
+                // would suppress the warning for a target that does land on the
+                // default backend — the exact case this diagnostic exists for.
+                if !self
+                    .models
+                    .iter()
+                    .any(|other| other.id == resolved && other.upstream_model.is_some())
+                    && !self.routes.iter().any(|route| route.model == resolved)
+                    && !self
+                        .route_prefixes
+                        .iter()
+                        .any(|prefix| resolved.starts_with(&prefix.prefix))
+                {
+                    tracing::warn!(
+                        model_id = %model.id,
+                        target = %target,
+                        default_provider = %self.server.default_provider,
+                        "router target matches no [[models]] entry with an upstream_model map, no [[routes]] entry, and no [[route_prefixes]] entry; it will fall back to the default provider"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Warns once at load when a `[models.router]` stage table sets its de-escalation
+    /// gate *below* its escalation gate.
+    ///
+    /// The shipped defaults (0.5 / 0.75) make coming back down the harder
+    /// direction, because a tier flip forfeits the warm prompt-cache prefix and
+    /// any `previous_response_id` continuation. Inverting that is coherent —
+    /// a cost-sensitive deployment may genuinely want to drop to the efficient
+    /// tier readily and escalate only on strong evidence — so this is a warning
+    /// and not a [`ConfigError`]: the realistic failure is a typo, and rejecting
+    /// the pair would take away a configuration someone means (issue #562).
+    ///
+    /// Compared against [`StageRouterConfig::deescalate_threshold`], the
+    /// *effective* value, so leaving the key out and raising
+    /// `confidence_threshold` past the 0.75 default warns too — that config
+    /// inverts the design just as much as writing both keys does. Equal
+    /// thresholds are symmetric rather than inverted and stay silent.
+    fn warn_router_threshold_inversion(&self) {
+        for model in &self.models {
+            // Stage and auto only: the two thresholds are stage keys, and a
+            // random or noop entry has neither.
+            let Some(router) = model.router.as_ref().and_then(RouterConfig::stage) else {
+                continue;
+            };
+            let deescalate = router.deescalate_threshold();
+            if deescalate < router.confidence_threshold {
+                tracing::warn!(
+                    model_id = %model.id,
+                    deescalate_threshold = deescalate,
+                    confidence_threshold = router.confidence_threshold,
+                    "router deescalate_threshold is below confidence_threshold; de-escalation is the easier direction, which inverts the default design"
+                );
+            }
+        }
+    }
+
+    /// Warns once at load when a `[models.router]` stage table's two targets resolve
+    /// to the same model id.
+    ///
+    /// The router then has nothing to choose between: whatever the signals say,
+    /// every decision lands on one destination. Degenerate, but a real operator
+    /// move — flattening both tiers onto one model while testing is a one-line
+    /// edit against restructuring the entry — so it warns rather than failing
+    /// the load (issue #562).
+    ///
+    /// Compared after [`crate::routing::strip_context_window_hint`], the same
+    /// normalization `resolve_chain` applies to a target before matching it, so
+    /// `"m[1m]"` and `"m"` are recognized as the one destination they route to.
+    /// Not case-insensitive: routing matches ids with `==`, so two ids differing
+    /// only in case really are two ids.
+    fn warn_router_identical_targets(&self) {
+        for model in &self.models {
+            // Stage and auto only: "the router has no tier to choose between"
+            // is a statement about a two-tier algorithm, and a random split
+            // across two identical targets is the operator's own arithmetic.
+            let Some(router) = model.router.as_ref().and_then(RouterConfig::stage) else {
+                continue;
+            };
+            let [capable, efficient] = router.targets();
+            if crate::routing::strip_context_window_hint(capable)
+                == crate::routing::strip_context_window_hint(efficient)
+            {
+                tracing::warn!(
+                    model_id = %model.id,
+                    capable_target = %capable,
+                    efficient_target = %efficient,
+                    "router capable_target and efficient_target resolve to the same model; the router has no tier to choose between"
+                );
+            }
+        }
+    }
+
+    /// Warns once at load for every `[[routes]]` entry a `[models.router]`
+    /// id shadows.
+    ///
+    /// `resolve_chain` matches `[[models]]` before either table and returns from
+    /// the router arm, so a route naming a router-backed id is never consulted.
+    /// Mutual exclusivity with `upstream_model` is what makes this reachable: a
+    /// router entry has no map, and a map-less `[[models]]` entry is exactly the
+    /// shape that *does* fall through to `[[routes]]` — so an operator
+    /// converting a routed alias into a router leaves a route behind that used
+    /// to do something and now does nothing.
+    ///
+    /// A warning rather than a `ConfigError`, for the reason issue #562 settled
+    /// for the sibling cross-field rules: the shadowed route is inert, not
+    /// wrong, and rejecting it would fail a config whose only fault is a leftover
+    /// line.
+    ///
+    /// `[[route_prefixes]]` is deliberately **not** checked. A prefix entry is
+    /// not dead just because one router id happens to start with it: it still
+    /// serves every other id that matches, and which ids those are is not
+    /// knowable at load — they arrive from `[[models]]`, from discovery, and
+    /// from whatever a client asks for. Only the exact-match entry has a single
+    /// purpose that the router takes away.
+    fn warn_router_shadows_exact_route(&self) {
+        for model in &self.models {
+            if model.router.is_none() {
+                continue;
+            }
+            for route in &self.routes {
+                if route.model == model.id {
+                    tracing::warn!(
+                        model_id = %model.id,
+                        provider = %route.provider,
+                        "a [[routes]] entry names a [models.router] id; the router decides this id's destination, so the route is never consulted"
+                    );
+                }
+            }
+        }
+    }
+
     /// Resolve `[server.auth]` into the runtime inbound-auth state, reading the
     /// configured tokens env. `None` when inbound auth is not configured. Fails
     /// closed (see [`InboundAuthConfig::resolve`]). Shared by `build_router` and
@@ -3996,6 +5084,20 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// Whether `provider` targets the stock OpenAI Responses host, exactly
+    /// (`api.openai.com`). Codex sends its session-affinity headers there under
+    /// api-key auth (`codex-rs` api-key test), so the api-key adapter branch
+    /// mirrors them on this host and nowhere else — a third-party
+    /// OpenAI-compatible host has no use for codex identity headers.
+    pub fn is_openai_backend(&self, provider: &str) -> bool {
+        self.provider(provider).is_some_and(|config| {
+            reqwest::Url::parse(&config.base_url)
+                .ok()
+                .and_then(|url| url.host_str().map(host_is_openai))
+                .unwrap_or(false)
+        })
+    }
+
     /// The effective storm-control initial admission allowance
     /// (`[server.pool] ramp_initial_concurrency`), or `None` when no pool is
     /// configured or the gate is disabled.
@@ -4004,6 +5106,14 @@ impl Config {
             .pool
             .as_ref()
             .and_then(PoolConfig::storm_ramp_initial)
+    }
+
+    /// Private `HOME` for `provider`'s Antigravity CLI child process, when
+    /// configured. See [`ProviderConfig::profile_dir`].
+    pub fn provider_profile_dir(&self, provider: &str) -> Option<&str> {
+        self.provider(provider)
+            .and_then(|config| config.profile_dir.as_deref())
+            .filter(|dir| !dir.is_empty())
     }
 
     /// Whether the Codex Responses WebSocket v2 transport should be used for
@@ -4174,7 +5284,7 @@ mod tests {
         GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, ModelConfig,
         OauthUsageConfig, OidcProviderConfig, PoolConfig, ProviderConfig, ProviderKind,
         ResponsesFlavor, RetryConfig, Secret, SpendConfig, StatusConfig, StatusSource,
-        UsageEndpointConfig, CONFIG_ENV_LOCK,
+        UsageEndpointConfig, CONFIG_ENV_LOCK, MAX_SHUTDOWN_TIMEOUT_SECONDS,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -4182,6 +5292,9 @@ mod tests {
             id: id.to_string(),
             display_name: None,
             upstream_model,
+            router: None,
+            stage_router: None,
+            subagents: None,
         }
     }
 
@@ -4333,6 +5446,76 @@ mod tests {
     }
 
     #[test]
+    fn classifier_model_is_accepted_on_an_anthropic_provider() {
+        use crate::config::ProviderConfig;
+
+        let mut provider = ProviderConfig::anthropic("https://api.anthropic.com");
+        provider.classifier_model = Some("claude-sonnet-5".to_string());
+        let mut config = Config::default();
+        config.providers.insert("pinned".to_string(), provider);
+
+        let config = config
+            .validate()
+            .expect("classifier_model is an anthropic-kind key");
+        assert_eq!(
+            config
+                .provider("pinned")
+                .unwrap()
+                .classifier_model
+                .as_deref(),
+            Some("claude-sonnet-5")
+        );
+    }
+
+    #[test]
+    fn classifier_model_is_rejected_on_a_non_anthropic_provider() {
+        use crate::config::ProviderConfig;
+
+        // A `responses` provider never sees the classifier request shape, so a
+        // value here would silently do nothing.
+        let mut provider = ProviderConfig::responses(
+            "https://api.openai.com",
+            AuthMode::ApiKey,
+            Some("OPENAI_API_KEY"),
+        );
+        provider.classifier_model = Some("gpt-5.6".to_string());
+        let mut config = Config::default();
+        config.providers.insert("wrong-kind".to_string(), provider);
+
+        let error = config
+            .validate()
+            .expect_err("classifier_model must not be accepted on kind = \"responses\"");
+        assert!(
+            matches!(
+                &error,
+                ConfigError::ClassifierModelWrongKind { provider } if provider == "wrong-kind"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn an_empty_classifier_model_is_rejected() {
+        use crate::config::ProviderConfig;
+
+        let mut provider = ProviderConfig::anthropic("https://api.anthropic.com");
+        provider.classifier_model = Some("   ".to_string());
+        let mut config = Config::default();
+        config.providers.insert("blank".to_string(), provider);
+
+        let error = config
+            .validate()
+            .expect_err("a whitespace-only classifier_model must not rewrite `model` to it");
+        assert!(
+            matches!(
+                &error,
+                ConfigError::EmptyClassifierModel { provider } if provider == "blank"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn bind_is_loopback_fails_closed_on_an_unparseable_bind() {
         let mut config = Config::default();
         config.server.bind = "not-an-address".to_string();
@@ -4376,6 +5559,34 @@ mod tests {
             .validate()
             .expect("the boundary value itself is valid");
         let _ = tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS_LIMIT);
+    }
+
+    #[test]
+    fn shutdown_timeout_is_finite_by_default_and_validated() {
+        assert_eq!(Config::default().server.shutdown_timeout_seconds, 30);
+
+        for seconds in [0, MAX_SHUTDOWN_TIMEOUT_SECONDS + 1] {
+            let mut config = Config::default();
+            config.server.shutdown_timeout_seconds = seconds;
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::InvalidShutdownTimeout {
+                        seconds: rejected,
+                        limit: MAX_SHUTDOWN_TIMEOUT_SECONDS,
+                    }) if rejected == seconds
+                ),
+                "shutdown timeout {seconds} must fail closed"
+            );
+        }
+
+        for seconds in [1, MAX_SHUTDOWN_TIMEOUT_SECONDS] {
+            let mut config = Config::default();
+            config.server.shutdown_timeout_seconds = seconds;
+            config
+                .validate()
+                .unwrap_or_else(|error| panic!("boundary {seconds} rejected: {error}"));
+        }
     }
 
     #[test]
@@ -4462,7 +5673,14 @@ mod tests {
         assert_eq!(admin.tokens_env, "SHUNT_ADMIN_TOKENS");
         assert_eq!(admin.session_ttl_secs, 3600);
         assert_eq!(admin.pending_ttl_secs, 600);
+        assert!(!admin.hide_observed);
         assert!(admin.oidc.is_none());
+    }
+
+    #[test]
+    fn admin_config_parses_hide_observed() {
+        let admin: AdminConfig = serde_json::from_str(r#"{"hide_observed":true}"#).unwrap();
+        assert!(admin.hide_observed);
     }
 
     #[test]
@@ -4479,6 +5697,7 @@ mod tests {
             read_keys: Vec::new(),
             session_ttl_secs: 3600,
             pending_ttl_secs: 600,
+            hide_observed: false,
             oidc: Some(AdminOidcConfig {
                 public_url: "http://127.0.0.1:8787".into(),
                 client_secret_env: secret_env.clone(),
@@ -4587,6 +5806,7 @@ mod tests {
             read_keys: Vec::new(),
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
+            hide_observed: false,
             oidc: None,
         };
 
@@ -4647,6 +5867,7 @@ mod tests {
             read_keys: Vec::new(),
             session_ttl_secs: 1800,
             pending_ttl_secs: 300,
+            hide_observed: false,
             oidc: None,
         };
 
@@ -4727,6 +5948,58 @@ mod tests {
         );
         config.providers.get_mut("kimi").unwrap().auth = AuthMode::KimiOauth;
         config
+    }
+
+    #[tokio::test]
+    async fn antigravity_provider_resolves_named_pool_and_preserves_singleton() {
+        use crate::accounts::StoreFamily;
+        use crate::auth::{antigravity::store, shared::EnvVarGuard};
+
+        let _guard = store::TEST_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("shunt-config-agy-{}", uuid::Uuid::new_v4()));
+        let _env = EnvVarGuard::set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &dir);
+        let mut provider = Config::default().providers.remove("antigravity").unwrap();
+        assert_eq!(provider.auth, AuthMode::AntigravityOauth);
+        assert_eq!(provider.store_family(), Some(StoreFamily::Antigravity));
+        assert!(provider.resolve_pool_accounts().await.unwrap().is_empty());
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(provider.resolve_pool_accounts().await.unwrap().is_empty());
+        std::fs::write(store::account_path("primary"), "{}").unwrap();
+        std::fs::write(store::account_path("backup"), "{}").unwrap();
+        let accounts = provider.resolve_pool_accounts().await.unwrap();
+        assert_eq!(
+            accounts.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            ["backup", "primary"]
+        );
+        assert!(accounts.iter().all(|a| a.store_entry
+            && a.store_family == Some(StoreFamily::Antigravity)
+            && a.uuid.is_none()));
+        provider.account_scope = vec!["primary".into()];
+        provider.accounts = vec![AccountConfig {
+            name: "inline".into(),
+            credentials: Some(dir.join("inline.json").to_string_lossy().into_owned()),
+            priority: 2,
+            disabled: true,
+            ..Default::default()
+        }];
+        let accounts = provider.resolve_pool_accounts().await.unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].name, "primary");
+        assert!(accounts[0].store_entry);
+        assert_eq!(accounts[1].name, "inline");
+        assert!(!accounts[1].store_entry);
+        assert_eq!(accounts[1].store_family, Some(StoreFamily::Antigravity));
+        assert_eq!(accounts[1].priority, 2);
+        assert!(accounts[1].disabled);
+        provider.account_scope.clear();
+        assert_eq!(provider.resolve_pool_accounts().await.unwrap().len(), 1);
+        provider.account_scope = vec!["missing".into()];
+        assert!(provider
+            .resolve_pool_accounts()
+            .await
+            .unwrap_err()
+            .contains("missing store account"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -4870,6 +6143,31 @@ mod tests {
             config.validate().unwrap_err(),
             ConfigError::AccountMultipleCredentialSources { .. }
         ));
+    }
+
+    #[test]
+    fn antigravity_oauth_rejects_token_env_accounts() {
+        // A bearer alone carries no Code Assist project id
+        // (`resolve_antigravity_account` in `src/auth/mod.rs` always rejects
+        // this at request time), so it must fail at boot rather than as a
+        // per-request 503. Exact config from the PR review that triggered
+        // this: `accounts = [{ name = "primary", token_env = "AGY_TOKEN" }]`.
+        let mut config = Config::default();
+        let mut configured = account("primary");
+        configured.token_env = Some("AGY_TOKEN".to_string());
+        config.providers.get_mut("antigravity").unwrap().accounts = vec![configured];
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::AntigravityAccountTokenEnv { .. }
+        ));
+
+        // Kimi legitimately supports token_env; the rejection must not spill
+        // over onto it.
+        let mut config = kimi_oauth_config();
+        let mut configured = account("primary");
+        configured.token_env = Some("KIMI_TOKEN".to_string());
+        config.providers.get_mut("kimi").unwrap().accounts = vec![configured];
+        config.validate().unwrap();
     }
 
     #[test]
@@ -5034,6 +6332,110 @@ mod tests {
         assert_eq!(bare.threshold, None);
         assert_eq!(bare.priority, 100, "serde default");
         assert!(!bare.disabled);
+    }
+
+    /// `Config::load` round-trips `Serialized::defaults(Self::default())` through
+    /// figment, so a `stage_router` serialized as an explicit null would reach
+    /// the table's own deserializer and fail. This pins the
+    /// `skip_serializing_if` on the field — drop it and this test goes red for
+    /// every config, router or not.
+    #[test]
+    fn router_survives_the_load_round_trip_in_both_formats() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-stage-router-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let toml_path = dir.join("shunt.toml");
+        std::fs::write(
+            &toml_path,
+            r#"
+[[models]]
+id = "claude-auto"
+
+[models.router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.6
+"#,
+        )
+        .unwrap();
+
+        let yaml_path = dir.join("shunt.yaml");
+        std::fs::write(
+            &yaml_path,
+            "models:\n  - id: claude-auto\n    router:\n      type: stage_router\n      capable_target: claude-opus-4-8\n      efficient_target: claude-sonnet-4-6\n      confidence_threshold: 0.6\n",
+        )
+        .unwrap();
+
+        for path in [&toml_path, &yaml_path] {
+            let config = Config::load(Some(path))
+                .unwrap_or_else(|error| panic!("{} must load: {error}", path.display()));
+            let router = config.models[0]
+                .router
+                .as_ref()
+                .and_then(super::RouterConfig::stage)
+                .unwrap_or_else(|| panic!("{} must parse a [models.router]", path.display()));
+            assert_eq!(router.capable_target, "claude-opus-4-8");
+            assert_eq!(router.efficient_target, "claude-sonnet-4-6");
+            assert_eq!(router.confidence_threshold, 0.6);
+            // Omitted keys take their documented defaults, not zero values.
+            assert_eq!(router.recent_turn_window, 3);
+            assert_eq!(router.min_dwell_turns, 3);
+            assert_eq!(
+                router.deescalate_threshold(),
+                super::DEFAULT_DEESCALATE_THRESHOLD
+            );
+            assert_eq!(router.picker, super::StageRouterPicker::EfficientFirst);
+            // The keys this PR added take their shunt defaults too, which is
+            // what keeps an existing deployment's hysteresis unchanged.
+            assert_eq!(router.capable_hold_turns, 0);
+            assert!(router.tool_semantics.is_empty());
+            assert!(router.handoff_notes.is_none());
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_model_without_a_stage_router_omits_the_key_entirely() {
+        // The round-trip test above populates the router in both fixtures, so
+        // it proves parsing and defaults but never the *absent* case — which is
+        // the one `skip_serializing_if` exists for. `Config::load` round-trips
+        // `Serialized::defaults(Self::default())` through figment, so a `None`
+        // emitted as an explicit null would come back as a present-but-null
+        // table and fail the router's own deserializer.
+        //
+        // Non-vacuity: drop `skip_serializing_if` from `ModelConfig` and both
+        // assertions below go red.
+        let model = ModelConfig {
+            id: "claude-opus-4-8".to_string(),
+            display_name: None,
+            upstream_model: None,
+            router: None,
+            stage_router: None,
+            subagents: None,
+        };
+
+        let rendered = toml::to_string(&model).expect("a router-less model serializes to TOML");
+        assert!(
+            !rendered.contains("stage_router"),
+            "stage_router must be omitted from TOML, got:\n{rendered}"
+        );
+
+        let json = serde_json::to_value(&model).expect("a router-less model serializes to JSON");
+        assert!(
+            json.get("stage_router").is_none(),
+            "stage_router must be omitted from JSON, got: {json}"
+        );
     }
 
     #[test]
@@ -5766,6 +7168,7 @@ provider = "deepseek"
             read_keys,
             session_ttl_secs: 3600,
             pending_ttl_secs: 600,
+            hide_observed: false,
             oidc: None,
         }
     }
@@ -6893,6 +8296,1765 @@ id = "claude-sonnet-5"
         ));
     }
 
+    /// A `[[models]]` entry carrying a stage router, with every optional key at
+    /// its default.
+    fn router_model(id: &str, capable: &str, efficient: &str) -> ModelConfig {
+        ModelConfig {
+            id: id.to_string(),
+            display_name: None,
+            upstream_model: None,
+            router: Some(super::RouterConfig::StageRouter(super::StageRouterConfig {
+                capable_target: capable.to_string(),
+                efficient_target: efficient.to_string(),
+                picker: super::StageRouterPicker::EfficientFirst,
+                confidence_threshold: super::DEFAULT_CONFIDENCE_THRESHOLD,
+                recent_turn_window: 3,
+                min_dwell_turns: 3,
+                deescalate_threshold: None,
+                session_ttl_seconds: 3600,
+                capable_hold_turns: 0,
+                tool_semantics: Default::default(),
+                handoff_notes: None,
+                classifier: None,
+                judge_timeout_ms: crate::config::DEFAULT_JUDGE_TIMEOUT_MS,
+                judge_max_response_bytes: crate::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES,
+                gated_max_bytes: crate::config::DEFAULT_GATED_MAX_BYTES,
+                gated_idle_ms: crate::config::DEFAULT_GATED_IDLE_MS,
+                gated_max_duration_ms: crate::config::DEFAULT_GATED_MAX_DURATION_MS,
+                max_judge_calls: crate::config::DEFAULT_MAX_JUDGE_CALLS,
+            })),
+            stage_router: None,
+            subagents: None,
+        }
+    }
+
+    /// The stage table inside a `router_model`'s `[models.router]`, for the
+    /// tests that tweak one key.
+    fn stage_mut(model: &mut ModelConfig) -> &mut super::StageRouterConfig {
+        match model.router.as_mut().expect("the fixture carries a router") {
+            super::RouterConfig::StageRouter(stage) => stage,
+            other => panic!("the fixture is a stage router, got {other:?}"),
+        }
+    }
+
+    /// A `prefill_router` entry naming `targets`, with a checkpoint path that
+    /// is never opened — `validate` must not touch the filesystem.
+    fn prefill_model(id: &str, targets: &[&str]) -> ModelConfig {
+        ModelConfig {
+            id: id.to_string(),
+            display_name: None,
+            upstream_model: None,
+            router: Some(super::RouterConfig::PrefillRouter(
+                super::PrefillRouterConfig {
+                    targets: targets.iter().map(|target| target.to_string()).collect(),
+                    checkpoint: std::path::PathBuf::from("/models/router.pt"),
+                    device: None,
+                    cache_dir: None,
+                    max_length: None,
+                    batch_size: None,
+                },
+            )),
+            stage_router: None,
+            subagents: None,
+        }
+    }
+
+    #[cfg(feature = "prefill-router")]
+    fn prefill_mut(model: &mut ModelConfig) -> &mut super::PrefillRouterConfig {
+        match model.router.as_mut().expect("the fixture carries a router") {
+            super::RouterConfig::PrefillRouter(prefill) => prefill,
+            other => panic!("the fixture is a prefill router, got {other:?}"),
+        }
+    }
+
+    /// A release binary parses the table and then refuses it by the name of
+    /// the thing the operator has to change. A parse error naming an unknown
+    /// variant would leave them with no remedy to act on.
+    #[cfg(not(feature = "prefill-router"))]
+    #[test]
+    fn a_prefill_router_entry_is_refused_by_feature_name_when_the_feature_is_off() {
+        let config = Config {
+            models: vec![
+                prefill_model("claude-prefill", &["claude-sonnet-4-6"]),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("codex", "gpt-5.2")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        let error = config.validate().unwrap_err();
+
+        assert!(matches!(
+            error,
+            ConfigError::PrefillRouterFeatureDisabled { ref model } if model == "claude-prefill"
+        ));
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("prefill-router"),
+            "the message must name the cargo feature, got: {rendered}"
+        );
+    }
+
+    /// Ordering: the feature error wins over every other complaint about the
+    /// same table. Telling an operator to fix `targets` on a binary that could
+    /// not run the router either way sends them to the wrong fix.
+    #[cfg(not(feature = "prefill-router"))]
+    #[test]
+    fn the_feature_error_wins_over_a_malformed_prefill_table() {
+        let config = Config {
+            models: vec![prefill_model("claude-prefill", &[])],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::PrefillRouterFeatureDisabled { .. }
+        ));
+    }
+
+    /// The positive twin of the refusal above: with the feature on the same
+    /// entry loads. `validate` still opens nothing — no Python, no checkpoint.
+    #[cfg(feature = "prefill-router")]
+    #[test]
+    fn a_prefill_router_entry_validates_when_the_feature_is_on() {
+        let config = Config {
+            models: vec![
+                prefill_model("claude-prefill", &["claude-sonnet-4-6"]),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("codex", "gpt-5.2")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    /// Each key-level rule, with the key it must report. Run under the feature
+    /// only: without it the entry is refused earlier by design, which the
+    /// ordering test above is what pins.
+    #[cfg(feature = "prefill-router")]
+    #[test]
+    fn prefill_router_rejects_each_malformed_key() {
+        /// One rule: the key the rejection must name, and the edit that breaks it.
+        type PrefillCase = (&'static str, fn(&mut ModelConfig));
+
+        let cases: Vec<PrefillCase> = vec![
+            ("targets", |model| prefill_mut(model).targets.clear()),
+            ("targets", |model| {
+                // Compared after `strip_context_window_hint`, like the
+                // recursion check: these two ids resolve to one destination,
+                // so the list binds two checkpoint heads to the same target.
+                prefill_mut(model).targets = vec!["x".to_string(), "x[1m]".to_string()];
+            }),
+            ("checkpoint", |model| {
+                prefill_mut(model).checkpoint = std::path::PathBuf::new();
+            }),
+            ("max_length", |model| {
+                prefill_mut(model).max_length = Some(0);
+            }),
+            ("batch_size", |model| {
+                prefill_mut(model).batch_size = Some(0);
+            }),
+        ];
+
+        for (expected_key, mutate) in cases {
+            let mut model = prefill_model("claude-prefill", &["claude-sonnet-4-6"]);
+            mutate(&mut model);
+            let config = Config {
+                models: vec![model],
+                ..Config::default()
+            };
+
+            let error = config.validate().unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    ConfigError::InvalidPrefillRouter { key, .. } if key == expected_key
+                ),
+                "expected an InvalidPrefillRouter on {expected_key}, got: {error}"
+            );
+        }
+    }
+
+    /// The one-hop rule ranges over `named_targets`, so it covers the new type
+    /// without a second implementation.
+    #[cfg(feature = "prefill-router")]
+    #[test]
+    fn a_prefill_target_may_not_be_another_router() {
+        let config = Config {
+            models: vec![
+                prefill_model("claude-prefill", &["claude-auto"]),
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+            ],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::RouterRecursion { ref model, ref target }
+                if model == "claude-prefill" && target == "claude-auto"
+        ));
+    }
+
+    /// One `[[models]]` entry parsed from TOML, for the shape tests.
+    ///
+    /// TOML rather than a JSON `Value`: the discriminator, the nested
+    /// `[models.router.*]` tables, and `deny_unknown_fields` are all things an
+    /// operator writes in TOML, and this is the parser that has to accept them.
+    fn parse_model(toml: &str) -> Result<ModelConfig, toml::de::Error> {
+        toml::from_str(toml)
+    }
+
+    fn parsed_router(toml: &str) -> super::RouterConfig {
+        parse_model(toml)
+            .unwrap_or_else(|error| panic!("{toml}\nmust parse: {error}"))
+            .router
+            .expect("the fixture writes a [models.router] table")
+    }
+
+    /// `[models.stage_router]` never shipped in a release, so it is removed
+    /// outright rather than aliased. `ModelConfig` has no `deny_unknown_fields`
+    /// — a `[[models]]` entry is also discovery metadata — so without an
+    /// explicit rejection the table would be dropped silently and the id would
+    /// route to the default provider.
+    #[test]
+    fn the_removed_stage_router_table_is_rejected_and_names_its_replacement() {
+        let model = parse_model(
+            r#"
+id = "claude-auto"
+[stage_router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+"#,
+        )
+        .expect("the removed table still parses; it is validation that refuses it");
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+
+        let error = config.validate().unwrap_err();
+
+        assert!(
+            matches!(error, ConfigError::RemovedStageRouterTable { ref model } if model == "claude-auto"),
+            "expected the removed-table error, got {error:?}"
+        );
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("[models.router]") && rendered.contains("stage_router"),
+            "the message must name the replacement, got: {rendered}"
+        );
+    }
+
+    /// The discriminator is required: an untagged table is not a router.
+    #[test]
+    fn a_router_table_without_a_type_is_rejected() {
+        let error = parse_model(
+            r#"
+id = "claude-auto"
+[router]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+"#,
+        )
+        .expect_err("a router table with no type must not parse");
+
+        assert!(
+            error.to_string().contains("type"),
+            "the message must name the missing discriminator, got: {error}"
+        );
+    }
+
+    /// Every variant's payload carries `deny_unknown_fields`, so a misspelled
+    /// key is a load error rather than a silently ignored line. Checked per
+    /// type because the enforcement differs by variant shape: the newtype
+    /// variants rely on their payload struct, `noop` on the container.
+    #[test]
+    fn an_unknown_key_is_rejected_for_every_router_type() {
+        for table in [
+            "type = \"stage_router\"\ncapable_target = \"a\"\nefficient_target = \"b\"\nconfidence_treshold = 0.5",
+            "type = \"auto\"\ncapable_target = \"a\"\nefficient_target = \"b\"\npicker = \"capable_first\"",
+            "type = \"random\"\ntargets = [\"a\"]\nweight = [1.0]",
+            "type = \"noop\"\ntarget = \"a\"",
+        ] {
+            let toml = format!("id = \"claude-auto\"\n[router]\n{table}\n");
+            assert!(
+                parse_model(&toml).is_err(),
+                "an unknown key must be rejected:\n{toml}"
+            );
+        }
+    }
+
+    /// `auto` is upstream's preset, expanded once at load: `efficient_first`,
+    /// `0.5`, and every other stage key at its shunt default.
+    #[test]
+    fn auto_expands_to_the_efficient_first_preset() {
+        let router = parsed_router(
+            r#"
+id = "claude-auto"
+[router]
+type = "auto"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+"#,
+        );
+
+        let stage = router.stage().expect("auto carries a stage table");
+        assert_eq!(stage.picker, super::StageRouterPicker::EfficientFirst);
+        assert_eq!(stage.confidence_threshold, 0.5);
+        assert_eq!(stage.recent_turn_window, 3);
+        assert_eq!(stage.min_dwell_turns, 3);
+        assert_eq!(stage.session_ttl_seconds, 3600);
+        assert_eq!(stage.capable_hold_turns, 0);
+        assert_eq!(router.algorithm(), "auto");
+        assert_eq!(router.targets(), ["claude-opus-4-8", "claude-sonnet-4-6"]);
+
+        // And it serializes back as the two keys the operator wrote, not as the
+        // expanded stage table.
+        let rendered = serde_json::to_value(&router).expect("a router serializes");
+        assert_eq!(
+            rendered,
+            serde_json::json!({
+                "type": "auto",
+                "capable_target": "claude-opus-4-8",
+                "efficient_target": "claude-sonnet-4-6"
+            })
+        );
+    }
+
+    /// `noop` takes no keys at all and names no destination.
+    #[test]
+    fn noop_takes_no_keys_and_names_no_target() {
+        let router = parsed_router("id = \"claude-quiet\"\n[router]\ntype = \"noop\"\n");
+
+        assert_eq!(router.algorithm(), "noop");
+        assert!(router.targets().is_empty());
+        assert!(router.stage().is_none());
+    }
+
+    /// The four weight rules, mirroring libsy's `RandomClassifier::new` but
+    /// raised at load instead of on the first request that draws.
+    #[test]
+    fn a_random_router_rejects_degenerate_targets_and_weights() {
+        type WeightCase = (&'static str, Option<Vec<f64>>, Vec<&'static str>);
+        let cases: Vec<WeightCase> = vec![
+            ("empty targets", None, vec![]),
+            ("weight count", Some(vec![1.0]), vec!["a", "b"]),
+            ("negative weight", Some(vec![1.0, -1.0]), vec!["a", "b"]),
+            (
+                "non-finite weight",
+                Some(vec![1.0, f64::NAN]),
+                vec!["a", "b"],
+            ),
+            ("no positive weight", Some(vec![0.0, 0.0]), vec!["a", "b"]),
+        ];
+        for (label, weights, targets) in cases {
+            let config = Config {
+                models: vec![ModelConfig {
+                    id: "claude-canary".to_string(),
+                    display_name: None,
+                    upstream_model: None,
+                    router: Some(super::RouterConfig::Random(super::RandomRouterConfig {
+                        targets: targets.iter().map(|t| t.to_string()).collect(),
+                        weights,
+                        seed: None,
+                        affinity: super::RandomAffinity::Session,
+                    })),
+                    stage_router: None,
+                    subagents: None,
+                }],
+                ..Config::default()
+            };
+
+            assert!(
+                config.validate().is_err(),
+                "{label} must be rejected at load"
+            );
+        }
+    }
+
+    /// Each weight being finite does not make their sum finite, and the sum is
+    /// what `arm` scales every draw by: an infinite total makes each
+    /// `point < weight` test false, so the walk falls through to the last
+    /// enabled target and an advertised 50/50 serves 100/0 in silence.
+    ///
+    /// Non-vacuity: this pair passes every other weight rule — two finite,
+    /// positive weights, one per target — so only the total check can reject it.
+    #[test]
+    fn a_random_router_rejects_weights_whose_total_overflows() {
+        let overflowing = vec![f64::MAX, f64::MAX];
+        assert!(
+            overflowing
+                .iter()
+                .all(|weight| weight.is_finite() && *weight > 0.0),
+            "each weight on its own clears the per-weight rule"
+        );
+
+        let config = Config {
+            models: vec![ModelConfig {
+                id: "claude-canary".to_string(),
+                display_name: None,
+                upstream_model: None,
+                router: Some(super::RouterConfig::Random(super::RandomRouterConfig {
+                    targets: vec!["a".to_string(), "b".to_string()],
+                    weights: Some(overflowing),
+                    seed: None,
+                    affinity: super::RandomAffinity::Session,
+                })),
+                stage_router: None,
+                subagents: None,
+            }],
+            ..Config::default()
+        };
+
+        assert!(
+            matches!(
+                config.validate(),
+                Err(ConfigError::RandomWeightTotal { ref model }) if model == "claude-canary"
+            ),
+            "an infinite total must be rejected as such, not as some other weight rule"
+        );
+    }
+
+    fn random_model(id: &str, targets: &[&str]) -> ModelConfig {
+        ModelConfig {
+            id: id.to_string(),
+            display_name: None,
+            upstream_model: None,
+            router: Some(super::RouterConfig::Random(super::RandomRouterConfig {
+                targets: targets.iter().map(|t| t.to_string()).collect(),
+                weights: None,
+                seed: None,
+                affinity: super::RandomAffinity::Session,
+            })),
+            stage_router: None,
+            subagents: None,
+        }
+    }
+
+    /// A driven `llm_classifier` entry whose *strong* tier is `target`, for the
+    /// one-hop cases. Built from TOML rather than a struct literal so the test
+    /// exercises the wire shape an operator writes.
+    fn classifier_model(id: &str, target: &str) -> ModelConfig {
+        ModelConfig {
+            id: id.to_string(),
+            display_name: None,
+            upstream_model: None,
+            router: Some(
+                toml::from_str(&format!(
+                    "type = \"llm_classifier\"\nmode = \"capability\"\nclassifier_target = \"judge-alias\"\nstrong_target = \"{target}\"\nweak_target = \"claude-sonnet-4-6\"\nbase_threshold = 0.5"
+                ))
+                .expect("the classifier table parses"),
+            ),
+            stage_router: None,
+            subagents: None,
+        }
+    }
+
+    /// A `composite` entry whose capable tier is `target`.
+    fn composite_model(id: &str, target: &str) -> ModelConfig {
+        ModelConfig {
+            id: id.to_string(),
+            display_name: None,
+            upstream_model: None,
+            router: Some(
+                toml::from_str(&format!(
+                    "type = \"composite\"\n[classifier]\ntarget = \"judge-alias\"\nbase_threshold = 0.5\nclassify_trigger = \"user_turn\"\n[stage]\ncapable_target = \"{target}\"\nefficient_target = \"claude-sonnet-4-6\"\nconfidence_threshold = 0.5"
+                ))
+                .expect("the composite table parses"),
+            ),
+            stage_router: None,
+            subagents: None,
+        }
+    }
+
+    /// The one-hop rule ranges over every router type, in both directions, and
+    /// normalizes the `[1m]` hint exactly as `resolve_chain` does. A predicate
+    /// that compared raw ids would leave `"<a router>[1m]"` satisfying the rule
+    /// on paper while routing recursed without bound.
+    #[test]
+    fn the_one_hop_rule_covers_every_router_type() {
+        let cases: Vec<(&str, Vec<ModelConfig>)> = vec![
+            (
+                "random -> stage",
+                vec![
+                    random_model("claude-canary", &["claude-auto", "claude-sonnet-4-6"]),
+                    router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                ],
+            ),
+            (
+                "random -> stage, hinted",
+                vec![
+                    random_model("claude-canary", &["claude-auto[1m]", "claude-sonnet-4-6"]),
+                    router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                ],
+            ),
+            (
+                "stage -> random",
+                vec![
+                    router_model("claude-auto", "claude-canary", "claude-sonnet-4-6"),
+                    random_model("claude-canary", &["claude-opus-4-8"]),
+                ],
+            ),
+            (
+                "stage -> random, hinted",
+                vec![
+                    router_model("claude-auto", "claude-canary[1M]", "claude-sonnet-4-6"),
+                    random_model("claude-canary", &["claude-opus-4-8"]),
+                ],
+            ),
+            (
+                "llm_classifier -> stage",
+                vec![
+                    classifier_model("claude-classified", "claude-auto"),
+                    router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                ],
+            ),
+            (
+                "composite -> stage",
+                vec![
+                    composite_model("claude-composite", "claude-auto"),
+                    router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                ],
+            ),
+            (
+                "random -> noop",
+                vec![
+                    random_model("claude-canary", &["claude-quiet"]),
+                    ModelConfig {
+                        id: "claude-quiet".to_string(),
+                        display_name: None,
+                        upstream_model: None,
+                        router: Some(super::RouterConfig::Noop {}),
+                        stage_router: None,
+                        subagents: None,
+                    },
+                ],
+            ),
+        ];
+        for (label, models) in cases {
+            let config = Config {
+                models,
+                ..Config::default()
+            };
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::RouterRecursion { .. }
+                ),
+                "{label} must be rejected as a two-hop chain"
+            );
+        }
+    }
+
+    /// The positive twin of the hinted cases above: a hint on a *plain* target
+    /// is ordinary and must still load, or the rule would be enforced by
+    /// rejecting every hinted target.
+    #[test]
+    fn a_hinted_plain_target_is_accepted_for_every_router_type() {
+        let config = Config {
+            models: vec![
+                random_model("claude-canary", &["plain-model[1m]"]),
+                router_model("claude-auto", "plain-model[1m]", "plain-model"),
+                model_config("plain-model", Some(model_upstream("codex", "gpt-5.2"))),
+            ],
+            ..Config::default()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    /// `tool_semantics` is additive. A name the built-in table already
+    /// classifies is rejected rather than ignored, because
+    /// `vocabulary::classify` consults the built-in table first — an accepted
+    /// `mutate = ["Read"]` would be a line that loads and does nothing.
+    #[test]
+    fn tool_semantics_rejects_a_name_with_builtin_semantics() {
+        for (category, name) in [
+            ("mutate", "Read"),
+            ("observe", "Edit"),
+            ("new", "TodoWrite"),
+        ] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            let semantics = &mut stage_mut(&mut model).tool_semantics;
+            match category {
+                "mutate" => semantics.mutate.push(name.to_string()),
+                "observe" => semantics.observe.push(name.to_string()),
+                _ => semantics.new.push(name.to_string()),
+            }
+            let config = Config {
+                models: vec![model],
+                ..Config::default()
+            };
+
+            let error = config.validate().unwrap_err();
+
+            assert!(
+                matches!(error, ConfigError::BuiltinToolSemanticsName { .. }),
+                "{name} under {category} must be rejected, got {error:?}"
+            );
+            assert!(
+                error.to_string().contains("built-in semantics"),
+                "the message must say why, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_semantics_rejects_a_blank_or_duplicated_name() {
+        let mut blank = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        stage_mut(&mut blank)
+            .tool_semantics
+            .observe
+            .push("  ".to_string());
+        assert!(matches!(
+            Config {
+                models: vec![blank],
+                ..Config::default()
+            }
+            .validate()
+            .unwrap_err(),
+            ConfigError::EmptyToolSemanticsName { .. }
+        ));
+
+        let mut duplicated = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        let semantics = &mut stage_mut(&mut duplicated).tool_semantics;
+        semantics.observe.push("mcp__x__probe".to_string());
+        // Different case, same name: the lookup is ASCII case-insensitive, so
+        // this is one name with two meanings.
+        semantics.new.push("MCP__X__PROBE".to_string());
+        assert!(matches!(
+            Config {
+                models: vec![duplicated],
+                ..Config::default()
+            }
+            .validate()
+            .unwrap_err(),
+            ConfigError::DuplicateToolSemanticsName { .. }
+        ));
+    }
+
+    /// A padded name passes every other gate and then matches nothing.
+    ///
+    /// `" Read "` is not blank, and `classify_builtin` does not recognize it
+    /// either — so it clears the builtin-collision guard that exists to stop an
+    /// operator silently re-classifying a built-in tool, and would then fail to
+    /// match the `Read` the client actually sends.
+    ///
+    /// Non-vacuity: the two assertions below pin that the padded form is
+    /// rejected *as whitespace* while the trimmed form is accepted, so a fix
+    /// that rejected both (or neither) goes red.
+    #[test]
+    fn tool_semantics_rejects_a_name_padded_with_whitespace() {
+        let padded_clears_the_other_gates = " Read ";
+        assert!(!padded_clears_the_other_gates.trim().is_empty());
+        assert_eq!(
+            crate::routing::stage::vocabulary::classify_builtin(padded_clears_the_other_gates),
+            crate::routing::stage::vocabulary::ToolCategory::Other,
+            "the builtin guard does not catch the padded form, which is why this check is needed"
+        );
+
+        let mut padded = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        stage_mut(&mut padded)
+            .tool_semantics
+            .observe
+            .push(padded_clears_the_other_gates.to_string());
+        assert!(matches!(
+            Config {
+                models: vec![padded],
+                ..Config::default()
+            }
+            .validate()
+            .unwrap_err(),
+            ConfigError::InvalidToolSemanticsName { .. }
+        ));
+
+        // The trimmed form is a different name than any built-in, so it stays
+        // valid: the rule is "no whitespace", not "no names like this one".
+        let mut trimmed = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        stage_mut(&mut trimmed)
+            .tool_semantics
+            .observe
+            .push("mcp__x__probe".to_string());
+        assert!(Config {
+            models: vec![trimmed],
+            ..Config::default()
+        }
+        .validate()
+        .is_ok());
+    }
+
+    /// A notes table with nothing to say is a config that does nothing.
+    #[test]
+    fn handoff_notes_reject_a_blank_note() {
+        for notes in [
+            super::HandoffNotesConfig {
+                escalation_note: "   ".to_string(),
+                deescalation_note: None,
+                only_on_wrong_signal_escalation: true,
+            },
+            super::HandoffNotesConfig {
+                escalation_note: "escalated".to_string(),
+                deescalation_note: Some(String::new()),
+                only_on_wrong_signal_escalation: true,
+            },
+        ] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            stage_mut(&mut model).handoff_notes = Some(notes);
+            let config = Config {
+                models: vec![model],
+                ..Config::default()
+            };
+
+            assert!(matches!(
+                config.validate().unwrap_err(),
+                ConfigError::EmptyHandoffNote { .. }
+            ));
+        }
+    }
+
+    /// The nested tables parse from TOML and round-trip, including the
+    /// `only_on_wrong_signal_escalation` default.
+    #[test]
+    fn the_nested_router_tables_parse_with_their_defaults() {
+        let router = parsed_router(
+            r#"
+id = "claude-auto"
+[router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+capable_hold_turns = 2
+[router.tool_semantics]
+observe = ["mcp__jbcontext__code_search"]
+new = ["Bash"]
+[router.handoff_notes]
+escalation_note = "pick up the diagnosis"
+"#,
+        );
+
+        let stage = router.stage().expect("a stage table");
+        assert_eq!(stage.capable_hold_turns, 2);
+        assert_eq!(
+            stage.tool_semantics.observe,
+            ["mcp__jbcontext__code_search"]
+        );
+        assert_eq!(stage.tool_semantics.new, ["Bash"]);
+        assert!(stage.tool_semantics.mutate.is_empty());
+        let notes = stage.handoff_notes.as_ref().expect("a notes table");
+        assert_eq!(notes.escalation_note, "pick up the diagnosis");
+        assert_eq!(notes.deescalation_note, None);
+        assert!(
+            notes.only_on_wrong_signal_escalation,
+            "gating is the safe default"
+        );
+    }
+
+    /// The positive twin for every rejection below: without it, a `validate`
+    /// that rejected *everything* would still pass the negative tests.
+    #[test]
+    fn stage_router_accepts_a_well_formed_table() {
+        let config = Config {
+            models: vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("codex", "gpt-5.1")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn stage_router_rejects_a_target_that_is_itself_a_router() {
+        for (capable, efficient) in [
+            // A router targeting another router.
+            ("claude-nested", "claude-sonnet-4-6"),
+            // The degenerate case of the same rule: a router targeting itself.
+            ("claude-auto", "claude-sonnet-4-6"),
+            // `resolve_model_chain` strips a trailing context-window hint before
+            // it matches a `[[models]]` id, so a hinted target resolves to the
+            // router it names. Compared as written these look distinct from the
+            // router ids, which is how they used to satisfy the rule on paper.
+            ("claude-nested[1m]", "claude-sonnet-4-6"),
+            ("claude-auto[1m]", "claude-sonnet-4-6"),
+            ("claude-auto[1M]", "claude-sonnet-4-6"),
+        ] {
+            let config = Config {
+                models: vec![
+                    router_model("claude-auto", capable, efficient),
+                    router_model("claude-nested", "claude-opus-4-8", "claude-sonnet-4-6"),
+                ],
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::RouterRecursion { ref target, .. } if target == capable
+                ),
+                "expected recursion rejection for capable_target {capable}"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_router_accepts_a_context_window_hint_on_a_plain_target() {
+        // The mirror of the test above: stripping the hint before the
+        // comparison must not turn a legitimate `"<plain model>[1m]"` target
+        // into a false recursion rejection, nor warn that it resolves to
+        // nothing.
+        let config = Config {
+            models: vec![
+                router_model("claude-auto", "claude-opus-4-8[1m]", "claude-sonnet-4-6"),
+                model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("codex", "gpt-5.1")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn stage_router_accepts_a_router_id_carrying_a_bracketed_substring() {
+        // `[1m]` mid-string is not a context-window hint — routing strips only a
+        // trailing one, so such an id routes by its literal name and must not be
+        // rejected. Regression for a `contains`-based check.
+        let config = Config {
+            models: vec![
+                router_model("claude[1m]auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                model_config("claude-opus-4-8", Some(model_upstream("codex", "gpt-5.2"))),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("codex", "gpt-5.1")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn stage_router_rejects_a_router_id_ending_in_a_context_window_hint() {
+        let config = Config {
+            models: vec![router_model(
+                "claude-auto[1m]",
+                "claude-opus-4-8",
+                "claude-sonnet-4-6",
+            )],
+            ..Config::default()
+        };
+
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::RouterContextWindowHint { ref model } if model == "claude-auto[1m]"
+        ));
+        // The rendered text, not just the variant: this case reuses the wording
+        // of the `upstream_model` hint error closely enough that a wrong variant
+        // would still match on `model` alone. An entry reaching this check has a
+        // stage_router table and provably no upstream_model map — mutual
+        // exclusivity is rejected earlier — so a message claiming otherwise
+        // sends the operator looking for a key they never wrote.
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("has a router table"),
+            "message must name the router table, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("upstream_model"),
+            "message must not claim an upstream_model map, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn stage_router_rejects_an_entry_that_also_has_an_upstream_map() {
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        model.upstream_model = Some(model_upstream("codex", "gpt-5.2"));
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::RouterWithUpstreamMap { model } if model == "claude-auto"
+        ));
+    }
+
+    #[test]
+    fn stage_router_rejects_thresholds_outside_the_unit_interval() {
+        // NaN is in the table deliberately: it compares false against every
+        // bound, so a naive `value < 0.0 || value > 1.0` check would accept it.
+        for value in [0.0, -0.1, 1.1, f64::NAN] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            stage_mut(&mut model).confidence_threshold = value;
+            let config = Config {
+                models: vec![model],
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::InvalidStageRouterThreshold { key, .. }
+                        if key == "confidence_threshold"
+                ),
+                "expected confidence_threshold {value} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_router_rejects_an_out_of_range_deescalate_threshold() {
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        stage_mut(&mut model).deescalate_threshold = Some(1.5);
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidStageRouterThreshold { key, .. }
+                if key == "deescalate_threshold"
+        ));
+    }
+
+    #[test]
+    fn stage_router_rejects_a_zero_turn_window() {
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        stage_mut(&mut model).recent_turn_window = 0;
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidStageRouterWindow { model } if model == "claude-auto"
+        ));
+    }
+
+    #[test]
+    fn stage_router_rejects_a_blank_target() {
+        for (key, capable, efficient) in [
+            ("capable_target", "   ", "claude-sonnet-4-6"),
+            ("efficient_target", "claude-opus-4-8", ""),
+        ] {
+            let config = Config {
+                models: vec![router_model("claude-auto", capable, efficient)],
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::EmptyRouterTarget { key: found, .. } if found == key
+                ),
+                "expected {key} to be rejected when blank"
+            );
+        }
+    }
+
+    /// The judge table parses with nothing but its target, and every bound it
+    /// shares a table with lands on the shipped default. Going red here means
+    /// an operator who wrote only `target` got a different judge than the docs
+    /// describe — or, for a bound, an unbounded one.
+    #[test]
+    fn the_classifier_table_parses_with_its_defaults() {
+        let router = parsed_router(
+            r#"
+id = "claude-auto"
+[router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+[router.classifier]
+target = "judge-alias"
+"#,
+        );
+
+        let stage = router.stage().expect("a stage table");
+        let classifier = stage.classifier.as_ref().expect("a classifier table");
+        assert_eq!(classifier.target, "judge-alias");
+        assert_eq!(classifier.base_threshold, super::DEFAULT_BASE_THRESHOLD);
+        assert_eq!(stage.judge_timeout_ms, super::DEFAULT_JUDGE_TIMEOUT_MS);
+        assert_eq!(
+            stage.judge_max_response_bytes,
+            super::DEFAULT_JUDGE_MAX_RESPONSE_BYTES
+        );
+        assert_eq!(stage.gated_max_bytes, super::DEFAULT_GATED_MAX_BYTES);
+        assert_eq!(stage.gated_idle_ms, super::DEFAULT_GATED_IDLE_MS);
+        assert_eq!(
+            stage.gated_max_duration_ms,
+            super::DEFAULT_GATED_MAX_DURATION_MS
+        );
+        assert_eq!(stage.max_judge_calls, super::DEFAULT_MAX_JUDGE_CALLS);
+        assert_eq!(
+            classifier.classify_trigger,
+            super::ClassifyTrigger::EveryRequest,
+            "an omitted trigger judges every turn that reaches the classifier"
+        );
+        assert!(
+            router.is_driven(),
+            "a classifier table is what moves an entry to the driven lane"
+        );
+    }
+
+    /// `classify_trigger` on `[router.classifier]` is only ever set
+    /// programmatically elsewhere in the suite, which leaves the serde name
+    /// itself unproven: rename the field and every other test stays green while
+    /// every operator's TOML stops loading. This is the test that writes the
+    /// key the way an operator does.
+    #[test]
+    fn the_classifier_table_reads_its_trigger_from_toml() {
+        let router = parsed_router(
+            r#"
+id = "claude-auto"
+[router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+[router.classifier]
+target = "judge-alias"
+classify_trigger = "user_turn"
+"#,
+        );
+
+        let stage = router.stage().expect("a stage table");
+        let classifier = stage.classifier.as_ref().expect("a classifier table");
+        assert_eq!(
+            classifier.classify_trigger,
+            super::ClassifyTrigger::UserTurn,
+            "the operator's spelling is the one serde reads"
+        );
+    }
+
+    /// The other half of that key's contract: `skip_serializing_if` means an
+    /// omitted trigger has to round-trip as omitted rather than reappear as an
+    /// explicit `every_request` in an emitted config.
+    #[test]
+    fn an_omitted_classifier_trigger_round_trips_as_omitted() {
+        let router = parsed_router(
+            r#"
+id = "claude-auto"
+[router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+[router.classifier]
+target = "judge-alias"
+"#,
+        );
+
+        let emitted = toml::to_string(&router).expect("the router table serializes");
+        assert!(
+            !emitted.contains("classify_trigger"),
+            "an omitted trigger must round-trip as omitted: {emitted}"
+        );
+        let reparsed: super::RouterConfig =
+            toml::from_str(&emitted).expect("the emitted table parses back");
+        assert_eq!(reparsed, router, "the table survives a round trip");
+    }
+
+    /// Zero is the one value that turns a bound into no bound at all — a
+    /// timeout that fires immediately, a cap that admits nothing, a call budget
+    /// that would make the judge unreachable. Each key is checked by name: an
+    /// error naming the wrong key sends the operator to a line they did not
+    /// write.
+    #[test]
+    fn stage_router_rejects_a_zero_call_bound() {
+        type Zero = fn(&mut super::StageRouterConfig);
+        for (key, zero) in [
+            (
+                "judge_timeout_ms",
+                (|stage| stage.judge_timeout_ms = 0) as Zero,
+            ),
+            ("judge_max_response_bytes", |stage| {
+                stage.judge_max_response_bytes = 0
+            }),
+            ("gated_max_bytes", |stage| stage.gated_max_bytes = 0),
+            ("gated_idle_ms", |stage| stage.gated_idle_ms = 0),
+            ("gated_max_duration_ms", |stage| {
+                stage.gated_max_duration_ms = 0
+            }),
+            ("max_judge_calls", |stage| stage.max_judge_calls = 0),
+        ] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            zero(stage_mut(&mut model));
+            let config = Config {
+                models: vec![model],
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::ZeroCallBound { key: found, .. } if found == key
+                ),
+                "expected {key} = 0 to be rejected naming itself"
+            );
+        }
+    }
+
+    /// The judge's gate is a probability like the scorer's, so it reuses that
+    /// error — with the key the operator wrote, not the scorer's.
+    #[test]
+    fn stage_router_rejects_an_out_of_range_classifier_threshold() {
+        for value in [0.0, -0.1, 1.1, f64::NAN] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            stage_mut(&mut model).classifier = Some(super::StageClassifierConfig {
+                target: "judge-alias".to_string(),
+                base_threshold: value,
+                classify_trigger: Default::default(),
+            });
+            let mut config = Config {
+                models: vec![judge_model(), model],
+                providers: injecting_providers(),
+                ..Config::default()
+            };
+            config.server.default_provider = "keyed".to_string();
+
+            assert!(
+                matches!(
+                    config.clone().validate().unwrap_err(),
+                    ConfigError::InvalidStageRouterThreshold { key, .. }
+                        if key == "classifier.base_threshold"
+                ),
+                "expected classifier.base_threshold {value} to be rejected, got {:?}",
+                config.validate().unwrap_err()
+            );
+        }
+    }
+
+    /// The judge target is held to the same shape rules as an answer target,
+    /// and reports them under its own key. Drop `named_judges` from the
+    /// validation loop and all three of these are accepted.
+    #[test]
+    fn stage_router_rejects_a_malformed_classifier_target() {
+        // Blank.
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        stage_mut(&mut model).classifier = Some(super::StageClassifierConfig {
+            target: "   ".to_string(),
+            base_threshold: 0.5,
+            classify_trigger: Default::default(),
+        });
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::EmptyRouterTarget { key, .. } if key == "classifier.target"
+        ));
+
+        // A router, written plainly and written with a trailing hint that
+        // resolves to the same entry.
+        for target in ["claude-nested", "claude-nested[1m]"] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            stage_mut(&mut model).classifier = Some(super::StageClassifierConfig {
+                target: target.to_string(),
+                base_threshold: 0.5,
+                classify_trigger: Default::default(),
+            });
+            let config = Config {
+                models: vec![
+                    model,
+                    router_model("claude-nested", "claude-opus-4-8", "claude-sonnet-4-6"),
+                ],
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::RouterRecursion { target: ref found, .. } if found == target
+                ),
+                "expected the judge target {target} to be rejected as a router"
+            );
+        }
+    }
+
+    /// A judge call carries no caller credential, so a passthrough judge would
+    /// reach its upstream with nothing at all. Both members of the chain are
+    /// checked, not only the primary: failover reaches the fallback too, so a
+    /// rule that stopped at the head would accept a judge that lands
+    /// unauthenticated the moment the primary fails.
+    #[test]
+    fn stage_router_rejects_a_passthrough_judge_target() {
+        // The primary is passthrough, on the legacy single-provider map.
+        let mut config = Config {
+            models: vec![
+                model_config(
+                    "judge-alias",
+                    Some(model_upstream("open", "judge-upstream")),
+                ),
+                driven_model("judge-alias"),
+            ],
+            providers: mixed_providers(),
+            ..Config::default()
+        };
+        config.server.default_provider = "keyed".to_string();
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::PassthroughJudgeTarget { ref provider, .. } if provider == "open"
+        ));
+
+        // The primary injects and a *later* member of the ordered chain does
+        // not. Ordered `[[upstreams]]`, because that is the only shape in which
+        // one id resolves to more than one route.
+        let mut config = Config {
+            models: vec![
+                ModelConfig {
+                    subagents: None,
+                    id: "judge-alias".to_string(),
+                    display_name: None,
+                    upstream_model: Some(BTreeMap::from([
+                        ("keyed".to_string(), "judge-upstream".to_string()),
+                        ("open".to_string(), "judge-upstream".to_string()),
+                    ])),
+                    router: None,
+                    stage_router: None,
+                },
+                driven_model("judge-alias"),
+            ],
+            upstreams: vec![
+                parse_upstream(
+                    r#"
+name = "keyed"
+kind = "anthropic"
+base_url = "https://judge.example"
+auth = { mode = "api_key", env = "SHUNT_TEST_JUDGE_KEY" }
+"#,
+                ),
+                parse_upstream(
+                    r#"
+name = "open"
+kind = "anthropic"
+base_url = "https://open.example"
+auth = "passthrough"
+"#,
+                ),
+            ],
+            ..Config::default()
+        };
+        config.server.default_provider = "keyed".to_string();
+        assert!(
+            matches!(
+                config.validate().unwrap_err(),
+                ConfigError::PassthroughJudgeTarget { ref provider, .. } if provider == "open"
+            ),
+            "a passthrough fallback is still a route the judge can land on"
+        );
+    }
+
+    /// A judge naming no `[[models]]` entry is not exempt: it falls through to
+    /// `server.default_provider`, and that is the route it would run on.
+    #[test]
+    fn stage_router_rejects_a_judge_falling_through_to_a_passthrough_default() {
+        let mut config = Config {
+            models: vec![driven_model("no-such-entry")],
+            providers: mixed_providers(),
+            ..Config::default()
+        };
+        config.server.default_provider = "open".to_string();
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::PassthroughJudgeTarget { ref target, ref provider, .. }
+                if target == "no-such-entry" && provider == "open"
+        ));
+    }
+
+    /// The `auto` preset has no judge: it is the pure lane by construction.
+    /// `deny_unknown_fields` on its table is what keeps a `classifier` key from
+    /// being read, accepted, and silently ignored.
+    #[test]
+    fn the_auto_router_rejects_a_classifier_key() {
+        let error = parse_model(
+            r#"
+id = "claude-auto"
+[router]
+type = "auto"
+[router.classifier]
+target = "judge-alias"
+"#,
+        )
+        .expect_err("an auto table has no classifier");
+        assert!(
+            error.to_string().contains("classifier"),
+            "the rejection must name the key the operator wrote, got: {error}"
+        );
+    }
+
+    /// `open` is passthrough and `keyed` injects — the two provider shapes the
+    /// judge rules turn on.
+    fn mixed_providers() -> BTreeMap<String, ProviderConfig> {
+        BTreeMap::from([
+            (
+                "open".to_string(),
+                provider_with_auth(AuthMode::Passthrough),
+            ),
+            ("keyed".to_string(), provider_with_auth(AuthMode::ApiKey)),
+        ])
+    }
+
+    fn injecting_providers() -> BTreeMap<String, ProviderConfig> {
+        BTreeMap::from([("keyed".to_string(), provider_with_auth(AuthMode::ApiKey))])
+    }
+
+    /// Built from the shipped `anthropic` entry: these tests are about `auth`,
+    /// and spelling out the other provider keys would read as if they mattered.
+    fn provider_with_auth(auth: AuthMode) -> ProviderConfig {
+        let mut provider = Config::default()
+            .providers
+            .remove("anthropic")
+            .expect("the default config ships an anthropic provider");
+        provider.auth = auth;
+        if auth == AuthMode::ApiKey {
+            // `ApiKey` without a key source is rejected before any judge rule
+            // runs, which would make every assertion below match the wrong
+            // error.
+            provider.api_key_env = Some("SHUNT_TEST_JUDGE_KEY".to_string());
+        }
+        provider
+    }
+
+    /// One `[[upstreams]]` entry, parsed the way an operator writes it.
+    fn parse_upstream(toml: &str) -> super::upstreams::UpstreamConfig {
+        toml::from_str(toml).unwrap_or_else(|error| panic!("{toml}\nmust parse: {error}"))
+    }
+
+    fn judge_model() -> ModelConfig {
+        model_config(
+            "judge-alias",
+            Some(model_upstream("keyed", "judge-upstream")),
+        )
+    }
+
+    /// A stage router with a judge, and answer targets on the injecting
+    /// provider so the only passthrough in play is the one under test.
+    fn driven_model(target: &str) -> ModelConfig {
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        stage_mut(&mut model).classifier = Some(super::StageClassifierConfig {
+            target: target.to_string(),
+            base_threshold: 0.5,
+            classify_trigger: Default::default(),
+        });
+        model
+    }
+
+    #[test]
+    fn stage_router_rejects_a_duplicate_router_id() {
+        // Two map-less entries may share an id when both are discovery
+        // metadata — `duplicate_map_less_model_ids_remain_valid` pins that, and
+        // it is harmless because neither entry changes resolution. A
+        // `router` entry is not metadata: it names a routing policy, so a
+        // second entry for the same id leaves two policies for one public model
+        // id, chosen by declaration order.
+        for models in [
+            vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                router_model("claude-auto", "claude-opus-4-7", "claude-haiku-4-5"),
+            ],
+            // And when only one side carries the table, in either order.
+            vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                model_config("claude-auto", None),
+            ],
+            vec![
+                model_config("claude-auto", None),
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+            ],
+        ] {
+            let config = Config {
+                models,
+                ..Config::default()
+            };
+
+            assert!(
+                matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::DuplicateModelId { model } if model == "claude-auto"
+                ),
+                "a duplicate id carrying a router must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_router_warns_for_a_target_only_advertised_for_discovery() {
+        // A map-less `[[models]]` entry advertises an id; it does not route it.
+        // `resolve_model_chain` returns from a `[[models]]` match only when
+        // `upstream_model` is present (`routing.rs`), and otherwise falls
+        // through to `[[routes]]`, `[[route_prefixes]]`, and finally
+        // `server.default_provider` — so a target naming such an entry lands on
+        // the default backend exactly like an unmatched id, and must warn.
+        let config = Config {
+            models: vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                // Advertised for discovery only: no map, no route.
+                model_config("claude-opus-4-8", None),
+                // Mapped, so this one really does route on its own.
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("anthropic", "claude-sonnet-4-6")),
+                ),
+            ],
+            ..Config::default()
+        };
+
+        let (_, logs) = capture_logs(|| config.warn_router_targets_unresolvable());
+        assert_eq!(
+            logs.matches("router target matches no").count(),
+            1,
+            "only the discovery-only target warns: {logs}"
+        );
+        assert!(
+            logs.contains("target=claude-opus-4-8"),
+            "the warning must name the discovery-only target, not the mapped one: {logs}"
+        );
+    }
+
+    #[test]
+    fn stage_router_unresolvable_target_warning_is_load_only() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-stage-router-warn-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // `claude-sonnet-4-6` matches no [[models]], [[routes]], or
+        // [[route_prefixes]] entry here, so it resolves through
+        // `server.default_provider` and earns the warning.
+        let unresolvable = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.router]\ntype = \"stage_router\"\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-sonnet-4-6\"\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n";
+        let path = dir.join("unresolvable.toml");
+        std::fs::write(&path, unresolvable).unwrap();
+
+        let (loaded, load_logs) = capture_logs(|| Config::load(Some(&path)));
+        let config = loaded.expect("an unresolvable stage_router target still loads");
+        assert_eq!(
+            load_logs.matches("router target matches no").count(),
+            1,
+            "the successful load warns once for the one unresolvable target: {load_logs}"
+        );
+
+        // The point of the split: `validate` runs again on every hot reload
+        // (`reload.rs`) and on `shunt check`, and must stay silent.
+        let (_, validate_logs) = capture_logs(|| {
+            config
+                .clone()
+                .validate()
+                .expect("first validation succeeds");
+            config.validate().expect("second validation succeeds");
+        });
+        assert_eq!(
+            validate_logs.matches("router target matches no").count(),
+            0,
+            "repeated validation must not repeat the load warning: {validate_logs}"
+        );
+
+        // Positive twin: with both targets routable the load is silent, so the
+        // assertion above cannot be satisfied by a warning that never fires.
+        let resolvable = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.router]\ntype = \"stage_router\"\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-sonnet-4-6\"\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n\n\
+             [[routes]]\nmodel = \"claude-sonnet-4-6\"\nprovider = \"anthropic\"\n";
+        let ok_path = dir.join("resolvable.toml");
+        std::fs::write(&ok_path, resolvable).unwrap();
+        let (ok_loaded, ok_logs) = capture_logs(|| Config::load(Some(&ok_path)));
+        ok_loaded.expect("a fully routable stage_router loads");
+        assert_eq!(
+            ok_logs.matches("router target matches no").count(),
+            0,
+            "both targets route explicitly, so the load must be silent: {ok_logs}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stage_router_warns_when_deescalation_is_the_easier_direction() {
+        // Written pair: the operator set both keys and inverted them.
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        let router = stage_mut(&mut model);
+        router.confidence_threshold = 0.9;
+        router.deescalate_threshold = Some(0.1);
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_router_threshold_inversion());
+        assert_eq!(
+            logs.matches("deescalate_threshold is below confidence_threshold")
+                .count(),
+            1,
+            "an inverted pair warns once: {logs}"
+        );
+
+        // Effective value, not the written one: the key is absent, so the 0.75
+        // default applies and a `confidence_threshold` above it inverts the
+        // design just as much.
+        let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+        let router = stage_mut(&mut model);
+        router.confidence_threshold = 0.9;
+        router.deescalate_threshold = None;
+        let config = Config {
+            models: vec![model],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_router_threshold_inversion());
+        assert_eq!(
+            logs.matches("deescalate_threshold is below confidence_threshold")
+                .count(),
+            1,
+            "the default de-escalation gate below a raised escalation gate warns: {logs}"
+        );
+
+        // Positive twins. Equal thresholds are symmetric, not inverted, and the
+        // shipped defaults are the design this warning defends — neither may
+        // fire, or the assertions above would pass on a warning that is always
+        // emitted.
+        for (confidence, deescalate) in [(0.6, Some(0.6)), (0.5, None), (0.5, Some(0.75))] {
+            let mut model = router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6");
+            let router = stage_mut(&mut model);
+            router.confidence_threshold = confidence;
+            router.deescalate_threshold = deescalate;
+            let config = Config {
+                models: vec![model],
+                ..Config::default()
+            };
+            let (_, logs) = capture_logs(|| config.warn_router_threshold_inversion());
+            assert_eq!(
+                logs.matches("deescalate_threshold is below confidence_threshold")
+                    .count(),
+                0,
+                "{confidence}/{deescalate:?} does not invert the design: {logs}"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_router_warns_when_both_targets_resolve_to_one_model() {
+        // Identical as written, and identical only after the context-window
+        // hint is stripped — `resolve_chain` strips it before matching, so both
+        // pairs name the single destination every decision would land on.
+        for (capable, efficient) in [
+            ("claude-opus-4-8", "claude-opus-4-8"),
+            ("claude-opus-4-8[1m]", "claude-opus-4-8"),
+        ] {
+            let config = Config {
+                models: vec![router_model("claude-auto", capable, efficient)],
+                ..Config::default()
+            };
+            let (_, logs) = capture_logs(|| config.warn_router_identical_targets());
+            assert_eq!(
+                logs.matches("resolve to the same model").count(),
+                1,
+                "{capable} and {efficient} route to one destination: {logs}"
+            );
+        }
+
+        // Positive twins: two genuinely different ids, and — the sub-point
+        // declined on #562 — two ids differing only in case. Routing matches
+        // with `==`, so those really are two ids and warning would be wrong.
+        for (capable, efficient) in [
+            ("claude-opus-4-8", "claude-sonnet-4-6"),
+            ("claude-opus-4-8", "CLAUDE-OPUS-4-8"),
+        ] {
+            let config = Config {
+                models: vec![router_model("claude-auto", capable, efficient)],
+                ..Config::default()
+            };
+            let (_, logs) = capture_logs(|| config.warn_router_identical_targets());
+            assert_eq!(
+                logs.matches("resolve to the same model").count(),
+                0,
+                "{capable} and {efficient} are distinct ids: {logs}"
+            );
+        }
+    }
+
+    fn route_config(model: &str) -> super::RouteConfig {
+        super::RouteConfig {
+            model: model.to_string(),
+            provider: "anthropic".to_string(),
+            upstream_model: None,
+            effort: None,
+            service_tier: None,
+        }
+    }
+
+    #[test]
+    fn stage_router_warns_for_a_route_its_id_shadows() {
+        // `resolve_chain` matches `[[models]]` first and returns from the router
+        // arm, so the exact route is inert — and silently so before this
+        // diagnostic. The prefix entry alongside it is *not*: it still serves
+        // every other id starting with `claude-`, so it must stay silent.
+        let config = Config {
+            models: vec![
+                router_model("claude-auto", "claude-opus-4-8", "claude-sonnet-4-6"),
+                model_config(
+                    "claude-opus-4-8",
+                    Some(model_upstream("anthropic", "claude-opus-4-8")),
+                ),
+                model_config(
+                    "claude-sonnet-4-6",
+                    Some(model_upstream("anthropic", "claude-sonnet-4-6")),
+                ),
+            ],
+            routes: vec![route_config("claude-auto")],
+            route_prefixes: vec![super::RoutePrefixConfig {
+                prefix: "claude-".to_string(),
+                provider: "anthropic".to_string(),
+            }],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_router_shadows_exact_route());
+        assert_eq!(
+            logs.matches("the route is never consulted").count(),
+            1,
+            "the exact route naming the router id warns: {logs}"
+        );
+        assert_eq!(
+            logs.matches("route_prefixes").count(),
+            0,
+            "a prefix entry the router id happens to match is still live: {logs}"
+        );
+
+        // Positive twin: the same tables, with the routes naming the router's
+        // *targets* instead. Those really are consulted — the router resolves
+        // each target through the ordinary ladder — so neither may warn.
+        let config = Config {
+            models: vec![router_model(
+                "claude-auto",
+                "claude-opus-4-8",
+                "claude-sonnet-4-6",
+            )],
+            routes: vec![
+                route_config("claude-opus-4-8"),
+                route_config("claude-sonnet-4-6"),
+            ],
+            ..Config::default()
+        };
+        let (_, logs) = capture_logs(|| config.warn_router_shadows_exact_route());
+        assert_eq!(
+            logs.matches("never consulted").count(),
+            0,
+            "a route naming a target, not the router id, is live: {logs}"
+        );
+    }
+
+    #[test]
+    fn stage_router_cross_field_warnings_are_load_only() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-config-test-stage-router-cross-field-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Both rules tripped at once: one target for both tiers, and a
+        // de-escalation gate under the escalation gate. Both targets are routed
+        // explicitly so the unresolvable-target warning stays out of the counts.
+        let degenerate = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.router]\ntype = \"stage_router\"\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-opus-4-8\"\n\
+             confidence_threshold = 0.9\ndeescalate_threshold = 0.1\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n";
+        let path = dir.join("degenerate.toml");
+        std::fs::write(&path, degenerate).unwrap();
+
+        let (loaded, load_logs) = capture_logs(|| Config::load(Some(&path)));
+        let config = loaded.expect("a degenerate stage_router still loads");
+        assert_eq!(
+            load_logs
+                .matches("deescalate_threshold is below confidence_threshold")
+                .count(),
+            1,
+            "the successful load warns once about the inverted thresholds: {load_logs}"
+        );
+        assert_eq!(
+            load_logs.matches("resolve to the same model").count(),
+            1,
+            "the successful load warns once about the single destination: {load_logs}"
+        );
+
+        // The point of the split: `validate` runs again on every hot reload
+        // (`reload.rs`) and on `shunt check`, and must stay silent.
+        let (_, validate_logs) = capture_logs(|| {
+            config
+                .clone()
+                .validate()
+                .expect("first validation succeeds");
+            config.validate().expect("second validation succeeds");
+        });
+        for message in [
+            "deescalate_threshold is below confidence_threshold",
+            "resolve to the same model",
+        ] {
+            assert_eq!(
+                validate_logs.matches(message).count(),
+                0,
+                "repeated validation must not repeat {message:?}: {validate_logs}"
+            );
+        }
+
+        // Positive twin: distinct targets and the default threshold ordering
+        // load silently, so neither assertion above is satisfied by a warning
+        // that never fires.
+        let sane = "[[models]]\nid = \"claude-auto\"\n\n\
+             [models.router]\ntype = \"stage_router\"\ncapable_target = \"claude-opus-4-8\"\n\
+             efficient_target = \"claude-sonnet-4-6\"\n\n\
+             [[routes]]\nmodel = \"claude-opus-4-8\"\nprovider = \"anthropic\"\n\n\
+             [[routes]]\nmodel = \"claude-sonnet-4-6\"\nprovider = \"anthropic\"\n";
+        let ok_path = dir.join("sane.toml");
+        std::fs::write(&ok_path, sane).unwrap();
+        let (ok_loaded, ok_logs) = capture_logs(|| Config::load(Some(&ok_path)));
+        ok_loaded.expect("a well-formed stage_router loads");
+        for message in [
+            "deescalate_threshold is below confidence_threshold",
+            "resolve to the same model",
+        ] {
+            assert_eq!(
+                ok_logs.matches(message).count(),
+                0,
+                "a well-formed router must not emit {message:?}: {ok_logs}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn model_upstream_map_rejects_context_window_hint_in_id() {
         for id in ["claude-opus-4-8[1m]", "claude-opus-4-8[1M]"] {
@@ -6985,6 +10147,9 @@ id = "claude-sonnet-5"
                 id: "claude-opus-via-codex".to_string(),
                 display_name: None,
                 upstream_model: None,
+                router: None,
+                stage_router: None,
+                subagents: None,
             }],
             ..Config::default()
         };
@@ -7753,6 +10918,25 @@ id = "claude-sonnet-5"
         assert!(config.native_tool_search("openai", "gpt-5.4"));
         // A trailing non-digit still counts as the documented minor.
         assert!(config.native_tool_search("openai", "gpt-5.4-turbo"));
+        // Codex catalog slug `gpt-6-astra` (`supports_search_tool: true`).
+        assert!(config.native_tool_search("codex", "gpt-6-astra"));
+        assert!(config.native_tool_search("openai", "gpt-6-astra"));
+        // Codex catalog slugs `gpt-6-sol` and `gpt-6-luna` (same flag).
+        assert!(config.native_tool_search("codex", "gpt-6-sol"));
+        assert!(config.native_tool_search("codex", "gpt-6-luna"));
+        for model in [
+            "openai/gpt-6-astra",
+            "gpt-6-astra-preview",
+            "gpt-6-astra[1m]",
+            "not-gpt-6-astra",
+            "gpt-6-sol-preview",
+            "gpt-6-luna[1m]",
+        ] {
+            assert!(!config.native_tool_search("codex", model), "{model}");
+        }
+        let hinted = crate::routing::resolve_model(&config, "gpt-6-astra[1m]");
+        assert_eq!(hinted.upstream_model, "gpt-6-astra");
+        assert!(config.native_tool_search("codex", &hinted.upstream_model));
 
         // Boundary guard: a multi-digit minor must NOT borrow 5.4's flag — those
         // are undocumented families whose backend may reject the native wire.
@@ -7761,12 +10945,19 @@ id = "claude-sonnet-5"
 
         // Unsupported model keeps the #43 shim (gpt-5.2 and below).
         assert!(!config.native_tool_search("codex", "gpt-5.2-codex"));
+        // Other gpt-6 slugs and close names must not borrow the listed flags.
+        assert!(!config.native_tool_search("codex", "gpt-6-pro"));
+        assert!(!config.native_tool_search("codex", "gpt-6-terra"));
+        assert!(!config.native_tool_search("codex", "gpt-6"));
+        assert!(!config.native_tool_search("codex", "gpt-6-astral"));
         // Unsupported flavor keeps the shim (xAI), even though `tool_search`
         // auto-resolves to on for a known host — the flavor gate blocks it
         // regardless.
         assert!(!config.native_tool_search("xai", "gpt-5.6-sol"));
+        assert!(!config.native_tool_search("xai", "gpt-6-astra"));
         // Unknown provider is never native.
         assert!(!config.native_tool_search("nope", "gpt-5.6-sol"));
+        assert!(!config.native_tool_search("nope", "gpt-6-astra"));
     }
 
     #[test]
@@ -7778,6 +10969,7 @@ id = "claude-sonnet-5"
 
         assert!(!config.native_tool_search("codex", "gpt-5.6-sol"));
         assert!(!config.native_tool_search("openai", "gpt-5.4"));
+        assert!(!config.native_tool_search("codex", "gpt-6-astra"));
     }
 
     #[test]

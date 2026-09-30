@@ -20,6 +20,13 @@ impl<E: std::fmt::Display> std::fmt::Display for SendError<E> {
 }
 
 impl<E: RetryableError> RetryableError for SendError<E> {
+    fn log_message(&self) -> String {
+        match self {
+            Self::Transport(error) => error.log_message(),
+            Self::Timeout => self.to_string(),
+        }
+    }
+
     fn is_transient(&self) -> bool {
         match self {
             Self::Transport(error) => error.is_transient(),
