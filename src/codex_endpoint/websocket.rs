@@ -335,7 +335,10 @@ async fn run_turn(context: TurnContext) {
         headers.remove(admin_auth.header());
     }
     let started_at = Instant::now();
-    let dispatch_res = forward_turn(state, model, pool_key, session_id, headers, body, started_at).await;
+    let dispatch_res = forward_turn(
+        state, model, pool_key, session_id, headers, body, started_at,
+    )
+    .await;
 
     if !is_current() {
         return;
@@ -594,21 +597,70 @@ fn same_origin_or_non_browser(headers: &HeaderMap) -> bool {
         return false;
     };
     let origin_port = origin.port_or_known_default();
-    let host_without_port = host.rsplit_once(':').map_or(host, |(host, port)| {
-        if port.parse::<u16>().is_ok() {
-            host.trim_matches(['[', ']'])
-        } else {
-            host
-        }
-    });
-    let host_port = host
+    // Split a trailing `:port` only when it parses; a port-less IPv6 literal
+    // (`[::1]`) keeps its whole text as the host name.
+    let (host_without_port, host_port) = host
         .rsplit_once(':')
-        .and_then(|(_, port)| port.parse::<u16>().ok());
-    origin_host.eq_ignore_ascii_case(host_without_port)
+        .and_then(|(name, port)| Some((name, Some(port.parse::<u16>().ok()?))))
+        .unwrap_or((host, None));
+    // `Url::host_str` keeps an IPv6 literal's brackets and so does the Host
+    // header; compare both unbracketed so either spelling matches.
+    let unbracket = |host: &str| {
+        host.trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_owned()
+    };
+    unbracket(origin_host).eq_ignore_ascii_case(&unbracket(host_without_port))
         && origin_port
             == host_port.or_else(|| match origin.scheme() {
                 "http" => Some(80),
                 "https" => Some(443),
                 _ => None,
             })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run the check against a handshake carrying the given `Origin` / `Host`.
+    fn allowed(origin: Option<&str>, host: Option<&str>) -> bool {
+        let mut headers = HeaderMap::new();
+        if let Some(origin) = origin {
+            headers.insert(header::ORIGIN, origin.parse().unwrap());
+        }
+        if let Some(host) = host {
+            headers.insert(header::HOST, host.parse().unwrap());
+        }
+        same_origin_or_non_browser(&headers)
+    }
+
+    #[test]
+    fn same_origin_accepts_ipv6_with_and_without_port() {
+        assert!(allowed(Some("http://[::1]:3001"), Some("[::1]:3001")));
+        assert!(allowed(Some("http://[::1]"), Some("[::1]")));
+    }
+
+    #[test]
+    fn same_origin_rejects_ipv6_host_mismatch() {
+        assert!(!allowed(Some("http://[::2]:3001"), Some("[::1]:3001")));
+    }
+
+    #[test]
+    fn same_origin_accepts_ipv4_and_rejects_port_mismatch() {
+        assert!(allowed(
+            Some("http://127.0.0.1:3001"),
+            Some("127.0.0.1:3001")
+        ));
+        assert!(!allowed(
+            Some("http://127.0.0.1:3002"),
+            Some("127.0.0.1:3001")
+        ));
+    }
+
+    #[test]
+    fn missing_origin_is_non_browser_and_missing_host_is_rejected() {
+        assert!(allowed(None, Some("127.0.0.1:3001")));
+        assert!(!allowed(Some("http://127.0.0.1:3001"), None));
+    }
 }
