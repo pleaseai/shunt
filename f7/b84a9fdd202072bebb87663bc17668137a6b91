@@ -1,0 +1,19 @@
+src/codex_endpoint/websocket.rs
+  s_cb39357fb104c2::t_54bf1e59e1ed1d 338-341,600-602,604-613,621-666
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f7b84a9fdd202072bebb87663bc17668137a6b91",
+  "prompts": {},
+  "sessions": {
+    "s_cb39357fb104c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e0a6fe9c-be10-4f28-a495-ad83906f4e3c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
