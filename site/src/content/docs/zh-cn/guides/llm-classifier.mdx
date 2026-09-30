@@ -113,6 +113,18 @@ policy = { type = "target_selector", selector = "/target" }
 时(`message_hash_fallback` 不适用于探测)。没有请求体的那些面 —— `GET /routes`、
 `/v1/models` 发现、`shunt check` —— 以路由来源 `classifier_default` 报告 fail-open 目标。
 
+## 客户端看到什么
+
+被路由的一轮会带上 `x-gateway-routed-model`(目标)和 `x-gateway-route-source`。后者说明
+这一轮是如何到达该目标的,同一个标签也是 `shunt.router.decisions` 的 `source`:
+
+| 来源 | 含义 |
+| :-- | :-- |
+| `llm-classifier` | 裁判在这一轮作答,并由它的结论选定了目标 |
+| `classifier_retained` | 在 `user_turn` 或 `new_session` 下,这一轮重放了之前某一轮已经得到的目标,因此没有发出裁判调用 |
+| `classifier_fail_open` | 没有结论定夺这一轮:裁判失败、答复无法使用,或 `max_judge_calls` 拒绝了调用,于是由默认目标作答 |
+| `classifier_default` | 没有请求体的面报告了 fail-open 目标 |
+
 ## 目标与裁判
 
 每一个目标和每一个裁判都是普通的公开 model id,受与阶段路由器相同的一跳规则约束;裁判也

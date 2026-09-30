@@ -287,9 +287,11 @@ POST /v1/messages     {"model": "claude-auto", ...}
 決めたターンにだけ現れます。設定しなければ、決着しなかったターンは従来どおり
 `fall_open` として報告され、ジャッジは呼ばれません。スコアラーはもう 1 つ `ambiguous`
 というラベルを定義していますが、これはレスポンスには載りません。ほかの
-ルーターの type は自分のラベル（`random`、`random_session`、`noop`）を使い、
-`[models.subagents]` オーバーレイも自分のラベル（`by_type` に一致したときは
-`subagent_type`、その `target` へのフォールバックなら `subagent`）を使います。
+ルーターの type は自分のラベルを使い、それぞれの type のページに載っています（`random`、
+`random_session`、`noop`、[LLM classifier](/ja/guides/llm-classifier/#クライアントから見えるもの)
+の `classifier_*` ラベルなど）。`[models.subagents]` オーバーレイも自分のラベル
+（`by_type` に一致したときは `subagent_type`、その `target` へのフォールバックなら
+`subagent`、`llm_classifier` 形式では classifier のラベル）を使います。
 
 ルーターも `[models.subagents]` オーバーレイもそのターンを決めなかった場合に限り、両方とも付きません。そうすることで「効率ティアに
 ルーティングされた」と「そもそもルーター経由ではない」が区別できます。

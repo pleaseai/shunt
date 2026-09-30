@@ -127,7 +127,11 @@ policy = { type = "target_selector", selector = "/target" }
 
 우회된 턴은 `x-gateway-routed-model`(타깃)과 `x-gateway-route-source`를 실어 보내며 —
 `by_type`이 맞으면 `subagent_type`, `target` 폴백이면 `subagent` —
-`algorithm = "subagents"`로 `shunt.router.decisions`에 집계됩니다.
+`algorithm = "subagents"`로 `shunt.router.decisions`에 집계됩니다. `llm_classifier`
+형태는 그 대신 classifier 자신의 소스를 보고합니다. 판정 모델이 분류한 턴은
+`llm-classifier`, 그 자식의 이후 턴이 배정을 재생하면 `classifier_retained`, 판정이 턴을
+결정하지 못했으면 `classifier_fail_open`입니다([LLM Classifier](/ko/guides/llm-classifier/#클라이언트가-보는-것)
+참고).
 
 요청이 없는 표면은 아무것도 해석하지 않습니다. `/v1/models` 디스커버리와 `shunt check`는
 모델별 목적지 정보를 전혀 싣지 않고, `GET /routes`는 부모 자신의

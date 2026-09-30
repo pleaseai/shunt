@@ -294,9 +294,12 @@ Six of those seven are signal labels. `llm-classifier` appears only on an entry
 that configures [the judge fallback](#the-judge-fallback) below, on a turn the
 judge decided; without one, an inconclusive turn still reports `fall_open` and
 runs no judge. The scorer defines one more label, `ambiguous`, which cannot
-reach a response. The other router types have labels of their own (`random`,
-`random_session`, `noop`), and so does the `[models.subagents]` overlay
-(`subagent_type` for a `by_type` hit, `subagent` for its `target` fallback).
+reach a response. The other router types have labels of their own, listed on each
+type's page (`random`, `random_session`, `noop`, and the
+[LLM classifier's](/guides/llm-classifier/#what-the-client-sees) `classifier_*`
+labels, among others), and so does the `[models.subagents]` overlay
+(`subagent_type` for a `by_type` hit, `subagent` for its `target` fallback, or the
+classifier's labels in its `llm_classifier` form).
 
 Both are absent only when neither a router nor a `[models.subagents]` overlay
 decided the turn, so "routed to the efficient tier" stays distinguishable from

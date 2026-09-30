@@ -119,7 +119,10 @@ policy = { type = "target_selector", selector = "/target" }
 
 被分流的一轮会带上 `x-gateway-routed-model`(目标)和 `x-gateway-route-source` —— 命中
 `by_type` 时是 `subagent_type`,回退到 `target` 时是 `subagent` —— 并以
-`algorithm = "subagents"` 计入 `shunt.router.decisions`。
+`algorithm = "subagents"` 计入 `shunt.router.decisions`。`llm_classifier` 形式则报告
+classifier 自己的来源:裁判完成分类的那一轮是 `llm-classifier`,该子 agent 之后重放这一
+分配的轮次是 `classifier_retained`,没有结论定夺这一轮时是 `classifier_fail_open`(见
+[LLM Classifier](/zh-cn/guides/llm-classifier/#客户端看到什么))。
 
 没有请求的接口什么都解析不出来:`/v1/models` 发现和 `shunt check` 根本不带任何按模型的
 目的地信息,`GET /routes` 也只在父级自身存在 `[[routes]]`/`[models.router]` 条目时才把它
