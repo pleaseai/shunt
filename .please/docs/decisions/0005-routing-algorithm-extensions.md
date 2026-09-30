@@ -708,6 +708,30 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   256 KiB error-envelope bounds. Client turns read this body
   lazily and read no clock, as before.
 
+- **2026-09-30 (the #709 review) — an error-body stall is a cut only when the
+  gap closes inside the error-envelope budget.** The 2026-09-29 (#703, #704)
+  amendment above says a stalled error body is the call's cut and is not
+  relayed after the error-envelope budget. That holds only when the gap
+  closes first. The read keeps its own 5 s budget, counted from when the read
+  starts, and a chunk moves the gap's deadline but not the budget's. On the
+  single-account HTTP path and in the pooled ChatGPT-OAuth refusal check, a
+  stalled body is therefore the call's cut, with the idle marker, only when
+  the gap's current deadline comes before the budget's end. That needs less
+  than 5 s of the gap left as the read starts (`gated_idle_ms` under 5 s, or
+  a header wait that used all but the last 5 s of it), and it is not enough
+  on its own: a chunk that arrives late in the read pushes the deadline past
+  the budget's end. With a 4 s gap, a chunk 3.5 s into the read moves the
+  deadline to 7.5 s, so a stall after it is not a cut. Otherwise the budget
+  ends the read first. The single-account path then relays the
+  refusal with its status, its `retry-after`, and a message naming the status
+  in place of the unread body (`gated_error`). The pooled refusal check leaves
+  the `400` unjudged, so it does not rotate the pool, and relays it the same
+  way. With the default `gated_idle_ms` of 60 s, this is the usual case. The
+  same rule applies to the pool-exhausted read of the 2026-09-30 (#707)
+  amendment above. Its fresh gap takes the header wait out of the condition,
+  so a stall there is a cut only when `gated_idle_ms` is under 5 s and no
+  late chunk has pushed the deadline past the budget's end.
+
 ### 10. Verification before code
 
 Three external facts to capture live through `shunt run` before the
