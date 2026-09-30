@@ -458,6 +458,97 @@ async fn response_done_is_terminal_and_drops_later_events() {
 }
 
 #[tokio::test]
+async fn failed_upgrade_handshake_returns_responses_error_envelope() {
+    let _env = ENV_LOCK.lock().await;
+    let (upstream, state) = start_upstream(Vec::new()).await;
+    let (gateway, account_env, client_env, _env_cleanup) =
+        start_gateway(&upstream, "BAD_UPGRADE").await;
+
+    // Authenticated, but without `Connection: upgrade` / `Sec-WebSocket-*`.
+    let response = reqwest::Client::new()
+        .get(format!("http://{}/v1/responses", gateway.address))
+        .header("authorization", "Bearer gateway-secret")
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    assert_ne!(status, StatusCode::SWITCHING_PROTOCOLS);
+    assert!(status.is_client_error(), "unexpected status {status}");
+    let error: serde_json::Value = response.json().await.unwrap();
+    let detail = error["error"].as_object().expect("error envelope");
+    assert!(detail["message"].as_str().is_some_and(|m| !m.is_empty()));
+    assert_eq!(detail["type"], "invalid_request_error");
+    assert!(detail.contains_key("code"));
+    assert!(state.requests.lock().unwrap().is_empty());
+    cleanup(&account_env, &client_env);
+}
+
+#[tokio::test]
+async fn upgrade_after_reload_disables_endpoint_returns_responses_error_envelope() {
+    let _env = ENV_LOCK.lock().await;
+    let account_env = "SHUNT_TEST_INBOUND_WS_ACCOUNT_RELOAD_DISABLED";
+    let client_env = "SHUNT_TEST_INBOUND_WS_CLIENT_RELOAD_DISABLED";
+    std::env::set_var(account_env, access_token("account-1"));
+    std::env::set_var(client_env, "client:gateway-secret");
+    let _env_cleanup = EnvCleanup::new([account_env.to_string(), client_env.to_string()]);
+
+    let mut config = Config::default();
+    config.providers.get_mut("codex").unwrap().accounts = vec![AccountConfig {
+        name: "account-1".to_string(),
+        token_env: Some(account_env.to_string()),
+        ..Default::default()
+    }];
+    config.server.codex_endpoint = Some(CodexEndpointConfig {
+        provider: "codex".to_string(),
+        routes: Vec::new(),
+    });
+    config.server.auth = Some(InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: client_env.to_string(),
+    });
+    let (router, shared, _) = server::build_router(config.clone()).unwrap();
+    let gateway = start_server(router).await;
+
+    // The routes stay registered; only the reloaded snapshot drops the table.
+    config.server.codex_endpoint = None;
+    let dir = std::env::temp_dir().join(format!(
+        "shunt-inbound-ws-reload-disabled-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("shunt.toml");
+    let reloaded_toml = toml::to_string(&config)
+        .unwrap()
+        .replace("upstreams = []\n", "");
+    std::fs::write(&path, reloaded_toml).unwrap();
+    reload::reload(&shared, Some(&path)).expect("reload without codex endpoint");
+
+    let response = reqwest::Client::new()
+        .get(format!("http://{}/v1/responses", gateway.address))
+        .header("authorization", "Bearer gateway-secret")
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let error: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        error["error"]["message"],
+        "codex endpoint is not configured"
+    );
+    assert_eq!(error["error"]["type"], "api_error");
+    assert!(error["error"].as_object().unwrap().contains_key("code"));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
 async fn omitted_generate_defaults_to_a_live_turn() {
     let _env = ENV_LOCK.lock().await;
     let (upstream, state) = start_upstream(vec![Reply::Static {

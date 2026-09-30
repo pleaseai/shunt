@@ -54,8 +54,10 @@ pub async fn get(
 ) -> Response {
     let state = state.refreshed();
     let Some(codex_endpoint) = &state.config.server.codex_endpoint else {
-        return ShuntError::bad_gateway("codex endpoint is not configured".to_string())
-            .into_response();
+        return crate::error::into_openai_error_shape(
+            ShuntError::bad_gateway("codex endpoint is not configured".to_string()).into_response(),
+        )
+        .await;
     };
     let provider = codex_endpoint.provider.clone();
 
@@ -81,7 +83,20 @@ pub async fn get(
 
     let mut ws = match ws {
         Ok(ws) => ws,
-        Err(rejection) => return rejection.into_response(),
+        Err(rejection) => {
+            // Axum's rejection body is plain text; carry its status and text
+            // into the OpenAI Responses envelope like every other pre-upgrade
+            // failure on this endpoint.
+            return crate::error::into_openai_error_shape(
+                ShuntError::new(
+                    rejection.status(),
+                    "invalid_request_error",
+                    rejection.body_text(),
+                )
+                .into_response(),
+            )
+            .await;
+        }
     };
 
     ws = ws.max_message_size(4 * 1024 * 1024);
