@@ -1,0 +1,25 @@
+site/src/content/docs/ko/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_ebe77bf3928456 129-131
+site/src/content/docs/zh-cn/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_712d50c399d58e 118-120
+site/src/content/docs/ja/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_6165ff5333cde9 133-135
+site/src/content/docs/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_72c857d81d4741 137-139
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aa38ce7b9171fc054fc07d50b34621e7ddc9272d",
+  "prompts": {},
+  "sessions": {
+    "s_daa14a0e68ee7c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0160baf5-b72a-408a-a008-fdbfaf9843af",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
