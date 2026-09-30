@@ -17,7 +17,7 @@ pub(crate) mod upstream;
 /// Builtin catalog captured live from `GET https://api.anthropic.com/v1/models`
 /// on 2026-07-28, in the API's own order (`created_at` descending, newest
 /// first). `claude-opus-5-5` and `claude-fable-5-1` were added from the same
-/// endpoint on 2026-09-23.
+/// endpoint on 2026-09-23, and `claude-sonnet-5-5` on 2026-09-30.
 ///
 /// The upstream list is **credential-scoped**: on 2026-07-28 the same endpoint
 /// returned 11 entries for an `x-api-key` caller, 10 for a Claude subscription
@@ -37,7 +37,7 @@ struct BuiltinModel {
     max_tokens: u64,
 }
 
-/// Expands one row per model so the table reads as data rather than thirteen
+/// Expands one row per model so the table reads as data rather than fourteen
 /// repetitions of the same struct literal:
 /// `id => display_name, created_at, max_input_tokens, max_tokens;`
 macro_rules! builtin_models {
@@ -53,6 +53,7 @@ macro_rules! builtin_models {
 }
 
 const BUILTIN_MODELS: &[BuiltinModel] = builtin_models![
+    "claude-sonnet-5-5" => "Claude Sonnet 5.5", "2026-09-28T00:00:00Z", 1_000_000, 128_000;
     "claude-opus-5-5" => "Claude Opus 5.5", "2026-09-21T16:24:00Z", 1_000_000, 128_000;
     "claude-fable-5-1" => "Claude Fable 5.1", "2026-08-28T00:00:00Z", 1_000_000, 128_000;
     "claude-opus-5" => "Claude Opus 5", "2026-07-24T00:00:00Z", 1_000_000, 128_000;
@@ -393,6 +394,7 @@ mod tests {
             body,
             json!({
                 "data": [
+                    {"type": "model", "id": "claude-sonnet-5-5", "display_name": "Claude Sonnet 5.5", "created_at": "2026-09-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-09-21T16:24:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-fable-5-1", "display_name": "Claude Fable 5.1", "created_at": "2026-08-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5", "created_at": "2026-07-24T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
@@ -408,7 +410,7 @@ mod tests {
                     {"type": "model", "id": "claude-opus-4-1-20250805", "display_name": "Claude Opus 4.1", "created_at": "2025-08-05T00:00:00Z", "max_input_tokens": 200000, "max_tokens": 32000}
                 ],
                 "has_more": false,
-                "first_id": "claude-opus-5-5",
+                "first_id": "claude-sonnet-5-5",
                 "last_id": "claude-opus-4-1-20250805"
             })
         );
@@ -451,6 +453,7 @@ mod tests {
                 "data": [
                     {"type": "model", "id": "claude-opus-4-8", "display_name": "Opus Curated"},
                     {"type": "model", "id": "claude-custom-model"},
+                    {"type": "model", "id": "claude-sonnet-5-5", "display_name": "Claude Sonnet 5.5", "created_at": "2026-09-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-09-21T16:24:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-fable-5-1", "display_name": "Claude Fable 5.1", "created_at": "2026-08-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5", "created_at": "2026-07-24T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
