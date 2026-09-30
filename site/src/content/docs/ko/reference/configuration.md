@@ -369,6 +369,27 @@ origin과 무관하게, 유지된 각 슬롯은 그 슬롯이 실제로 담고 �
 
 이름만 있는 항목은 `shunt login claude --name <name> --mode <mode>`(`<mode>`는 `oauth`, `import`, `setup-token` 중 하나)로 만든 `~/.shunt/accounts/claude/<name>.json`을 읽습니다. 대화형 CLI는 이 세 mode를 묻고 갱신 가능한 OAuth를 권장합니다. `--long-lived`는 `--mode setup-token`의 deprecated alias입니다. `SHUNT_CLAUDE_ACCOUNTS_DIR`로 스토어 디렉터리를 재정의할 수 있습니다. `[[providers.<name>.accounts]]`에 명시적으로 나열된 계정 목록이 비어 있으면 스토어 디렉터리의 유효한 계정 파일을 모두 스캔합니다. 갱신 가능한 OAuth/import 파일은 provider가 refresh token을 회전할 때 제자리에서 갱신되므로 파일마다 활성 owner가 하나만 있어야 합니다. 실행 중인 여러 shunt 프로세스에서 파일을 공유하거나 독립적으로 복사하지 마세요. 프로세스마다 별도로 프로비저닝하거나, 적절한 경우 정적 setup token을 사용하세요.
 
+### `[providers.<name>.retry]`
+
+지원되는 단일 크리덴셜 호출에서 **일시적인** 업스트림 실패에 대한 유한 재시도입니다. 대상은 `passthrough`/`api_key` Anthropic 경로와 단일 크리덴셜 Responses 경로(`api_key`, `xai_oauth`/Grok, 풀 계정이 없는 `chatgpt_oauth` provider)입니다. 연결 수준의 트랜스포트 오류(연결 reset/refused, 타임아웃)가 발생하면 요청을 다시 보냅니다(클라이언트에 바이트가 하나라도 전달되기 전에, 전체 본문으로). 이 요청들은 멱등하지 않은 생성 POST이고 업스트림이 이미 과금되는 생성을 수락했을 수 있으므로, 일시적인 응답 상태는 재시도하지 않습니다. 현재 Cursor 어댑터의 스트리밍 턴은 이 재시도 계층으로 감싸지 않으므로, 정규화된 `retry` 테이블은 효과가 없고 응답 전 연결 실패는 그대로 표면화됩니다. 지원되는 어떤 경로도 `4xx` 응답을 재시도하지 않으며, 응답 본문 스트리밍이 시작된 뒤에는 재시도를 시작하지 않습니다.
+
+백오프는 무작위(full) 지터를 적용한 지수 방식이며 `max_backoff_ms`가 상한입니다. 서버가 보낸 `Retry-After`가 우선합니다(delta-seconds 형식과 HTTP-date 형식을 모두 따릅니다). 소수 delta-seconds도 받아들여 다음 정수 초로 올림하며, 형식이 잘못되었거나 지나치게 긴 값은 무시합니다. 요청한 대기 시간이 `max_backoff_ms`보다 길면 예산을 넘겨 대기하지 않고 응답을 즉시 표면화합니다. 이 설정과 관계없이 **`count_tokens`에는 재시도를 적용하지 않습니다**. `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` 계정 풀은 자체 계정 로테이션 페일오버를 수행하며 이 테이블의 영향을 받지 않습니다.
+
+```toml
+[providers.openai.retry]
+max_retries = 2          # 기본값; 0이면 재시도를 완전히 비활성화
+initial_backoff_ms = 500 # 기본값
+max_backoff_ms = 8000    # 기본값; 따르는 Retry-After의 상한이기도 함
+multiplier = 2.0         # 기본값; 지수 증가 계수(>= 1.0)
+```
+
+| 키 | 값 | 의미 |
+| :-- | :-- | :-- |
+| `max_retries` | 정수(기본 `2`, 최대 `10`) | 첫 시도 이후의 추가 시도 횟수. `0`은 재시도를 비활성화합니다. |
+| `initial_backoff_ms` | 밀리초(기본 `500`, `max_retries > 0`이면 `> 0`이어야 함) | 첫 재시도 전의 백오프 상한(지터가 `[0, 이 값]`을 채움)이며, 시도마다 `multiplier`만큼 커집니다. |
+| `max_backoff_ms` | 밀리초(기본 `8000`, `max_retries > 0`이면 `> 0`이어야 함) | 개별 백오프와 따르는 `Retry-After`의 상한. |
+| `multiplier` | 1.0 이상의 유한한 수(기본 `2.0`) | 시도마다 백오프에 적용하는 지수 증가 계수. |
+
 ## `[[routes]]`
 
 레거시 exact-match 라우팅 항목 — 일치하는 `[models.upstream_model]` 항목 다음에 확인됩니다:

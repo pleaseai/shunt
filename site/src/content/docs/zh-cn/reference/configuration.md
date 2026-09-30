@@ -349,6 +349,27 @@ codex-fallback = "gpt-5.2"
 
 只带名称的条目读取 `~/.shunt/accounts/claude/<name>.json`,该文件由 `shunt login claude --name <name> --mode oauth|import|setup-token` 创建。交互式 CLI 会提示选择这三种 mode,并推荐可刷新的 OAuth。`--long-lived` 保留为 `--mode setup-token` 的 deprecated alias。`SHUNT_CLAUDE_ACCOUNTS_DIR` 可覆盖存储目录。可刷新的 OAuth/import 文件会在 provider 轮换 refresh token 时原地更新,因此每个文件只能有一个正在运行的 owner。不要在多个 shunt 进程之间共享或独立复制该文件。请为每个进程分别预配,或在适合时使用静态 setup token。
 
+### `[providers.<name>.retry]`
+
+针对受支持的单凭据调用中**瞬时**上游故障的有界重试，适用于 `passthrough`/`api_key` Anthropic 路径和单凭据 Responses 路径（`api_key`、`xai_oauth`/Grok，以及没有池化账户的 `chatgpt_oauth` provider）。遇到连接层传输错误（连接 reset/refused、超时）时，它会重新发出请求（在任何字节到达客户端之前，携带完整请求体）。这些创建类 POST 不是幂等的，上游可能已经接受了一次计费的生成，因此瞬时响应状态不会重试。当前 Cursor 适配器的流式回合没有被这一重试层包裹，因此其规范化后的 `retry` 表不起作用，响应之前的连接失败会直接浮出。所有受支持的路径都不会重试 `4xx` 响应，响应正文开始流式传输之后也绝不会开始重试。
+
+退避采用带随机化（full）抖动的指数方式，上限为 `max_backoff_ms`。服务器提供的 `Retry-After` 优先（delta-seconds 与 HTTP-date 两种形式都会遵循）；小数形式的 delta-seconds 也会被接受，并向上取整到下一个整数秒，格式错误或过长的值则会被忽略。如果它要求的等待超过 `max_backoff_ms`，响应会立即浮出，而不是超出预算地休眠等待。无论此设置如何，**`count_tokens` 都不会重试**。`claude_oauth` / `chatgpt_oauth` / `kimi_oauth` 账户池各自执行账户轮换故障转移，不受此表影响。
+
+```toml
+[providers.openai.retry]
+max_retries = 2          # 默认值；0 表示完全禁用重试
+initial_backoff_ms = 500 # 默认值
+max_backoff_ms = 8000    # 默认值；同时也是所遵循 Retry-After 的上限
+multiplier = 2.0         # 默认值；指数增长因子（>= 1.0）
+```
+
+| 键 | 取值 | 含义 |
+| :-- | :-- | :-- |
+| `max_retries` | 整数（默认 `2`，最大 `10`） | 首次尝试之后的额外尝试次数。`0` 表示禁用重试。 |
+| `initial_backoff_ms` | 毫秒（默认 `500`；当 `max_retries > 0` 时必须 `> 0`） | 首次重试前的退避上限（抖动在 `[0, 该值]` 内取值），每次尝试按 `multiplier` 增长。 |
+| `max_backoff_ms` | 毫秒（默认 `8000`；当 `max_retries > 0` 时必须 `> 0`） | 单次退避以及所遵循的 `Retry-After` 的上限。 |
+| `multiplier` | ≥ 1.0 的有限数（默认 `2.0`） | 每次尝试时应用于退避的指数增长因子。 |
+
 ## `[[routes]]`
 
 旧式的精确匹配路由条目 —— 在匹配的 `[models.upstream_model]` 条目之后检查:

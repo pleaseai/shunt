@@ -349,6 +349,27 @@ origin に関係なく、保持された各スロットはそのスロットが�
 
 名前だけのエントリーは、`shunt login claude --name <name> --mode oauth|import|setup-token` で作成した `~/.shunt/accounts/claude/<name>.json` を読み取ります。対話型 CLI はこの 3 つの mode を提示し、リフレッシュ可能な OAuth を推奨します。`--long-lived` は `--mode setup-token` の deprecated alias です。`SHUNT_CLAUDE_ACCOUNTS_DIR` でストアディレクトリを上書きできます。リフレッシュ可能な OAuth/import ファイルは provider が refresh token をローテーションすると同じ場所に更新されるため、ファイルごとに稼働中の owner は 1 つだけにしてください。複数の shunt プロセスで共有したり、独立してコピーしたりしないでください。プロセスごとに個別にプロビジョニングするか、適切な場合は静的な setup token を使ってください。
 
+### `[providers.<name>.retry]`
+
+サポートされる単一クレデンシャル呼び出しにおける**一時的な**上流障害に対する有界のリトライです。対象は `passthrough`/`api_key` の Anthropic パスと、単一クレデンシャルの Responses パス（`api_key`、`xai_oauth`/Grok、プールされたアカウントを持たない `chatgpt_oauth` provider）です。接続レベルのトランスポートエラー（接続の reset/refused、タイムアウト）が起きると、リクエストを再送します（クライアントにバイトが 1 つも届かないうちに、ボディ全体で）。これらは冪等でない生成 POST であり、上流がすでに課金対象の生成を受け付けている可能性があるため、一時的なレスポンスステータスはリトライしません。現在の Cursor アダプターのストリーミングターンはこのリトライ層で包まれていないため、正規化された `retry` テーブルは効果を持たず、レスポンス前の接続障害はそのまま表面化します。サポートされるどのパスも `4xx` レスポンスをリトライせず、レスポンスボディのストリーミングが始まった後にリトライが始まることはありません。
+
+バックオフはランダム化（full）ジッター付きの指数方式で、`max_backoff_ms` が上限です。サーバーが返す `Retry-After` が優先されます（delta-seconds 形式と HTTP-date 形式の両方に従います）。小数の delta-seconds も受け付けて次の整数秒に切り上げ、形式が不正な値や長すぎる値は無視します。`max_backoff_ms` より長い待機を求められた場合は、予算を超えて待機せず、レスポンスを即座に表面化します。この設定にかかわらず、**`count_tokens` にはリトライを適用しません**。`claude_oauth` / `chatgpt_oauth` / `kimi_oauth` のアカウントプールは独自のアカウントローテーションによるフェイルオーバーを行い、このテーブルの影響を受けません。
+
+```toml
+[providers.openai.retry]
+max_retries = 2          # デフォルト。0 でリトライを完全に無効化
+initial_backoff_ms = 500 # デフォルト
+max_backoff_ms = 8000    # デフォルト。従う Retry-After の上限も兼ねる
+multiplier = 2.0         # デフォルト。指数成長係数（>= 1.0）
+```
+
+| キー | 値 | 意味 |
+| :-- | :-- | :-- |
+| `max_retries` | 整数（デフォルト `2`、最大 `10`） | 最初の試行後の追加試行回数。`0` でリトライを無効化します。 |
+| `initial_backoff_ms` | ミリ秒（デフォルト `500`、`max_retries > 0` のときは `> 0` が必須） | 最初のリトライ前のバックオフ上限（ジッターが `[0, この値]` を埋める）。試行ごとに `multiplier` 倍に増えます。 |
+| `max_backoff_ms` | ミリ秒（デフォルト `8000`、`max_retries > 0` のときは `> 0` が必須） | 個々のバックオフと、従う `Retry-After` の上限。 |
+| `multiplier` | 1.0 以上の有限数（デフォルト `2.0`） | 試行ごとにバックオフへ適用する指数成長係数。 |
+
 ## `[[routes]]`
 
 レガシーな厳密一致ルーティングエントリ — 一致する `[models.upstream_model]` エントリの後にチェックされます。
