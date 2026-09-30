@@ -1,0 +1,21 @@
+src/codex_endpoint/frame.rs
+  s_b6742971f8b6e5::t_a605106ed43698 221
+tests/inbound_codex_websocket.rs
+  s_b6742971f8b6e5::t_f257bb3e3fcde2 426-459
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3ba0165113bbb9a79b3bbde67c829563ccdea0b1",
+  "prompts": {},
+  "sessions": {
+    "s_b6742971f8b6e5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "36bb4dd5-be65-4c82-9c43-2ddaf52d0875",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
