@@ -1,0 +1,66 @@
+---
+title: 组合路由
+description: 让 LLM 裁判决定阶段路由器回落到哪个档位,而阶段路由器的信号评分仍决定它能决定的每一轮。
+---
+
+`type = "composite"` 把裁判与[阶段路由器](/zh-cn/guides/stage-router/)结合起来。由裁判
+决定阶段路由器回落到哪个档位,而信号评分本身不受影响:信号能定夺的回合由信号定夺,信号
+无法定夺的回合落在裁判挑选的档位上,而不是固定的 `picker`。
+
+## 如何配置
+
+```toml
+[[models]]
+id = "claude-composite"
+
+[models.router]
+type = "composite"
+
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[models.router.stage]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.5
+# recent_turn_window = 3
+# capable_hold_turns = 0
+```
+
+stage 表**不接受 `picker`** —— 那个档位由 classifier 提供 —— 所以在这里写 `picker` 会导致
+启动错误。`classifier.base_threshold` 是仍然路由到高效档位的 `p_solve` 下限。
+
+`classifier.classify_trigger` 是必填的,它决定档位多久重新挑一次:
+
+- `user_turn` 在每一个人类用户回合重新挑一次档位。
+- `new_session` 只挑一次并保持。
+- `every_request` 在这里会被**拒绝** —— 每个工具步骤都调一次裁判的代价,正是这个类型要
+  避免的。
+
+`classifier.message_hash_fallback` 为不发送会话 id 的客户端改用第一条用户消息的哈希来保留
+档位。`stage.tool_semantics` 接受与阶段路由器的
+[`[models.router.tool_semantics]`](/zh-cn/guides/stage-router/#工具词汇) 相同的四张列表,
+规则也相同。六个[每次调用的上限](/zh-cn/reference/configuration/#每次调用的上限)放在
+`[models.router]` 上,而不是放进两张子表里。
+
+## 够不到裁判时
+
+裁判够不到的回合回落到 `stage.efficient_target`,这既是上游的规则,也是没有请求体的那些面
+所报告的值。裁判调用被 `max_judge_calls` 拒绝的回合,如果会话有上一次保留的档位就保持该
+档位,否则取 picker 的默认档位,因此档位不会在用户回合与其后的工具续接回合之间变动。不需要
+裁判调用的回合不会被拒绝。
+
+`count_tokens` 探测不给信号打分,也不调用裁判:会话有保留的档位就由该档位作答,否则由
+`stage.efficient_target` 作答。
+
+## 客户端看到什么
+
+因为 stage 那一半就是 libsy 自己的 stage 路由,它定夺下来的回合仍然报告阶段路由器自己的
+路由来源,而不是报告成 classifier 的决策 —— 也就是说,composite 里由信号驱动的回合,读起来
+和一个普通 `stage_router` 的回合完全一样(见
+[客户端看到什么](/zh-cn/guides/stage-router/#客户端看到什么))。
+
+每个键都在[配置参考](/zh-cn/reference/configuration/#type--composite)中;每个裁判都遵循的
+规则见[裁判调用](/zh-cn/guides/routing/#裁判调用)。
