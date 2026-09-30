@@ -128,7 +128,7 @@ result.
 | Signal extraction | Upstream's, provider-neutral | shunt's own, from Anthropic Messages blocks |
 | `tests_passed` / `repeated_failure` | Available to the scorer | Always `false` — never populated |
 | `compacted` | Available to the scorer | Set from `x-claude-code-context-compacted` and latched onto the session pin |
-| Judge on ambiguous turns | Optionally available | Never; falls open to the picker default |
+| Judge on ambiguous turns | Optionally available | Off by default, falling open to the picker default; opt in per entry with [`[models.router.classifier]`](/guides/stage-router/#the-judge-fallback) |
 | Tier stability across turns | Scored per turn | Session-pinned with asymmetric hysteresis |
 | Workload | Terminal-Bench 2.1 tasks | Claude Code sessions |
 
