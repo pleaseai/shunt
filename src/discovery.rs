@@ -17,7 +17,8 @@ pub(crate) mod upstream;
 /// Builtin catalog captured live from `GET https://api.anthropic.com/v1/models`
 /// on 2026-07-28, in the API's own order (`created_at` descending, newest
 /// first). `claude-opus-5-5` and `claude-fable-5-1` were added from the same
-/// endpoint on 2026-09-23, and `claude-sonnet-5-5` on 2026-09-30.
+/// endpoint on 2026-09-23, and `claude-sonnet-5-5` on 2026-09-30, where it led
+/// the list.
 ///
 /// The upstream list is **credential-scoped**: on 2026-07-28 the same endpoint
 /// returned 11 entries for an `x-api-key` caller, 10 for a Claude subscription
@@ -37,8 +38,8 @@ struct BuiltinModel {
     max_tokens: u64,
 }
 
-/// Expands one row per model so the table reads as data rather than fourteen
-/// repetitions of the same struct literal:
+/// Expands one row per model so the table reads as data rather than one
+/// repeated struct literal per model:
 /// `id => display_name, created_at, max_input_tokens, max_tokens;`
 macro_rules! builtin_models {
     ($($id:literal => $display_name:literal, $created_at:literal, $max_input_tokens:literal, $max_tokens:literal;)*) => {
@@ -298,7 +299,7 @@ mod tests {
         server::{self, AppState},
     };
 
-    use super::get;
+    use super::{get, BUILTIN_MODELS};
 
     struct OwnedEnvGuard(String);
 
@@ -377,6 +378,27 @@ mod tests {
             body,
             json!({"data": [], "has_more": false, "first_id": null, "last_id": null})
         );
+    }
+
+    /// The table is maintained by hand and `first_id` follows its first row, so
+    /// a new model inserted out of `created_at` order must fail here rather than
+    /// only in the hand-copied fixture below.
+    #[test]
+    fn builtin_table_is_newest_first_with_unique_ids() {
+        for pair in BUILTIN_MODELS.windows(2) {
+            assert!(
+                pair[0].created_at > pair[1].created_at,
+                "{} ({}) must be newer than {} ({})",
+                pair[0].id,
+                pair[0].created_at,
+                pair[1].id,
+                pair[1].created_at
+            );
+        }
+        let mut ids: Vec<&str> = BUILTIN_MODELS.iter().map(|model| model.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), BUILTIN_MODELS.len(), "duplicate builtin id");
     }
 
     #[tokio::test]
