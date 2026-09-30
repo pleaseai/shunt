@@ -1,0 +1,33 @@
+site/src/content/docs/ko/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_de55cabf5e7291 130-132
+site/src/content/docs/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_bd835720e5d17e 138-140
+site/src/content/docs/ko/guides/composite.mdx
+  s_daa14a0e68ee7c::t_92658caa0d277f 68-72
+site/src/content/docs/ja/guides/composite.mdx
+  s_daa14a0e68ee7c::t_c825dbde629f48 69-74
+site/src/content/docs/zh-cn/guides/composite.mdx
+  s_daa14a0e68ee7c::t_8c4228981ee102 65-68
+site/src/content/docs/zh-cn/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_5508d2ab0399bc 119-120
+site/src/content/docs/guides/composite.mdx
+  s_daa14a0e68ee7c::t_e59ae87772798f 72-77
+site/src/content/docs/ja/guides/llm-classifier.mdx
+  s_daa14a0e68ee7c::t_2b402cd5c467c1 135-137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a0312d15d0add4f3365303316cf863cfaea344b8",
+  "prompts": {},
+  "sessions": {
+    "s_daa14a0e68ee7c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0160baf5-b72a-408a-a008-fdbfaf9843af",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
