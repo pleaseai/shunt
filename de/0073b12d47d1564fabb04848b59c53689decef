@@ -1,0 +1,19 @@
+src/adapters/gemini/sse.rs
+  s_217d08c795e32c::t_cca64ba0ca192b 15-20,37-39,48-49,63-81,87-110,112,114-122,144,330-357
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "de0073b12d47d1564fabb04848b59c53689decef",
+  "prompts": {},
+  "sessions": {
+    "s_217d08c795e32c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15d9890a-c61c-4a45-9586-f798a76e2a17",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
