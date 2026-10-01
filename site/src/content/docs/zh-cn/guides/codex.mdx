@@ -301,6 +301,35 @@ export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
 
 完整优先级和力度表:[力度与上下文](/zh-cn/guides/effort-and-context/#推理力度)。
 
+## Fast 模式
+
+Codex CLI 的 `/fast` 开关并不改变模型或力度——它发送的是 Responses API 的顶层字段
+`service_tier: "priority"`,这一档位被称为“Fast”(以更高的用量换取更快的响应)。shunt 把同一个
+开关暴露为配置键,与 `effort` 完全一致,可在提供方级别和路由级别设置:
+
+```toml
+[[routes]]
+model = "gpt-5.6-sol"
+provider = "codex"
+# service_tier = "priority"   # 可选:启用 Codex 的“Fast”模式
+```
+
+可接受的值:`fast`(旧式别名,会被规范化为 `priority`)、`priority`、`flex` 或 `default`
+(仅客户端使用的哨兵值,从不发送到线上)。默认关闭,只有在显式配置时才会发送;与 `effort` 一样,
+路由级别的值胜过提供方级别的默认值——包括显式设为 `default` 的路由,它会让该路由**退出**提供方级别的
+`priority`/`flex` 档位,而不是继承它。完整的键参考:[配置参考](/zh-cn/reference/configuration/#providersname旧式)。
+
+Codex CLI 本身把 `gpt-6-sol` 和 `gpt-6-luna` 默认设为 Fast(`priority`),因为它们的
+`models.json` 条目设置了 `default_service_tier`。这是后端不会应用的客户端默认值,因此经由 shunt
+时,除非你设置 `service_tier = "fast"`,这些模型都以标准档位运行。
+
+最终发送到线上的档位也会通过 Codex CLI 的 `x-codex-routing-hint` 头回传给后端,格式为
+`model=<upstream model>;tier=<tier>`(未发送档位时只有 `model=<upstream model>`)。shunt 与 Codex CLI
+一样,只在 ChatGPT OAuth 路径上发送这个头——HTTP 请求中作为请求头,WebSocket 传输中作为握手头。
+经由前缀路由或 `default_provider` 时,upstream 模型就是客户端自己的 `model` 字符串,因此该头以防御方式
+构造:只有看起来合理的 slug(非空、不超过 128 字节、只含 ASCII 字母/数字以及 `-` `_` `.` `:` `/` `+`)
+才会发送,否则只丢弃该头,请求照常发出。
+
 ## 6. 上下文窗口
 
 Claude Code 为映射的 id 将其上下文栏固定标定为 **200k**。`gpt-5.6-sol` 的真实窗口

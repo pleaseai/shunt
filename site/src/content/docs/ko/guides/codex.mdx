@@ -244,6 +244,38 @@ export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
 
 전체 우선순위와 effort 테이블: [노력 & 컨텍스트](/ko/guides/effort-and-context/#추론-노력).
 
+## Fast 모드
+
+Codex CLI의 `/fast` 토글은 모델이나 노력을 바꾸는 것이 아닙니다. Responses API의 최상위 필드
+`service_tier: "priority"`를 보내며, 이 티어를 "Fast"(사용량이 늘어나는 대신 더 빠른 응답)라고 부릅니다.
+shunt는 같은 설정을 구성 키로 노출하며, `effort`와 똑같이 프로바이더 수준과 라우트 수준 모두에서 설정할 수 있습니다.
+
+```toml
+[[routes]]
+model = "gpt-5.6-sol"
+provider = "codex"
+# service_tier = "priority"   # 선택: Codex의 "Fast" 모드 사용
+```
+
+허용 값은 `fast`(레거시 별칭으로, `priority`로 정규화됨), `priority`, `flex`, `default`(클라이언트 전용
+센티널로, 와이어로는 절대 전송되지 않음)입니다. 기본값은 꺼짐이며 명시적으로 구성했을 때만 전송됩니다.
+`effort`와 마찬가지로 라우트 수준 값이 프로바이더 수준 기본값보다 우선합니다. 라우트를 명시적으로
+`default`로 설정하면 프로바이더 수준의 `priority`/`flex` 티어를 상속하지 않고 해당 라우트만 **제외**됩니다.
+전체 키 레퍼런스: [구성 레퍼런스](/ko/reference/configuration/#providersname-레거시).
+
+Codex CLI 자체는 `gpt-6-sol`과 `gpt-6-luna`의 기본 티어를 Fast(`priority`)로 둡니다. 두 모델의
+`models.json` 항목이 `default_service_tier`를 설정하기 때문입니다. 이는 백엔드가 적용하지 않는
+클라이언트 측 기본값이므로, shunt를 거치면 `service_tier = "fast"`를 설정하지 않는 한 이 모델들은
+표준 티어로 실행됩니다.
+
+실제로 와이어에 실린 티어는 Codex CLI의 `x-codex-routing-hint` 헤더로도 백엔드에 전달되며, 형식은
+`model=<upstream model>;tier=<tier>`입니다(티어를 보내지 않으면 `model=<upstream model>`만). shunt는 Codex
+CLI와 똑같이 ChatGPT OAuth 경로에서만 이 헤더를 보냅니다. HTTP 요청에서는 요청 헤더로, WebSocket 전송에서는
+핸드셰이크 헤더로 보냅니다. 프리픽스 라우트나 `default_provider`를 거치면 upstream 모델이 클라이언트가 보낸
+`model` 문자열 그대로이므로, 헤더는 방어적으로 만들어집니다. 그럴듯한 슬러그(비어 있지 않고 128바이트 이하이며,
+ASCII 영문자·숫자와 `-` `_` `.` `:` `/` `+`만 포함)일 때만 보내고, 그렇지 않으면 헤더만 빼고 요청은 그대로
+보냅니다.
+
 ## 6. 컨텍스트 윈도우
 
 Claude Code는 매핑된 id에 대해 컨텍스트 바를 고정된 **200k**로 크기 조정합니다. `gpt-5.6-sol`의 실제 윈도우는 **372k**이므로(`gpt-5.5`는 272k), 비-`claude-` id에 대해서는 올려주세요:

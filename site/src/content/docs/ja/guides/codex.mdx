@@ -258,6 +258,38 @@ export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
 
 完全な優先順位とエフォートの表: [Effort & Context](/ja/guides/effort-and-context/#reasoning-エフォート)。
 
+## Fast モード
+
+Codex CLI の `/fast` トグルはモデルやエフォートの変更ではありません。Responses API のトップレベルフィールド
+`service_tier: "priority"` を送るもので、このティアは「Fast」（使用量が増える代わりに応答が速くなる）と呼ばれます。
+shunt は同じノブを設定キーとして公開しており、`effort` とまったく同様に、プロバイダーレベルとルートレベルの両方で設定できます。
+
+```toml
+[[routes]]
+model = "gpt-5.6-sol"
+provider = "codex"
+# service_tier = "priority"   # 任意: Codex の「Fast」モードを有効にする
+```
+
+受け入れる値は `fast`（レガシーエイリアスで、`priority` に正規化されます）、`priority`、`flex`、`default`
+（クライアント専用のセンチネルで、ワイヤーには決して送られません）です。デフォルトはオフで、明示的に設定した
+ときだけ送られます。`effort` と同じく、ルートレベルの値がプロバイダーレベルのデフォルトより優先されます。ルートを
+明示的に `default` に設定すると、プロバイダーレベルの `priority`/`flex` ティアを継承せず、そのルートだけを
+**除外**できます。すべてのキーについては [Configuration Reference](/ja/reference/configuration/#providersnameレガシー) を参照してください。
+
+Codex CLI 自体は `gpt-6-sol` と `gpt-6-luna` のデフォルトを Fast（`priority`）にしています。これらの
+`models.json` エントリが `default_service_tier` を設定しているためです。これはバックエンドが適用しない
+クライアント側のデフォルトなので、shunt を経由する場合、`service_tier = "fast"` を設定しない限りこれらの
+モデルは標準ティアで動作します。
+
+実際にワイヤーに載ったティアは、Codex CLI の `x-codex-routing-hint` ヘッダーでもバックエンドへ伝えられます。
+形式は `model=<upstream model>;tier=<tier>` です（ティアを送らない場合は `model=<upstream model>` のみ）。shunt は
+Codex CLI と同じく、ChatGPT OAuth パスでのみこのヘッダーを送ります。HTTP リクエストではリクエストヘッダーとして、
+WebSocket トランスポートではハンドシェイクヘッダーとして送ります。プレフィックスルートや `default_provider`
+経由では upstream モデルがクライアント自身の `model` 文字列になるため、ヘッダーは防御的に組み立てられます。
+妥当なスラッグ（空でなく、128 バイト以下で、ASCII の英数字と `-` `_` `.` `:` `/` `+` のみを含む）の場合だけ
+送り、それ以外はヘッダーだけを落としてリクエストはそのまま送ります。
+
 ## 6. コンテキストウィンドウ
 
 Claude Code はマッピングされた id に対して、コンテキストバーを固定の **200k** でサイズします。`gpt-5.6-sol` の実際のウィンドウは **372k** です（`gpt-5.5` は 272k）。したがって、非 `claude-` id にはこれを引き上げてください。
