@@ -8,15 +8,19 @@ src/server.rs
   s_66c3bdd127475a::t_3071206369c575 13
   s_66c3bdd127475a::t_98222b7a5581e9 114
   s_66c3bdd127475a::t_8df4d1c9c8c8d0 67-71,103,123,140,158,247
+  s_f28e76f8042f9e::t_04eef13e77d0bf 109,111-113
 src/discovery.rs
   s_66c3bdd127475a::t_25fcceb6b6d856 141-142,144-148,155,157-159
   s_66c3bdd127475a::t_c3e47e2a39e27e 156,165,194
+  s_f28e76f8042f9e::t_4f5dcccd05c98e 728
+  s_f28e76f8042f9e::t_d91edda7376409 10,143,149-154
 src/codex_analytics.rs
   s_66c3bdd127475a::t_8693967a9c2f7c 66-86
   s_66c3bdd127475a::t_a7876ced47f092 30
 src/auth/gate.rs
   s_66c3bdd127475a::t_12bbee694fdab9 1-78,81-98,100-104,110
   s_66c3bdd127475a::t_68a9f80e92faec 79-80
+  s_f28e76f8042f9e::t_1a6dfd3ba8e6c5 99,105-109
 src/oauth_usage.rs
   s_66c3bdd127475a::t_5a65a26179b7bc 29,214-229,234,245
   s_66c3bdd127475a::t_68a9f80e92faec 30
@@ -25,15 +29,18 @@ src/auth/mod.rs
   s_66c3bdd127475a::t_b9d06ba053a0af 21
 src/proxy/failover.rs
   s_66c3bdd127475a::t_e094036a7037bf 228-229,868-879,881-894,903
+  s_f28e76f8042f9e::t_9b044c3b03b237 14,227,831,880
 tests/failover.rs
   s_66c3bdd127475a::t_296bd06e494b90 846
 tests/inbound_auth.rs
   s_66c3bdd127475a::t_296bd06e494b90 86
 src/usage/tests.rs
   s_66c3bdd127475a::t_296bd06e494b90 253,706
+  s_f28e76f8042f9e::t_4f5dcccd05c98e 337,483,592
 src/usage.rs
   s_66c3bdd127475a::t_f44106f2724d3a 309-323
   s_66c3bdd127475a::t_0b62b16ed255c7 324-325
+  s_f28e76f8042f9e::t_36d92199b1a00b 30
 Cargo.toml
   s_66c3bdd127475a::t_badef154ba9052 77-84
 src/oauth_usage/tests.rs
@@ -45,6 +52,7 @@ src/config.rs
   s_66c3bdd127475a::t_296bd06e494b90 8230,8324,8350,8373
   s_66c3bdd127475a::t_911e8a148b9bcf 1323-1326,1335,1343-1346,1354-1357
   s_66c3bdd127475a::t_b10dba9565598e 3987-4012
+  s_f28e76f8042f9e::t_4bacb4a56d112c 525
 tests/inbound_codex_endpoint.rs
   s_66c3bdd127475a::t_296bd06e494b90 385,744,791,869,1605
 src/gateway/mod.rs
@@ -57,6 +65,37 @@ src/auth/inbound.rs
   s_66c3bdd127475a::t_05927f9ccbeb87 65
 Cargo.lock
   s_66c3bdd127475a::t_b294ce521e3e2b 203,1558-1559,1561,1563-1573,2506-2514,2713,2895,3230,3283-3291,3973-3978,4619-4630,4632
+tests/inbound_codex_websocket.rs
+  s_f28e76f8042f9e::t_4f5dcccd05c98e 180,227,469,652,727
+src/auth/slots/tests.rs
+  s_f28e76f8042f9e::t_3d00f9a6f186a1 349
+tests/inbound_codex_routes.rs
+  s_f28e76f8042f9e::t_4f5dcccd05c98e 655
+tests/admin_surface.rs
+  s_f28e76f8042f9e::t_4f5dcccd05c98e 1704
+src/error.rs
+  s_f28e76f8042f9e::t_1a6dfd3ba8e6c5 78-81
+src/codex_endpoint.rs
+  s_f28e76f8042f9e::t_1a6dfd3ba8e6c5 31,176-189,231-238,242-267
+tests/judge_harness/mod.rs
+  s_f28e76f8042f9e::t_4f5dcccd05c98e 165
+src/codex_endpoint/websocket/turn.rs
+  s_f28e76f8042f9e::t_1a6dfd3ba8e6c5 74,76,79-102
+  s_f28e76f8042f9e::t_30421901b4ea73 103-107
+tests/judge_harness/driven.rs
+  s_f28e76f8042f9e::t_4f5dcccd05c98e 102
+tests/noop_router.rs
+  s_f28e76f8042f9e::t_4f5dcccd05c98e 207
+tests/buffer_replay/harness.rs
+  s_f28e76f8042f9e::t_4f5dcccd05c98e 80
+src/codex_endpoint/websocket.rs
+  s_f28e76f8042f9e::t_1a6dfd3ba8e6c5 62-69
+tests/stage_router.rs
+  s_f28e76f8042f9e::t_4f5dcccd05c98e 447
+src/proxy/failover/tests.rs
+  s_f28e76f8042f9e::t_3d00f9a6f186a1 234-235,244,371-372,385,687-688,698,713,715,729-730,741,746-747,756,922-923,939-941,945,956-958
+tests/router_surface.rs
+  s_f28e76f8042f9e::t_4f5dcccd05c98e 278
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -69,6 +108,14 @@ Cargo.lock
         "tool": "claude",
         "id": "42d1844c-4f1d-4739-ba6d-cd8ab7401e1d",
         "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_f28e76f8042f9e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef1fce21-6c4e-41c0-84a0-c77ba09e2a35",
+        "model": "claude-opus-5-5"
       },
       "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
     }
