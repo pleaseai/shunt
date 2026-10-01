@@ -22,6 +22,16 @@ site/src/content/docs/zh-cn/guides/codex.mdx
   s_424eb594afb601::t_999f91a837742e 135
 site/src/content/docs/zh-cn/guides/connect-codex-cli.mdx
   s_424eb594afb601::t_5440cbcc00fb9e 239
+site/src/content/docs/ja/guides/providers.mdx
+  s_d01909b6f717df::t_4cd354417a1f3f 172
+site/src/content/docs/ko/guides/providers.mdx
+  s_d01909b6f717df::t_4cd354417a1f3f 167
+site/src/content/docs/ko/guides/codex.mdx
+  s_d01909b6f717df::t_4cd354417a1f3f 112
+site/src/content/docs/guides/providers.mdx
+  s_d01909b6f717df::t_4cd354417a1f3f 278
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_d01909b6f717df::t_4cd354417a1f3f 155
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -33,6 +43,14 @@ site/src/content/docs/zh-cn/guides/connect-codex-cli.mdx
       "agent_id": {
         "tool": "claude",
         "id": "5f7f75c6-8ebb-4ed5-9972-acc121a76dba",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_d01909b6f717df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bdc35b41-1632-4f5d-8520-61e60eac0cac",
         "model": "claude-opus-5-5"
       },
       "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
