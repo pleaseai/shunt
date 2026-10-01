@@ -161,7 +161,7 @@ Non-streaming client: run the same machine but collect blocks instead of emittin
 Exception: if the machine recorded a backend error (the `error` / `response.failed` row above),
 return the mapped Anthropic error envelope as a gateway error instead of the collected message
 JSON (issue #113; see `m7-codex-websocket.md` §8) — the status follows the error `code` per
-§8 (`429` for `rate_limit_exceeded` / `slow_down`, `529` for `server_is_overloaded`, `400` for
+§8 (`429` for `rate_limit_exceeded` / `slow_down` / `flex_unavailable`, `529` for `server_is_overloaded`, `400` for
 `invalid_prompt` / `bio_policy` / `cyber_policy`, a wrapped frame's own non-2xx `status`, else
 `502`); either way terminal, never
 replayed on the next upstream.
@@ -219,6 +219,7 @@ classification (`codex-api/src/sse/responses.rs`):
 | Error `code` | Status | `error.type` | Upstream class |
 |---|---|---|---|
 | `rate_limit_exceeded`, `slow_down` | `429` | `rate_limit_error` | `RateLimitExceeded` (rust-v0.156.0 moved `slow_down` here from `ServerOverloaded`) |
+| `flex_unavailable` | `429` | `rate_limit_error` | `FlexUnavailable` (rust-v0.159.3; no capacity for the `flex` service tier) |
 | `server_is_overloaded` | `529` | `overloaded_error` | `ServerOverloaded` (terminal upstream; see below) |
 | `invalid_prompt`, `bio_policy`, `cyber_policy` | `400` | `invalid_request_error` | `InvalidRequest` / `BioPolicy` / `CyberPolicy` (terminal, non-retryable) |
 | any other code, on an event carrying a top-level non-2xx `status` / `status_code` (the Codex WebSocket's wrapped HTTP-class error frame; not transport-gated, so an HTTP SSE error event from any Responses backend carrying one maps the same way) | that status, per the table above | per the table above | treated as an HTTP error with that status (`parse_wrapped_websocket_error_event`) |

@@ -86,9 +86,9 @@ pub struct AnthropicSseMachine {
     /// [`Self::take_backend_error`]) so they can return a gateway error instead
     /// of a `200 OK` carrying the partial/empty content accumulated so far.
     /// Paired with the client-facing status the envelope was mapped against
-    /// ([`backend_error_status`]): `429` for an in-stream `rate_limit_exceeded`
-    /// or `slow_down`, `529` for `server_is_overloaded`, `400` for the
-    /// `invalid_prompt` / `bio_policy` / `cyber_policy` refusals, the event's
+    /// ([`backend_error_status`]): `429` for an in-stream `rate_limit_exceeded`,
+    /// `slow_down`, or `flex_unavailable`, `529` for `server_is_overloaded`,
+    /// `400` for the `invalid_prompt` / `bio_policy` / `cyber_policy` refusals, the event's
     /// own non-2xx top-level `status` (a Codex websocket wrapped error frame,
     /// or any other backend's error event carrying one), else `502`.
     backend_error: Option<(StatusCode, Value)>,
@@ -1130,10 +1130,12 @@ fn error_code(value: &Value) -> &str {
 /// preserve; the status is picked from the error `code`, mirroring openai/codex
 /// rust-v0.156.0's SSE error classification (`codex-api/src/sse/responses.rs`):
 ///
-/// - `rate_limit_exceeded` / `slow_down` → `429` `rate_limit_error`, the same
-///   envelope an HTTP 429 produces. Upstream classifies both as
-///   `RateLimitExceeded` (rust-v0.156.0 moved `slow_down` there from its
-///   `ServerOverloaded` class).
+/// - `rate_limit_exceeded` / `slow_down` / `flex_unavailable` → `429`
+///   `rate_limit_error`, the same envelope an HTTP 429 produces. Upstream
+///   classifies the first two as `RateLimitExceeded` (rust-v0.156.0 moved
+///   `slow_down` there from its `ServerOverloaded` class), and
+///   `flex_unavailable` (no capacity for the `flex` service tier) as
+///   `FlexUnavailable`, which rust-v0.159.3 maps to HTTP 429.
 /// - `server_is_overloaded` → `529` `overloaded_error`: upstream's
 ///   `ServerOverloaded` class, which is Anthropic's overload signal. The mapping
 ///   is by meaning, not retry policy — the Codex CLI surfaces this class to the
@@ -1160,7 +1162,7 @@ fn error_code(value: &Value) -> &str {
 /// pool account down — pool cooldown keys on the upstream HTTP status alone.
 pub fn backend_error_status(value: &Value) -> StatusCode {
     match error_code(value) {
-        "rate_limit_exceeded" | "slow_down" => StatusCode::TOO_MANY_REQUESTS,
+        "rate_limit_exceeded" | "slow_down" | "flex_unavailable" => StatusCode::TOO_MANY_REQUESTS,
         "server_is_overloaded" => {
             const OVERLOADED: StatusCode = match StatusCode::from_u16(529) {
                 Ok(status) => status,

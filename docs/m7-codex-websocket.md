@@ -300,8 +300,8 @@ The issue frames this as "prewarm". Two separable things:
   gateway error instead of a `200 OK` carrying the partial content collected
   before it — so a non-streaming client cannot mistake a backend failure for a
   truncated-but-successful result. The status follows the error `code`
-  (`m1-responses-translation.md` §8): an in-stream `rate_limit_exceeded` or
-  `slow_down` is `429` `rate_limit_error`, `server_is_overloaded` is `529`
+  (`m1-responses-translation.md` §8): an in-stream `rate_limit_exceeded`,
+  `slow_down`, or `flex_unavailable` is `429` `rate_limit_error`, `server_is_overloaded` is `529`
   `overloaded_error`, `invalid_prompt` / `bio_policy` / `cyber_policy` are `400`
   `invalid_request_error`, any other code on a wrapped frame carrying a non-2xx
   `status` / `status_code` takes that status, and everything else is `502`; all are terminal and

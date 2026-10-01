@@ -1992,7 +1992,10 @@ fn model_supports_tool_search(model: &str) -> bool {
     }
     // Codex catalog gpt-6 slugs (`supports_search_tool: true`), matched
     // exactly: the catalog lists no gpt-6 family, only these slugs.
-    matches!(model, "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna")
+    matches!(
+        model,
+        "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna" | "gpt-6.1-sol"
+    )
 }
 
 /// Whether `host` belongs to xAI (`x.ai` or any subdomain). Used both to gate
@@ -10924,6 +10927,9 @@ target = "judge-alias"
         // Codex catalog slugs `gpt-6-sol` and `gpt-6-luna` (same flag).
         assert!(config.native_tool_search("codex", "gpt-6-sol"));
         assert!(config.native_tool_search("codex", "gpt-6-luna"));
+        // Codex catalog slug `gpt-6.1-sol` (rust-v0.159.3, same flag).
+        assert!(config.native_tool_search("codex", "gpt-6.1-sol"));
+        assert!(config.native_tool_search("openai", "gpt-6.1-sol"));
         for model in [
             "openai/gpt-6-astra",
             "gpt-6-astra-preview",
@@ -10931,6 +10937,8 @@ target = "judge-alias"
             "not-gpt-6-astra",
             "gpt-6-sol-preview",
             "gpt-6-luna[1m]",
+            "gpt-6.1-sol-preview",
+            "gpt-6.1-sol[1m]",
         ] {
             assert!(!config.native_tool_search("codex", model), "{model}");
         }

@@ -131,7 +131,7 @@ ChatGPT 账户后端**拒绝** `gpt-*-codex` slug(例如 `gpt-5.2-codex`),返回
 它只接受你账户的**实时授权** slug。权威目录(以及每个 slug 接受的
 推理级别)是 openai/codex 的
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json)。
-当前 slug:`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`(最新)、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`(前沿)以及
+当前 slug:`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-6.1-sol`(最新)、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`(前沿)以及
 `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`。较老的账户可能只被授权使用
 较早的那些(一个免费账户会解析到 `gpt-5.5`)。shunt 会透出后端自身的错误
 `detail`,因此错误的 slug 会返回真实原因。
@@ -147,10 +147,10 @@ ChatGPT 账户后端**拒绝** `gpt-*-codex` slug(例如 `gpt-5.2-codex`),返回
 一些 slug 带有 `minimal_client_version`(例如 `gpt-6-astra` 需要 ≥ 0.153.0,`gpt-6-sol` 和 `gpt-6-luna` 需要 ≥ 0.155.0)。当
 请求的客户端身份缺失或过旧时,后端会应答 `Model not found <slug>`。
 shunt 通过发送固定的 Codex CLI 身份头(`originator: codex_cli_rs`、
-`user-agent`、`version`)来避免这一点,固定到 **openai/codex rust-v0.159.2**。见
+`user-agent`、`version`)来避免这一点,固定到 **openai/codex rust-v0.159.3**。见
 [openai/codex#31967](https://github.com/openai/codex/issues/31967)。
 
-在有使用权限的账户上,固定的 `0.159.2` 身份可用于 `gpt-6.1-sol` 请求. 即使账户有使用权限,过旧的身份也可能导致模型不受支持的错误. 此固定值不指定所需的最低版本.
+在有使用权限的账户上,尽管 `gpt-6.1-sol` 在目录中的 `minimal_client_version` 为 0.153.0,使用 `0.156.0` 身份的请求被拒绝,使用 `0.159.2` 身份的请求成功. `0.159.3` 是之后的 upstream 补丁版本. 即使账户有使用权限,过旧的身份也可能导致模型不受支持的错误. 此固定值不指定所需的最低版本.
 
 </Aside>
 
@@ -398,7 +398,7 @@ export ENABLE_TOOL_SEARCH=true
 
 - 上游必须是标准 OpenAI 或 ChatGPT/Codex 风格的 Responses 后端。xAI / Grok 路由始终保留 shim。
 - 路由到的模型必须是 **gpt-5.4 及以上**(`gpt-5.4`、`gpt-5.5`,或 `gpt-5.6` 系列)。精确 slug
-  `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna` 也符合条件。更早的 slug (`gpt-5.2` 及以下)无论 `tool_search` 如何设置都会保留 shim。
+  `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-6.1-sol` 也符合条件。更早的 slug (`gpt-5.2` 及以下)无论 `tool_search` 如何设置都会保留 shim。
 - Claude Code 一侧仍然需要 `ENABLE_TOOL_SEARCH=true` —— 这个标志只改变 shunt *如何* 把该功能转译到
   上游,不改变 Claude Code 是否延迟工具本身。
 
