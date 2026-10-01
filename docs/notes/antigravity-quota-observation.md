@@ -19,15 +19,16 @@ shunt 0.41.0. Re-checked against `main` @ 6e7ccb1.
 
 > **Correction (2026-09-18).** This note originally recommended leaving
 > Antigravity unobserved. That conclusion was too broad: it rules out *Google's
-> quota APIs*, which is correct and is what the probes below establish, but shunt
-> does not need them. `src/auth/observation.rs` already reads Antigravity quota
+> quota APIs when called with the `agy` CLI's credential*, which is correct and is
+> what the probes below establish, but that local path does not need them. `src/auth/observation.rs` already reads Antigravity quota
 > locally over the IDE language server's loopback RPC
 > (`/exa.language_server_pb.LanguageServerService/GetUserStatus`, via
 > `discover_antigravity_connection` + `fetch_antigravity_quota_from`), with no
 > Google credential involved. That path is sound and simply never matches: its
 > process-table substring is the old install location, which is #308. Read this
-> note as "do not spend time on the Google APIs", not as "Antigravity cannot be
-> observed".
+> note as "do not call the Google APIs with the `agy` CLI's token", not as
+> "Antigravity cannot be observed"; the HTTP transport's own login does reach them
+> (see "Superseded" above).
 
 ## The question
 
@@ -118,9 +119,11 @@ Unknown; a separate investigation.
 
 ## Recommendation
 
-Do not spend further effort on Google's quota APIs. Both grounds above are
-authentication and product-scope problems, not schema problems, and no amount of
-descriptor extraction moves them.
+For the `agy` CLI credential, do not spend further effort on Google's quota APIs.
+Both grounds above are authentication and product-scope problems, not schema
+problems, and no amount of descriptor extraction moves them. This does not apply
+to the HTTP `antigravity_oauth` transport, whose own login reads the same RPC
+(#671).
 
 The observable path is already in the tree and needs no Google credential:
 `discover_antigravity_connection` locates the running language server and
