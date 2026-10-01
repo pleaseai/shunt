@@ -22,9 +22,9 @@ Only the model that generates the tokens changes.
 Each agent's `model:` frontmatter pins the request to a Codex slug, so only that
 subagent diverts — the main session stays on Claude. The three GPT-5.6 agents
 share a 372k-token context window. GPT-6-Sol is the workhorse for coding and
-everyday work; GPT-6-Luna is the fast, affordable tier for easier tasks. Both
-slugs need a Codex client of at least 0.155.0 — shunt advertises one
-for you (see [Prerequisites](#prerequisites)).
+everyday work; GPT-6-Luna is the fast, affordable tier for easier tasks.
+`gpt-6-sol` and `gpt-6-luna` need a Codex client of at least 0.155.0 — shunt
+advertises one for you (see [Prerequisites](#prerequisites)).
 
 > **Effort levels are from openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).**
 > Note the difference: **Luna (both `gpt-6-luna` and `gpt-5.6-luna`) does not
