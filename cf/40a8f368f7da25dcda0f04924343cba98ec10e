@@ -1,0 +1,29 @@
+src/adapters/gemini/mod.rs
+  s_217d08c795e32c::t_5a09685e89f199 164-170,172
+  s_217d08c795e32c::t_55b09fd40ded2d 954-969
+  s_fb5ae126ff6bbb::t_fd7f18cb798754 953
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cf40a8f368f7da25dcda0f04924343cba98ec10e",
+  "prompts": {},
+  "sessions": {
+    "s_217d08c795e32c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15d9890a-c61c-4a45-9586-f798a76e2a17",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_fb5ae126ff6bbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "581ac287-1423-4fb9-ad15-bfc9739141fe",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
