@@ -279,8 +279,9 @@ provider = "codex"
 
 Codex CLI 自体は `gpt-6-sol` と `gpt-6-luna` のデフォルトを Fast（`priority`）にしています。これらの
 `models.json` エントリが `default_service_tier` を設定しているためです。これはバックエンドが適用しない
-クライアント側のデフォルトなので、shunt を経由する場合、`service_tier = "fast"` を設定しない限りこれらの
-モデルは標準ティアで動作します。
+クライアント側のデフォルトなので、このガイドで設定する Claude Code のルートでは、`service_tier = "fast"` を
+設定しない限りこれらのモデルは標準ティアで動作します。[shunt に接続した Codex CLI](/ja/guides/connect-codex-cli/)
+は異なります。そのエンドポイントはリクエストをそのまま転送するため、CLI が自身で送るティアが保たれます。
 
 実際にワイヤーに載ったティアは、Codex CLI の `x-codex-routing-hint` ヘッダーでもバックエンドへ伝えられます。
 形式は `model=<upstream model>;tier=<tier>` です（ティアを送らない場合は `model=<upstream model>` のみ）。shunt は

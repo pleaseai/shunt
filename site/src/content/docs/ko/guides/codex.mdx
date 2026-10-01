@@ -265,8 +265,9 @@ provider = "codex"
 
 Codex CLI 자체는 `gpt-6-sol`과 `gpt-6-luna`의 기본 티어를 Fast(`priority`)로 둡니다. 두 모델의
 `models.json` 항목이 `default_service_tier`를 설정하기 때문입니다. 이는 백엔드가 적용하지 않는
-클라이언트 측 기본값이므로, shunt를 거치면 `service_tier = "fast"`를 설정하지 않는 한 이 모델들은
-표준 티어로 실행됩니다.
+클라이언트 측 기본값이므로, 이 가이드에서 구성하는 Claude Code 라우트에서는 `service_tier = "fast"`를
+설정하지 않는 한 이 모델들이 표준 티어로 실행됩니다. [shunt에 연결한 Codex CLI](/ko/guides/connect-codex-cli/)는
+다릅니다. 그 엔드포인트는 요청을 그대로 전달하므로 CLI가 직접 보내는 티어가 유지됩니다.
 
 실제로 와이어에 실린 티어는 Codex CLI의 `x-codex-routing-hint` 헤더로도 백엔드에 전달되며, 형식은
 `model=<upstream model>;tier=<tier>`입니다(티어를 보내지 않으면 `model=<upstream model>`만). shunt는 Codex

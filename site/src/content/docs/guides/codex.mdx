@@ -332,8 +332,9 @@ including a route explicitly set to `default`, which opts that route **out** of 
 
 The Codex CLI itself defaults `gpt-6-sol` and `gpt-6-luna` to Fast (`priority`), because their
 `models.json` entry sets `default_service_tier`. That's a client-side default the backend doesn't
-apply, so through shunt these models run at the standard tier unless you set
-`service_tier = "fast"`.
+apply, so on the Claude Code routes this guide sets up these models run at the standard tier unless
+you set `service_tier = "fast"`. A Codex CLI [pointed at shunt](/guides/connect-codex-cli/) is
+different: that endpoint forwards the request as-is, so the CLI keeps the tier it sends itself.
 
 Whatever tier ends up on the wire is also echoed to the backend in the Codex CLI's
 `x-codex-routing-hint` header, as `model=<upstream model>;tier=<tier>` (just `model=<upstream model>`

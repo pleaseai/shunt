@@ -555,8 +555,10 @@ target model doesn't support.
 
 **Codex CLI's per-model default differs:** the Codex CLI defaults `gpt-6-sol` and `gpt-6-luna` to
 Fast (`priority`), because their `models.json` entry sets `default_service_tier`. That default is
-applied client-side by the Codex CLI, not by the backend, so through shunt these models run at the
-standard tier unless you set `service_tier = "fast"`.
+applied client-side by the Codex CLI, not by the backend, so on a translated route (Claude Code →
+shunt → Codex) these models run at the standard tier unless you set `service_tier = "fast"`. The
+inbound Codex endpoint ([`m11-inbound-codex-endpoint.md`](m11-inbound-codex-endpoint.md)) is a
+byte-faithful passthrough, so a Codex CLI pointed at shunt keeps the tier it sends itself.
 
 **xAI/Grok exception:** the field is withheld for the `xai` and `grok` provider flavors even when
 configured — xAI's Responses API 400s on `service_tier`, and the Grok CLI flavor inherits xAI's

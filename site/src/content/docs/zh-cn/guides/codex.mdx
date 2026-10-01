@@ -320,8 +320,10 @@ provider = "codex"
 `priority`/`flex` 档位,而不是继承它。完整的键参考:[配置参考](/zh-cn/reference/configuration/#providersname旧式)。
 
 Codex CLI 本身把 `gpt-6-sol` 和 `gpt-6-luna` 默认设为 Fast(`priority`),因为它们的
-`models.json` 条目设置了 `default_service_tier`。这是后端不会应用的客户端默认值,因此经由 shunt
-时,除非你设置 `service_tier = "fast"`,这些模型都以标准档位运行。
+`models.json` 条目设置了 `default_service_tier`。这是后端不会应用的客户端默认值,因此在本指南配置的
+Claude Code 路由上,除非你设置 `service_tier = "fast"`,这些模型都以标准档位运行。
+[连接到 shunt 的 Codex CLI](/zh-cn/guides/connect-codex-cli/) 则不同:该端点原样转发请求,因此 CLI
+会保留它自己发送的档位。
 
 最终发送到线上的档位也会通过 Codex CLI 的 `x-codex-routing-hint` 头回传给后端,格式为
 `model=<upstream model>;tier=<tier>`(未发送档位时只有 `model=<upstream model>`)。shunt 与 Codex CLI
