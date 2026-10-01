@@ -161,17 +161,15 @@ fn embedded_gemini_error(data: Value) -> AdapterError {
     }
 }
 
-/// The byte cap for a whole-body read: the call's own cap when it is the
-/// tighter one, otherwise `MAX_GEMINI_UNARY_RESPONSE_BYTES`, so a client turn
-/// (whose bounds set none) is still never read into unbounded memory.
+/// The byte cap for a whole-body read: the call's own cap when it sets one,
+/// otherwise `MAX_GEMINI_UNARY_RESPONSE_BYTES`, so a client turn (whose bounds
+/// set none) is still never read into unbounded memory.
+///
+/// A call's own cap is never tightened: the `UpstreamBodyTooLarge` marker a
+/// cap hit carries tells `routing::serve` that *its* bound was spent, which
+/// would be false for an operator cap set above the adapter's ceiling.
 fn unary_cap(bounds: crate::adapters::ResponseBounds) -> Option<usize> {
-    Some(
-        bounds
-            .max_bytes
-            .map_or(MAX_GEMINI_UNARY_RESPONSE_BYTES, |cap| {
-                cap.min(MAX_GEMINI_UNARY_RESPONSE_BYTES)
-            }),
-    )
+    Some(bounds.max_bytes.unwrap_or(MAX_GEMINI_UNARY_RESPONSE_BYTES))
 }
 
 async fn forward(
@@ -950,6 +948,23 @@ mod tests {
             retry_safety_for_auth(AuthMode::ApiKey),
             crate::retry::RetrySafety::NonIdempotentPost
         );
+    }
+
+    #[test]
+    fn unary_cap_keeps_the_call_cap_and_defaults_a_client_turn_to_the_adapter_ceiling() {
+        let bounds = |max_bytes| crate::adapters::ResponseBounds {
+            max_bytes,
+            idle: None,
+        };
+        assert_eq!(
+            unary_cap(bounds(None)),
+            Some(MAX_GEMINI_UNARY_RESPONSE_BYTES)
+        );
+        assert_eq!(unary_cap(bounds(Some(1024))), Some(1024));
+        // An operator cap above the adapter's ceiling stays the operator's, so a
+        // cap hit's marker never claims a bound the call did not reach.
+        let above = MAX_GEMINI_UNARY_RESPONSE_BYTES + 1;
+        assert_eq!(unary_cap(bounds(Some(above))), Some(above));
     }
 
     #[test]
