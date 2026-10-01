@@ -177,9 +177,7 @@ fn translate_messages(request: &Value, model: &str) -> Result<Vec<Value>, Adapte
                         .and_then(Value::as_str)
                         .filter(|id| !id.is_empty())
                         .ok_or_else(|| bad_request("tool_result tool_use_id must be non-empty"))?;
-                    return Err(bad_request(format!(
-                        "tool_result references unknown tool_use_id {tool_use_id} or one already consumed"
-                    )));
+                    return Err(unknown_tool_result(tool_use_id));
                 }
             };
             let mut matched = HashMap::with_capacity(expected.len());
@@ -193,9 +191,7 @@ fn translate_messages(request: &Value, model: &str) -> Result<Vec<Value>, Adapte
                     .filter(|id| !id.is_empty())
                     .ok_or_else(|| bad_request("tool_result tool_use_id must be non-empty"))?;
                 let Some((_, name)) = expected.iter().find(|(id, _)| id == tool_use_id) else {
-                    return Err(bad_request(format!(
-                        "tool_result references unknown tool_use_id {tool_use_id} or one already consumed"
-                    )));
+                    return Err(unknown_tool_result(tool_use_id));
                 };
                 let output = extract_tool_result_content(block)?;
                 let mut response = Map::new();
@@ -414,6 +410,15 @@ fn push_content(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
         }
     }
     contents.push(json!({ "role": role, "parts": parts }));
+}
+
+/// The id is client-controlled and unmatched, so it never passed the
+/// `tool_use` id cap; echo only a bounded preview of it.
+fn unknown_tool_result(tool_use_id: &str) -> AdapterError {
+    bad_request(format!(
+        "tool_result references unknown tool_use_id {} or one already consumed",
+        crate::auth::gateway::auth::truncate_for_error(tool_use_id)
+    ))
 }
 
 fn decode_tool_use_signature(id: &str) -> Result<Option<String>, AdapterError> {

@@ -771,6 +771,32 @@ fn gemini_tool_signature_roundtrip_rejects_orphan_result_before_dispatch() {
 }
 
 #[test]
+fn unknown_tool_result_id_is_echoed_only_as_a_bounded_preview() {
+    let huge_id = "x".repeat(1024 * 1024);
+    let orphan = json!({
+        "messages": [{"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": huge_id, "content": "r"
+        }]}]
+    });
+    let in_batch = json!({
+        "messages": [
+            {"role": "assistant", "content": [{
+                "type": "tool_use", "id": "toolu_a", "name": "read", "input": {}
+            }]},
+            {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": huge_id, "content": "r"
+            }]}
+        ]
+    });
+
+    for request in [orphan, in_batch] {
+        let error = translate_request(&request).unwrap_err();
+        assert!(error.message.contains("unknown tool_use_id"));
+        assert!(error.message.len() < 1024, "{}", error.message.len());
+    }
+}
+
+#[test]
 fn gemini_tool_signature_roundtrip_keeps_legacy_calls_unsigned() {
     let request = json!({
         "model": "gemini-2.5-pro",
