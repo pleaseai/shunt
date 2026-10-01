@@ -1,0 +1,27 @@
+docs/codex-configuration.md
+  s_d01909b6f717df::t_4cea3f94772a82 558-561
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_d01909b6f717df::t_4cea3f94772a82 323-326
+site/src/content/docs/ja/guides/codex.mdx
+  s_d01909b6f717df::t_4cea3f94772a82 282-284
+site/src/content/docs/ko/guides/codex.mdx
+  s_d01909b6f717df::t_4cea3f94772a82 268-270
+site/src/content/docs/guides/codex.mdx
+  s_d01909b6f717df::t_4cea3f94772a82 335-337
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cb30a5d4ab91714448d0196e6f143c8fcf6ea808",
+  "prompts": {},
+  "sessions": {
+    "s_d01909b6f717df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bdc35b41-1632-4f5d-8520-61e60eac0cac",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
