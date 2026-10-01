@@ -1,0 +1,73 @@
+site/src/content/docs/ja/guides/codex-multi-account.mdx
+  s_16e49cef881676::t_dda1ffae97b038 151
+docs/m11-inbound-codex-endpoint.md
+  s_16e49cef881676::t_4b6752c6af9056 215
+docs/codex-configuration.md
+  s_16e49cef881676::t_6c668404c534ce 194
+  s_16e49cef881676::t_c451507b75df2e 278
+  s_16e49cef881676::t_4b6752c6af9056 183-184,190,834
+src/model/responses.rs
+  s_16e49cef881676::t_d76ca9ab57b729 89-91
+  s_16e49cef881676::t_4b6752c6af9056 1133-1138,1165
+site/src/content/docs/guides/providers.mdx
+  s_16e49cef881676::t_c451507b75df2e 278
+site/src/content/docs/ja/guides/codex.mdx
+  s_16e49cef881676::t_6c668404c534ce 126
+  s_16e49cef881676::t_248e926e14826e 128
+  s_16e49cef881676::t_c451507b75df2e 115,364
+site/src/content/docs/zh-cn/guides/codex.mdx
+  s_16e49cef881676::t_c451507b75df2e 134,401
+  s_16e49cef881676::t_248e926e14826e 153
+  s_16e49cef881676::t_4b6752c6af9056 150
+site/src/content/docs/guides/codex-multi-account.mdx
+  s_16e49cef881676::t_c451507b75df2e 151
+docs/m1-responses-translation.md
+  s_16e49cef881676::t_c451507b75df2e 164
+  s_16e49cef881676::t_dda1ffae97b038 222
+site/src/content/docs/ko/guides/codex-multi-account.mdx
+  s_16e49cef881676::t_c451507b75df2e 151
+site/src/content/docs/ko/guides/codex.mdx
+  s_16e49cef881676::t_c451507b75df2e 112,347
+  s_16e49cef881676::t_6c668404c534ce 122,124
+src/config.rs
+  s_16e49cef881676::t_4b6752c6af9056 1995-1998,10930-10932,10940-10941
+site/src/content/docs/ko/guides/providers.mdx
+  s_16e49cef881676::t_c451507b75df2e 167
+src/adapters/responses/request.rs
+  s_16e49cef881676::t_4b6752c6af9056 8,23-24,967,969
+docs/m7-codex-websocket.md
+  s_16e49cef881676::t_dda1ffae97b038 303-304
+site/src/content/docs/guides/codex.mdx
+  s_16e49cef881676::t_6c668404c534ce 159
+  s_16e49cef881676::t_4b6752c6af9056 156
+  s_16e49cef881676::t_c451507b75df2e 139,448
+tests/responses_translate.rs
+  s_16e49cef881676::t_4b6752c6af9056 1802-1807,1846-1848,1852-1853
+site/src/content/docs/zh-cn/guides/codex-multi-account.mdx
+  s_16e49cef881676::t_c451507b75df2e 151
+site/src/content/docs/zh-cn/guides/providers.mdx
+  s_16e49cef881676::t_c451507b75df2e 155
+site/src/content/docs/ja/guides/providers.mdx
+  s_16e49cef881676::t_c451507b75df2e 172
+docs/running.md
+  s_16e49cef881676::t_c451507b75df2e 814
+  s_16e49cef881676::t_4b6752c6af9056 826
+shunt.toml.example
+  s_16e49cef881676::t_56de61bc2c22a4 299
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "215b803c38a072ca21d132ff32fe0793a8bed50b",
+  "prompts": {},
+  "sessions": {
+    "s_16e49cef881676": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d1804ed-eaeb-4acb-bce4-04de5f007377",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
