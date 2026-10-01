@@ -1,0 +1,23 @@
+tests/gemini_conformance.rs
+  s_217d08c795e32c::t_9fd743d012c22a 746-761
+src/adapters/gemini/sse.rs
+  s_217d08c795e32c::t_a906fff978c502 65-69
+  s_217d08c795e32c::t_cbb75cd4f270c1 314-330
+  s_217d08c795e32c::t_b69ca69be57509 313
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3797aeeecdb668792fe937e61ad010bfbbd8aea4",
+  "prompts": {},
+  "sessions": {
+    "s_217d08c795e32c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15d9890a-c61c-4a45-9586-f798a76e2a17",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
