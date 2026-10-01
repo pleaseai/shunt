@@ -97,7 +97,8 @@ and is configured to route the model ids above to the Codex provider:
 > `/model` picker, `CLAUDE_CODE_SUBAGENT_MODEL=gpt-6.1-sol` to run every subagent
 > on it, or your own agent file — for example `.claude/agents/gpt-6.1-sol.md`,
 > copied from this plugin's [`agents/gpt-6-sol.md`](agents/gpt-6-sol.md) with
-> `name` and `model:` changed to `gpt-6.1-sol`. The canonical catalog is
+> `name` and `model:` changed to `gpt-6.1-sol` and the GPT-6-Sol references in
+> its description and prompt updated to match. The canonical catalog is
 > openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
 
 Without a running shunt gateway mapping these ids, Claude Code will send the
