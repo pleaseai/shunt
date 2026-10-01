@@ -1880,6 +1880,10 @@ fn classifies_a_wrapped_websocket_error_by_its_status() {
             StatusCode::BAD_REQUEST,
         ),
         (
+            json!({"type": "error", "status": 503, "error": {"code": "flex_unavailable"}}),
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
+        (
             json!({"type": "error", "error": {"message": "no status"}}),
             StatusCode::BAD_GATEWAY,
         ),

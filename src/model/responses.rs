@@ -1127,8 +1127,9 @@ fn error_code(value: &Value) -> &str {
 /// Client-facing status for a backend-sent `error` / `response.failed` event.
 ///
 /// These events ride a `200 OK` stream, so there is no upstream HTTP status to
-/// preserve; the status is picked from the error `code`, mirroring openai/codex
-/// rust-v0.156.0's SSE error classification (`codex-api/src/sse/responses.rs`):
+/// preserve; the status is picked from the error `code`, mirroring openai/codex's
+/// SSE error classification as of rust-v0.159.3 (`codex-api/src/sse/responses.rs`
+/// and `codex-api/src/sse/responses_error.rs`):
 ///
 /// - `rate_limit_exceeded` / `slow_down` / `flex_unavailable` → `429`
 ///   `rate_limit_error`, the same envelope an HTTP 429 produces. Upstream
