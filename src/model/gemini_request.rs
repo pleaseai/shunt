@@ -10,6 +10,8 @@ use crate::adapters::AdapterError;
 const MAX_SCHEMA_DEPTH: usize = 64;
 const GEMINI_3_MODEL_PREFIX: &str = "gemini-3";
 const GEMINI_TOOL_USE_ID_PREFIX: &str = "call_gemini_v1_";
+// Google documents this exact value for imported/custom Gemini 3 function-call history.
+const GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER: &str = "context_engineering_is_the_way to_go";
 const MAX_TOOL_SIGNATURE_BYTES: usize = 64 * 1024;
 const MAX_TOOL_USE_ID_BYTES: usize = 96 * 1024;
 /// Budget an enabled `thinking` block asks for when it names none. Shared with
@@ -320,15 +322,15 @@ fn translate_messages(request: &Value, model: &str) -> Result<Vec<Value>, Adapte
                                         "duplicate Gemini tool_use id is ambiguous",
                                     ));
                                 }
-                                let signature = decode_tool_use_signature(id)?;
-                                if model.starts_with(GEMINI_3_MODEL_PREFIX)
-                                    && function_call_index == 0
-                                    && signature.is_none()
-                                {
-                                    return Err(bad_request(
-                                        "Gemini 3 tool history requires an authentic thought signature",
-                                    ));
-                                }
+                                // A call this gateway did not produce (another
+                                // provider's history after a failover, or an older
+                                // shunt) carries no signature; Gemini 3 accepts the
+                                // documented placeholder on the first call instead.
+                                let signature = decode_tool_use_signature(id)?.or_else(|| {
+                                    (model.starts_with(GEMINI_3_MODEL_PREFIX)
+                                        && function_call_index == 0)
+                                        .then(|| GEMINI_THOUGHT_SIGNATURE_PLACEHOLDER.to_string())
+                                });
                                 let mut part = json!({
                                     "functionCall": {
                                         "name": name,

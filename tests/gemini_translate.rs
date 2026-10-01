@@ -289,7 +289,7 @@ fn test_gemini_3_sequential_steps_keep_distinct_signatures() {
 }
 
 #[test]
-fn test_unsigned_gemini_3_history_is_rejected() {
+fn test_unsigned_gemini_3_history_uses_documented_placeholder() {
     let request = json!({
         "messages": [{
             "role": "assistant",
@@ -299,26 +299,48 @@ fn test_unsigned_gemini_3_history_is_rejected() {
                 "name": "read_file",
                 "input": { "path": "a.tex" }
             }]
+        }, {
+            "role": "user",
+            "content": [{ "type": "tool_result", "tool_use_id": "toolu_imported", "content": "a" }]
         }]
     });
 
-    let error = translate_request_for_model(&request, "gemini-3.1-pro-preview").unwrap_err();
-    assert!(error.message.contains("authentic thought signature"));
+    let translated = translate_request_for_model(&request, "gemini-3.1-pro-preview").unwrap();
+    assert_eq!(
+        translated["contents"][0]["parts"][0]["thoughtSignature"],
+        "context_engineering_is_the_way to_go"
+    );
 }
 
 #[test]
-fn test_foreign_tool_use_id_is_rejected_for_gemini_3() {
+fn test_foreign_tool_history_after_failover_uses_gemini_3_placeholder() {
+    // A Claude-produced parallel batch replayed to Gemini 3 after a failover:
+    // only the first call of the turn takes the placeholder.
     let request = json!({
-        "messages": [{
-            "role": "assistant",
-            "content": [
-                { "type": "tool_use", "id": "toolu_foreign", "name": "read_file", "input": {} }
-            ]
-        }]
+        "messages": [
+            { "role": "user", "content": "Read both files" },
+            { "role": "assistant", "content": [
+                { "type": "tool_use", "id": "toolu_foreign_a", "name": "read_file", "input": {} },
+                { "type": "tool_use", "id": "toolu_foreign_b", "name": "read_file", "input": {} }
+            ]},
+            { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "toolu_foreign_a", "content": "a" },
+                { "type": "tool_result", "tool_use_id": "toolu_foreign_b", "content": "b" }
+            ]}
+        ]
     });
 
-    let error = translate_request_for_model(&request, "gemini-3.1-pro-preview").unwrap_err();
-    assert!(error.message.contains("authentic thought signature"));
+    let translated = translate_request_for_model(&request, "gemini-3.1-pro-preview").unwrap();
+    let parts = translated["contents"][1]["parts"].as_array().unwrap();
+    assert_eq!(
+        parts[0]["thoughtSignature"],
+        "context_engineering_is_the_way to_go"
+    );
+    assert!(parts[1].get("thoughtSignature").is_none());
+    assert_eq!(
+        translated["contents"][2]["parts"][1]["functionResponse"]["response"]["output"],
+        "b"
+    );
 }
 
 #[test]
