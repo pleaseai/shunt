@@ -12,6 +12,12 @@ pub(super) enum Item {
 
 pub(super) struct Decoder {
     buffer: Vec<u8>,
+    /// Start of the line currently being read within `buffer`.
+    line_start: usize,
+    /// End of the last field byte; trailing line terminators are excluded.
+    content_end: usize,
+    /// The previous byte was a CR, so a following LF completes its CRLF.
+    skip_lf: bool,
     max_event_bytes: usize,
     done: bool,
     disposed: bool,
@@ -28,6 +34,9 @@ impl Decoder {
         assert!(max_event_bytes > 0);
         Self {
             buffer: Vec::new(),
+            line_start: 0,
+            content_end: 0,
+            skip_lf: false,
             max_event_bytes,
             done: false,
             disposed: false,
@@ -36,6 +45,8 @@ impl Decoder {
 
     fn fail(&mut self, message: impl Into<String>) -> String {
         self.buffer.clear();
+        self.line_start = 0;
+        self.content_end = 0;
         self.disposed = true;
         message.into()
     }
@@ -49,41 +60,66 @@ impl Decoder {
         if self.disposed {
             return Err("Gemini SSE parser is disposed".to_string());
         }
-        for (offset, &byte) in chunk.iter().enumerate() {
-            self.buffer.push(byte);
-            if let Some(delimiter_len) = terminal_delimiter_len(&self.buffer) {
-                let frame_len = self.buffer.len() - delimiter_len;
-                if frame_len > self.max_event_bytes {
+        let mut offset = 0;
+        while offset < chunk.len() {
+            if std::mem::take(&mut self.skip_lf) && chunk[offset] == b'\n' {
+                // The LF of a CRLF whose CR already ended the line. It is kept
+                // only inside a pending frame, so the byte cap still counts it.
+                if !self.buffer.is_empty() {
+                    self.buffer.push(b'\n');
+                    self.line_start = self.buffer.len();
+                }
+                offset += 1;
+                continue;
+            }
+            let rest = &chunk[offset..];
+            let run = rest
+                .iter()
+                .position(|&byte| byte == b'\r' || byte == b'\n')
+                .unwrap_or(rest.len());
+            if run > 0 {
+                if self.buffer.len() + run > self.max_event_bytes {
                     return Err(self.fail(format!(
                         "Gemini SSE event exceeded {} bytes",
                         self.max_event_bytes
                     )));
                 }
-                let mut frame = std::mem::take(&mut self.buffer);
-                frame.truncate(frame_len);
-                if self.done {
-                    // A bare blank-line separator carries no field at all,
-                    // so it is framing slack rather than a late event.
-                    if frame.iter().all(u8::is_ascii_whitespace) {
-                        return Ok((offset + 1, None));
-                    }
-                    return Err(self.fail("Gemini SSE frame arrived after [DONE]"));
-                }
-                let item = match parse_frame(&frame) {
-                    Ok(Some(Item::Done)) => {
-                        self.done = true;
-                        Some(Item::Done)
-                    }
-                    Ok(item) => item,
-                    Err(error) => return Err(self.fail(error)),
-                };
-                return Ok((offset + 1, item));
-            } else if retained_candidate_len(&self.buffer) > self.max_event_bytes {
-                return Err(self.fail(format!(
-                    "Gemini SSE event exceeded {} bytes",
-                    self.max_event_bytes
-                )));
+                self.buffer.extend_from_slice(&rest[..run]);
+                self.content_end = self.buffer.len();
+                offset += run;
+                continue;
             }
+            // SSE lines end in CRLF, LF, or a lone CR.
+            let terminator = rest[0];
+            offset += 1;
+            self.skip_lf = terminator == b'\r';
+            if self.buffer.len() > self.line_start {
+                self.buffer.push(terminator);
+                self.line_start = self.buffer.len();
+                continue;
+            }
+            // A blank line dispatches the frame, minus its trailing terminators.
+            let mut frame = std::mem::take(&mut self.buffer);
+            frame.truncate(self.content_end);
+            self.line_start = 0;
+            self.content_end = 0;
+            if self.done {
+                // A bare blank-line separator carries no field at all,
+                // so it is framing slack rather than a late event.
+                if frame.iter().all(u8::is_ascii_whitespace) {
+                    return Ok((offset, None));
+                }
+                return Err(self.fail("Gemini SSE frame arrived after [DONE]"));
+            }
+            let item = match parse_frame(&frame) {
+                Ok(Some(Item::Done)) => {
+                    self.done = true;
+                    Some(Item::Done)
+                }
+                Ok(item) => item,
+                Err(error) => return Err(self.fail(error)),
+            };
+            return Ok((offset, item));
         }
         Ok((chunk.len(), None))
     }
@@ -101,30 +137,11 @@ impl Decoder {
     }
 }
 
-fn retained_candidate_len(buffer: &[u8]) -> usize {
-    const PREFIXES: &[&[u8]] = &[b"\r", b"\n", b"\r\n", b"\n\r", b"\r\n\r", b"\n\r\n"];
-    let delimiter_prefix = PREFIXES
-        .iter()
-        .filter(|prefix| buffer.ends_with(prefix))
-        .map(|prefix| prefix.len())
-        .max()
-        .unwrap_or(0);
-    buffer.len().saturating_sub(delimiter_prefix)
-}
-
-fn terminal_delimiter_len(buffer: &[u8]) -> Option<usize> {
-    [b"\r\n\r\n".as_slice(), b"\n\r\n", b"\r\n\n", b"\n\n"]
-        .into_iter()
-        .find(|delimiter| buffer.ends_with(delimiter))
-        .map(<[u8]>::len)
-}
-
 fn parse_frame(frame: &[u8]) -> Result<Option<Item>, String> {
     let frame =
         std::str::from_utf8(frame).map_err(|_| "invalid UTF-8 in Gemini SSE event".to_string())?;
     let mut data = Vec::new();
-    for line in frame.split('\n') {
-        let line = line.strip_suffix('\r').unwrap_or(line);
+    for line in frame.split(['\r', '\n']) {
         if line.starts_with(':') {
             continue;
         }
@@ -308,6 +325,34 @@ mod tests {
         assert_eq!(whitespace.push_one(DONE).unwrap().1, Some(Item::Done));
         assert_eq!(whitespace.push_one(b" \r\n").unwrap(), (3, None));
         whitespace.finish().unwrap();
+    }
+
+    #[test]
+    fn gemini_sse_accepts_cr_only_line_terminators() {
+        let wire = b"data: {\"n\":\rdata: 1}\r\rdata: [DONE]\r\r";
+        let mut decoder = Decoder::with_limit(64);
+        assert_eq!(
+            drain(&mut decoder, wire).unwrap(),
+            vec![Item::Json(json!({"n": 1})), Item::Done]
+        );
+        decoder.finish().unwrap();
+    }
+
+    #[test]
+    fn gemini_sse_crlf_split_between_cr_and_lf_is_one_terminator() {
+        // A CR ends the blank line on its own; the LF that follows in the next
+        // chunk completes the same CRLF and must not open an extra frame.
+        let mut decoder = Decoder::with_limit(64);
+        assert_eq!(
+            drain(&mut decoder, b"data: {\"n\":1}\r\n\r").unwrap(),
+            vec![Item::Json(json!({"n": 1}))]
+        );
+        assert_eq!(
+            drain(&mut decoder, b"\ndata: [DONE]\r\n\r").unwrap(),
+            vec![Item::Done]
+        );
+        assert_eq!(drain(&mut decoder, b"\n").unwrap(), vec![]);
+        decoder.finish().unwrap();
     }
 
     #[test]
