@@ -1,8 +1,9 @@
 //! A pooled Antigravity weak tier whose first account stalls after its
-//! headers. The idle gap that cuts the read is the gated call's bound, not the
-//! account's fault, so the pool walk ends there: rotating would spend the gap
-//! again on the next account and could replace the idle-marked error
-//! `routing::serve` reads back with that account's own.
+//! headers, or replies past the byte cap. The idle gap or byte cap that cuts
+//! the read is the gated call's bound, not the account's fault, so the pool
+//! walk ends there: rotating would spend the bound again on the next account
+//! and could replace the marked error `routing::serve` reads back with that
+//! account's own.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -195,6 +196,90 @@ async fn a_pooled_antigravity_weak_body_stalled_after_its_headers_does_not_rotat
         accepted.load(Ordering::SeqCst),
         1,
         "the idle cut must end the pool walk, not rotate to the next account"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The byte-cap twin of the stall above: the first account's non-streaming
+/// reply is larger than `gated_max_bytes`, so the adapter refuses it with the
+/// `UpstreamBodyTooLarge` marker. That cap is the gated call's bound, not the
+/// account's fault, so the turn is cut as oversized and falls back to strong
+/// without a second account being asked.
+///
+/// Non-vacuity: drop the too-large-marker early return from the first `Err`
+/// arm of the pool loop in `gemini::forward` and the refusal's `502`
+/// classifies as `Rotate`: the walk moves on to the next account, the
+/// oversized marker is lost, and the turn surfaces a `502` instead of falling
+/// back, so the status assertion goes red.
+#[tokio::test]
+async fn a_pooled_antigravity_weak_body_over_the_byte_cap_does_not_rotate_accounts() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = env().await;
+    let dir = scratch_dir("antigravity-oversized");
+    let accounts_dir = dir.join("accounts");
+    std::fs::create_dir_all(&accounts_dir).unwrap();
+    write_account(&accounts_dir, "a");
+    write_account(&accounts_dir, "b");
+    vars.set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_ANTIGRAVITY_AUTH_FILE", dir.join("no-singleton.json"));
+
+    let (strong, unused_tier, judge) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    messages_mock(anthropic_json(CAPABLE_UPSTREAM_MODEL, "STRONG"), 1)
+        .mount(&strong)
+        .await;
+    messages_mock(judge_text(DECLINE), 0).mount(&judge).await;
+    let mut reply =
+        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 4096\r\n\r\n"
+            .to_vec();
+    reply.extend_from_slice(&[b' '; 4096]);
+    let (oversized, accepted) = counting_stalled_upstream(reply).await;
+    let tiers = Tiers {
+        strong: strong.uri(),
+        weak: unused_tier.uri(),
+        responses: unused_tier.uri(),
+        judge: judge.uri(),
+    };
+    let router = format!(
+        "{}gated_max_bytes = 1024\ngated_idle_ms = 2000\ngated_max_duration_ms = 8000\n",
+        escalation_router("gemini-alias")
+    );
+    let mut config = unvalidated_gated_config(&tiers, &router);
+    let mut gemini = upstream_with(
+        "gemini",
+        oversized,
+        UpstreamAuth::Shorthand(AuthMode::AntigravityOauth),
+    );
+    gemini.kind = Some(ProviderKind::Antigravity);
+    config.upstreams.push(gemini);
+    config
+        .models
+        .push(alias("gemini-alias", "gemini", GEMINI_UPSTREAM_MODEL));
+    let config = config
+        .validate()
+        .expect("the gated config with a pooled Antigravity tier is well formed");
+    let gateway = start_gateway(config).await;
+
+    let started = std::time::Instant::now();
+    let response = post(&gateway, false).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        header(&response, "x-gateway-route-source"),
+        "escalation_fallback"
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["content"][0]["text"], "STRONG", "got: {body}");
+    // Cut by the byte cap as the body arrived, not by the idle gap.
+    assert!(started.elapsed() < Duration::from_millis(2000));
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        1,
+        "the byte cap must end the pool walk, not rotate to the next account"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

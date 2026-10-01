@@ -174,25 +174,6 @@ fn unary_cap(bounds: crate::adapters::ResponseBounds) -> Option<usize> {
     )
 }
 
-/// Render a whole-body read that passed [`unary_cap`]. Only a cap the call
-/// itself set carries the marker `routing::serve` reads back; the adapter's
-/// own ceiling is a local Gemini error, since no caller's bound was spent.
-fn unary_too_large(
-    bounds: crate::adapters::ResponseBounds,
-    too_large: crate::adapters::UpstreamBodyTooLarge,
-) -> AdapterError {
-    if bounds
-        .max_bytes
-        .is_some_and(|cap| cap <= MAX_GEMINI_UNARY_RESPONSE_BYTES)
-    {
-        crate::adapters::too_large_error(too_large)
-    } else {
-        local_gemini_error(format!(
-            "Gemini response exceeded {MAX_GEMINI_UNARY_RESPONSE_BYTES} bytes"
-        ))
-    }
-}
-
 async fn forward(
     state: AppState,
     route: Route,
@@ -315,15 +296,17 @@ async fn forward(
                 return Ok((status, crate::adapters::with_admission(response, admission)));
             }
             Err(error) => {
-                // The idle gap that cut this read is the caller's bound, not
-                // this account's fault: rotating would re-spend it against the
-                // next account and could replace the marker `routing::serve`
-                // reads with that account's error.
-                if error
-                    .response
-                    .extensions()
+                // An idle gap or byte cap that cut this read is the caller's
+                // bound, not this account's fault: rotating would re-spend it
+                // against the next account and could replace the marker
+                // `routing::serve` reads with that account's error.
+                let extensions = error.response.extensions();
+                if extensions
                     .get::<crate::adapters::UpstreamBodyIdle>()
                     .is_some()
+                    || extensions
+                        .get::<crate::adapters::UpstreamBodyTooLarge>()
+                        .is_some()
                 {
                     return Err(error);
                 }
@@ -390,14 +373,16 @@ async fn forward(
                                         ));
                                     }
                                     Err(retry_error) => {
-                                        // Same as above: the idle bound is
-                                        // the caller's, so it ends the pool
-                                        // walk rather than rotating.
-                                        if retry_error
-                                            .response
-                                            .extensions()
+                                        // Same as above: an idle or byte
+                                        // bound is the caller's, so it ends
+                                        // the pool walk rather than rotating.
+                                        let extensions = retry_error.response.extensions();
+                                        if extensions
                                             .get::<crate::adapters::UpstreamBodyIdle>()
                                             .is_some()
+                                            || extensions
+                                                .get::<crate::adapters::UpstreamBodyTooLarge>()
+                                                .is_some()
                                         {
                                             return Err(retry_error);
                                         }
@@ -728,7 +713,7 @@ async fn forward_single(
             {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
-                    return Err(unary_too_large(bounds, too_large))
+                    return Err(crate::adapters::too_large_error(too_large))
                 }
                 // A refusal that stalls is cut exactly like a success that
                 // does: the gated collector would have cut either at the same
@@ -904,7 +889,7 @@ async fn forward_single(
             {
                 Ok(bytes) => bytes,
                 Err(crate::adapters::UpstreamBodyError::TooLarge(too_large)) => {
-                    return Err(unary_too_large(bounds, too_large))
+                    return Err(crate::adapters::too_large_error(too_large))
                 }
                 Err(crate::adapters::UpstreamBodyError::Idle(idle)) => {
                     return Err(crate::adapters::idle_error(idle))
