@@ -25,9 +25,14 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
+mod common;
+
 struct Gateway {
     base_url: String,
     task: JoinHandle<()>,
+    // Holds the shared env lock for as long as the gateway can read the key;
+    // dropped after `Drop::drop` aborts the server task.
+    _env: common::EnvVars,
 }
 
 impl Drop for Gateway {
@@ -79,7 +84,7 @@ async fn start_gateway(base_url: String) -> Gateway {
 }
 
 async fn start_gateway_with_config(mut config: Config) -> Gateway {
-    std::env::set_var("SHUNT_GEMINI_CONFORMANCE_KEY", "fixture-key");
+    let env = common::set_env(&[("SHUNT_GEMINI_CONFORMANCE_KEY", "fixture-key")]).await;
     config.server.bind = "127.0.0.1:0".to_string();
     let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
         .await
@@ -90,6 +95,7 @@ async fn start_gateway_with_config(mut config: Config) -> Gateway {
     Gateway {
         base_url: format!("http://{addr}"),
         task,
+        _env: env,
     }
 }
 
@@ -169,6 +175,9 @@ async fn gemini_aliases_validate_signatures_against_the_resolved_upstream_model(
         .await
         .unwrap();
     assert_eq!(strict.status(), StatusCode::BAD_GATEWAY);
+    // Each gateway holds the shared env lock, so release this one before the
+    // next takes it.
+    drop(strict_gateway);
 
     let legacy_upstream = MockServer::start().await;
     Mock::given(method("POST"))
