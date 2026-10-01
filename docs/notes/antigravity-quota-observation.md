@@ -55,7 +55,7 @@ row per `profile_dir`.
 
 ### 1. shunt cannot authenticate as the Antigravity client
 
-- The stored token file is `{"auth_method", "token": {access_token, expiry,
+- The stored token file is `{"auth_method": …, "token": {access_token, expiry,
   refresh_token, token_type}}`.
 - The **primary** profile's `access_token` expired 2026-08-31 and the file has
   not been rewritten since (`stat` mtime unchanged), yet `agy` keeps serving
