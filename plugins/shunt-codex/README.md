@@ -22,8 +22,8 @@ Only the model that generates the tokens changes.
 Each agent's `model:` frontmatter pins the request to a Codex slug, so only that
 subagent diverts — the main session stays on Claude. The three GPT-5.6 agents
 share a 372k-token context window. GPT-6-Sol is the workhorse for coding and
-everyday work; GPT-6-Luna is the fast, affordable tier for easier tasks. The
-`gpt-6-*` slugs need a Codex client of at least 0.155.0 — shunt advertises one
+everyday work; GPT-6-Luna is the fast, affordable tier for easier tasks. Both
+slugs need a Codex client of at least 0.155.0 — shunt advertises one
 for you (see [Prerequisites](#prerequisites)).
 
 > **Effort levels are from openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).**
@@ -87,10 +87,10 @@ and is configured to route the model ids above to the Codex provider:
 > The ChatGPT-account backend only accepts the slugs your account is entitled to.
 > The latest are `gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna` / `gpt-6.1-sol`, followed by
 > `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`; older accounts may only have
-> `gpt-5.5` / `gpt-5.4`. The `gpt-6-*` slugs require a Codex client of
-> at least 0.155.0, and `gpt-6.1-sol` was rejected with a 0.156.0 identity even
-> though its catalog minimum is lower; shunt's pinned client identity
-> (`codex_cli_rs/0.159.3`) satisfies both. This plugin ships no agent for
+> `gpt-5.5` / `gpt-5.4`. In `models.json`, `gpt-6-sol` and `gpt-6-luna` require a
+> Codex client of at least 0.155.0 and `gpt-6-astra` and `gpt-6.1-sol` at least
+> 0.153.0, but `gpt-6.1-sol` was rejected with a 0.156.0 identity anyway; shunt's
+> pinned client identity (`codex_cli_rs/0.159.3`) satisfies all four. This plugin ships no agent for
 > `gpt-6-astra` or `gpt-6.1-sol`, and a route alone does not make one invokable.
 > To use one, add a `[[routes]]` block like those above, then pick one way to
 > select it: `ANTHROPIC_CUSTOM_MODEL_OPTION=gpt-6.1-sol` to offer it in the
