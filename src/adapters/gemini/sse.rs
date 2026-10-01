@@ -62,6 +62,11 @@ impl Decoder {
                 let mut frame = std::mem::take(&mut self.buffer);
                 frame.truncate(frame_len);
                 if self.done {
+                    // A bare blank-line separator carries no field at all,
+                    // so it is framing slack rather than a late event.
+                    if frame.iter().all(u8::is_ascii_whitespace) {
+                        return Ok((offset + 1, None));
+                    }
                     return Err(self.fail("Gemini SSE frame arrived after [DONE]"));
                 }
                 let item = match parse_frame(&frame) {
@@ -303,6 +308,24 @@ mod tests {
         assert_eq!(whitespace.push_one(DONE).unwrap().1, Some(Item::Done));
         assert_eq!(whitespace.push_one(b" \r\n").unwrap(), (3, None));
         whitespace.finish().unwrap();
+    }
+
+    #[test]
+    fn gemini_post_done_blank_separators_are_not_late_frames() {
+        const DONE: &[u8] = b"data: [DONE]\n\n";
+        for suffix in [b"\n\n".as_slice(), b"\r\n\r\n", b"\n\n\n\n", b" \n\n"] {
+            let mut coalesced = Decoder::with_limit(64);
+            assert_eq!(
+                drain(&mut coalesced, &[DONE, suffix].concat()).unwrap(),
+                vec![Item::Done]
+            );
+            coalesced.finish().unwrap();
+
+            let mut aligned = Decoder::with_limit(64);
+            assert_eq!(aligned.push_one(DONE).unwrap().1, Some(Item::Done));
+            assert_eq!(drain(&mut aligned, suffix).unwrap(), vec![]);
+            aligned.finish().unwrap();
+        }
     }
 
     #[test]

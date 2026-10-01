@@ -743,6 +743,22 @@ async fn gemini_post_done_frames_real_gateway() {
         "{whitespace}"
     );
     assert!(!whitespace.contains("event: error"), "{whitespace}");
+
+    // An extra blank-line separator after `[DONE]` is framing, not a late
+    // event, so the deferred success must still be served.
+    let blank_separator = split_streaming_gateway_response(vec![bytes::Bytes::from(
+        [FINISH, DONE, b"\n\n"].concat(),
+    )])
+    .await;
+    assert_eq!(
+        blank_separator.matches("event: message_stop").count(),
+        1,
+        "{blank_separator}"
+    );
+    assert!(
+        !blank_separator.contains("event: error"),
+        "{blank_separator}"
+    );
 }
 
 #[tokio::test]
