@@ -1,10 +1,21 @@
-# Antigravity quota observation — why the usage surface has no Google row
+# Antigravity quota observation through the `agy` CLI credential
 
-**Date:** 2026-09-06, scope corrected 2026-09-18
-**Status:** the Google-API route is blocked; the local route is not (see
-"Correction" below)
+**Date:** 2026-09-06, scope corrected 2026-09-18 and 2026-10-02
+**Status:** historical for the `agy` CLI credential; superseded for the HTTP
+transport (see "Superseded" below)
 **Verified against:** `agy` (Antigravity CLI) on macOS, two live Google accounts,
 shunt 0.41.0. Re-checked against `main` @ 6e7ccb1.
+
+> **Superseded for the HTTP transport (2026-10-02).** Every probe below used the
+> token the `agy` CLI stores, under its own OAuth client. Since #671, shunt reads
+> Antigravity quota through `retrieveUserQuotaSummary` with its *own*
+> `antigravity_oauth` login on the daily host (`src/auth/antigravity/usage.rs`,
+> polled from `src/usage_poll.rs` when `[server.pool] usage_refresh_seconds` is
+> set), and the dashboard shows the grouped Gemini and Claude + GPT pools. So the
+> `403 SUBSCRIPTION_REQUIRED` rows below describe the CLI credential, not the
+> endpoint. What still holds: a reader of the CLI's token file cannot refresh or
+> trust it, and the deprecated `antigravity_cli` transport has no quota signal of
+> its own.
 
 > **Correction (2026-09-18).** This note originally recommended leaving
 > Antigravity unobserved. That conclusion was too broad: it rules out *Google's
@@ -24,8 +35,10 @@ shunt 0.41.0. Re-checked against `main` @ 6e7ccb1.
 `~/.gemini/oauth_creds.json` — the **Gemini Code Assist** credential — and
 reports `Needs login`, because individual Code Assist accounts are sunset.
 
-Meanwhile every Gemini route in production goes through the `antigravity_cli`
-provider, which drives the `agy` binary against a *different* credential:
+Meanwhile, in the deployment these probes came from, every Gemini route went
+through the `antigravity_cli` transport (deprecated since #372 made the HTTP
+`antigravity_oauth` path the default), which drives the `agy` binary against a
+*different* credential:
 `~/.gemini/antigravity-cli/antigravity-oauth-token`. Same Google identity, two
 tokens, two APIs.
 
@@ -37,7 +50,7 @@ gap worse: none of them are observable.
 The question was whether shunt could read Antigravity's own quota and render one
 row per `profile_dir`.
 
-## Answer: no, on two independent grounds
+## Answer for the CLI credential: no, on two independent grounds
 
 ### 1. shunt cannot authenticate as the Antigravity client
 
@@ -114,15 +127,19 @@ The observable path is already in the tree and needs no Google credential:
 `fetch_antigravity_quota_from` reads `GetUserStatus` over its loopback RPC. It
 reports nothing today only because the process-table match is pinned to
 `/Applications/Antigravity.app/Contents/Resources/bin/language_server`, a path
-the shipping app no longer installs to (#308). Fixing that match is the whole
-job; everything downstream of it already exists.
+the shipping app no longer installs to (#308). Fixing that match restores that
+one local signal: the quota of whichever account the IDE app is signed in to,
+reported through the existing `GEMINI` observed row. It does not discover one
+row per `antigravity_cli` `profile_dir`, so it does not close the multi-account
+gap described above; for pooled accounts, the HTTP transport's quota poll
+(#671) is the path that does.
 
 Caveat on that fix: it should be made with Antigravity actually running, so the
 new match is checked against a live process table rather than against a path
 copied out of an issue. It was not running when this correction was written, so
 the fix is left to #308 rather than guessed at here.
 
-The `agy remote-control` lead below remains the fallback if the language-server
+The `agy remote-control` lead above remains the fallback if the language-server
 route is ever removed, but it is no longer the cheapest next probe.
 
 Do **not** re-derive this by extracting protobuf descriptors from the binary:
