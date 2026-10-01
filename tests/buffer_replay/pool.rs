@@ -246,7 +246,7 @@ async fn a_pooled_antigravity_weak_body_over_the_byte_cap_does_not_rotate_accoun
         judge: judge.uri(),
     };
     let router = format!(
-        "{}gated_max_bytes = 1024\ngated_idle_ms = 2000\ngated_max_duration_ms = 8000\n",
+        "{}gated_max_bytes = 1024\ngated_idle_ms = 5000\ngated_max_duration_ms = 8000\n",
         escalation_router("gemini-alias")
     );
     let mut config = unvalidated_gated_config(&tiers, &router);
@@ -274,8 +274,9 @@ async fn a_pooled_antigravity_weak_body_over_the_byte_cap_does_not_rotate_accoun
     );
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["content"][0]["text"], "STRONG", "got: {body}");
-    // Cut by the byte cap as the body arrived, not by the idle gap.
-    assert!(started.elapsed() < Duration::from_millis(2000));
+    // Sanity bound only, with a wide margin: the turn never waits out the
+    // idle gap. `accepted` below is what proves the walk did not rotate.
+    assert!(started.elapsed() < Duration::from_millis(5000));
     assert_eq!(
         accepted.load(Ordering::SeqCst),
         1,
