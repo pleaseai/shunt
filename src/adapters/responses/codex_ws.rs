@@ -143,7 +143,7 @@ impl OverflowSlot {
     /// Claim one overflow slot, or `None` at the ceiling.
     fn claim() -> Option<Self> {
         LIVE_OVERFLOW_CONNECTIONS
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |live| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |live| {
                 (live < MAX_OVERFLOW_CONNECTIONS).then(|| live + 1)
             })
             .ok()
