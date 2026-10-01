@@ -590,6 +590,8 @@ fn gemini_semantic_strictness_rejects_ambiguous_and_incomplete() {
         .process_chunk_checked(&semantic_fixture())
         .is_err());
 
+    // Metadata parts retain no bytes, so this block pins the 4,096
+    // content-block count ceiling; the byte ceiling has its own test below.
     let metadata_parts = vec![json!({"citationMetadata": {}}); 4_096];
     let mut bounded = GeminiSseMachine::new("gemini-2.5-pro");
     bounded
@@ -601,7 +603,28 @@ fn gemini_semantic_strictness_rejects_ambiguous_and_incomplete() {
         .process_chunk_checked(&json!({
             "candidates": [{"content": {"role": "model", "parts": [{}]}}]
         }))
-        .is_err());
+        .unwrap_err()
+        .to_string()
+        .contains("block count exceeds limit"));
+}
+
+#[test]
+fn gemini_semantic_retained_bytes_ceiling_is_exact() {
+    const MAX_RETAINED_SEMANTIC_BYTES: usize = 32 * 1024 * 1024;
+    let text_chunk = |text: String| json!({"candidates": [{"content": {"role": "model", "parts": [{"text": text}]}}]});
+    // The unary machine retains text for the final message, so its bytes
+    // count toward the ceiling: exactly 32 MiB is accepted, one more is not.
+    let mut ceiling = GeminiSseMachine::new("gemini-2.5-pro");
+    for _ in 0..2 {
+        ceiling
+            .process_chunk_checked(&text_chunk("x".repeat(MAX_RETAINED_SEMANTIC_BYTES / 2)))
+            .unwrap();
+    }
+    assert!(ceiling
+        .process_chunk_checked(&text_chunk("x".to_string()))
+        .unwrap_err()
+        .to_string()
+        .contains("retained semantic state exceeds limit"));
 }
 
 #[test]
