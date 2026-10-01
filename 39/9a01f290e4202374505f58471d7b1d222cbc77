@@ -1,0 +1,21 @@
+docs/notes/antigravity-headless-oauth-capture.md
+  s_217d08c795e32c::t_0f15a3e7351d37 1,7-54,56-58,91,113,128,143,153,155
+docs/notes/antigravity-quota-observation.md
+  s_217d08c795e32c::t_7be2676c131954 1,3-5,9-19,38-41,53,130-135,142
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "399a01f290e4202374505f58471d7b1d222cbc77",
+  "prompts": {},
+  "sessions": {
+    "s_217d08c795e32c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15d9890a-c61c-4a45-9586-f798a76e2a17",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
