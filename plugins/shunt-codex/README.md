@@ -91,8 +91,13 @@ and is configured to route the model ids above to the Codex provider:
 > at least 0.155.0, and `gpt-6.1-sol` was rejected with a 0.156.0 identity even
 > though its catalog minimum is lower; shunt's pinned client identity
 > (`codex_cli_rs/0.159.3`) satisfies both. This plugin ships no agent for
-> `gpt-6-astra` or `gpt-6.1-sol`; to use one, add a `[[routes]]` block like those
-> above and call it by model id. The canonical catalog is
+> `gpt-6-astra` or `gpt-6.1-sol`, and a route alone does not make one invokable.
+> To use one, add a `[[routes]]` block like those above, then pick one way to
+> select it: `ANTHROPIC_CUSTOM_MODEL_OPTION=gpt-6.1-sol` to offer it in the
+> `/model` picker, `CLAUDE_CODE_SUBAGENT_MODEL=gpt-6.1-sol` to run every subagent
+> on it, or your own agent file — for example `.claude/agents/gpt-6.1-sol.md`,
+> copied from this plugin's [`agents/gpt-6-sol.md`](agents/gpt-6-sol.md) with
+> `name` and `model:` changed to `gpt-6.1-sol`. The canonical catalog is
 > openai/codex's [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
 
 Without a running shunt gateway mapping these ids, Claude Code will send the
