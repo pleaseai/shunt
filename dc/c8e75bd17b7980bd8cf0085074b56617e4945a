@@ -1,0 +1,76 @@
+src/gateway/tests.rs
+  s_66c3bdd127475a::t_296bd06e494b90 1478,2158
+src/auth/inbound_jwt.rs
+  s_66c3bdd127475a::t_68a9f80e92faec 142-146,216-223,298-301,379,394-396
+  s_66c3bdd127475a::t_71cdd7435b55f7 1-141,147-215,224-297,302-378,380-393,397-447
+src/server.rs
+  s_66c3bdd127475a::t_296bd06e494b90 419
+  s_66c3bdd127475a::t_3071206369c575 13
+  s_66c3bdd127475a::t_98222b7a5581e9 114
+  s_66c3bdd127475a::t_8df4d1c9c8c8d0 67-71,103,123,140,158,247
+src/discovery.rs
+  s_66c3bdd127475a::t_25fcceb6b6d856 141-142,144-148,155,157-159
+  s_66c3bdd127475a::t_c3e47e2a39e27e 156,165,194
+src/codex_analytics.rs
+  s_66c3bdd127475a::t_8693967a9c2f7c 66-86
+  s_66c3bdd127475a::t_a7876ced47f092 30
+src/auth/gate.rs
+  s_66c3bdd127475a::t_12bbee694fdab9 1-78,81-98,100-104,110
+  s_66c3bdd127475a::t_68a9f80e92faec 79-80
+src/oauth_usage.rs
+  s_66c3bdd127475a::t_5a65a26179b7bc 29,214-229,234,245
+  s_66c3bdd127475a::t_68a9f80e92faec 30
+src/auth/mod.rs
+  s_66c3bdd127475a::t_f2638e0a7f80d0 17
+  s_66c3bdd127475a::t_b9d06ba053a0af 21
+src/proxy/failover.rs
+  s_66c3bdd127475a::t_e094036a7037bf 228-229,868-879,881-894,903
+tests/failover.rs
+  s_66c3bdd127475a::t_296bd06e494b90 846
+tests/inbound_auth.rs
+  s_66c3bdd127475a::t_296bd06e494b90 86
+src/usage/tests.rs
+  s_66c3bdd127475a::t_296bd06e494b90 253,706
+src/usage.rs
+  s_66c3bdd127475a::t_f44106f2724d3a 309-323
+  s_66c3bdd127475a::t_0b62b16ed255c7 324-325
+Cargo.toml
+  s_66c3bdd127475a::t_badef154ba9052 77-84
+src/oauth_usage/tests.rs
+  s_66c3bdd127475a::t_296bd06e494b90 190
+src/config.rs
+  s_66c3bdd127475a::t_9676640fe7835b 367-369,378-455,466-473,475-482,489-494,496-510,512-524,526-580,582-632
+  s_66c3bdd127475a::t_d5bf2fde938b8a 3027,3031-3034
+  s_66c3bdd127475a::t_4b99d1a3ea9d7d 511
+  s_66c3bdd127475a::t_296bd06e494b90 8230,8324,8350,8373
+  s_66c3bdd127475a::t_911e8a148b9bcf 1323-1326,1335,1343-1346,1354-1357
+  s_66c3bdd127475a::t_b10dba9565598e 3987-4012
+tests/inbound_codex_endpoint.rs
+  s_66c3bdd127475a::t_296bd06e494b90 385,744,791,869,1605
+src/gateway/mod.rs
+  s_66c3bdd127475a::t_68a9f80e92faec 73-75
+  s_66c3bdd127475a::t_d8e127dccf0652 58,62-72
+  s_66c3bdd127475a::t_ea6e2dae1dd331 76-77
+src/auth/inbound.rs
+  s_66c3bdd127475a::t_f3093ed90c1a4b 44,46-53,64
+  s_66c3bdd127475a::t_badc70b7d90787 10-15,21-31,36,41-43,45,60-63
+  s_66c3bdd127475a::t_05927f9ccbeb87 65
+Cargo.lock
+  s_66c3bdd127475a::t_b294ce521e3e2b 203,1558-1559,1561,1563-1573,2506-2514,2713,2895,3230,3283-3291,3973-3978,4619-4630,4632
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "dcc8e75bd17b7980bd8cf0085074b56617e4945a",
+  "prompts": {},
+  "sessions": {
+    "s_66c3bdd127475a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d1844c-4f1d-4739-ba6d-cd8ab7401e1d",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
