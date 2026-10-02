@@ -255,6 +255,52 @@ pub mod sse_framer {
     }
 
     #[test]
+    fn content_frame_count_does_not_depend_on_chunk_boundaries() {
+        // More data frames than the data-less block cap (4096 at the client
+        // limit), all in one chunk, as an upstream that writes a finished
+        // response in a single burst delivers them. The same bytes split in
+        // two must frame identically.
+        let delta = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n";
+        let terminal = b"data: {\"type\":\"response.completed\"}\n\n";
+        let mut input = delta.repeat(4200);
+        input.extend_from_slice(terminal);
+
+        let mut whole = BoundedSseFrameBuffer::new(MAX_CLIENT_SSE_FRAME_BYTES);
+        let frames = whole.feed(&input).unwrap();
+        assert_eq!(frames.len(), 4201);
+        assert_eq!(frames.last().unwrap(), &terminal[..terminal.len() - 2]);
+
+        let mut split = BoundedSseFrameBuffer::new(MAX_CLIENT_SSE_FRAME_BYTES);
+        let (head, tail) = input.split_at(input.len() / 2);
+        let mut rejoined = split.feed(head).unwrap();
+        rejoined.extend(split.feed(tail).unwrap());
+        assert_eq!(rejoined, frames);
+    }
+
+    #[test]
+    fn dataless_block_cap_ignores_interleaved_data_blocks() {
+        // Cap 4: twelve blocks carrying `data:` interleaved with exactly four
+        // that do not (blank, comment, `event:`-only, `id:`-only) frame
+        // cleanly, and one more data-less block in the same feed trips the cap.
+        let dataless: [&[u8]; 4] = [b"\n\n", b": ping\n\n", b"event: x\n\n", b"id: 1\n\n"];
+        let mut input = Vec::new();
+        for block in dataless {
+            input.extend(b"event: x\ndata: a\n\n".repeat(3));
+            input.extend_from_slice(block);
+        }
+        let mut framer = BoundedSseFrameBuffer::new(4096);
+        let frames = framer.feed(&input).unwrap();
+        assert_eq!(frames.len(), 16);
+
+        input.extend_from_slice(b"data: a\n\n: ping\n\n");
+        let mut framer = BoundedSseFrameBuffer::new(4096);
+        assert_eq!(
+            framer.feed(&input).unwrap_err(),
+            SseFrameError::CountLimit(4)
+        );
+    }
+
+    #[test]
     fn preserves_terminal_frame_before_trailing_overflow() {
         let terminal = b"data: {\"type\":\"response.completed\"}\n\n";
         let mut input = terminal.to_vec();

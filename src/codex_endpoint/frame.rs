@@ -230,14 +230,21 @@ pub fn terminal_status_from_type(type_str: &str) -> Option<TerminalStatus> {
 pub enum SseFrameError {
     #[error("upstream SSE frame exceeded {0} bytes")]
     TooLarge(usize),
-    #[error("upstream SSE chunk exceeded {0} frame limit")]
+    #[error("upstream SSE chunk exceeded {0} data-less frame limit")]
     CountLimit(usize),
 }
 
 /// Byte-bounded SSE block framer scanning across arbitrary chunk boundaries.
 pub struct BoundedSseFrameBuffer {
     max_frame_bytes: usize,
-    max_frames_per_feed: usize,
+    /// Cap on blocks with no `data:` line (blank-line runs, `: ping`
+    /// comments, `event:`-only blocks) per [`Self::feed`]. The relay drops
+    /// every such block, so the cap guards against a run of them turning a
+    /// few bytes into one allocation each. Blocks that carry `data:` are not
+    /// counted: they are already bounded by `max_frame_bytes` and by the
+    /// chunk's own length, and counting them made a valid stream fail or pass
+    /// depending on how its bytes were chunked.
+    max_dataless_blocks_per_feed: usize,
     delimiter_tail: Vec<u8>,
     candidate: Vec<u8>,
     disposed: bool,
@@ -246,10 +253,10 @@ pub struct BoundedSseFrameBuffer {
 impl BoundedSseFrameBuffer {
     pub fn new(max_frame_bytes: usize) -> Self {
         assert!(max_frame_bytes > 0, "max_frame_bytes must be positive");
-        let max_frames_per_feed = (max_frame_bytes / 1024).max(1);
+        let max_dataless_blocks_per_feed = (max_frame_bytes / 1024).max(1);
         Self {
             max_frame_bytes,
-            max_frames_per_feed,
+            max_dataless_blocks_per_feed,
             delimiter_tail: Vec::new(),
             candidate: Vec::new(),
             disposed: false,
@@ -312,6 +319,7 @@ impl BoundedSseFrameBuffer {
 
         let mut index = 0;
         let mut retained_through = 0;
+        let mut dataless_blocks = 0;
 
         let result = (|| -> Result<(), SseFrameError> {
             while index < total_len {
@@ -320,14 +328,17 @@ impl BoundedSseFrameBuffer {
                     None => break,
                     Some(0) => index += 1,
                     Some(len) => {
-                        if frames.len() >= self.max_frames_per_feed {
-                            let max_frames = self.max_frames_per_feed;
-                            self.clear();
-                            self.disposed = true;
-                            return Err(SseFrameError::CountLimit(max_frames));
-                        }
                         retain_range(self, retained_through, index)?;
                         let block = std::mem::take(&mut self.candidate);
+                        if !carries_data(&block) {
+                            dataless_blocks += 1;
+                            if dataless_blocks > self.max_dataless_blocks_per_feed {
+                                let max_dataless = self.max_dataless_blocks_per_feed;
+                                self.clear();
+                                self.disposed = true;
+                                return Err(SseFrameError::CountLimit(max_dataless));
+                            }
+                        }
                         frames.push(block);
                         index += len;
                         retained_through = index;
@@ -445,6 +456,14 @@ fn delimiter_length_at<F: Fn(usize) -> u8>(
     } else {
         Some(3)
     }
+}
+
+/// Whether a block has a `data:` line, read the way [`parse_sse_block`] reads
+/// one: a line splits on `\r` or `\n` and must start with `data:`.
+fn carries_data(block: &[u8]) -> bool {
+    block
+        .split(|&byte| byte == b'\r' || byte == b'\n')
+        .any(|line| line.starts_with(b"data:"))
 }
 
 fn is_responses_terminal_frame(block: &[u8]) -> bool {
