@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.52.0](https://github.com/pleaseai/shunt/compare/v0.51.1...v0.52.0) (2026-10-02)
+
+
+### Features
+
+* **admin:** report per-account request counters on the pool endpoint ([#691](https://github.com/pleaseai/shunt/issues/691)) ([d149a6d](https://github.com/pleaseai/shunt/commit/d149a6dabdd778e157df39066561a6874ae60a65))
+* **auth:** accept verify-only inbound JWTs from an external IdP ([#351](https://github.com/pleaseai/shunt/issues/351)) ([696f93e](https://github.com/pleaseai/shunt/commit/696f93e908df276a039248444fed87235e305471))
+* **codex:** add inbound Responses WebSocket transport ([#519](https://github.com/pleaseai/shunt/issues/519)) ([fafcd4a](https://github.com/pleaseai/shunt/commit/fafcd4ad33586fca2fe739afcf329994f7998476))
+* **gemini:** harden semantic state, SSE framing, and tool pairing ([#520](https://github.com/pleaseai/shunt/issues/520)) ([5fdf981](https://github.com/pleaseai/shunt/commit/5fdf98114ad295f054a71b84ed17276946897cc6))
+* **pool:** runtime account pause and reset-priority sort ([#656](https://github.com/pleaseai/shunt/issues/656)) ([777e510](https://github.com/pleaseai/shunt/commit/777e5103585469c81a8e16af675e01cce6523513))
+
+
+### Bug Fixes
+
+* **codex:** count only data-less SSE blocks against the per-chunk frame cap ([#727](https://github.com/pleaseai/shunt/issues/727)) ([ac35192](https://github.com/pleaseai/shunt/commit/ac35192010c7c46d6649fabe84ea7a957f401646))
+* **codex:** sync with openai/codex rust-v0.159.3 ([#723](https://github.com/pleaseai/shunt/issues/723)) ([266e943](https://github.com/pleaseai/shunt/commit/266e943f3098fd5e2e433ddd7216ef68881f31a9))
+* **codex:** use AtomicUsize::try_update for the overflow-slot claim ([#724](https://github.com/pleaseai/shunt/issues/724)) ([3ddec3f](https://github.com/pleaseai/shunt/commit/3ddec3f2d1239ef2e071928814838d9e5cc881fc))
+
 ## [0.51.1](https://github.com/pleaseai/shunt/compare/v0.51.0...v0.51.1) (2026-09-30)
 
 
