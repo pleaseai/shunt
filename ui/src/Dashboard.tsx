@@ -104,7 +104,7 @@ export function Dashboard(): ReactElement {
           onMutated={afterAntigravityMutation}
           onMessage={(text, ok) => antigravityForm.current?.report(text, ok)}
         />
-        <PoolHealth pool={data.pool} />
+        <PoolHealth pool={data.pool} onMutated={() => void reloadPool()} />
         </Collapsible.Panel>
       </Collapsible.Root>
     </>

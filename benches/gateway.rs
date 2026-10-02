@@ -335,6 +335,7 @@ fn translate_request(bencher: divan::Bencher) {
             ResponsesFlavor::Chatgpt,
             false,
             None,
+            true,
         )
     });
 }

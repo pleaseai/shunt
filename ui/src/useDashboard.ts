@@ -9,6 +9,7 @@ import type {
   ClaudeStoreAccount,
   CodexStoreAccount,
   ObservedAccount,
+  PoolData,
   PoolProvider,
   StatusSource,
 } from './types';
@@ -47,7 +48,7 @@ export interface Dashboard {
   accounts: Loadable<ClaudeStoreAccount[]>;
   codexAccounts: Loadable<CodexStoreAccount[]>;
   antigravityAccounts: Loadable<AntigravityStoreAccount[]>;
-  pool: Loadable<PoolProvider[]>;
+  pool: Loadable<PoolData>;
   /** `null` means the section is hidden: `[server.status]` is opt-in. */
   status: StatusSource[] | null;
   reloadObserved: () => Promise<void>;
@@ -128,10 +129,16 @@ export function useDashboard(): Dashboard {
       : { status: 'error', message: result.message };
   }, []);
 
-  const loadPool = useCallback(async (): Promise<Loadable<PoolProvider[]>> => {
-    const result = await readJson<{ providers?: PoolProvider[] }>(`${API}/pool`, 'Failed to load pool');
+  const loadPool = useCallback(async (): Promise<Loadable<PoolData>> => {
+    const result = await readJson<{ providers?: PoolProvider[]; sort_by_reset?: boolean }>(
+      `${API}/pool`,
+      'Failed to load pool',
+    );
     return result.ok
-      ? { status: 'ready', data: result.data.providers ?? [] }
+      ? {
+          status: 'ready',
+          data: { providers: result.data.providers ?? [], sortByReset: result.data.sort_by_reset ?? false },
+        }
       : { status: 'error', message: result.message };
   }, []);
 

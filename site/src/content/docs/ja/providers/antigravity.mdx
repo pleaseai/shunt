@@ -238,6 +238,19 @@ Code Assist リクエストは、これらをいずれも送りません。
 `x-shunt-account` が付きます。すべてのアカウントが失敗した場合は最後の upstream エラーを中継するので、
 原因が見えなくなることはありません。
 
+## 使用量レポート
+
+`usage_refresh_seconds` を設定すると、imported（更新可能）な `antigravity_oauth` アカウントごとに
+Code Assist の `retrieveUserQuotaSummary` RPC をポーリングします。本番の
+`cloudcode-pa.googleapis.com` を指定した設定は、推論やモデルカタログと同様に Antigravity の
+`daily-cloudcode-pa.googleapis.com` コントロールプレーンへ正規化されます。
+
+応答はモデルごとの独立クォータではなく、**Gemini Models** と **Claude + GPT Models** という
+2 つの共有モデルファミリーのクォータプールに分かれます。アカウントのプランで提供される場合、
+各グループには 5 時間と週次のウィンドウがあり、それぞれ残量割合とリセット時刻を持ちます。
+ダッシュボードはカタログ内の各モデルではなく、これらの共有ウィンドウを表示します。これは表示専用で、
+プール選択とローテーションは参照しません。
+
 ## 検証
 
 ```bash

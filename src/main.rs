@@ -750,9 +750,9 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // endpoints in the background, sharing the router's status store.
     // Observation-only (see AGENTS.md) and a no-op when `sources` is empty.
     shunt::status_poll::spawn_status_poller(state.clone());
-    // Opt-in `[server.pool] usage_refresh_seconds`: poll imported Claude and
-    // ChatGPT/Codex OAuth usage APIs in the background, sharing the router's
-    // account pool. A no-op when the key is unset.
+    // Opt-in `[server.pool] usage_refresh_seconds`: poll imported Claude,
+    // ChatGPT/Codex, and Antigravity OAuth usage APIs in the background,
+    // sharing the router's account pool. A no-op when the key is unset.
     shunt::usage_poll::spawn_usage_poller(state);
     let (drain_started_tx, drain_started_rx) = tokio::sync::oneshot::channel();
     let server = axum::serve(

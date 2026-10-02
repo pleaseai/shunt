@@ -242,6 +242,20 @@ one; a client error (4xx other than 401/429) is relayed without rotating. The re
 `x-shunt-account` naming the account that served it. If every account fails, the last upstream
 error is relayed, so the cause stays visible.
 
+## Usage reporting
+
+Setting [`usage_refresh_seconds`](/reference/configuration/#serverpool-optional) also polls every
+imported (refreshable) `antigravity_oauth` account against Code Assist's
+`retrieveUserQuotaSummary` RPC. Production `cloudcode-pa.googleapis.com` configurations are
+normalized to Antigravity's `daily-cloudcode-pa.googleapis.com` control plane, matching inference
+and model-catalog traffic.
+
+The response is grouped into two shared model-family quota pools: **Gemini Models** and
+**Claude + GPT Models**. Each group carries its provider-native 5-hour and weekly windows when the
+account tier exposes them, including each window's remaining fraction and reset time. The dashboard
+renders those grouped windows rather than one bar per catalog model. These buckets are display-only:
+pool selection and rotation do not consult them.
+
 ## Verify
 
 ```bash

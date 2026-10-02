@@ -44,8 +44,11 @@ flag, with a conservative fallback that never sends wrong context.
   `response.create` frame envelope, event streaming re-encoded through the existing
   [`AnthropicSseMachine`], and handshake-error re-shaping identical to the HTTP
   path.
-- A per-`x-claude-code-session-id` connection pool with TTL/size eviction, a
-  connection-owned reader task that keeps each pooled socket responsive to
+- A per-conversation connection pool keyed on the pool-safe effective
+  conversation id (the `x-claude-code-session-id` header or a parsed metadata
+  session id, extended with a delegated turn's agent id; the hashed user-id
+  fallback never pools) with size-bounded eviction,
+  a connection-owned reader task that keeps each pooled socket responsive to
   upstream keepalive pings, a `Pong`-verified liveness probe on reuse, and
   invalidation on any error.
 - `previous_response_id` continuation (`src/adapters/responses/codex_continuation.rs`): the
@@ -110,9 +113,13 @@ reproducing attestation.**
 
 ## 5. Connection pool (`codex_ws.rs`)
 
-- Process-global `HashMap<pool_key, Arc<PoolEntry>>` keyed by
-  `x-claude-code-session-id`, namespaced by the authenticated inbound client when
-  `[server.auth]` is configured. A std mutex guards only map lookups/inserts (never
+- Process-global `HashMap<pool_key, Arc<PoolEntry>>` keyed by the pool-safe
+  effective conversation id (the `x-claude-code-session-id` header or a parsed
+  metadata session id, extended with the delegated turn's agent id so a
+  subagent's turns pool under their own child identity; the hashed user-id
+  fallback never pools), namespaced by
+  the authenticated inbound client when `[server.auth]` is configured. A std
+  mutex guards only map lookups/inserts (never
   held across an await); each connection accepts at most one active turn, while a
   concurrent turn uses a dedicated socket. On a multi-tenant deployment, enable
   inbound authentication whenever `websocket = true`; without it, session IDs are
@@ -152,8 +159,8 @@ reproducing attestation.**
   over to HTTP, preserving the transport's "never worse than plain HTTP" safety net
   without restoring a turn queue. A `shunt.codex_ws_overflow` counter (`opened` vs
   `refused`, per provider) records each admission decision, giving operators a way
-  to see whether concurrent Claude Code agents actually share one
-  `x-claude-code-session-id` pool key and how often that costs continuation reuse.
+  to see whether concurrent Claude Code agents actually share one pool key and
+  how often that costs continuation reuse.
 - **Invalidation.** Any non-clean end (error/incomplete terminal, close, transport
   error, or a rejected `previous_response_id`) evicts the connection and clears its
   continuation state. A clean `response.completed` re-pools a fresh connection and
@@ -293,8 +300,8 @@ The issue frames this as "prewarm". Two separable things:
   gateway error instead of a `200 OK` carrying the partial content collected
   before it — so a non-streaming client cannot mistake a backend failure for a
   truncated-but-successful result. The status follows the error `code`
-  (`m1-responses-translation.md` §8): an in-stream `rate_limit_exceeded` or
-  `slow_down` is `429` `rate_limit_error`, `server_is_overloaded` is `529`
+  (`m1-responses-translation.md` §8): an in-stream `rate_limit_exceeded`,
+  `slow_down`, or `flex_unavailable` is `429` `rate_limit_error`, `server_is_overloaded` is `529`
   `overloaded_error`, `invalid_prompt` / `bio_policy` / `cyber_policy` are `400`
   `invalid_request_error`, any other code on a wrapped frame carrying a non-2xx
   `status` / `status_code` takes that status, and everything else is `502`; all are terminal and

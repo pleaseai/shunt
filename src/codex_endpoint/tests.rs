@@ -1,12 +1,45 @@
-use super::{model_label, pool_sticky_key, UNKNOWN_MODEL};
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
+
+use super::{forward, model_label, pool_sticky_key, UNKNOWN_MODEL};
 
 /// Matches the production default; individual body-limit behavior is tested in
 /// the HTTP tuning layer and handler tests.
 const TEST_REQUEST_LIMIT: usize = 32 * 1024 * 1024;
 use axum::{
-    body::Bytes,
+    body::{Body, Bytes},
     http::{header::CONTENT_ENCODING, HeaderMap},
 };
+
+use crate::config::{CodexEndpointConfig, CodexRouteConfig, Config};
+use crate::server::AppState;
+use std::net::SocketAddr;
+use wiremock::{
+    matchers::{header, method, path},
+    Match, Mock, MockServer, Request, ResponseTemplate,
+};
+
+/// Asserts a header never reaches the mock upstream.
+struct HeaderAbsent(&'static str);
+
+impl Match for HeaderAbsent {
+    fn matches(&self, request: &Request) -> bool {
+        !request.headers.contains_key(self.0)
+    }
+}
+
+/// The api-key path must not add the OAuth/Grok `accept: text/event-stream`;
+/// reqwest's own default (`*/*`) is the only accept shunt leaves in place.
+struct AcceptNotEventStream;
+
+impl Match for AcceptNotEventStream {
+    fn matches(&self, request: &Request) -> bool {
+        request
+            .headers
+            .get("accept")
+            .and_then(|value| value.to_str().ok())
+            != Some("text/event-stream")
+    }
+}
 
 /// A body big enough that `compress_request_body` does not skip it, shaped
 /// like the real inbound Responses request (`model` first, then the turn).
@@ -257,4 +290,86 @@ fn falls_back_to_the_bare_session_without_auth() {
 fn is_none_without_a_session_id() {
     assert_eq!(pool_sticky_key(Some("alice"), None), None);
     assert_eq!(pool_sticky_key(None, None), None);
+}
+
+/// Pins the raw-session plumbing end to end: `forward` threads the extracted id
+/// through `dispatch_routed` into `forward_codex_routed`/`routed_request`, which
+/// generates the affinity headers only for a stock-OpenAI api-key route. The
+/// provider keeps its exact `api.openai.com` host, and the test client resolves
+/// that host to a loopback mock, so the exact-host gate runs for real and the
+/// request stays local. Removing the session threading anywhere in
+/// `forward` -> `dispatch_routed` -> `forward_codex_routed` leaves the mock
+/// with no `session-id`, reddening the `header(...)` match below.
+#[tokio::test]
+async fn routed_stock_openai_api_key_generates_the_affinity_headers() {
+    let upstream = MockServer::start().await;
+    let addr: SocketAddr = *upstream.address();
+
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header("authorization", "Bearer openai-key"))
+        .and(header("session-id", "sess-routed"))
+        .and(header("thread-id", "sess-routed"))
+        .and(header("x-client-request-id", "sess-routed"))
+        .and(header("x-codex-window-id", "client-window"))
+        .and(HeaderAbsent("x-api-key"))
+        .and(HeaderAbsent("originator"))
+        .and(AcceptNotEventStream)
+        .respond_with(ResponseTemplate::new(200).set_body_raw("{}", "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let _lock = crate::config::CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _env =
+        crate::auth::shared::EnvVarGuard::set("SHUNT_TEST_TASK1_ROUTED_OPENAI_KEY", "openai-key");
+
+    let mut config = Config::default();
+    let openai = config.providers.get_mut("openai").unwrap();
+    openai.base_url = "http://api.openai.com/v1".to_string();
+    openai.api_key_env = Some("SHUNT_TEST_TASK1_ROUTED_OPENAI_KEY".to_string());
+    config.server.codex_endpoint = Some(CodexEndpointConfig {
+        provider: "codex".to_string(),
+        routes: vec![CodexRouteConfig {
+            model: "glm-5.3".to_string(),
+            provider: "openai".to_string(),
+            upstream_model: Some("gpt-5.6-sol".to_string()),
+        }],
+    });
+
+    let http_client = reqwest::Client::builder()
+        .resolve("api.openai.com", addr)
+        .build()
+        .unwrap();
+    let state = AppState::new(config, http_client).unwrap();
+
+    // The caller's own headers: the three thread-derived codex ids pass
+    // through (F7 — the client's real thread identity), everything else is
+    // stripped by the allowlist and the credential/affinity set is generated.
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", "application/json".parse().unwrap());
+    headers.insert("session-id", "client-session".parse().unwrap());
+    headers.insert("x-codex-window-id", "client-window".parse().unwrap());
+    headers.insert("authorization", "Bearer client-secret".parse().unwrap());
+    headers.insert("x-api-key", "client-api-key".parse().unwrap());
+    headers.insert("originator", "codex_cli_rs".parse().unwrap());
+
+    let body = Body::from(r#"{"model":"glm-5.3","input":[]}"#);
+
+    match forward(
+        state,
+        Some("sess-routed".to_string()),
+        headers,
+        body,
+        std::time::Instant::now(),
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(error) => panic!("inbound codex forward failed: {}", error.message),
+    }
+
+    upstream.verify().await;
 }

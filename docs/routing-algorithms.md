@@ -573,7 +573,7 @@ jobs.
 | Admission on the envelope | Inbound auth ranges over the requested id plus every answer and judge target's full chain; the managed-model policy stays on the requested id |
 | Judge credentials | Reserved slots plus `authorization` and `x-api-key` stripped unconditionally, `anthropic-beta` with them; a passthrough judge target is a startup error |
 | `shunt.requests` / `shunt.latency` | Gain a `caller` attribute, `client` or `router` |
-| One new counter | `shunt.router.judge_calls{model, algorithm, outcome}`, with the closed outcome set `decided`, `timeout`, `oversized`, `upstream_error`, `invalid_reply`, `translation_failed`, `budget_exhausted` |
+| One new counter | `shunt.router.judge_calls{model, algorithm, outcome}`, with the closed outcome set `decided`, `timeout`, `oversized`, `upstream_error`, `invalid_reply`, `translation_failed`, `budget_exhausted`. A reply the upstream cut short is `upstream_error`, never `invalid_reply`: a body stream that broke mid-read, and a Responses reply the adapter marked `UpstreamTruncated` because the upstream ended before `response.completed` — whose synthesized message would otherwise parse and be read as a verdict (issue #635) |
 | `GET /routes` | Each `routers[]` entry gains `judges`, omitted when empty — the ids consulted but never served |
 | `x-gateway-route-source` | Gains `llm-classifier` for a judged turn. The scorer's `ambiguous` still cannot reach a response |
 | One new benchmark arm | `dependency_envelope_driven`, the envelope walk for a stage router carrying a classifier |
@@ -1404,12 +1404,19 @@ A gated turn is made **in the caller's own mode**:
   are retained as they arrive. The judge's neutral `Response` is assembled from
   them. If the turn is served, the retained frames are replayed byte for byte.
   They are retained, not re-encoded.
-- **`stream: false`.** The call is non-streaming. The single JSON message is
-  retained, the judge's `Response` derives from it, and the client gets that
-  message.
+- **`stream: false`.** The client gets one JSON message from a completed turn.
+  The message is retained, and the judge's `Response` derives from it. The
+  upstream transport is the adapter's (ADR-0005 §9, amendment of 2026-09-29).
+  The Anthropic adapter makes a non-streaming call. The Responses adapter
+  streams upstream on every turn and aggregates the SSE into that message
+  under the gated bounds below. That is one code path for every flavor: the
+  ChatGPT/Codex backend is reported to refuse `stream: false`, while the
+  stock OpenAI Platform accepts it, so there streaming is a choice rather than
+  a constraint.
 
-No SSE-to-JSON conversion exists or is added: the gate changes *when* the answer
-is sent, never its shape.
+`serve` adds no SSE-to-JSON conversion: the Responses aggregation is the
+adapter's own, the path every non-streaming client turn on that adapter
+already takes. The gate changes *when* the answer is sent, never its shape.
 
 **Replayed under the advertised id.** The internal dispatch carries the
 router's own id as the alias to render, so `message_start.model` — or the
@@ -1463,9 +1470,18 @@ with the status the ordered loop's client would have seen: a Responses route's
 upstream status outside that adapter's passthrough set becomes `502`.
 Escalation therefore does not call the strong tier for a refused weak chain
 (`an_exhausted_streaming_weak_chain_relays_its_refusal`,
-`a_refused_streaming_weak_chain_relays_the_client_facing_status`). The committed
-stream does not carry the upstream's response headers, so this relay has no
-`retry-after`. A route that fails after it has started streaming is still a cut.
+`a_refused_streaming_weak_chain_relays_the_client_facing_status`). The relay
+also carries the `retry-after` of the attempt whose failure it is — the value
+that upstream sent, from the same remembered failure the status comes from,
+which is the value the ordered loop relays with that failure (issue #655,
+`a_refused_streaming_weak_chain_relays_the_upstream_retry_after`). An
+`auth = "chatgpt_oauth"` account pool that ran out of accounts relays it the
+same way: the pool reads the header off the upstream response its exhaustion
+keeps (issue #702,
+`a_refused_streaming_weak_chain_relays_a_pool_exhausted_retry_after`). The live committed stream cannot carry the header at all:
+it has already answered `200` and reports the refusal as one `error` frame, so
+on that path the header is still absent. A route that
+fails after it has started streaming is still a cut.
 
 ### Why the gated call is the first `CallModel`
 
@@ -1494,7 +1510,7 @@ gated turn:
 | Key | Default | Bounds |
 | :-- | :-- | :-- |
 | `gated_max_bytes` | `8388608` | Retained SSE frame bytes, or the retained JSON body. An adapter that builds the reply before the capture sees it counts what it receives, as §5 describes for `judge_max_response_bytes` |
-| `gated_idle_ms` | `60000` | The gap between body chunks. On an SSE body — a streaming call, or a Responses upstream's reply, which is SSE even when read whole for a non-streaming call — only a completed content frame counts as progress (§5), so SSE `ping` frames do not reset it and an endless keep-alive stream cannot hold a gated turn open. The adapters that accumulate a non-streaming reply apply it between the pieces they accumulate, the first wait included: the Responses WebSocket between events (and before the first one, where a cut is not an HTTP fallback), Antigravity between CLI lines whose translation carries a content frame, so a tool step alone does not reset it. Cursor's agent stream already ends a quiet turn on its own first-byte and idle timeouts |
+| `gated_idle_ms` | `60000` | The gap between body chunks. On an SSE body — a streaming call, or a Responses upstream's reply, which is SSE even when read whole for a non-streaming call — only a completed content frame counts as progress (§5), so SSE `ping` frames do not reset it and an endless keep-alive stream cannot hold a gated turn open. The adapters that accumulate a non-streaming reply apply it between the pieces they accumulate, the first wait included: the Responses WebSocket between events (and before the first one, where a cut is not an HTTP fallback), Antigravity between CLI lines whose translation carries a content frame, so a tool step alone does not reset it. Cursor's agent stream already ends a quiet turn on its own first-byte and idle timeouts. On a non-streaming Responses call the clock starts when the request is sent, so the HTTP header wait is the first gap, and on the WebSocket the handshake (or a pooled connection's probe) and the wait for the first event are. The bounded input-token estimate runs beside the collector rather than before it, so a frame counts as progress only if it arrives inside the gap (#703). An error body's read continues the same gap, on the single-account path and in the pooled refusal check, so a non-2xx whose body stalls is cut at the gap from the send (#704); the body a `chatgpt_oauth` pool relays after every account failed is read under a fresh gap taken when the pool runs out of accounts, since the kept attempt's own send would charge it for the later accounts' time (#707). An error body's read also keeps its own 5 s error-envelope budget, counted from the read's start, so a stall is a cut only when the gap's current deadline, moved by each chunk, comes before the budget's end. That needs less than 5 s of the gap left as the read starts (`gated_idle_ms` under 5 s, or a header wait that used all but the last 5 s of it), but a chunk late in the read can still push the deadline past the budget. Otherwise the refusal is relayed with its status once the budget ends (`gated_error`). A retried send, a pooled account's attempt, or a retry after a credential refresh starts its own clock (#690) |
 | `gated_max_duration_ms` | `600000` | Wall clock across headers and body |
 
 Crossing a bound cancels the upstream call and refunds nothing: the upstream
@@ -1512,7 +1528,7 @@ from a live one.
 | :-- | :-- | :-- | :-- |
 | `escalation_weak` | escalation | The judge let the weak turn through: it declined, or the escalate streak is still below `confirmations` | Replayed |
 | `escalation_latch` | escalation | The session latched, on this turn or an earlier one, so the strong target served the turn | Live |
-| `escalation_fallback` | escalation | The weak turn failed or was cut before its terminal marker, so the strong target served the turn. The judge was not called | Live |
+| `escalation_fallback` | escalation | The weak turn failed or was cut before its terminal marker, or its upstream refused it as too long for its context window, so the strong target served the turn. The judge was not called | Live |
 | `classifier_fail_open` | escalation | The judge failed after a complete weak turn, so the weak turn was served | Replayed |
 | `advisor_approve` | advisor | The executor turn was reviewed and APPROVEd | Replayed |
 | `advisor_pass` | advisor | The executor turn was served without a review: it did not trip the gate (for example, it ends in a tool call), or no review could be reserved | Replayed |
@@ -1556,8 +1572,45 @@ served.
 | :-- | :-- | :-- |
 | The gated turn crosses a `gated_*` bound | Discarded before any header is committed; the strong target serves the turn live (`escalation_fallback`) | Discarded before any header is committed; the request fails with a gateway-owned `502` in the Anthropic error shape (`gated_error`) |
 | The gated turn ends before its terminal marker | As above | As above. Not a REDO and not a failover attempt: the upstream answered `2xx` and the client never saw it |
-| The gated call's upstream answers non-2xx | Relayed to the client unchanged, as a live turn would be (`gated_error`) | Relayed unchanged (`gated_error`) |
-| The judge or review fails after a complete turn — timeout, oversized, unparseable, upstream error, or `max_judge_calls` spent | The algorithm's `fail_open` outcome: the weak turn is replayed (`classifier_fail_open`) | With `fail_open = true` (the default), the executor turn is replayed (`advisor_fail_open`). With `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`) |
+| The gated call's upstream refuses the turn as too long for its context window (a `400`, see below) | The strong target serves the turn live (`escalation_fallback`) | Relayed unchanged (`gated_error`), so a harness can compact |
+| The gated call's upstream answers any other non-2xx | Relayed to the client unchanged, as a live turn would be, `retry-after` included, from a `chatgpt_oauth` account pool that ran out of accounts too (`gated_error`) | Relayed unchanged (`gated_error`) |
+| The judge or review fails after a complete turn — timeout, oversized, unparseable, upstream error, or `max_judge_calls` spent | The algorithm's `fail_open` outcome: the weak turn is replayed (`classifier_fail_open`) | With `fail_open = true` (the default), the executor turn is replayed (`advisor_fail_open`). With `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`), including when `max_judge_calls` refused the review; the failed review is still recorded under its outcome — e.g. `upstream_error` or `timeout`, or `budget_exhausted` when `max_judge_calls` refused it |
+
+**A context-window refusal (issue #654).** libsy's own client types a `400`
+naming the context window as `ContextWindowExceeded` rather than a generic HTTP
+error, and the pinned algorithms branch on it: escalation falls back to its
+strong target (evidence `{"source": "fallback", "reason_code":
+"context_window"}`), and the advisor propagates it so the host can relay the
+`400` a harness compacts on. shunt serves the gated call itself, so it applies
+the same rule to the refusal the caller would have received: a `400` whose
+`error.message` — or, when the message does not match, the whole raw body,
+JSON or not —
+contains `prompt is too long`, `maximum number of tokens`, `context window`, or
+`context length`, case-insensitively (libsy's Anthropic-backend phrase set, at
+the pinned revision). That refusal is rendered in the Anthropic error shape on
+both adapters: the Responses adapter rewrites an upstream
+`context_length_exceeded` into `prompt is too long`. Any other status, and any
+other `400`, stays a relayed refusal. The judge is not called on a refused
+weak turn either way
+(`a_weak_context_overflow_escalates_to_the_strong_tier_on_both_adapters`,
+`a_weak_400_that_is_not_an_overflow_is_still_relayed`,
+`an_advisor_executor_overflow_is_relayed_as_the_refusal`).
+
+**A review that failed or that `max_judge_calls` refused, under `fail_open = false` (issue #686).**
+A refused review is closed by libsy's own cascade, as on every other lane
+(ADR-0005 §3, 2026-09-25 amendment). For an advisor under `fail_open = false`
+that cascade is the algorithm's failure, so the turn fails with the
+gateway-owned `502` a failed review gets: `fail_open` governs a review that did
+not produce a verdict, and shunt does not distinguish why. The failed review is
+nonetheless recorded under `shunt.router.judge_calls`, the series
+`max_judge_calls` is tuned by, with its outcome: a review that was made and
+failed under its own (`upstream_error`, `timeout`, …), one `max_judge_calls`
+refused as `budget_exhausted`. Before #686 the `502` path recorded no outcome at
+all
+(`a_budget_refused_review_under_fail_open_false_is_a_502_recorded_as_budget_exhausted`,
+`a_failed_review_under_fail_open_false_is_a_502_recorded_under_its_outcome`).
+An operator who wants a spent budget to serve the held turn sets
+`fail_open = true`.
 
 The escalation column and the advisor column differ on a cut turn by design.
 Escalation has a second answer on hand, the strong target, and taking it costs

@@ -39,7 +39,7 @@ use axum::{
     extract::{rejection::JsonRejection, Path, State},
     http::{header, HeaderMap, HeaderName, StatusCode},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Form, Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -264,7 +264,11 @@ pub fn admin_router() -> Router<AppState> {
         .route("/admin/api/session", get(session_bootstrap))
         .route("/admin/api/accounts", get(list_accounts))
         .route("/admin/api/observed", get(observed_accounts))
-        .route("/admin/api/pool", get(pool))
+        .route("/admin/api/pool", get(pool).patch(patch_pool_settings))
+        .route(
+            "/admin/api/pool/{provider}/accounts/{account_ref}",
+            patch(patch_pool_account),
+        )
         .route("/admin/api/status", get(status))
         .route("/admin/api/routes", get(routes))
         .route("/admin/api/accounts/claude", post(add_account))
@@ -1247,10 +1251,17 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
         let accounts: Vec<Value> = snapshots
             .into_iter()
             .zip(plans)
-            .map(|(snapshot, plan)| {
+            .zip(resolved.iter())
+            .map(|((snapshot, plan), account)| {
                 let mut value = serde_json::to_value(&snapshot).unwrap_or(Value::Null);
-                if let (Value::Object(map), Some(plan)) = (&mut value, plan) {
-                    map.insert("plan".to_string(), Value::String(plan));
+                if let Value::Object(map) = &mut value {
+                    map.insert(
+                        "account_ref".to_string(),
+                        Value::String(crate::accounts::account_ref(name, account)),
+                    );
+                    if let Some(plan) = plan {
+                        map.insert("plan".to_string(), Value::String(plan));
+                    }
                 }
                 value
             })
@@ -1264,7 +1275,171 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
         // named "claude".
         providers.push(json!({ "provider": name, "auth": provider.auth, "accounts": accounts }));
     }
-    json_secure(json!({ "providers": providers }))
+    json_secure(json!({
+        "providers": providers,
+        // `[server.pool]` is process-wide (one, not one per provider), so this
+        // reflects a runtime `PATCH /admin/api/pool` override when set, else
+        // the config file's own value.
+        "sort_by_reset": state
+            .accounts
+            .effective_sort_by_reset(state.config.server.pool.as_ref()),
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct PatchPoolSettingsBody {
+    /// Double-`Option` so the field's three JSON shapes stay distinguishable:
+    /// omitted (`None`, outer) is a no-op, `null` (`Some(None)`) clears the
+    /// runtime override back to config-following, and `true`/`false`
+    /// (`Some(Some(bool))`) sets it. Collapsing `null` and omitted into one
+    /// `None` (a plain `Option<bool>`, as this used to be) would leave no way
+    /// to clear an override once set — `serde` gives both the same value by
+    /// default, so this needs the explicit `deserialize_some` shim below.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    sort_by_reset: Option<Option<bool>>,
+}
+
+/// Maps a present field (of any value, including `null`) to `Some`, so a
+/// `#[serde(default)]` outer `Option` can distinguish "field omitted" from
+/// "field present". Standard workaround for serde's lack of a built-in
+/// double-`Option` — see <https://github.com/serde-rs/serde/issues/984>.
+fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// `PATCH /admin/api/pool` — toggle the process-wide reset-priority sort at
+/// runtime, without editing `shunt.toml`. Mirrors account pause: memory-only,
+/// cleared on restart, and only takes effect where `[server.pool]` is
+/// configured (see `AccountPool::effective_sort_by_reset`). `{"sort_by_reset":
+/// null}` clears a previously set override back to following the config file;
+/// omitting the field entirely leaves the current override untouched.
+async fn patch_pool_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<PatchPoolSettingsBody>,
+) -> Response {
+    let state = state.refreshed();
+    let Some(authok) = authenticate(&state, &headers) else {
+        return unauthorized();
+    };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
+    if let Some(response) = check_csrf(&authok.kind, &headers) {
+        return response;
+    }
+    if let Some(sort_by_reset) = body.sort_by_reset {
+        state.accounts.set_sort_by_reset_override(sort_by_reset);
+        tracing::info!(
+            sort_by_reset = ?sort_by_reset,
+            "admin: pool sort_by_reset override updated"
+        );
+    }
+    json_secure(json!({"ok": true}))
+}
+
+#[derive(serde::Deserialize)]
+struct PatchPoolAccountBody {
+    #[serde(default)]
+    paused: Option<bool>,
+}
+
+async fn patch_pool_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((provider, account_ref)): Path<(String, String)>,
+    Json(body): Json<PatchPoolAccountBody>,
+) -> Response {
+    let state = state.refreshed();
+    let Some(authok) = authenticate(&state, &headers) else {
+        return unauthorized();
+    };
+    if let Some(response) = require_write(&authok) {
+        return response;
+    }
+    if let Some(response) = check_csrf(&authok.kind, &headers) {
+        return response;
+    }
+    // Look up the provider.
+    let Some(provider_cfg) = state.config.providers.get(&provider) else {
+        return not_found();
+    };
+    // Resolve pool accounts for this provider.
+    let resolved = match provider_cfg.auth {
+        AuthMode::ClaudeOauth => {
+            crate::auth::shared::resolve_pool_accounts(
+                "Claude",
+                &provider_cfg.accounts,
+                &provider_cfg.account_scope,
+                crate::accounts::StoreFamily::Claude,
+                crate::auth::claude::store::default_accounts_dir(),
+                crate::auth::claude::store::scan_accounts,
+            )
+            .await
+        }
+        AuthMode::ChatgptOauth => {
+            crate::auth::shared::resolve_pool_accounts(
+                "codex",
+                &provider_cfg.accounts,
+                &provider_cfg.account_scope,
+                crate::accounts::StoreFamily::Chatgpt,
+                crate::auth::codex::store::default_accounts_dir(),
+                crate::auth::codex::store::scan_accounts,
+            )
+            .await
+        }
+        AuthMode::KimiOauth => {
+            crate::auth::shared::resolve_pool_accounts(
+                "Kimi",
+                &provider_cfg.accounts,
+                &provider_cfg.account_scope,
+                crate::accounts::StoreFamily::Kimi,
+                crate::auth::kimi::store::default_accounts_dir(),
+                crate::auth::kimi::store::scan_accounts,
+            )
+            .await
+        }
+        AuthMode::AntigravityOauth => {
+            crate::auth::shared::resolve_pool_accounts(
+                "Antigravity",
+                &provider_cfg.accounts,
+                &provider_cfg.account_scope,
+                crate::accounts::StoreFamily::Antigravity,
+                crate::auth::antigravity::store::default_accounts_dir(),
+                crate::auth::antigravity::store::scan_accounts,
+            )
+            .await
+        }
+        _ => return bad_request("provider does not use a managed pool"),
+    };
+    let accounts = match resolved {
+        Ok(accounts) => accounts,
+        Err(error) => {
+            tracing::error!(provider = %provider, %error, "admin: failed to resolve pool accounts for patch");
+            return internal("failed to read pool state");
+        }
+    };
+    let Some(account) = accounts
+        .iter()
+        .find(|account| crate::accounts::account_ref(&provider, account) == account_ref)
+    else {
+        return not_found();
+    };
+    if let Some(paused) = body.paused {
+        state.accounts.set_paused(&provider, account, paused);
+        tracing::info!(
+            provider = %provider,
+            account = %account.name,
+            account_ref = %account_ref,
+            paused,
+            "admin: pool account pause flag updated",
+        );
+    }
+    json_secure(json!({"ok": true}))
 }
 
 /// `GET /admin/api/routes` — the resolved routing table, for the dashboard.

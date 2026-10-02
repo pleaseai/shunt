@@ -103,6 +103,79 @@ pub(super) async fn bounded_input_estimate(
         .unwrap_or(0)
 }
 
+/// The input-token seed a non-streaming collector reports for a turn whose
+/// upstream usage never lands (an emulated stop sequence, issue #605): a value
+/// already known, or the spawned estimate still running on the blocking pool.
+///
+/// A pending estimate is waited for beside the reply's collection rather than
+/// before it (#703). Awaiting it first leaves the reply unread for that wait,
+/// so on a gated call a frame that landed after the idle gap closed would be
+/// ready at the collector's first poll and taken as progress.
+pub(super) enum InputEstimate {
+    Known(u64),
+    Pending(tokio::task::JoinHandle<u64>),
+}
+
+impl From<u64> for InputEstimate {
+    fn from(value: u64) -> Self {
+        Self::Known(value)
+    }
+}
+
+impl From<Option<tokio::task::JoinHandle<u64>>> for InputEstimate {
+    fn from(handle: Option<tokio::task::JoinHandle<u64>>) -> Self {
+        handle.map_or(Self::Known(0), Self::Pending)
+    }
+}
+
+impl InputEstimate {
+    /// The value now, a pending estimate under its 1 s bound
+    /// ([`bounded_input_estimate`]): for a caller that needs it before any
+    /// reply byte, as a streaming `message_start` does.
+    pub(super) async fn resolve(self) -> u64 {
+        match self {
+            Self::Known(value) => value,
+            Self::Pending(handle) => {
+                bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await
+            }
+        }
+    }
+
+    /// Run `collect` with the estimate's bounded wait beside it, and hand back
+    /// the estimate once the collection is done. The wait starts where it
+    /// always did, at the collection's start, under the same 1 s bound, so the
+    /// value is the one a wait before the collection would have read; only the
+    /// reply is no longer left unread meanwhile. A failed collection returns at
+    /// once, without waiting on the estimate. A known value runs `collect`
+    /// alone.
+    pub(super) async fn beside<T, E>(
+        self,
+        collect: impl std::future::Future<Output = Result<T, E>>,
+    ) -> Result<(T, u64), E> {
+        let handle = match self {
+            Self::Known(value) => return collect.await.map(|collected| (collected, value)),
+            Self::Pending(handle) => handle,
+        };
+        let estimate = bounded_input_estimate(handle, std::time::Duration::from_secs(1));
+        tokio::pin!(estimate, collect);
+        let mut resolved = None;
+        let collected = loop {
+            tokio::select! {
+                // The estimate first, so its bound is armed before the first
+                // read, where the sequential wait used to arm it.
+                biased;
+                value = &mut estimate, if resolved.is_none() => resolved = Some(value),
+                collected = &mut collect => break collected?,
+            }
+        };
+        let value = match resolved {
+            Some(value) => value,
+            None => estimate.await,
+        };
+        Ok((collected, value))
+    }
+}
+
 /// Translate parsed upstream events through the [`AnthropicSseMachine`] into
 /// Anthropic SSE bytes. A producer error envelope becomes an SSE `error` event
 /// and ends the stream; a producer that ends before a terminal event gets the
@@ -141,6 +214,11 @@ pub(super) enum PoolItem {
         advance: bool,
         remember: bool,
         envelope: LazyEnvelope,
+        /// The exhausting upstream response's `retry-after`, read before the
+        /// response moves into its lazy envelope, so a refused gated chain
+        /// relays it the way the ordered loop's refusal does (#702). `None`
+        /// when no upstream answered or it sent none.
+        retry_after: Option<axum::http::HeaderValue>,
     },
 }
 

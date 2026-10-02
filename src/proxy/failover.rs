@@ -63,6 +63,19 @@ pub(super) async fn forward(
             response: Box::new(error.into_response()),
         })?;
     normalize_request_body(&mut body);
+    // The client's one-shot post-compaction hint, decided once per request:
+    // the Responses adapter consumes it on the first dispatch that reaches an
+    // upstream — either transport — and every later dispatch of the same turn
+    // (route failover, the gated lane's capture and REDO, the WS→HTTP
+    // fallback) reads the already-advanced window without bumping again.
+    // Judge and advisor calls build their own body, so they never see the
+    // mark at all; `judge_headers` also drops the header they would clone.
+    body.set_compaction_mark(crate::adapters::responses::compact_marked(headers));
+    // The same boundary marks the body as the client's own turn: the
+    // Responses translation scopes its chatgpt-flavor defaults (the
+    // encrypted-reasoning `include`) to client turns, so an internal call to
+    // a chatgpt target never requests reasoning blobs it cannot round-trip.
+    body.mark_client_turn();
     // Claude Code's auto mode asks the API to classify the session's own tool
     // uses server-side (`safeguards` + the `dangerous-tool-use-…` beta). Only
     // api.anthropic.com answers it, and a completed response carrying no
@@ -1092,6 +1105,9 @@ fn stamp_gateway_headers(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod gated_tests;
 
 #[cfg(all(test, feature = "prefill-router"))]
 mod prefill_tests;

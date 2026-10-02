@@ -106,8 +106,9 @@ is the documented default. Discovery is only useful if shunt exposes a **Claude-
   The builtin table is the **superset** of what the three observed upstream surfaces serve. The
   2026-07-28 capture counted `x-api-key` (11 ids), Claude subscription OAuth (10, no
   `claude-opus-4-1-20250805`), and the reference apps gateway (10, no
-  `claude-opus-4-5-20251101`); the table now also carries `claude-opus-5-5` and
-  `claude-fable-5-1` (added 2026-09-23), for 13 rows. It is a snapshot with no
+  `claude-opus-4-5-20251101`); the table now also carries `claude-opus-5-5`,
+  `claude-fable-5-1` (both added 2026-09-23), and `claude-sonnet-5-5` (added 2026-09-30), for 14
+  rows. It is a snapshot with no
   credential behind it, so it over-advertises by design: a caller may see an id its own
   credential cannot reach, and that stays a runtime error rather than a discovery-time
   entitlement probe. A successful live fetch **supersedes** the snapshot rather than merging

@@ -87,7 +87,8 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # default_threshold_fable = 0.85 # Fable-only 7d_oi bucket
 # burn_rate_avoidance = false    # avoid projected exhaustion before reset
 # usage_refresh_seconds = 300    # (disabled by default; 0 disables) poll usage
-#                                    API for refreshable Claude accounts only;
+#                                    APIs for refreshable Claude, Codex, and
+#                                    Antigravity accounts;
 #                                    values below 60 clamp to 60, fixed at boot
 # state_path = "shunt-state.json"  # (disabled by default) persist per-account
 #                                    quota to this file so a restart warm-starts
@@ -188,9 +189,11 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
                                # "estimate" opts out (404 -> client estimates).
 # websocket = true             # EXPERIMENTAL (issue #32): reach the Codex backend
                                # over the Responses WebSocket v2 transport instead
-                               # of HTTP. Pools a connection per conversation and
-                               # reuses previous_response_id to upload only the new
-                               # input. Only honored for this ChatGPT/Codex backend;
+                               # of HTTP. Pools a connection per resolved
+                               # conversation (the x-claude-code-session-id header
+                               # or a parsed metadata session id) and reuses
+                               # previous_response_id to upload only the new input.
+                               # Only honored for this ChatGPT/Codex backend;
                                # falls back to HTTP if the socket can't be opened.
 
 # --- Optional: pool several ChatGPT accounts behind [providers.codex] instead of
@@ -293,9 +296,9 @@ provider = "openai"
 # account's live-entitled slugs. The catalog of valid Codex slugs (and the
 # reasoning levels each accepts) is openai/codex's models.json:
 #   https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json
-# The latest are gpt-6-astra / gpt-6-sol / gpt-6-luna, then gpt-5.6-sol /
+# The latest are gpt-6-astra / gpt-6-sol / gpt-6-luna / gpt-6.1-sol, then gpt-5.6-sol /
 # gpt-5.6-terra / gpt-5.6-luna; older accounts may only be entitled to gpt-5.5 /
-# gpt-5.4 / gpt-5.2. See docs/m2-chatgpt-oauth.md §0.
+# gpt-5.4. See docs/m2-chatgpt-oauth.md §0.
 # [[routes]]
 # model = "gpt-5.6-sol"
 # provider = "codex"

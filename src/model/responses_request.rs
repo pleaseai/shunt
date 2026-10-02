@@ -115,6 +115,7 @@ pub fn translate_request(
     flavor: ResponsesFlavor,
     tool_search_native: bool,
     session_id: Option<&str>,
+    client_turn: bool,
 ) -> Result<Value, serde_json::Error> {
     let request: Value = serde_json::from_slice(body)?;
     Ok(translate_request_value(
@@ -123,6 +124,7 @@ pub fn translate_request(
         flavor,
         tool_search_native,
         session_id,
+        client_turn,
     ))
 }
 
@@ -132,6 +134,7 @@ pub fn translate_request_value(
     flavor: ResponsesFlavor,
     tool_search_native: bool,
     session_id: Option<&str>,
+    client_turn: bool,
 ) -> Value {
     let tool_search = ToolSearchContext::from_request(request, tool_search_native);
     let mut out = Map::new();
@@ -157,8 +160,17 @@ pub fn translate_request_value(
             out.insert("tool_choice".to_string(), tool_choice);
         }
     }
+    // The Codex CLI always sends `parallel_tool_calls: true` (non-lite models),
+    // so the chatgpt flavor defaults it to true when the client omits it,
+    // unless an Anthropic client turned the same switch off through
+    // `tool_choice.disable_parallel_tool_use`; every other flavor stays
+    // client-driven.
     if let Some(value) = request.get("parallel_tool_calls") {
         out.insert("parallel_tool_calls".to_string(), value.clone());
+    } else if flavor == ResponsesFlavor::Chatgpt {
+        let disabled =
+            request.pointer("/tool_choice/disable_parallel_tool_use") == Some(&Value::Bool(true));
+        out.insert("parallel_tool_calls".to_string(), json!(!disabled));
     }
     // Several grok models 400 on `reasoning.effort` even though they reason
     // natively, so on the xai flavor the reasoning dial stays opt-in: sent only
@@ -246,9 +258,15 @@ pub fn translate_request_value(
     }
     // With store:false the Responses backend forgets each turn's reasoning, so ask
     // for the encrypted reasoning blob and echo it back next turn (see input_items).
-    // Only when the client enabled extended thinking, which is what lets Claude Code
-    // round-trip the thinking blocks that carry the blob (see model/responses.rs).
-    if thinking_enabled(request) {
+    // The Codex CLI sends this unconditionally on the ChatGPT/Codex backend, so a
+    // CLIENT turn to that flavor forces it regardless of thinking (mirroring what
+    // the client itself sends); the other flavors keep it gated on extended
+    // thinking, which is what lets Claude Code round-trip the thinking blocks that
+    // carry the blob (see model/responses.rs). An INTERNAL call (judge,
+    // classifier, advisor — a body nobody marked as the client's turn) never
+    // forces it: its reply is parsed once and discarded, so the encrypted blobs
+    // would only inflate the reply against `judge_max_response_bytes`.
+    if thinking_enabled(request) || (flavor == ResponsesFlavor::Chatgpt && client_turn) {
         out.insert(
             "include".to_string(),
             json!(["reasoning.encrypted_content"]),
@@ -272,17 +290,44 @@ pub fn translate_request_value(
     Value::Object(out)
 }
 
-/// The conversation id the upstream `session-id`/`thread-id` headers and the
-/// body `prompt_cache_key` share: the inbound `x-claude-code-session-id` header
-/// when the client sent one, else the `metadata.user_id` JSON `session_id`.
-/// Shared with the adapter so a metadata-only client still gets the affinity
-/// headers (the backend derives cache affinity from the header alone — a body
-/// key without the matching header caches nothing, measured 2026-09-20).
-pub(crate) fn effective_session_id(request: &Value, session_id: Option<&str>) -> Option<String> {
+/// The source and value of the effective conversation identity shared by the
+/// upstream session headers and body `prompt_cache_key`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EffectiveSessionId {
+    Header(String),
+    MetadataSession(String),
+    HashedUserId(String),
+}
+
+impl EffectiveSessionId {
+    pub(crate) fn into_string(self) -> String {
+        match self {
+            Self::Header(value) | Self::MetadataSession(value) | Self::HashedUserId(value) => value,
+        }
+    }
+
+    /// Only conversation-scoped identities may reuse a WebSocket. The hash
+    /// fallback can represent every conversation belonging to one user.
+    pub(crate) fn websocket_pool_id(&self) -> Option<&str> {
+        match self {
+            Self::Header(value) | Self::MetadataSession(value) => Some(value),
+            Self::HashedUserId(_) => None,
+        }
+    }
+}
+
+/// Resolve the conversation identity from the inbound session header, then a
+/// `metadata.user_id` JSON `session_id`, then a stable hash of the raw user id.
+/// Metadata-only clients still get matching affinity headers and body keys; the
+/// provenance keeps the per-user hash out of the WebSocket connection pool.
+pub(crate) fn effective_session_identity(
+    request: &Value,
+    session_id: Option<&str>,
+) -> Option<EffectiveSessionId> {
     // The inbound header is always header-safe: hyper rejects invalid header
     // values at parse time, so whatever reached the handler is valid.
     if let Some(session_id) = session_id.filter(|session_id| !session_id.is_empty()) {
-        return Some(session_id.to_string());
+        return Some(EffectiveSessionId::Header(session_id.to_string()));
     }
     let user_id = request
         .pointer("/metadata/user_id")
@@ -299,10 +344,18 @@ pub(crate) fn effective_session_id(request: &Value, session_id: Option<&str>) ->
             // hex, always header-safe, and keeps header and key equal.
             .filter(|session| HeaderValue::from_str(session).is_ok())
         {
-            return Some(session.to_string());
+            return Some(EffectiveSessionId::MetadataSession(session.to_string()));
         }
     }
-    Some(hashed_user_id(user_id))
+    Some(EffectiveSessionId::HashedUserId(hashed_user_id(user_id)))
+}
+
+/// The value-only view of [`effective_session_identity`], for consumers that
+/// need the id string but no provenance (`prompt_cache_key`, the adapter's
+/// inner forward after the pool decision). The decision logic stays in one
+/// place; this only drops the variant.
+pub(crate) fn effective_session_id(request: &Value, session_id: Option<&str>) -> Option<String> {
+    effective_session_identity(request, session_id).map(EffectiveSessionId::into_string)
 }
 
 /// A stable per-conversation key so the Responses backend routes every turn of a
@@ -1051,9 +1104,53 @@ fn effort(request: &Value, route: &Route) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// F9's other half: a CLIENT turn to the chatgpt flavor keeps the
+    /// encrypted-reasoning include (the force exists to mirror what the Codex
+    /// CLI itself sends), and flipping the mark off drops it — the same
+    /// translation, discriminated only by the body's origin.
+    #[test]
+    fn a_client_turn_to_the_chatgpt_flavor_keeps_the_encrypted_reasoning_include() {
+        let request = serde_json::json!({
+            "model": "gpt-5.2-codex",
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+        let route = crate::routing::Route {
+            provider: "codex".to_string(),
+            adapter: crate::routing::AdapterKind::Responses,
+            model: "gpt-5.2-codex".to_string(),
+            upstream_model: "gpt-5.2-codex".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+        let client = translate_request_value(
+            &request,
+            &route,
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+            true,
+        );
+        assert_eq!(
+            client["include"],
+            serde_json::json!(["reasoning.encrypted_content"])
+        );
+        let internal = translate_request_value(
+            &request,
+            &route,
+            ResponsesFlavor::Chatgpt,
+            false,
+            None,
+            false,
+        );
+        assert!(internal.get("include").is_none());
+    }
+
     use serde_json::json;
 
-    use super::{effort, input_items, translate_request_value, ResponsesFlavor, ToolSearchContext};
+    use super::{
+        effective_session_identity, effort, input_items, translate_request_value,
+        EffectiveSessionId, ResponsesFlavor, ToolSearchContext,
+    };
     use crate::routing::{AdapterKind, Route};
 
     fn codex_route() -> Route {
@@ -1116,6 +1213,7 @@ mod tests {
             ResponsesFlavor::Chatgpt,
             false,
             None,
+            true,
         );
 
         assert_eq!(out["text"]["format"]["type"], "json_schema");
@@ -1138,7 +1236,7 @@ mod tests {
         });
 
         for flavor in [ResponsesFlavor::Xai, ResponsesFlavor::Grok] {
-            let out = translate_request_value(&request, &codex_route(), flavor, false, None);
+            let out = translate_request_value(&request, &codex_route(), flavor, false, None, true);
             assert!(out.get("text").is_none(), "flavor={flavor:?}");
         }
     }
@@ -1159,6 +1257,7 @@ mod tests {
                 ResponsesFlavor::Chatgpt,
                 false,
                 None,
+                true,
             );
             assert!(
                 out["text"].get("format").is_none(),
@@ -1217,6 +1316,37 @@ mod tests {
         assert_eq!(items[1]["role"], "developer");
         assert_eq!(items[1]["content"][0]["type"], "input_text");
         assert_eq!(items[1]["content"][0]["text"], "SessionStart hook output");
+    }
+
+    /// Only conversation-scoped identities may pool a WebSocket: the header and
+    /// the parsed metadata session qualify, while the per-user hash fallback —
+    /// including the one an unsafe metadata session degrades to — stays
+    /// affinity-only.
+    #[test]
+    fn only_conversation_scoped_identities_pool_a_websocket() {
+        let header = effective_session_identity(&json!({}), Some("hdr")).unwrap();
+        assert_eq!(header.websocket_pool_id(), Some("hdr"));
+
+        let metadata = effective_session_identity(
+            &json!({"metadata": {"user_id": "{\"session_id\":\"meta_sess\"}"}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(metadata.websocket_pool_id(), Some("meta_sess"));
+
+        let hashed =
+            effective_session_identity(&json!({"metadata": {"user_id": "plain-user"}}), None)
+                .unwrap();
+        assert!(matches!(hashed, EffectiveSessionId::HashedUserId(_)));
+        assert!(hashed.websocket_pool_id().is_none());
+
+        let unsafe_meta = effective_session_identity(
+            &json!({"metadata": {"user_id": "{\"session_id\":\"bad\\nid\"}"}}),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(unsafe_meta, EffectiveSessionId::HashedUserId(_)));
+        assert!(unsafe_meta.websocket_pool_id().is_none());
     }
 
     #[test]

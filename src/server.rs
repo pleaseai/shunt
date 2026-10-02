@@ -224,7 +224,10 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
     let state = AppState::from_shared(
         shared.clone(),
-        reqwest::Client::new(),
+        reqwest::Client::builder()
+            .redirect(crate::adapters::responses::request::codex_identity_redirect_policy())
+            .build()
+            .expect("build responses http client"),
         Arc::new(AccountPool::new()),
         Arc::new(StatusStore::new()),
         Arc::new(AdminStores::new()),
@@ -296,7 +299,10 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         // classifies against, so a route cannot be added here without also
         // getting the OpenAI-shaped gateway errors its clients expect.
         for path in codex_endpoint::PATHS {
-            router = router.route(path, post(codex_endpoint::post));
+            router = router.route(
+                path,
+                get(codex_endpoint::websocket::get).post(codex_endpoint::post),
+            );
         }
         for path in codex_analytics::PATHS {
             router = router.route(path, post(codex_analytics::post));

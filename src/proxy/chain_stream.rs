@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use axum::{
     body::{Body, Bytes},
-    http::{HeaderMap, StatusCode, Uri},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri},
     response::IntoResponse,
 };
 use futures_util::{stream, Stream, StreamExt};
@@ -138,6 +138,11 @@ pub(crate) enum Attempt {
         remember: bool,
         envelope: LazyEnvelope,
         status: StatusCode,
+        /// The upstream's `retry-after` on a relayed status that carried one:
+        /// the header the ordered loop's refusal relays with the status, kept
+        /// so a refusal whose headers are not yet committed can carry it too
+        /// (issue #655). `None` for a gateway-synthesized failure.
+        retry_after: Option<HeaderValue>,
     },
 }
 
@@ -372,17 +377,28 @@ pub(crate) struct ChainStreamWinner {
 
 /// The refusal a committed stream relayed as its only frame because no route
 /// produced a turn — the chain ran out, or an attempt failed terminally before
-/// its headers: the client-facing status and error envelope the ordered loop
-/// would have answered with instead of a `200`.
-type RefusalSlot = std::sync::Arc<std::sync::Mutex<Option<(StatusCode, Value)>>>;
+/// its headers: the client-facing status, error envelope, and `retry-after`
+/// the ordered loop would have answered with instead of a `200`.
+#[derive(Clone, Debug)]
+pub(crate) struct ChainRefusal {
+    pub(crate) status: StatusCode,
+    pub(crate) envelope: Value,
+    /// The `retry-after` of the attempt whose failure this is, as that
+    /// upstream sent it — the value the ordered loop relays with the same
+    /// failure. The live stream has already committed `200` and cannot send
+    /// it; a reader that has not committed headers can (issue #655).
+    pub(crate) retry_after: Option<HeaderValue>,
+}
+
+type RefusalSlot = std::sync::Arc<std::sync::Mutex<Option<ChainRefusal>>>;
 
 /// Keep a refusal for an unobserved stream's reader; an observed stream is
 /// the live client's, which reads the `error` frame itself.
-fn record_refusal(slot: &RefusalSlot, observe_stream: bool, status: StatusCode, envelope: &Value) {
+fn record_refusal(slot: &RefusalSlot, observe_stream: bool, refusal: ChainRefusal) {
     if !observe_stream {
         *slot
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((status, envelope.clone()));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(refusal);
     }
 }
 
@@ -418,7 +434,7 @@ impl ChainStreamWinner {
     /// Set when the chain ran out or an attempt failed terminally before its
     /// headers. A route that fails after it won the stream is a cut, not a
     /// refusal, and leaves this `None`.
-    pub(crate) fn refusal(&self) -> Option<(StatusCode, Value)> {
+    pub(crate) fn refusal(&self) -> Option<ChainRefusal> {
         self.refusal
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -485,6 +501,7 @@ pub(super) async fn forward_chain_stream(
     struct Remembered {
         envelope: LazyEnvelope,
         status: StatusCode,
+        retry_after: Option<HeaderValue>,
         /// What the ordered loop's client would see for `status`.
         client_status: StatusCode,
         provider: String,
@@ -624,6 +641,7 @@ pub(super) async fn forward_chain_stream(
                                     envelope,
                                     status,
                                     refused_status,
+                                    retry_after,
                                     finish_provider,
                                     finish_model,
                                 ) = match remembered {
@@ -631,9 +649,17 @@ pub(super) async fn forward_chain_stream(
                                             envelope,
                                             status,
                                             client_status,
+                                            retry_after,
                                             provider,
                                             model,
-                                        }) => (envelope, status, client_status, provider, model),
+                                        }) => (
+                                            envelope,
+                                            status,
+                                            client_status,
+                                            retry_after,
+                                            provider,
+                                            model,
+                                        ),
                                         None => (
                                             LazyEnvelope::Ready(
                                                 crate::error::error_body_value(
@@ -650,6 +676,7 @@ pub(super) async fn forward_chain_stream(
                                             ),
                                             StatusCode::BAD_GATEWAY,
                                             StatusCode::BAD_GATEWAY,
+                                            None,
                                             last_provider.clone(),
                                             last_model.clone(),
                                         ),
@@ -669,8 +696,11 @@ pub(super) async fn forward_chain_stream(
                                 record_refusal(
                                     &refusal_slot,
                                     observe_stream,
-                                    refused_status,
-                                    &envelope,
+                                    ChainRefusal {
+                                        status: refused_status,
+                                        envelope: envelope.clone(),
+                                        retry_after,
+                                    },
                                 );
                                 let frame = sse("error", &envelope);
                                 // The Sentry event is the stream observer's
@@ -769,6 +799,7 @@ pub(super) async fn forward_chain_stream(
                                     remember,
                                     envelope,
                                     status,
+                                    retry_after,
                                 } => {
                                     crate::metrics::record_proxied_request(
                                         &provider,
@@ -793,6 +824,7 @@ pub(super) async fn forward_chain_stream(
                                                 remembered = Some(Remembered {
                                                     envelope,
                                                     status,
+                                                    retry_after,
                                                     client_status: client_status(
                                                         route.adapter,
                                                         status,
@@ -842,8 +874,11 @@ pub(super) async fn forward_chain_stream(
                                     record_refusal(
                                         &refusal_slot,
                                         observe_stream,
-                                        client_status(route.adapter, status, remember),
-                                        &envelope,
+                                        ChainRefusal {
+                                            status: client_status(route.adapter, status, remember),
+                                            envelope: envelope.clone(),
+                                            retry_after,
+                                        },
                                     );
                                     let frame = sse("error", &envelope);
                                     // The Sentry event is the stream

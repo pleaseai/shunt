@@ -31,8 +31,12 @@ use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{self, resolve_credential, Credential},
     config::{AuthMode, CountTokens},
-    model::responses::translate_request_value,
+    model::{
+        responses::translate_request_value,
+        responses_request::{effective_session_identity, EffectiveSessionId},
+    },
     request::RequestBody,
+    routing::context::RouterContext,
     routing::Route,
     server::AppState,
 };
@@ -59,6 +63,15 @@ use self::websocket::forward_websocket;
 
 pub struct ResponsesAdapter;
 
+/// Whether this turn carries the client's one-shot post-compaction mark
+/// (`x-claude-code-context-compacted`, the first main turn after a compaction).
+/// Read once per inbound request in `proxy::failover::forward` — never per
+/// dispatch — so a re-dispatch of the same turn cannot re-arm the mark; the
+/// `pub(crate)` visibility is that call site's.
+pub(crate) fn compact_marked(headers: &HeaderMap) -> bool {
+    RouterContext::from_headers(headers).context_compacted
+}
+
 impl Adapter for ResponsesAdapter {
     fn forward<'a>(
         &'a self,
@@ -76,28 +89,50 @@ impl Adapter for ResponsesAdapter {
         // `idle` too.
         bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
-        // The session id keys the websocket connection pool (issue #32) so turns
-        // of one Claude Code conversation reuse a live connection. Keep an owned
-        // value because the adapter future may outlive the borrowed header map.
-        let session_id = headers
+        // Resolve the effective id once before the WebSocket pool decision. A
+        // parsed metadata session is conversation-scoped and may pool; the raw
+        // user-id hash still feeds affinity but stays one-shot.
+        let header_session_id = headers
             .get("x-claude-code-session-id")
             .and_then(|value| value.to_str().ok())
             .filter(|session_id| !session_id.is_empty());
-        let pool_key = session_id.map(|session_id| {
-            headers
-                .get("x-shunt-inbound-client")
-                .and_then(|value| value.to_str().ok())
-                .map_or_else(
-                    || session_id.to_string(),
-                    |client| format!("{client}:{session_id}"),
-                )
+        let identity = effective_session_identity(body.json(), header_session_id);
+        // The client marks the first main turn after a compaction with a
+        // one-shot `x-claude-code-context-compacted` header. The mark was
+        // decided once per request in `proxy::failover::forward` and armed on
+        // the body: this (and every later dispatch of the same turn) consumes
+        // the shared one-shot, so exactly the first dispatch that reaches an
+        // upstream — on either transport — bumps the window counter.
+        let compact = body.compaction_mark();
+        // A delegated turn's codex identity: a per-child thread id plus the two
+        // subagent markers (see request::codex_delegation). Derived from the
+        // same string the session headers carry — every effective-id
+        // provenance, the hashed user-id fallback included — so the headers
+        // and the derived identity can never diverge on one turn.
+        let session_id = identity.clone().map(EffectiveSessionId::into_string);
+        let delegation = session_id.as_deref().and_then(|session_id| {
+            crate::adapters::responses::request::codex_delegation(headers, session_id)
         });
+        // The connection pool and the window counter key on the turn's
+        // IDENTITY — one internal key per (client, session, agent) triple,
+        // joined by the unit separator so crafted header text can neither
+        // collide two conversations nor suffix-match another's key (see
+        // `compose_identity_key`). Poolability still follows the effective-id
+        // provenance — the hashed user-id fallback never pools, nor tracks a
+        // window.
+        let pool_key = identity
+            .as_ref()
+            .and_then(|identity| identity_key(headers, identity, delegation.as_ref()));
         Box::pin(async move {
             forward(
                 state,
                 route,
                 pool_key,
-                session_id.map(str::to_string),
+                session_id,
+                TurnHints {
+                    compact,
+                    delegation,
+                },
                 body,
                 bounds,
             )
@@ -106,26 +141,56 @@ impl Adapter for ResponsesAdapter {
     }
 }
 
+/// The composed internal key for one turn — the connection-pool key and the
+/// window-counter key, which are the same string — derived from the
+/// effective-id provenance (`None` for the hashed user-id fallback), the
+/// inbound client stamp, and the delegated turn's agent id. Shared by the
+/// adapter entry and the chain attempt so the two cannot drift.
+fn identity_key(
+    headers: &HeaderMap,
+    identity: &EffectiveSessionId,
+    delegation: Option<&request::CodexDelegation>,
+) -> Option<String> {
+    identity.websocket_pool_id().map(|session_id| {
+        let client = headers
+            .get("x-shunt-inbound-client")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        let agent_id = delegation
+            .map(|delegation| delegation.agent_id.as_str())
+            .unwrap_or("");
+        codex_ws::compose_identity_key(client, session_id, agent_id)
+    })
+}
+
+/// The header-derived turn marks: the client's one-shot post-compaction hint
+/// (consumed by the first upstream-reaching dispatch, keys the window
+/// counter) and the delegated-turn subagent identity (child thread id +
+/// markers). Derived once per turn; every transport reads from the same
+/// instance.
+struct TurnHints {
+    compact: crate::request::CompactionMark,
+    delegation: Option<crate::adapters::responses::request::CodexDelegation>,
+}
+
 async fn forward(
     state: AppState,
     route: Route,
     pool_key: Option<String>,
     session_id: Option<String>,
+    hints: TurnHints,
     body: RequestBody,
     response_bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let request_json = body.json();
-    // The effective conversation id: the inbound session header when present,
-    // else the `metadata.user_id` session — the id the upstream session-id
-    // headers AND the body prompt_cache_key must carry. A metadata-only client
-    // still gets the affinity headers, without which the backend caches
-    // nothing (measured 2026-09-20). The connection-pool key stays
-    // header-derived (see `ResponsesAdapter::forward`); the account-pool
-    // sticky key follows the effective id, so sessionless turns now pin per
-    // conversation instead of rotating (the inbound endpoint's sticky-key
-    // rationale).
-    let session_id = session_id
-        .or_else(|| crate::model::responses_request::effective_session_id(request_json, None));
+    // The effective conversation id (see `ResponsesAdapter::forward`, which
+    // derived it — header first, else the `metadata.user_id` session — from
+    // this same body): the id the upstream session-id headers AND the body
+    // prompt_cache_key must carry. A metadata-only client still gets the
+    // affinity headers, without which the backend caches nothing (measured
+    // 2026-09-20). The account-pool sticky key follows the effective id, so
+    // sessionless turns pin per conversation instead of rotating (the inbound
+    // endpoint's sticky-key rationale).
     let client_wants_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -214,6 +279,7 @@ async fn forward(
         flavor,
         tool_search_native,
         session_id.as_deref(),
+        body.is_client_turn(),
     ));
     tracing::debug!(
         provider = %route.provider,
@@ -273,6 +339,9 @@ async fn forward(
                 route,
                 PoolForwardStream {
                     session_id,
+                    window_key: pool_key,
+                    compact: hints.compact,
+                    delegation: hints.delegation,
                     upstream_body,
                     turn,
                     estimate_input,
@@ -304,6 +373,8 @@ async fn forward(
                 PoolForward {
                     pool_key,
                     session_id,
+                    compact: hints.compact,
+                    delegation: hints.delegation,
                     upstream_body,
                     accounts_config: accounts,
                     turn,
@@ -364,12 +435,19 @@ async fn forward(
             codex_quota_account: codex_quota_account.clone(),
             estimate_input: estimate_input.clone(),
             started_at: None,
+            window_key: pool_key.clone(),
+            compact: hints.compact.clone(),
         };
         match forward_websocket(
             &state,
             &route,
-            pool_key.as_deref(),
-            session_id.as_deref(),
+            websocket::WsIdentity {
+                pool_key: pool_key.as_deref(),
+                window_key: pool_key.as_deref(),
+                session_id: session_id.as_deref(),
+                compact: hints.compact.clone(),
+                delegation: hints.delegation.as_ref(),
+            },
             websocket_options,
             websocket_credential.clone(),
         )
@@ -393,6 +471,10 @@ async fn forward(
         codex_quota_account,
         estimate_input,
         started_at: single_started_at,
+        window_key: pool_key,
+        // The websocket attempt above already consumed the mark when it ran;
+        // this take is the first upstream reach whenever it did not.
+        compact: hints.compact,
     };
     forward_http(
         &state,
@@ -400,6 +482,7 @@ async fn forward(
         forward_options,
         credential,
         session_id.as_deref(),
+        hints.delegation.as_ref(),
     )
     .await
 }
@@ -433,16 +516,29 @@ pub(crate) async fn chain_attempt(
     body: RequestBody,
     estimate_cache: &Arc<ChainEstimate>,
 ) -> crate::proxy::chain_stream::Attempt {
-    let session_id = headers
+    let header_session_id = headers
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok())
-        .filter(|session_id| !session_id.is_empty())
-        .map(str::to_string);
+        .filter(|session_id| !session_id.is_empty());
     let request_json = body.json();
     // The effective conversation id (see `forward`): metadata-only clients
-    // still get the upstream affinity headers and the matching body key.
-    let session_id = session_id
-        .or_else(|| crate::model::responses_request::effective_session_id(request_json, None));
+    // still get the upstream affinity headers and the matching body key. The
+    // provenance-carrying identity is kept so the window key follows the same
+    // poolability gate as the adapter entry's.
+    let identity = crate::model::responses_request::effective_session_identity(
+        request_json,
+        header_session_id,
+    );
+    let session_id = identity.clone().map(EffectiveSessionId::into_string);
+    // Derived once here and shared by the pool context and the send context:
+    // two derivations are a drift hazard when one site is edited later.
+    let delegation = session_id.as_deref().and_then(|session_id| {
+        crate::adapters::responses::request::codex_delegation(headers, session_id)
+    });
+    let window_key = identity
+        .as_ref()
+        .and_then(|identity| identity_key(headers, identity, delegation.as_ref()));
+    let compact = body.compaction_mark();
     let thinking_enabled = request_json
         .pointer("/thinking/type")
         .and_then(Value::as_str)
@@ -481,6 +577,7 @@ pub(crate) async fn chain_attempt(
         flavor,
         tool_search_native,
         session_id.as_deref(),
+        body.is_client_turn(),
     ));
     let auth = state
         .config
@@ -511,6 +608,7 @@ pub(crate) async fn chain_attempt(
                     remember: false,
                     envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                     status: StatusCode::BAD_GATEWAY,
+                    retry_after: None,
                 };
             }
         };
@@ -532,6 +630,7 @@ pub(crate) async fn chain_attempt(
                     remember: false,
                     envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                     status: StatusCode::BAD_GATEWAY,
+                    retry_after: None,
                 };
             }
             let (order, reprobe) = state.accounts.select_order_deferred(
@@ -546,6 +645,8 @@ pub(crate) async fn chain_attempt(
                 route: route.clone(),
                 auth: AuthMode::ChatgptOauth,
                 session_id,
+                window_key: window_key.clone(),
+                compact: compact.clone(),
                 upstream_body: upstream_body.clone(),
                 accounts_config: std::sync::Arc::new(accounts),
                 order,
@@ -553,6 +654,7 @@ pub(crate) async fn chain_attempt(
                 ramp_initial: state.config.storm_ramp_initial(),
                 record_metrics: false,
                 started_at: None,
+                delegation: delegation.clone(),
             });
             // Race the machine build — which awaits the bounded token
             // estimate — against the pool's first poll so account admission,
@@ -617,6 +719,7 @@ pub(crate) async fn chain_attempt(
                     advance,
                     remember,
                     envelope,
+                    retry_after,
                 })) => {
                     // The pending build is dropped with the failure: the
                     // estimate share it holds keeps the chain's single
@@ -628,6 +731,7 @@ pub(crate) async fn chain_attempt(
                         remember,
                         envelope,
                         status,
+                        retry_after,
                     };
                 }
                 Some(Err(envelope)) => {
@@ -639,6 +743,7 @@ pub(crate) async fn chain_attempt(
                         remember: false,
                         envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                         status: StatusCode::BAD_GATEWAY,
+                        retry_after: None,
                     };
                 }
                 None => {
@@ -653,6 +758,7 @@ pub(crate) async fn chain_attempt(
                             .await,
                         ),
                         status: StatusCode::BAD_GATEWAY,
+                        retry_after: None,
                     };
                 }
             }
@@ -675,6 +781,7 @@ pub(crate) async fn chain_attempt(
                 remember: false,
                 envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                 status,
+                retry_after: None,
             };
         }
     };
@@ -689,7 +796,10 @@ pub(crate) async fn chain_attempt(
         route: route.clone(),
         policy,
         credential: Some(credential),
-        session_id,
+        session_id: session_id.clone(),
+        window_key: window_key.clone(),
+        compact: compact.clone(),
+        delegation: delegation.clone(),
         upstream_body: upstream_body.clone(),
         auth,
         codex_quota_account,
@@ -754,11 +864,13 @@ pub(crate) async fn chain_attempt(
             status,
             remember,
             advance,
+            retry_after,
         } => crate::proxy::chain_stream::Attempt::Failed {
             advance,
             remember,
             envelope,
             status,
+            retry_after,
         },
     }
 }
@@ -848,4 +960,41 @@ async fn winner_estimate(state: &AppState, route: &Route, request: &Arc<Value>) 
         .ok()
         .and_then(Result::ok)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    /// The window bump keys on the client's context-compacted hint, never on
+    /// a neighbouring hint: a delegated turn is not a compaction, and a bare
+    /// compaction mark with no other headers still is one.
+    #[test]
+    fn compact_marked_reads_only_the_context_compacted_hint() {
+        let none = HeaderMap::new();
+        assert!(!compact_marked(&none));
+
+        let mut delegated = HeaderMap::new();
+        delegated.insert(
+            "x-claude-code-request-class",
+            HeaderValue::from_static("subagent"),
+        );
+        delegated.insert("x-claude-code-agent-id", HeaderValue::from_static("a1"));
+        assert!(!compact_marked(&delegated));
+
+        let mut marked = HeaderMap::new();
+        marked.insert(
+            "x-claude-code-context-compacted",
+            HeaderValue::from_static("auto"),
+        );
+        assert!(compact_marked(&marked));
+
+        marked.insert(
+            "x-claude-code-request-class",
+            HeaderValue::from_static("main"),
+        );
+        marked.insert("x-claude-code-agent-id", HeaderValue::from_static("a1"));
+        assert!(compact_marked(&marked));
+    }
 }

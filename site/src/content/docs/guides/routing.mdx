@@ -1,0 +1,269 @@
+---
+title: Routing Overview
+description: Let one advertised model id pick its destination per request — the shape every router shares, how to choose a router type, and the rules for judge calls and held turns.
+---
+
+A `[[models]]` entry normally names one destination. A **router** lets one
+advertised id decide instead: the entry carries a `[models.router]` table whose
+`type` key picks a routing algorithm, and the algorithm picks the destination for
+each request. Delegated work can additionally take a different target through the
+[`[models.subagents]`](/guides/subagents/) overlay.
+
+This is opt-in and inert by default. Configure neither table anywhere and shunt
+routes exactly as it did before: by the request's `model` id, and nothing else.
+
+## The common shape
+
+Every router is one `[[models]]` entry plus a `[models.router]` table:
+
+```toml
+[[models]]
+id = "claude-auto"                     # must begin with claude/anthropic to reach /model
+display_name = "Auto (stage router)"
+
+[models.router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+**Targets are ordinary public model ids.** The router's output re-enters shunt's
+normal routing ladder, so each target keeps its own failover chain, account pool,
+adapter, `effort`, and `service_tier`, and appears in `/v1/models` discovery with
+no extra code. A target that is itself a router is a startup error, so resolution
+is one hop **by construction** rather than by a depth counter.
+
+**The client still sees the id it asked for.** The chosen target travels upstream
+in `upstream_model` and nowhere else. Responses report the requested id, so Claude
+Code's `/model` display and `--resume` model restoration keep working. Two response
+headers report the decision instead — `x-gateway-routed-model` (the target the
+router chose) and `x-gateway-route-source` (why it was chosen) — for every router
+type; the [stage router guide](/guides/stage-router/#what-the-client-sees) walks
+through them.
+
+**Nothing changes without a router table.** Absent a `[models.router]` table the
+router arm is a single `Option` check on a config field existing deployments do not
+have. Nothing about the routing path changes — and the check costs the same
+whichever `type` the routed entries declare.
+
+`[models.router]` and `[models.upstream_model]` on the same entry are mutually
+exclusive. Every key, default, and validation rule is in the
+[configuration reference](/reference/configuration/#modelsrouter-optional).
+
+## Choose a router type
+
+| Router | Use it when | Declare it with | Makes judge calls? | Holds the turn before serving? | Guide |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| `auto` | You want the stage router with upstream's preset and no tuning | `type = "auto"` | No — the preset carries no judge | No | [Below](#auto) |
+| `stage_router` | Recent tool-result history should pick a capable or an efficient tier per turn | `type = "stage_router"` | Only with an optional `[models.router.classifier]`, and only on turns the signals leave undecided | No | [Stage Router](/guides/stage-router/) |
+| `llm_classifier`, capability | A judge should pick between a strong and a weak target from the task's solve probability | `type = "llm_classifier"`, `mode = "capability"` | Yes, as `classify_trigger` allows | No | [LLM Classifier](/guides/llm-classifier/) |
+| `llm_classifier`, custom | Your own prompt and schema should pick among two or more model groups | `type = "llm_classifier"`, `mode = "custom"` | Yes, as `classify_trigger` allows | No | [LLM Classifier](/guides/llm-classifier/#mode--custom) |
+| `llm_classifier`, escalation | Each session should start on a weak target and latch onto a strong one when a judge keeps finding the finished work in trouble | `type = "llm_classifier"`, `mode = "escalation"` | Yes, on every turn before the latch | Yes, before the latch | [Escalation](/guides/escalation/) |
+| `composite` | A judge should set the tier a stage router falls open to, leaving its signal scoring alone | `type = "composite"` | Yes, per `user_turn` or `new_session` | No | [Composite](/guides/composite/) |
+| `advisor` | One executor should serve every turn while a stronger reviewer approves its terminal turns or sends them back | `type = "advisor"` | Yes — each review, up to `max_reviews` per session | Yes, while the session has review budget | [Advisor Gate](/guides/advisor/) |
+| `[models.subagents]` overlay | Delegated work should go to a different target than the parent session | `[models.subagents]` with `type = "passthrough"` or `type = "llm_classifier"` | Only in the `llm_classifier` form, once per `(session, agent)` | No | [Subagent Routing](/guides/subagents/) |
+| `random` | You want a weighted split across targets — a canary | `type = "random"` | No | No | [Below](#random) |
+| `noop` | You want to smoke-test client wiring without spending a token | `type = "noop"` | No | No | [Below](#noop) |
+| `prefill_router` | A learned classifier should score the latest user turn (needs a from-source build) | `type = "prefill_router"` | No — the model runs in-process | No | [Below](#prefill_router) |
+
+Two upstream Switchyard route types have no shunt counterpart. `plan_execute` is
+not implemented. Upstream's `passthrough` route type — one target, no routing
+decision — is not a router type here either: a plain `[[models]]` entry with no
+`[models.router]` table is already the fixed-model case, and upstream's
+"passthrough with subagents" is exactly such an entry carrying a
+[`[models.subagents]`](/guides/subagents/) overlay.
+
+`GET /routes` lists every configured router under `routers`, with its `algorithm`
+and `targets`, and a router that configures a judge also lists it under `judges`.
+`shunt.router.decisions` counts decisions for every router type.
+
+## `auto`
+
+Upstream's stage-router preset: `picker = "efficient_first"` and
+`confidence_threshold = 0.5`, with every other stage key at its shunt default.
+Only the two targets are accepted beside `type`. To set any other stage key — a
+judge included — use [`type = "stage_router"`](/guides/stage-router/) instead.
+
+```toml
+[models.router]
+type = "auto"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+## `random`
+
+A weighted split across two or more targets — a canary aid. By default one Claude
+Code session stays on one arm.
+
+```toml
+[models.router]
+type = "random"
+targets = ["claude-sonnet-4-6", "gpt-5.6-terra"]
+weights = [9, 1]
+```
+
+Under `affinity = "session"` (the default) the arm is
+`sha256(seed ‖ model ‖ session id)` scaled into the weight range. Nothing is
+stored, so the arm survives restarts and is identical across replicas loading the
+same config — and changing `seed`, `targets`, or `weights` can move it. A request
+that sends no `x-claude-code-session-id` takes a fresh weighted draw instead of
+sharing one arm, so a 90/10 split stays 90/10 for clients that send no session.
+Under `affinity = "request"` every request draws, and a set `seed` makes the
+sequence reproducible.
+
+Session affinity is **stickiness, not access control.** The session id comes from
+the client, so a caller that retries ids can steer itself onto the arm it wants —
+which guards nothing, because every target is a public model id that same caller
+may simply ask for by name. Use the managed-model policy for access.
+
+Surfaces with no request body — `GET /routes`, `/v1/models` discovery, and
+`shunt check` — report the first target with a positive weight. A turn placed by
+its session id reports the route source `random_session`; a weighted draw reports
+`random`.
+
+## `noop`
+
+Answers without calling any upstream: an empty terminal assistant message in the
+caller's own mode. For `stream: true` that is a valid SSE sequence
+(`message_start`, `message_delta` with `stop_reason: "end_turn"`,
+`message_stop`); otherwise one Message JSON object. `count_tokens` answers
+`input_tokens: 0`. The route is authenticated exactly like any other, so this is
+not an unauthenticated hole — it is a smoke test for client wiring that proves the
+inbound path end to end without spending a token. `type` is the only key it
+accepts.
+
+## `prefill_router`
+
+A learned router: upstream's own classifier scores the latest text user turn and
+picks one of the entry's targets, running its model in this process rather than
+calling a judge upstream. It is available only from a build that opts into the
+**`prefill-router` cargo feature**, which is off by default and absent from
+release binaries and the Homebrew formula; a binary without it fails to load a
+config naming the type, with an error that says so. It also needs Python with
+`torch`, `transformers`, `numpy`, and `accelerate` at run time, and a router
+checkpoint you supply.
+
+The keys, prerequisites, admission rules, and route sources are in the
+[configuration reference](/reference/configuration/#type--prefill_router); why the
+crate is vendored behind a feature is in
+[Switchyard Integration](/guides/switchyard/#the-learned-prefill-router).
+
+## Judge calls
+
+A **judge** is a model asked where a turn should go, or whether finished work is
+good enough. It is consulted, never served: it never answers the client. Five
+shapes make judge calls — a `stage_router`'s
+[`[models.router.classifier]`](/guides/stage-router/#the-judge-fallback),
+[`llm_classifier`](/guides/llm-classifier/) in all three modes,
+[`composite`](/guides/composite/), [`advisor`](/guides/advisor/) (each review is
+one), and the classifier form of [`[models.subagents]`](/guides/subagents/).
+Every other type makes none.
+
+A judge buys back accuracy — a real part of what the upstream
+classifier-assisted configurations measured — and pays for it in latency and in
+the judge target's own pool quota. These rules hold for every judge:
+
+- **It runs on its own route's credential, never the caller's.** The reserved
+  `x-shunt-*` slots and `cookie`, `authorization`, `x-api-key`, and
+  `anthropic-beta` are all stripped before the call goes out. A judge target that
+  resolves to a **passthrough** upstream is therefore a startup error: passthrough
+  means *forward the caller's credential*, and that is exactly what was stripped.
+  `auth = "none"` is accepted — a local or self-hosted judge behind no auth is
+  supported. The call spends that target's own account-pool quota, so give the
+  judge its own `[[models]]` entry.
+- **Admission comes first.** A judge is consulted only after the request has been
+  admitted. On a turn that may consult one, inbound auth
+  ranges over the requested id plus every target and judge the entry can name,
+  each with its whole failover chain, so adding a credential-injecting judge to an
+  entry whose answer targets are all passthrough makes those turns require a
+  client credential. An unauthenticated or policy-denied request makes zero judge
+  calls.
+- **`classify_trigger` decides how often the cost is paid** on the types that
+  take it: judge every turn (`every_request`), judge each new human user turn and
+  hold the verdict across the tool calls between them (`user_turn`), or judge once
+  per session (`new_session`).
+- **Every call is bounded.** Six keys — `judge_timeout_ms`,
+  `judge_max_response_bytes`, `max_judge_calls`, and three `gated_*` keys — bound
+  every internal call an entry makes, and crossing one cancels the upstream call.
+  `max_judge_calls` caps judge calls per `(session, agent)`, charged when a call is
+  sent so concurrent turns cannot overshoot it; a turn that replays a retained
+  verdict makes no call and is never refused. See
+  [per-call bounds](/reference/configuration/#per-call-bounds).
+- **A judge failure resolves to the algorithm's own default** rather than failing
+  the request — a timeout, a `400`, an oversized or unparseable verdict, or an
+  exhausted budget alike — and exactly one judge call is made per consulted turn.
+  Each type's default is on its own page. The two types that judge a finished
+  turn serve that turn instead: escalation serves the weak turn, and
+  [`advisor`](/guides/advisor/) serves the executor's turn unless the entry sets
+  `fail_open = false`, which fails the request with a `502`.
+- **A `count_tokens` probe never consults a judge.** It answers from the target
+  the session is already holding, if any; each type's page says what it answers
+  otherwise.
+
+Each call is counted by `shunt.router.judge_calls` with the outcome that resolved
+it.
+
+## Held turns
+
+Every shape above decides where a turn goes before the turn runs. Two decide
+afterwards: [`mode = "escalation"`](/guides/escalation/) has a judge rule on a weak
+target's completed turn, and [`advisor`](/guides/advisor/) has a stronger reviewer
+approve an executor's terminal turn or send it back.
+
+Both judge a turn that already exists, so shunt holds it. A **gated** turn —
+escalation's weak turn before the latch, or an advisor executor turn while the
+session has review budget — is made first, buffered, judged, and only then
+replayed to the client. That is the one exception to shunt's rule against
+buffering a stream, and it covers only the turns these two entries gate. Every
+other turn on these entries, and every turn on every other route, streams exactly
+as before.
+
+Holding the turn is what keeps upstream's design inside shunt's post-2xx
+no-replay rule. No response header is committed until the replay starts, so a
+discarded turn — replaced by the strong target, or sent back for REDO — was never
+seen by the client.
+
+**The caller's mode is kept.** A `stream: true` caller's gated call streams. Its
+SSE frames are retained as they arrive and, if the turn is served, replayed byte
+for byte. A `stream: false` caller gets the single JSON message of a completed
+turn. The Anthropic adapter makes that call non-streaming. The OpenAI Responses
+adapter streams upstream on every turn, on every flavor, and assembles the one
+message from that stream under the same bounds. The ChatGPT/Codex backend is
+reported to refuse a non-streaming request; the stock OpenAI Platform accepts one,
+and there streaming keeps a single code path. The gate changes *when* the answer
+is sent, never its shape. The replayed `message_start.model` is the router's own
+id, not the executor's, on an Anthropic and an OpenAI Responses executor alike, so
+Claude Code's `/model` display and `--resume` see the id they asked for.
+
+**Only a complete turn is served.** A held turn is servable only after its
+terminal marker: `message_stop` on a streaming call, or a complete body that
+parses as one message on a non-streaming call. A truncated `200` is never
+replayed. A turn ends at its `message_stop` frame, as the live stream does:
+nothing after it is replayed, and a connection that breaks or stays open after it
+does not cut the turn. Gated turns take the target's ordered failover chain, and
+the three `gated_*` [per-call bounds](/reference/configuration/#per-call-bounds)
+cap how large, how idle, and how long a held turn may be.
+
+**What it costs.** You opt into these per entry:
+
+- On a gated turn the client receives nothing until the whole turn is complete
+  and judged, so time to first token becomes time to last token.
+- Escalation makes a judge call on every turn before the latch. A turn that
+  latches also pays for the weak call it discards.
+- A discarded weak or executor turn still consumed its upstream's quota. It is
+  the client's own answer dispatch, so it counts as `caller="client"` in
+  `shunt.requests`.
+
+The route sources a held turn reports, and what happens when a held turn, its
+upstream, or its judge fails, are tabulated in the
+[configuration reference](/reference/configuration/#buffered-turns-escalation-and-advisor).
+
+## Design records
+
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md)
+records the stage router, including what was deliberately left out;
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)
+records the `[models.router]` discriminator and the rest of the algorithms. Where
+each algorithm comes from, and what upstream's benchmark does and does not say
+about it, is in [Switchyard Integration](/guides/switchyard/).

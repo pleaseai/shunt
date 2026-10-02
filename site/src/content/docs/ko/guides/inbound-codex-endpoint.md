@@ -84,6 +84,12 @@ http_headers = { "x-shunt-token" = "<token>" }
 
 `[server.auth]`가 없으면 엔드포인트는 도달할 수 있는 누구에게나 열려 있습니다 — 루프백이나 개인 용도에는 받아들일 만하지만 공유 게이트웨이에는 적절하지 않습니다. 클라이언트가 제시한 자격 증명은 shunt에 인증하는 데에**만** 사용됩니다: 이 값은(그리고 CLI가 보내는 어떤 `Authorization`이든) 제거되며 업스트림으로 전달되지 않습니다. `[server.admin]` 자격 증명 헤더(기본값 `x-shunt-admin-token`, 또는 `[server.admin] header`가 지정한 이름)도 제거됩니다 — 관리 화면이 바로 그 슬롯에서 인증하며, 관리 자격 증명은 업스트림 계정을 프로비저닝할 수 있기 때문입니다. `cookie` 헤더도 통째로 제거됩니다: 관리 화면은 세션 쿠키 역시 그 슬롯에서 수락하고, shunt는 쿠키 저장소를 두지 않으므로 업스트림이 이에 의존할 일이 없습니다. `x-api-key`도 `[server.auth]`가 설정되지 않은 경우를 포함해 무조건 제거됩니다 — 대상 프로바이더는 부팅 시점에 `chatgpt_oauth` 전용으로 검증되므로, 인바운드 `x-api-key` 값은 이 업스트림에 대해 결코 유효한 자격 증명이 될 수 없습니다. Claude Code의 `apiKeyHelper`처럼 `Authorization`과 `x-api-key`에 같은 키를 넣는 클라이언트라도 두 번째 슬롯을 통해 그 키가 새어 나가지 않습니다. 인바운드 클라이언트가 실제 Codex CLI이므로, 패스스루는 그 요청 헤더를 그대로 전달하고(`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) 선택된 풀 계정의 `Authorization` bearer와 `chatgpt-account-id`**만** 바꿔 넣습니다. 전체 인증 안내는 [Codex CLI 연결](/ko/guides/connect-codex-cli/#3-shunt-클라이언트-토큰-제시-serverauth가-설정된-경우)을 참고하세요.
 
+## WebSocket 전송
+
+세 개의 Responses 경로는 HTTP `POST`와 인증된 WebSocket `GET` 업그레이드를 모두 허용합니다. 인증은 `101 Switching Protocols` 전에 완료됩니다. 소켓에서 `generate: false` 웜업은 로컬에서 완료되며, 일반 `response.create`는 기존 HTTP 계정 풀을 재사용하고 업스트림 스트리밍을 강제하여 첫 번째 터미널 이벤트까지 각 SSE `data:` 페이로드를 WebSocket 텍스트 프레임으로 전달합니다. 턴을 교체하거나 소켓을 닫으면 진행 중인 업스트림 본문이 취소됩니다. 클라이언트 프레임과 SSE 이벤트는 4 MiB로 제한되고, 전송에는 바운디드 백프레셔가 적용되며, 오류 프레임에는 안전한 응답 메타데이터만 포함됩니다.
+
+`[server.auth]`가 없으면 브라우저의 업그레이드는 `Origin`과 `Host`를 비교해 검사하는데, 이 검사는 같은 호스트의 `http`와 `https`를 구분하지 못합니다. 따라서 루프백 이외의 용도에서는 `[server.auth]`로 엔드포인트를 보호하세요.
+
 ## 계정 프로비저닝
 
 [Codex 멀티 계정](/ko/guides/codex-multi-account/#풀-구성)과 동일한 풀을 재사용합니다:
@@ -151,7 +157,7 @@ shunt는 Codex CLI 디스커버리 요청에 유효한 폴백인 `{"models":[]}`
 
 **ChatGPT가 아닌** 업스트림으로 라우팅된 요청에서 달라지는 점:
 
-- **헤더 허용 목록.** 클라이언트에서 가져오는 것은 `content-type`과 `accept`뿐이고, 여기에 해석된 자격 증명과 라우팅 대상 업스트림이 요구하는 identity만 더해집니다 — `OpenAI-Beta: responses=experimental`(xAI/Grok에서는 생략), 그리고 `xai_oauth` 라우트의 경우 Grok CLI identity 헤더. `authorization`, `x-api-key`, `chatgpt-account-id`, `originator`, `version`, `user-agent`, `session-id`, `x-codex-*`, `x-shunt-*`는 어느 것도 서드파티에 닿지 않습니다.
+- **헤더 허용 목록.** 새 허용 목록은 먼저 클라이언트의 `content-type`(없으면 `application/json`)과 `accept`만 가져온 뒤, 해석된 자격 증명과 라우팅 대상 업스트림 자체가 요구하는 헤더를 더합니다: xAI/Grok에서는 생략되는 `OpenAI-Beta: responses=experimental`, `xai_oauth` 라우트의 Grok CLI identity 헤더 세트, 그리고 `api_key` 라우트가 정확히 `api.openai.com`을 대상으로 하며 비어 있지 않은 conversation id가 해석된 경우 새로 생성한 네 개의 세션 친화도 헤더(`session-id`, `thread-id`, `x-client-request-id`, `x-codex-window-id`)입니다. 클라이언트가 보낸 `authorization`, `x-api-key`, `chatgpt-account-id`, `originator`, `version`, `user-agent`, `session-id`, `thread-id`, `x-client-request-id`, `x-codex-*`, `x-shunt-*`는 계속 제거되며, 순정 OpenAI용 값도 전달하는 것이 아니라 새로 생성합니다. xAI와 그 밖의 서드파티 OpenAI 호환 호스트에는 세션 친화도 헤더가 추가되지 않습니다. API 키 경로는 `accept: text/event-stream`도 새로 만들지 않습니다.
 - **본문 `model` 재작성.** `upstream_model`이 요청된 모델과 다르면 shunt가 최상위 `model`만 바꾸고 나머지 필드는 그대로 둡니다. JSON 객체가 아닌 본문은 그대로 보내지 않고 `400`으로 거부합니다.
 - **identity 인코딩.** zstd 요청 본문은 먼저 디코딩되며 — 순정 Responses API는 그 인코딩을 받지 않습니다 — `content-encoding`은 전달되지 않습니다.
 - **자격 증명 하나, 페일오버 없음.** 라우팅된 서드파티 뒤에는 풀이 없으므로 429나 5xx는 회전을 유발하지 않고 `retry-after`와 함께 그대로 릴레이됩니다.
@@ -165,7 +171,7 @@ shunt는 Codex CLI 디스커버리 요청에 유효한 폴백인 `{"models":[]}`
 - **모델 기반 라우팅은 선택 기능입니다.** 기본적으로 모든 요청은 `[server.codex_endpoint]`에 지정된 단 하나의 프로바이더로 가고 본문의 `model`은 그대로 전달됩니다. `[[server.codex_endpoint.routes]]`를 쓰면 정확히 일치하는 `model`이 해당 항목의 프로바이더를 선택합니다 — [모델을 다른 업스트림으로 라우팅하기](#모델을-다른-업스트림으로-라우팅하기) 참고.
 - **소진 시에도 그대로 릴레이합니다.** 풀링된 모든 계정을 시도했고 업스트림 응답이 최소 한 번 돌아왔다면, shunt는 그것을 Anthropic 형식의 오류로 다시 만들지 않고 마지막 응답을 변경 없이 릴레이합니다. Responses 클라이언트는 실제 ChatGPT 백엔드에서 받았을 원시 형태를 기대하기 때문입니다.
 - **게이트웨이 소유 오류는 OpenAI 형식입니다.** 실패가 shunt 자신의 것일 때 — 잘못됐거나 없는 클라이언트 토큰(`401`), 업스트림 응답 없이 풀을 해석할 수 없는 경우(`502`), 지나치게 큰 요청 본문, 구성되지 않은 엔드포인트 — shunt는 이를 동일한 status 코드와 함께 OpenAI Responses 오류 형태(`{"error":{"message":…,"type":…,"code":null}}`)로 반환합니다. 그러면 Codex CLI가 Anthropic의 `{"type":"error",…}` 봉투가 아니라 자체 오류 경로로 이를 해석합니다. 릴레이되는 *업스트림* 오류(백엔드의 429/4xx/5xx)는 여전히 그대로 통과합니다.
-- **HTTP/SSE 전용입니다.** 대상 프로바이더에 `websocket = true`가 설정되어 있어도 이 엔드포인트는 항상 HTTP 전송을 사용합니다.
+- **두 가지 인바운드 전송.** HTTP `POST`는 바이트 충실도를 유지하며, WebSocket `GET`은 바운디드 이벤트 전달을 추가합니다. 이는 프로바이더의 아웃바운드 `websocket = true` 설정에 의존하지 않습니다.
 
 ## 보안
 

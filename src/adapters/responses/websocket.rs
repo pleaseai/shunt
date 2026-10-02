@@ -19,10 +19,26 @@ use crate::{
 use super::codex_continuation;
 use super::codex_ws::{self, CodexWsError, CodexWsEvents};
 use super::context::ForwardOptions;
-use super::early_stream::bounded_input_estimate;
+use super::early_stream::InputEstimate;
 use super::error::build_upstream_error;
 use super::request::{responses_url, routing_hint, CODEX_CLIENT_VERSION, CODEX_USER_AGENT};
 use super::ws_stream::{json_events_response, stream_events_response};
+
+/// The identity inputs for a turn's handshake headers: the connection pool
+/// key (the turn's thread scope — the child's on a delegated turn — and
+/// account-prefixed on the pool path), the window-counter key (the same scope
+/// unprefixed by the account, so an account rotation cannot reset the
+/// conversation's window), the effective session id, the request's one-shot
+/// compaction mark (consumed by this turn's window computation if no earlier
+/// dispatch of the same turn reached an upstream), and the delegated-turn
+/// subagent identity (child thread id + markers) when the turn is a child's.
+pub(super) struct WsIdentity<'a> {
+    pub(super) pool_key: Option<&'a str>,
+    pub(super) window_key: Option<&'a str>,
+    pub(super) session_id: Option<&'a str>,
+    pub(super) compact: crate::request::CompactionMark,
+    pub(super) delegation: Option<&'a super::request::CodexDelegation>,
+}
 
 /// Drive a turn over the Codex Responses WebSocket v2 transport (issue #32).
 /// Reuses the session's pooled connection and, when the current input is an
@@ -33,8 +49,7 @@ use super::ws_stream::{json_events_response, stream_events_response};
 pub(super) async fn forward_websocket(
     state: &AppState,
     route: &Route,
-    pool_key: Option<&str>,
-    session_id: Option<&str>,
+    identity: WsIdentity<'_>,
     forward: ForwardOptions,
     credential: Credential,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
@@ -45,10 +60,34 @@ pub(super) async fn forward_websocket(
         codex_quota_account,
         estimate_input,
         started_at: _,
+        // The websocket attempt's mark and window key arrive through
+        // `identity` below; `forward`'s copies exist for the HTTP fallback,
+        // which this function never drives itself.
+        window_key: _,
+        compact: _,
     } = forward;
+    let WsIdentity {
+        pool_key,
+        window_key,
+        session_id,
+        compact,
+        delegation,
+    } = identity;
     let pool_key = pool_key.filter(|key| !key.is_empty());
     let http_url = responses_url(&state.config, &route.provider);
     let ws_url = codex_ws::to_websocket_url(&http_url).map_err(ws_transport_error)?;
+    // The handshake's `x-codex-window-id` carries the conversation's compaction
+    // window: the request's one-shot mark is consumed here — the first window
+    // computation of the turn, which is the first dispatch that reaches an
+    // upstream — bumping the counter and rotating the socket; every later
+    // dispatch of the same turn (route failover, a gated REDO, the HTTP
+    // fallback below) takes an already-consumed mark and reads the advanced
+    // window. The counter keys on `window_key` — the turn's thread scope (the
+    // child's on a delegated turn), unprefixed by the account name so an
+    // account rotation cannot reset it — and the bump sweeps the
+    // conversation's sockets under every account, not just this attempt's
+    // (see `window_for_turn`).
+    let window = codex_ws::window_for_turn(window_key, compact.take());
     let ctx = WsTurnContext {
         ws_url,
         pool_key,
@@ -61,8 +100,19 @@ pub(super) async fn forward_websocket(
         signature: codex_continuation::signature(&upstream_body),
         upstream_body,
         routing_hint: routing_hint(route),
+        window,
+        delegation,
     };
-    tracing::debug!(provider = %route.provider, ws_url = %ctx.ws_url, pool_key = pool_key.unwrap_or(""), "opening codex websocket");
+    // The internal key composes with a control-byte separator; render it with
+    // `:` so the log line stays readable.
+    tracing::debug!(
+        provider = %route.provider,
+        ws_url = %ctx.ws_url,
+        pool_key = pool_key
+            .unwrap_or("")
+            .replace(codex_ws::KEY_COMPONENT_SEPARATOR, ":"),
+        "opening codex websocket"
+    );
 
     // Overlap the CPU-bound tiktoken encode with the websocket connect (same
     // rationale as forward_http); its result is only consumed once the event
@@ -73,7 +123,7 @@ pub(super) async fn forward_websocket(
     let estimate_handle = estimate_input.map(|request| {
         tokio::task::spawn_blocking(move || crate::count_tokens::count_input_tokens_value(&request))
     });
-    let (buffered, events) = open_ws_turn(&ctx, turn.response_bounds.idle).await?;
+    let (buffered, first_at, events) = open_ws_turn(&ctx, turn.response_bounds.idle).await?;
     // Both branches consume it: the streaming arm seeds `message_start`, and a
     // non-streaming turn cut short by an emulated stop sequence needs it because
     // the stop makes the upstream's own usage a no-op (issue #605).
@@ -83,11 +133,10 @@ pub(super) async fn forward_websocket(
     // backpressures the bounded `CodexWsEvents` channel until tokenization ends.
     // The encode has had the whole `open_ws_turn` to finish, so the bound only
     // bites when the blocking pool is saturated — the same trade the HTTP and
-    // pooled paths already make.
-    let input_tokens_estimate = match estimate_handle {
-        Some(handle) => bounded_input_estimate(handle, std::time::Duration::from_secs(1)).await,
-        None => 0,
-    };
+    // pooled paths already make. The streaming arm waits for it before its
+    // first frame; the non-streaming collector waits for it beside the events
+    // (#703).
+    let input_tokens_estimate = InputEstimate::from(estimate_handle);
     if turn.client_wants_stream {
         let keepalive = std::time::Duration::from_secs(state.config.server.sse_keepalive_seconds);
         Ok((
@@ -96,7 +145,7 @@ pub(super) async fn forward_websocket(
                 buffered,
                 events,
                 turn.relay(route),
-                input_tokens_estimate,
+                input_tokens_estimate.resolve().await,
                 keepalive,
             ),
         ))
@@ -110,6 +159,7 @@ pub(super) async fn forward_websocket(
             turn.relay(route),
             input_tokens_estimate,
             turn.response_bounds,
+            first_at,
         )
         .await?;
         Ok((response.status(), response))
@@ -120,10 +170,10 @@ pub(super) async fn forward_websocket(
 struct WsTurnContext<'a> {
     ws_url: String,
     pool_key: Option<&'a str>,
-    /// The inbound `x-claude-code-session-id` header, the conversation id that
-    /// becomes the `session-id`/`thread-id` handshake headers (the backend
-    /// derives prompt-cache affinity from it) and the body's
-    /// `prompt_cache_key`.
+    /// The effective conversation id (the inbound `x-claude-code-session-id`
+    /// header or a parsed metadata session), which becomes the handshake
+    /// session-identity headers (the backend derives prompt-cache affinity
+    /// from `session-id`) and the body's `prompt_cache_key`.
     session_id: Option<&'a str>,
     provider: &'a str,
     /// Shared, not borrowed: the `codex.rate_limits` tap outlives this context
@@ -142,6 +192,15 @@ struct WsTurnContext<'a> {
     /// builds it at connection time — and it is a routing *hint*, not a routing
     /// decision, so a stale one costs nothing.
     routing_hint: Option<HeaderValue>,
+    /// The compaction-window index the handshake's `x-codex-window-id` carries
+    /// (`{session}:{window}`). Computed once per turn in [`forward_websocket`]:
+    /// a compaction-marked turn bumps the pooled counter, every other turn
+    /// reads the current window, and an unpoolable session stays 0.
+    window: u64,
+    /// The delegated-turn subagent identity for the handshake headers, when
+    /// this turn is a child's (`{session}::{agent}` thread id + the two
+    /// markers); `None` sends the plain session headers.
+    delegation: Option<&'a super::request::CodexDelegation>,
 }
 
 /// The first event, peeked off the stream before the websocket response is
@@ -170,47 +229,81 @@ pub(super) type BufferedEvent = Option<Result<ResponseEvent, CodexWsError>>;
 /// ([`stream_events_response`]), a gateway error for a non-streaming one
 /// ([`json_events_response`]).
 ///
-/// `idle` is the gated call's `gated_idle_ms` and `None` for every other turn;
-/// see [`peek_first_event`].
+/// `idle` is the gated call's `gated_idle_ms` and `None` for every other turn.
+/// With it set, the clock starts as the turn is opened, as `forward_http`'s
+/// starts at its send: the handshake (or a pooled connection's probe), the
+/// frame, and the wait for the first event are one gap (#690), and a stall
+/// anywhere in it is a cut, not an HTTP fallback (see [`peek_first_event`]).
+/// The retry below is a new request and starts its own clock. The first
+/// event's arrival instant is returned for the collector to measure its next
+/// gap from.
 async fn open_ws_turn(
     ctx: &WsTurnContext<'_>,
     idle: Option<std::time::Duration>,
-) -> Result<(BufferedEvent, CodexWsEvents), AdapterError> {
-    let (events, used_continuation) = start_ws_turn(ctx, true).await?;
-    let (first, events) = peek_first_event(events, idle).await?;
+) -> Result<(BufferedEvent, Option<tokio::time::Instant>, CodexWsEvents), AdapterError> {
+    let (first, first_at, events, used_continuation) = open_and_peek(ctx, true, idle).await?;
     // A rejected previous_response_id arrives before any output: retry once with
     // the full input on a fresh connection, then evaluate that stream instead.
     if used_continuation && matches!(&first, Some(Err(error)) if error.previous_response_missing) {
         tracing::info!("codex previous_response_id rejected; retrying with full input");
-        let (events, _) = start_ws_turn(ctx, false).await?;
-        let (first, events) = peek_first_event(events, idle).await?;
-        return commit_or_fallback(first, events, ctx.auth);
+        let (first, first_at, events, _) = open_and_peek(ctx, false, idle).await?;
+        let (first, events) = commit_or_fallback(first, events, ctx.auth)?;
+        return Ok((first, first_at, events));
     }
-    commit_or_fallback(first, events, ctx.auth)
+    let (first, events) = commit_or_fallback(first, events, ctx.auth)?;
+    Ok((first, first_at, events))
+}
+
+/// [`start_ws_turn`] then [`peek_first_event`], both under one gated idle
+/// clock started here. `None` reads no clock.
+async fn open_and_peek(
+    ctx: &WsTurnContext<'_>,
+    allow_continuation: bool,
+    idle: Option<std::time::Duration>,
+) -> Result<
+    (
+        BufferedEvent,
+        Option<tokio::time::Instant>,
+        CodexWsEvents,
+        bool,
+    ),
+    AdapterError,
+> {
+    let clock = idle.map(|idle| (idle, tokio::time::Instant::now()));
+    let (events, used_continuation) =
+        crate::adapters::within_idle(clock, start_ws_turn(ctx, allow_continuation))
+            .await
+            .map_err(crate::adapters::idle_error)??;
+    let (first, first_at, events) = peek_first_event(events, clock).await?;
+    Ok((first, first_at, events, used_continuation))
 }
 
 /// Await the first event of a freshly opened turn, returning it alongside the
 /// still-live channel so it can be replayed before the remainder of the stream.
 ///
-/// With `idle` set, the wait is the gated call's first gap after the
-/// handshake — the twin of the first wait after the headers that
-/// `collect_upstream_sse_body` times on the HTTP path — and a backend that
-/// accepts the frame and then says nothing is cut there with the idle marker
-/// rather than held to the transport's own idle timeout. That is a cut, not an
-/// HTTP fallback: the bound belongs to the call, and re-driving the turn over
-/// HTTP would start it again against a gap already spent. Dropping `events`
-/// abandons the turn, so its socket is evicted rather than pooled.
+/// With `clock` set — the gated call's gap and the instant [`open_and_peek`]
+/// opened the turn — the wait ends at the close of that first gap, which the
+/// handshake and the frame already spent part of: the twin of the gap
+/// `forward_http` times from its send, the header wait included (#690). A
+/// backend that accepts the frame and then says nothing is cut there with the
+/// idle marker rather than held to the transport's own idle timeout. That is a
+/// cut, not an HTTP fallback: the bound belongs to the call, and re-driving
+/// the turn over HTTP would start it again against a gap already spent.
+/// Dropping `events` abandons the turn, so its socket is evicted rather than
+/// pooled.
+///
+/// With `clock` set, the first event's arrival is returned too: it is the
+/// upstream's last progress, and the collector's next gap runs from it rather
+/// than from whenever the collector starts (#690). `None` for every other turn, which reads no clock.
 async fn peek_first_event(
     mut events: CodexWsEvents,
-    idle: Option<std::time::Duration>,
-) -> Result<(BufferedEvent, CodexWsEvents), AdapterError> {
-    let first = match idle {
-        Some(idle) => tokio::time::timeout(idle, events.recv())
-            .await
-            .map_err(|_| crate::adapters::idle_error(crate::adapters::UpstreamBodyIdle { idle }))?,
-        None => events.recv().await,
-    };
-    Ok((first, events))
+    clock: Option<(std::time::Duration, tokio::time::Instant)>,
+) -> Result<(BufferedEvent, Option<tokio::time::Instant>, CodexWsEvents), AdapterError> {
+    let first = crate::adapters::within_idle(clock, events.recv())
+        .await
+        .map_err(crate::adapters::idle_error)?;
+    let first_at = clock.map(|_| tokio::time::Instant::now());
+    Ok((first, first_at, events))
 }
 
 /// Decide, from the peeked first event, whether to commit to the websocket
@@ -335,6 +428,8 @@ async fn start_ws_turn(
         ctx.credential.clone(),
         ctx.routing_hint.as_ref(),
         ctx.session_id,
+        ctx.window,
+        ctx.delegation,
     )?;
     let turn = codex_ws::begin(&ctx.ws_url, headers, ctx.pool_key, ctx.provider)
         .await
@@ -432,6 +527,8 @@ fn websocket_headers(
     credential: Credential,
     routing_hint: Option<&HeaderValue>,
     session_id: Option<&str>,
+    window: u64,
+    delegation: Option<&super::request::CodexDelegation>,
 ) -> Result<HeaderMap, AdapterError> {
     let mut headers = HeaderMap::new();
     // Set only on the ChatGPT OAuth arm; inserted after the match (see there).
@@ -463,9 +560,30 @@ fn websocket_headers(
             // Same session identity the HTTP transport sends: the backend
             // derives prompt-cache affinity from `session-id`, and its value
             // must equal the body's `prompt_cache_key` (see `request.rs`).
+            // The window id advances on compaction-marked turns (see
+            // `forward_websocket`); the HTTP transport stays `:0`.
+            // A delegated turn swaps `thread-id` for the child's derived id
+            // and adds the two subagent markers, and every thread-derived id
+            // — `x-client-request-id` and the window id's identity part —
+            // carries the child's, exactly as codex builds them from its
+            // thread metadata.
             if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
+                let thread_id =
+                    delegation.map_or(session_id, |delegation| delegation.thread_id.as_str());
                 set("session-id", session_id.to_string())?;
-                set("thread-id", session_id.to_string())?;
+                match delegation {
+                    Some(delegation) => {
+                        set("thread-id", delegation.thread_id.clone())?;
+                        set(
+                            "x-codex-parent-thread-id",
+                            delegation.parent_thread_id.clone(),
+                        )?;
+                        set("x-openai-subagent", delegation.subagent.clone())?;
+                    }
+                    None => set("thread-id", session_id.to_string())?,
+                }
+                set("x-client-request-id", thread_id.to_string())?;
+                set("x-codex-window-id", format!("{thread_id}:{window}"))?;
             }
             // Deliberately not through `set`: every other header must fail the
             // turn on a malformed value, but the routing hint is built from the
@@ -658,6 +776,98 @@ mod tests {
         );
     }
 
+    /// `peek_first_event` hands back when the first event arrived — the
+    /// instant `json_events_response` measures its next gap from (#690) — and
+    /// reads no clock on a client turn.
+    ///
+    /// Non-vacuity: take the instant before the wait rather than after it and
+    /// `first_at` is the peek's start, 120 ms early, so this goes red.
+    #[tokio::test(start_paused = true)]
+    async fn peek_first_event_returns_the_first_events_arrival_instant() {
+        async fn peek_one(
+            idle: Option<std::time::Duration>,
+        ) -> (tokio::time::Instant, Option<tokio::time::Instant>) {
+            let (tx, rx) = tokio::sync::mpsc::channel(16);
+            let started = tokio::time::Instant::now();
+            let clock = idle.map(|idle| (idle, started));
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                let event = super::ResponseEvent {
+                    event: Some("response.created".to_string()),
+                    data: Value::Null,
+                };
+                let _ = tx.send(Ok(event)).await;
+            });
+            let (first, first_at, _events) = super::peek_first_event(rx, clock)
+                .await
+                .expect("an event inside the gap is peeked");
+            assert!(matches!(first, Some(Ok(_))), "the first event is returned");
+            (started, first_at)
+        }
+
+        let (started, first_at) = peek_one(Some(std::time::Duration::from_millis(300))).await;
+        assert_eq!(
+            first_at,
+            Some(started + std::time::Duration::from_millis(120)),
+            "a gated peek returns the first event's arrival"
+        );
+
+        let (_, first_at) = peek_one(None).await;
+        assert_eq!(first_at, None, "a client turn reads no clock");
+    }
+
+    /// The peek's wait ends at the close of the gap the turn's opening started
+    /// — the handshake and the frame spent part of it (#690) — not a full gap
+    /// after the peek begins. With 200 ms spent opening and a 300 ms gap, a
+    /// first event 150 ms into the peek is past the gap and is cut; one 50 ms
+    /// into it is inside and is peeked.
+    ///
+    /// Non-vacuity: time the peek with a fresh `timeout(idle, …)` instead of
+    /// the opening's deadline and the 150 ms event lands inside a new gap, so
+    /// this goes red.
+    #[tokio::test(start_paused = true)]
+    async fn peek_first_event_ends_at_the_gap_the_opening_started() {
+        async fn peek_after(
+            event_at: std::time::Duration,
+        ) -> Result<super::BufferedEvent, crate::adapters::AdapterError> {
+            let idle = std::time::Duration::from_millis(300);
+            let opened_at = tokio::time::Instant::now();
+            // The handshake and the frame, before the peek starts.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let (tx, rx) = tokio::sync::mpsc::channel(16);
+            tokio::spawn(async move {
+                tokio::time::sleep(event_at).await;
+                let event = super::ResponseEvent {
+                    event: Some("response.created".to_string()),
+                    data: Value::Null,
+                };
+                let _ = tx.send(Ok(event)).await;
+            });
+            super::peek_first_event(rx, Some((idle, opened_at)))
+                .await
+                .map(|(first, _, _)| first)
+        }
+
+        let error = peek_after(std::time::Duration::from_millis(150))
+            .await
+            .expect_err("an event past the gap since the opening is cut");
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle {
+                idle: std::time::Duration::from_millis(300)
+            }),
+            "got: {}",
+            error.message
+        );
+        let first = peek_after(std::time::Duration::from_millis(50))
+            .await
+            .expect("an event inside the gap since the opening is peeked");
+        assert!(matches!(first, Some(Ok(_))));
+    }
+
     /// Peek `data` as the first event of a turn through `commit_or_fallback`.
     fn commit_first(data: Value) -> Result<super::BufferedEvent, crate::adapters::AdapterError> {
         let (_tx, rx) = tokio::sync::mpsc::channel(16);
@@ -778,7 +988,7 @@ mod tests {
             },
         ];
         for credential in cases {
-            let headers = websocket_headers(credential, Some(&hint()), Some("sess-1"))
+            let headers = websocket_headers(credential, Some(&hint()), Some("sess-1"), 0, None)
                 .expect("valid credential builds headers");
             assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
             assert!(headers
@@ -791,6 +1001,8 @@ mod tests {
             assert!(headers.get("originator").is_none());
             assert!(headers.get("session-id").is_none());
             assert!(headers.get("thread-id").is_none());
+            assert!(headers.get("x-client-request-id").is_none());
+            assert!(headers.get("x-codex-window-id").is_none());
             // Upstream suppresses the routing hint for api-key/bearer providers.
             assert!(headers.get("x-codex-routing-hint").is_none());
         }
@@ -811,6 +1023,8 @@ mod tests {
                 "model=gpt-5.6-sol;tier=priority",
             )),
             Some("session-123"),
+            0,
+            None,
         )
         .expect("valid credential builds headers");
         assert_eq!(
@@ -819,6 +1033,8 @@ mod tests {
         );
         assert_eq!(headers.get("session-id").unwrap(), "session-123");
         assert_eq!(headers.get("thread-id").unwrap(), "session-123");
+        assert_eq!(headers.get("x-client-request-id").unwrap(), "session-123");
+        assert_eq!(headers.get("x-codex-window-id").unwrap(), "session-123:0");
     }
 
     #[test]
@@ -864,6 +1080,8 @@ mod tests {
                 },
                 routing_hint(&route).as_ref(),
                 None,
+                0,
+                None,
             )
             .expect("an unusable model must not fail the handshake build");
             assert!(
@@ -873,6 +1091,64 @@ mod tests {
             // Only the hint is dropped; the rest of the identity still goes out.
             assert_eq!(headers.get("originator").unwrap(), "codex_cli_rs");
         }
+    }
+
+    #[test]
+    fn websocket_handshake_carries_the_advanced_window_id() {
+        use super::{websocket_headers, Credential};
+
+        let headers = websocket_headers(
+            Credential::ChatGptOAuth {
+                access_token: "access-token".to_string(),
+                account_id: "account-id".to_string(),
+            },
+            None,
+            Some("session-123"),
+            1,
+            None,
+        )
+        .expect("valid credential builds headers");
+        assert_eq!(headers.get("x-codex-window-id").unwrap(), "session-123:1");
+    }
+
+    #[test]
+    fn websocket_handshake_carries_the_delegated_subagent_markers() {
+        use super::{websocket_headers, Credential};
+        use crate::adapters::responses::request::CodexDelegation;
+
+        let headers = websocket_headers(
+            Credential::ChatGptOAuth {
+                access_token: "access-token".to_string(),
+                account_id: "account-id".to_string(),
+            },
+            None,
+            Some("session-123"),
+            0,
+            Some(&CodexDelegation {
+                thread_id: "session-123::agent-7".to_string(),
+                parent_thread_id: "session-123".to_string(),
+                subagent: "Explore".to_string(),
+                agent_id: "agent-7".to_string(),
+            }),
+        )
+        .expect("valid credential builds headers");
+        assert_eq!(headers.get("session-id").unwrap(), "session-123");
+        assert_eq!(headers.get("thread-id").unwrap(), "session-123::agent-7");
+        assert_eq!(
+            headers.get("x-codex-parent-thread-id").unwrap(),
+            "session-123"
+        );
+        assert_eq!(headers.get("x-openai-subagent").unwrap(), "Explore");
+        // Every thread-derived id — request id and window id included —
+        // carries the child identity; only `session-id` stays the parent's.
+        assert_eq!(
+            headers.get("x-client-request-id").unwrap(),
+            "session-123::agent-7"
+        );
+        assert_eq!(
+            headers.get("x-codex-window-id").unwrap(),
+            "session-123::agent-7:0"
+        );
     }
 
     #[test]
@@ -886,10 +1162,14 @@ mod tests {
             },
             Some(&hint()),
             Some(""),
+            0,
+            None,
         )
         .expect("valid credential builds headers");
         assert!(headers.get("session-id").is_none());
         assert!(headers.get("thread-id").is_none());
+        assert!(headers.get("x-client-request-id").is_none());
+        assert!(headers.get("x-codex-window-id").is_none());
         assert_eq!(headers.get("originator").unwrap(), "codex_cli_rs");
     }
 
@@ -900,7 +1180,8 @@ mod tests {
 
         // Passthrough is a misconfiguration on this transport: no credential is
         // attached, leaving the upstream to reject it.
-        let headers = websocket_headers(Credential::Passthrough, Some(&hint()), None).unwrap();
+        let headers =
+            websocket_headers(Credential::Passthrough, Some(&hint()), None, 0, None).unwrap();
         assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
         assert!(headers.get("authorization").is_none());
         assert!(headers.get("x-codex-routing-hint").is_none());
@@ -922,6 +1203,8 @@ mod tests {
             },
             Some(&hint()),
             None,
+            0,
+            None,
         )
         .unwrap();
         assert_eq!(headers.get("openai-beta").unwrap(), WEBSOCKET_BETA_PROTOCOL);
@@ -942,6 +1225,8 @@ mod tests {
                 account_id: "bad\nid".to_string(),
             },
             Some(&hint()),
+            None,
+            0,
             None,
         )
         .expect_err("a malformed header value is rejected");

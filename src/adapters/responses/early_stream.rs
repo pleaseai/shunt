@@ -26,7 +26,8 @@ use crate::proxy::chain_stream::{ClientFrames, LazyEnvelope, RelayBuild};
 
 pub(super) use super::sse_parse::{
     bounded_input_estimate, next_parsed, parsed_events, pool_translated_stream, pooled_first_poll,
-    translated_core, translated_stream, PoolEvent, PoolFirstPoll, PoolItem, SseParser,
+    translated_core, translated_stream, InputEstimate, PoolEvent, PoolFirstPoll, PoolItem,
+    SseParser,
 };
 
 /// Marker on the committed streaming responses: their
@@ -151,6 +152,10 @@ pub(super) enum SendClassified {
         /// configured timeout is an answer (`504 timeout_error`), not a
         /// transport failure, exactly like the pre-commit loop's mapping.
         advance: bool,
+        /// The upstream's `retry-after` on a relayed status, which
+        /// `mapped_upstream_error` copies onto the ordered loop's refusal
+        /// (issue #655). `None` for a gateway-synthesized failure.
+        retry_after: Option<axum::http::HeaderValue>,
     },
 }
 
@@ -173,6 +178,7 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
             status: StatusCode::BAD_GATEWAY,
             remember: false,
             advance: false,
+            retry_after: None,
         };
     };
     let body = super::body::prepare_body(
@@ -181,6 +187,11 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
         context.upstream_body.as_ref(),
     )
     .await;
+    // The mark is consumed by the first send that reaches an upstream on
+    // either transport; the window it leaves is what the affinity headers
+    // carry, the same value a websocket handshake would.
+    let window =
+        super::codex_ws::window_for_turn(context.window_key.as_deref(), context.compact.take());
     let outcome = crate::retry::send_with_retry_with_safety(
         context.policy,
         &context.route.provider,
@@ -191,6 +202,8 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
                 &context.route,
                 credential.clone(),
                 context.session_id.as_deref(),
+                context.delegation.as_ref(),
+                window,
                 body.clone(),
             )
         },
@@ -217,6 +230,7 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
                 status,
                 remember: false,
                 advance,
+                retry_after: None,
             };
         }
     };
@@ -236,6 +250,10 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
         // the budgeted read runs for the terminal error frame. The envelope
         // resolves where the failure turns terminal.
         let auth = context.auth;
+        let retry_after = upstream
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .cloned();
         let envelope = LazyEnvelope::Deferred(Box::pin(async move {
             adapter_error_envelope(mapped_upstream_error(status, upstream, auth).await).await
         }));
@@ -244,6 +262,7 @@ pub(super) async fn send_classified(context: &HttpSendContext) -> SendClassified
             status,
             remember: true,
             advance: crate::proxy::failover::is_advance_status(status),
+            retry_after,
         };
     }
     SendClassified::Relay {
@@ -337,6 +356,15 @@ pub(super) struct HttpSendContext {
     /// stream before the send.
     pub(super) credential: Option<Credential>,
     pub(super) session_id: Option<String>,
+    /// The composed identity key the window counter keys on; `None` for an
+    /// unpoolable identity, which stays at window 0.
+    pub(super) window_key: Option<String>,
+    /// The request's one-shot compaction mark, consumed by this send when no
+    /// earlier dispatch of the turn reached an upstream.
+    pub(super) compact: crate::request::CompactionMark,
+    /// The delegated-turn subagent identity for the chatgpt arm's headers;
+    /// `None` for a non-delegated turn.
+    pub(super) delegation: Option<super::request::CodexDelegation>,
     /// The raw translated request; prepared (zstd admission + blocking-pool
     /// work) at send time inside the committed stream, so compression load
     /// cannot delay the committed response.

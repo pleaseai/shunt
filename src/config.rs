@@ -233,9 +233,16 @@ pub struct PoolConfig {
     /// Avoid an account projected to exhaust a soft threshold before reset.
     #[serde(default)]
     pub burn_rate_avoidance: bool,
-    /// Poll Claude's `/api/oauth/usage` and Codex's `/wham/usage` every N
-    /// seconds for refreshable accounts. Unset or `0` disables polling;
-    /// positive values below 60 are clamped to 60 seconds.
+    /// When true, available accounts in the pool tier sort by their earliest
+    /// known rate-limit reset timestamp (ascending — soonest-reset first) rather
+    /// than by burn-rate headroom. Accounts with no reset signal sort last
+    /// within their priority tier. Off by default.
+    #[serde(default)]
+    pub sort_by_reset: bool,
+    /// Poll Claude's `/api/oauth/usage`, Codex's `/wham/usage`, and
+    /// Antigravity's `retrieveUserQuotaSummary` every N seconds for refreshable
+    /// accounts. Unset or `0` disables polling; positive values below 60 are
+    /// clamped to 60 seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_refresh_seconds: Option<u64>,
     /// Persist the pool's per-account quota state to this file so a restart
@@ -285,6 +292,7 @@ impl Default for PoolConfig {
             default_threshold_7d: None,
             default_threshold_fable: None,
             burn_rate_avoidance: false,
+            sort_by_reset: false,
             usage_refresh_seconds: None,
             state_path: None,
             ramp_initial_concurrency: None,
@@ -1991,7 +1999,10 @@ fn model_supports_tool_search(model: &str) -> bool {
     }
     // Codex catalog gpt-6 slugs (`supports_search_tool: true`), matched
     // exactly: the catalog lists no gpt-6 family, only these slugs.
-    matches!(model, "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna")
+    matches!(
+        model,
+        "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna" | "gpt-6.1-sol"
+    )
 }
 
 /// Whether `host` belongs to xAI (`x.ai` or any subdomain). Used both to gate
@@ -2029,7 +2040,9 @@ pub fn host_is_anthropic(host: &str) -> bool {
 /// Whether `host` is the stock OpenAI Responses API host, exactly
 /// (`api.openai.com`, no subdomains). Used by [`Config::native_tool_search`]
 /// to decide whether an "auto" (unset `tool_search`) provider may default to
-/// the native protocol. Unlike `host_is_xai`/`host_is_cursor`/
+/// the native protocol, by the api-key affinity gate in
+/// `adapters::responses::request`, and by the shared client's redirect
+/// policy. Unlike `host_is_xai`/`host_is_cursor`/
 /// `host_is_anthropic`, which widen to any subdomain to avoid leaking a
 /// subscription bearer off one operator's origin, this check is narrowed to
 /// the single documented Responses endpoint on purpose: other `openai.com`
@@ -2037,7 +2050,7 @@ pub fn host_is_anthropic(host: &str) -> bool {
 /// products with no guarantee they implement `tool_search` items the same
 /// way, so trusting the whole domain would risk silently promoting an
 /// unverified host to the native wire shape.
-fn host_is_openai(host: &str) -> bool {
+pub(crate) fn host_is_openai(host: &str) -> bool {
     host == "api.openai.com"
 }
 
@@ -5079,6 +5092,20 @@ impl Config {
         self.provider(provider)
             .map(|provider| provider.auth == AuthMode::ChatgptOauth)
             .unwrap_or(false)
+    }
+
+    /// Whether `provider` targets the stock OpenAI Responses host, exactly
+    /// (`api.openai.com`). Codex sends its session-affinity headers there under
+    /// api-key auth (`codex-rs` api-key test), so the api-key adapter branch
+    /// mirrors them on this host and nowhere else — a third-party
+    /// OpenAI-compatible host has no use for codex identity headers.
+    pub fn is_openai_backend(&self, provider: &str) -> bool {
+        self.provider(provider).is_some_and(|config| {
+            reqwest::Url::parse(&config.base_url)
+                .ok()
+                .and_then(|url| url.host_str().map(host_is_openai))
+                .unwrap_or(false)
+        })
     }
 
     /// The effective storm-control initial admission allowance
@@ -10907,6 +10934,9 @@ target = "judge-alias"
         // Codex catalog slugs `gpt-6-sol` and `gpt-6-luna` (same flag).
         assert!(config.native_tool_search("codex", "gpt-6-sol"));
         assert!(config.native_tool_search("codex", "gpt-6-luna"));
+        // Codex catalog slug `gpt-6.1-sol` (rust-v0.159.3, same flag).
+        assert!(config.native_tool_search("codex", "gpt-6.1-sol"));
+        assert!(config.native_tool_search("openai", "gpt-6.1-sol"));
         for model in [
             "openai/gpt-6-astra",
             "gpt-6-astra-preview",
@@ -10914,6 +10944,8 @@ target = "judge-alias"
             "not-gpt-6-astra",
             "gpt-6-sol-preview",
             "gpt-6-luna[1m]",
+            "gpt-6.1-sol-preview",
+            "gpt-6.1-sol[1m]",
         ] {
             assert!(!config.native_tool_search("codex", model), "{model}");
         }

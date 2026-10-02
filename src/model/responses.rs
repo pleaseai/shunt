@@ -86,9 +86,9 @@ pub struct AnthropicSseMachine {
     /// [`Self::take_backend_error`]) so they can return a gateway error instead
     /// of a `200 OK` carrying the partial/empty content accumulated so far.
     /// Paired with the client-facing status the envelope was mapped against
-    /// ([`backend_error_status`]): `429` for an in-stream `rate_limit_exceeded`
-    /// or `slow_down`, `529` for `server_is_overloaded`, `400` for the
-    /// `invalid_prompt` / `bio_policy` / `cyber_policy` refusals, the event's
+    /// ([`backend_error_status`]): `429` for an in-stream `rate_limit_exceeded`,
+    /// `slow_down`, or `flex_unavailable`, `529` for `server_is_overloaded`,
+    /// `400` for the `invalid_prompt` / `bio_policy` / `cyber_policy` refusals, the event's
     /// own non-2xx top-level `status` (a Codex websocket wrapped error frame,
     /// or any other backend's error event carrying one), else `502`.
     backend_error: Option<(StatusCode, Value)>,
@@ -421,8 +421,9 @@ impl AnthropicSseMachine {
     }
 
     /// Record the reasoning item's id; defer opening the thinking block until the
-    /// first summary delta (or `output_item.done` when there is encrypted content),
-    /// so a reasoning item with neither summary nor encrypted content emits nothing.
+    /// first summary delta (or `output_item.done` when there is something to
+    /// round-trip), so a reasoning item with no summary, no id, and no encrypted
+    /// content emits nothing.
     fn reasoning_added(&mut self, item: &Value) -> Vec<String> {
         if !self.thinking_enabled {
             return Vec::new();
@@ -500,9 +501,22 @@ impl AnthropicSseMachine {
             .get("encrypted_content")
             .and_then(Value::as_str)
             .unwrap_or("");
+        // Prefer the id captured at output_item.added; fall back to the id on
+        // this done event so the round-trip keeps a real reasoning-item id even
+        // if the added event was missed or carried none.
+        let id = self
+            .reasoning
+            .as_ref()
+            .map(|reasoning| reasoning.id.clone())
+            .filter(|id| !id.is_empty())
+            .or_else(|| item.get("id").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default();
         let is_open = self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Reasoning);
-        // Nothing to show (no summary streamed) and nothing to round-trip.
-        if !is_open && encrypted.is_empty() {
+        // Nothing to show (no summary streamed) and nothing to round-trip (no
+        // id). An empty encrypted_content is not a drop: the item still
+        // round-trips its id so the backend keeps its reasoning chain under
+        // store:false.
+        if !is_open && encrypted.is_empty() && id.is_empty() {
             self.reasoning = None;
             return Vec::new();
         }
@@ -511,17 +525,7 @@ impl AnthropicSseMachine {
             // Open an empty thinking block purely to carry the round-trip signature.
             out.extend(self.open_reasoning());
         }
-        if !encrypted.is_empty() {
-            // Prefer the id captured at output_item.added; fall back to the id on
-            // this done event so the round-trip keeps a real reasoning-item id even
-            // if the added event was missed or carried none.
-            let id = self
-                .reasoning
-                .as_ref()
-                .map(|reasoning| reasoning.id.clone())
-                .filter(|id| !id.is_empty())
-                .or_else(|| item.get("id").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or_default();
+        if !id.is_empty() || !encrypted.is_empty() {
             let signature = encode_reasoning_signature(&id, encrypted);
             if let Some(reasoning) = &mut self.reasoning {
                 reasoning.signature = Some(signature.clone());
@@ -1123,13 +1127,16 @@ fn error_code(value: &Value) -> &str {
 /// Client-facing status for a backend-sent `error` / `response.failed` event.
 ///
 /// These events ride a `200 OK` stream, so there is no upstream HTTP status to
-/// preserve; the status is picked from the error `code`, mirroring openai/codex
-/// rust-v0.156.0's SSE error classification (`codex-api/src/sse/responses.rs`):
+/// preserve; the status is picked from the error `code`, mirroring openai/codex's
+/// SSE error classification as of rust-v0.159.3 (`codex-api/src/sse/responses.rs`
+/// and `codex-api/src/sse/responses_error.rs`):
 ///
-/// - `rate_limit_exceeded` / `slow_down` → `429` `rate_limit_error`, the same
-///   envelope an HTTP 429 produces. Upstream classifies both as
-///   `RateLimitExceeded` (rust-v0.156.0 moved `slow_down` there from its
-///   `ServerOverloaded` class).
+/// - `rate_limit_exceeded` / `slow_down` / `flex_unavailable` → `429`
+///   `rate_limit_error`, the same envelope an HTTP 429 produces. Upstream
+///   classifies the first two as `RateLimitExceeded` (rust-v0.156.0 moved
+///   `slow_down` there from its `ServerOverloaded` class), and
+///   `flex_unavailable` (no capacity for the `flex` service tier) as
+///   `FlexUnavailable`, which rust-v0.159.3 maps to HTTP 429.
 /// - `server_is_overloaded` → `529` `overloaded_error`: upstream's
 ///   `ServerOverloaded` class, which is Anthropic's overload signal. The mapping
 ///   is by meaning, not retry policy — the Codex CLI surfaces this class to the
@@ -1156,7 +1163,7 @@ fn error_code(value: &Value) -> &str {
 /// pool account down — pool cooldown keys on the upstream HTTP status alone.
 pub fn backend_error_status(value: &Value) -> StatusCode {
     match error_code(value) {
-        "rate_limit_exceeded" | "slow_down" => StatusCode::TOO_MANY_REQUESTS,
+        "rate_limit_exceeded" | "slow_down" | "flex_unavailable" => StatusCode::TOO_MANY_REQUESTS,
         "server_is_overloaded" => {
             const OVERLOADED: StatusCode = match StatusCode::from_u16(529) {
                 Ok(status) => status,

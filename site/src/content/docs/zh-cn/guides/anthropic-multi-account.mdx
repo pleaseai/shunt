@@ -194,6 +194,53 @@ disabled = true              # 保留配置,但永不被选中
 
 路由到 Anthropic 的 `POST /v1/messages/count_tokens` 请求使用同一个池。
 
+## 让 Claude Sonnet 5.5 对话保持在同一个账户上
+
+Anthropic 会把 Claude Sonnet 5.5 生成的 thinking 块绑定到生成它们的账户([Preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking#account-bound-thinking))。当另一个账户把这样的块发回时,API 会在模型看到之前丢弃它。请求仍然成功,但模型在没有那段先前推理的情况下作答。更早模型的 thinking 块不受影响。
+
+池具有会话粘性,因此一次对话通常停留在一个账户上。在以下情况下它会转到另一个账户:
+
+- 粘性账户接近配额、处于冷却中或被禁用,于是[主动轮换](#选择与主动轮换)把会话从该账户移走。
+- 某个响应按照[故障转移规则](#故障转移规则)触发轮换:配额 429、刷新无法解决的 401(setup token 无法刷新,因此其上的任何 401 都会轮换),或者 5xx 或传输失败。
+- 池中不同账户的数量发生变化,例如用 `shunt login claude` 新增的存储条目会在不重启的情况下进入池。粘性账户是按池中不同账户的数量对会话 ID 取哈希选出的,因此大多数现有会话会被分配到另一个账户。
+- 请求不带 `x-claude-code-session-id`,因此使用轮询。
+
+转移之后,后续的 Sonnet 5.5 轮次会在没有前一个账户上产生的推理的情况下运行。不会有任何失败。shunt 不会添加 `thinking-binding-controls-2026-08-01` beta 头部,因此除非客户端自己发送该头部,响应不会报告这次丢弃(shunt 会保留客户端的 `anthropic-beta` 值,仅在缺少 `oauth-2025-04-20` 时追加它)。shunt 也不会记录这次丢弃。
+
+如果你希望每个 Sonnet 5.5 请求都落在同一个账户上,请为该模型配置一个限定到该账户的专用上游。账户限定使用有序的 `[[upstreams]]` 形式(见[配置](/zh-cn/reference/configuration/)中的 `[[upstreams]]` 一节),它不能与 `[providers.*]` 在同一个配置文件中混用。用 `shunt login claude` 存储账户,并按名称引用它们:
+
+```toml
+[server]
+default_provider = "anthropic"
+
+# 最先声明,因此对映射到它的每个模型都最先尝试。
+[[upstreams]]
+name = "anthropic-sonnet55"
+provider = "anthropic"
+auth = { mode = "claude_oauth", account = "primary" }
+
+# 其他所有模型:整个 Claude 存储,按通常方式轮换。
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic"
+auth = "claude_oauth"
+
+[[models]]
+id = "claude-sonnet-5-5"
+[models.upstream_model]
+anthropic-sonnet55 = "claude-sonnet-5-5"
+anthropic = "claude-sonnet-5-5" # 如需严格固定,删除此行
+```
+
+Sonnet 5.5 请求首先发往 `primary`。当模型映射中有 `anthropic` 这一行时,`primary` 上推进链路的失败(例如配额 429 或 5xx)会落到整个池。每一轮只能使用处理该轮的账户所产生的 Sonnet 5.5 推理,因此由另一个账户处理的轮次会在没有 `primary` 上产生的推理的情况下运行。由于使用整个存储的池也包含 `primary`,它也可能再次尝试 `primary`,此时 `primary` 上产生的推理会被保留。只有当池尝试的每个账户都失败时,请求才会失败。没有这一行时,固定是严格的:客户端会收到 `primary` 的错误,而不会有任何东西转移该对话。
+
+请记住以下权衡:
+
+- 每个 Sonnet 5.5 会话都消耗同一个账户的 5 小时配额和每周配额。
+- `primary` 也仍留在扫描整个存储的 `anthropic` 池中。若要把它保留给 Sonnet 5.5,请改为限定该池,例如 `auth = { mode = "claude_oauth", accounts = ["backup", "team-2"] }`。
+- 配额、冷却和刷新状态属于账户,而不属于上游。在两个上游中都列出的存储账户共享同一份状态和同一把刷新锁。当 shunt 无法识别内联账户表时,即它没有 `uuid`、其凭据中也没有 `shuntAccountUuid` 时,它按上游分别建键。在两个上游中内联重复这样的凭据会拆分其状态和刷新锁,因此请改为按名称引用存储账户。
+- `shunt check` 不会验证限定的名称是否存在于存储中。缺失的名称会在请求解析该池时失败。
+
 ## 请求与响应的改动
 
 对所选账户,shunt 将客户端认证替换为:

@@ -1,0 +1,98 @@
+---
+title: Escalation
+description: Start each session on a weak target, have a judge rule on the work it actually did, and latch the session onto a strong target once the judge keeps finding it in trouble.
+---
+
+`mode = "escalation"` is the third [`llm_classifier`](/guides/llm-classifier/)
+mode. Where `capability` and `custom` predict which model a turn needs, escalation
+starts each session on a weak target and has a judge read how the work is going —
+the work the weak model actually did, not a prediction.
+
+## How a session escalates
+
+Each turn on a session that has not latched is made on `weak_target` and held.
+The judge then rules on the **completed** turn:
+
+- A decline resets the escalate streak.
+- An escalate verdict extends it. While the streak is below `confirmations`, the
+  held weak turn is served.
+- When the streak reaches `confirmations`, the session latches: that turn's weak
+  answer is discarded and `strong_target` serves it, and every later turn of the
+  session goes straight to `strong_target` with no judge call and no buffering.
+
+Because the judge rules on a turn that already exists, shunt holds that turn until
+the verdict is in. No response header is committed until the replay starts, so the
+switch to the strong target happens before any header is sent, and a discarded
+weak turn was never seen by the client. [Held turns](/guides/routing/#held-turns)
+explains how the held turn is served and what it costs.
+
+## Configure it
+
+```toml
+[[models]]
+id = "claude-escalate"
+
+[models.router]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+# prompt = "…"
+# max_output_tokens = 4096
+
+[models.router.escalation]
+confirmations = 2
+# recent_turn_window = 28
+# window_message_chars = 500
+```
+
+The `[models.router.escalation]` table is optional; leaving it out keeps the three
+defaults, which are upstream's benchmarked configuration. `confirmations` above
+`1` needs a session id: without one every turn starts from zero and the session
+never latches. The judge sees the trailing `recent_turn_window` messages, each
+capped at `window_message_chars` characters. `weak_target` may be the same id as
+`classifier_target`.
+
+The six [per-call bounds](/reference/configuration/#per-call-bounds) go on
+`[models.router]`, and the three `gated_*` bounds are the ones that cap the held
+weak turn. A classifier-form [`[models.subagents]`](/guides/subagents/) overlay
+stays `mode = "custom"` only.
+
+## Credentials
+
+`weak_target` may be a **passthrough** route, although `classifier_target` may
+not: the weak turn is the client's own answer, so it carries the caller's
+credential exactly as a live turn does, while a judge call carries none of the
+caller's credentials. See [judge calls](/guides/routing/#judge-calls).
+
+## Probes and the latch
+
+A `count_tokens` probe makes no judge call and no gated call. It answers from
+`strong_target` while the session is latched — its last turn was served by the
+latch or by a confirmed escalation — and from `weak_target` otherwise. The latch
+is shared by the session's delegated children and expires after an hour idle.
+
+## What the client sees
+
+`x-gateway-route-source` says what happened on each turn:
+
+| Source | Meaning |
+| :-- | :-- |
+| `escalation_weak` | The judge let the weak turn through; it was replayed |
+| `escalation_latch` | The session latched, on this turn or earlier, so the strong target served the turn live |
+| `escalation_fallback` | The weak turn failed, was cut, or was refused as too long for its context window, so the strong target served the turn live without a judge call |
+| `classifier_fail_open` | The judge failed after a complete weak turn, so the weak turn was served |
+| `gated_error` | The gated turn could not be served |
+
+The [configuration reference](/reference/configuration/#buffered-turns-escalation-and-advisor)
+has the exact conditions for each source and what happens when the weak turn, its
+upstream, or the judge fails. Judge calls are counted by
+`shunt.router.judge_calls{algorithm="llm_classifier"}`.
+
+## What it costs
+
+Escalation makes a judge call on every turn before the latch, and on each of those
+turns the client receives nothing until the weak turn is complete and judged. A
+turn that latches also pays for the weak call it discards, which still consumed
+its upstream's quota.

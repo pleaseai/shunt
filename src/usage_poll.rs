@@ -1,13 +1,17 @@
-//! Background poller for OAuth usage APIs — Claude's official one and Codex's
-//! private `wham/usage` one.
+//! Background poller for OAuth usage APIs — Claude's official one, Codex's
+//! private `wham/usage` one, and Antigravity's Code Assist `retrieveUserQuotaSummary` one.
 //!
 //! When `[server.pool] usage_refresh_seconds` is set, this spawns one task at
 //! boot that periodically polls, for every imported (refreshable) account:
-//! `GET /api/oauth/usage` across all `claude_oauth` providers, and the private
+//! `GET /api/oauth/usage` across all `claude_oauth` providers, the private
 //! `GET /wham/usage` (see [`crate::auth::codex::usage`]) across all ChatGPT
-//! backend `chatgpt_oauth` providers — applying the returned utilization to the
-//! account pool via [`AccountPool::note_usage`] for Claude and the Codex-only
-//! [`AccountPool::note_codex_usage`] reconciliation path for wham.
+//! backend `chatgpt_oauth` providers, and `POST :retrieveUserQuotaSummary` (see
+//! [`crate::auth::antigravity::usage`]) across all `antigravity_oauth`
+//! providers — applying the returned utilization to the account pool via
+//! [`AccountPool::note_usage`] for Claude, the Codex-only
+//! [`AccountPool::note_codex_usage`] reconciliation path for wham, and the
+//! display-only [`AccountPool::note_antigravity_usage`] bucket path for
+//! Antigravity.
 //!
 //! Why: the pool's primary quota signal is the response headers on proxied
 //! traffic (`anthropic-ratelimit-unified-*` for Claude, `x-codex-*` for Codex),
@@ -17,11 +21,13 @@
 //! consumption — and its eventual window reset — is invisible to the headers
 //! and the pool can undercount or stay stuck excluding a recovered account. The
 //! usage APIs report ground-truth utilization, so a periodic poll reconciles
-//! the header-derived state.
+//! the header-derived state. Antigravity has no reactive header signal at all,
+//! so its poll is the account's only quota signal rather than a reconciliation
+//! layer.
 //!
-//! Eligibility: only imported logins can call either endpoint. A long-lived
-//! Claude `setup-token`, and a `token_env`-supplied credential of either
-//! family, are treated as static and skipped, mirroring the adapters'
+//! Eligibility: only imported logins can call these endpoints. A long-lived
+//! Claude `setup-token`, and a `token_env`-supplied credential of any family,
+//! are treated as static and skipped, mirroring the adapters'
 //! non-refreshable 401 handling. The Codex arm additionally only polls
 //! providers on the ChatGPT backend ([`crate::config::Config::is_chatgpt_backend`])
 //! — a `chatgpt_oauth` provider pointed at some other base is never polled.
@@ -35,8 +41,11 @@ use std::{
 use serde_json::Value;
 
 use crate::{
-    accounts::{account_key, AccountKey, UsageSnapshot},
-    auth::{self, claude, codex, resolve_chatgpt_account, resolve_claude_account, Credential},
+    accounts::{account_key, AccountKey, QuotaBucketSnapshot, UsageSnapshot},
+    auth::{
+        self, antigravity, claude, codex, resolve_antigravity_account, resolve_chatgpt_account,
+        resolve_claude_account, Credential,
+    },
     config::{AccountConfig, AuthMode},
     server::AppState,
 };
@@ -68,7 +77,7 @@ pub fn spawn_usage_poller(state: AppState) {
     }
     tracing::info!(
         interval_seconds = interval,
-        "starting OAuth usage-API poller (Claude, Codex)"
+        "starting OAuth usage-API poller (Claude, Codex, Antigravity)"
     );
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(interval));
@@ -229,6 +238,76 @@ async fn poll_all(state: &AppState) {
                     cached.insert(key, CachedUsage::Codex(report));
                 }
             }
+            // No extra backend guard here, unlike the Codex arm: `Config::validate`
+            // already restricts `AuthMode::AntigravityOauth` to `kind =
+            // "antigravity"` and the two vetted Google hosts, so there is no
+            // "wrong backend" ambiguity to defend against.
+            AuthMode::AntigravityOauth => {
+                let accounts = match auth::shared::resolve_pool_accounts(
+                    "Antigravity",
+                    &provider.accounts,
+                    &provider.account_scope,
+                    crate::accounts::StoreFamily::Antigravity,
+                    antigravity::store::default_accounts_dir(),
+                    antigravity::store::scan_accounts,
+                )
+                .await
+                {
+                    Ok(accounts) => accounts,
+                    Err(error) => {
+                        tracing::debug!(provider = %name, %error, "usage poller: failed to resolve antigravity accounts");
+                        continue;
+                    }
+                };
+                state.accounts.sync_enabled_accounts(name, &accounts);
+                for account in &accounts {
+                    let key = account_key(name, account);
+                    if let Some(CachedUsage::Antigravity(buckets)) = cached.get(&key) {
+                        if applied.insert((key.clone(), name.clone())) {
+                            state
+                                .accounts
+                                .note_antigravity_usage(name, account, buckets.clone());
+                        }
+                        continue;
+                    }
+                    if cached.contains_key(&key) {
+                        tracing::debug!(
+                            provider = %name,
+                            account = %account.name,
+                            "usage poller: cached usage family does not match Antigravity account"
+                        );
+                        continue;
+                    }
+                    {
+                        let aliases = pending.entry(key.clone()).or_default();
+                        if !aliases.iter().any(|(provider, _)| provider == name) {
+                            aliases.push((name.clone(), account.clone()));
+                        }
+                    }
+                    if applied.contains(&(key.clone(), name.clone())) {
+                        continue;
+                    }
+                    if !antigravity_account_is_refreshable(account).await {
+                        continue;
+                    }
+                    let Some(buckets) =
+                        fetch_antigravity_usage(&state.http_client, &provider.base_url, account)
+                            .await
+                    else {
+                        continue;
+                    };
+                    for (provider, account) in pending.remove(&key).unwrap_or_default() {
+                        if applied.insert((key.clone(), provider.clone())) {
+                            state.accounts.note_antigravity_usage(
+                                &provider,
+                                &account,
+                                buckets.clone(),
+                            );
+                        }
+                    }
+                    cached.insert(key, CachedUsage::Antigravity(buckets));
+                }
+            }
             _ => {}
         }
     }
@@ -242,6 +321,7 @@ async fn poll_all(state: &AppState) {
 enum CachedUsage {
     Claude(UsageSnapshot),
     Codex(codex::usage::WhamUsageReport),
+    Antigravity(Vec<QuotaBucketSnapshot>),
 }
 
 /// Fetch and parse one Claude account's usage without mutating pool state.
@@ -304,6 +384,41 @@ async fn fetch_codex_usage(
         }
         Err(error) => {
             tracing::debug!(provider, account = %account.name, %error, "usage poller: codex wham usage fetch failed");
+            None
+        }
+    }
+}
+
+/// Fetch and parse one Antigravity account's grouped model-family quota windows without
+/// mutating pool state. Empty bucket lists and every failure stay uncached so a
+/// later alias can retry.
+async fn fetch_antigravity_usage(
+    client: &reqwest::Client,
+    base_url: &str,
+    account: &AccountConfig,
+) -> Option<Vec<QuotaBucketSnapshot>> {
+    let credential = match resolve_antigravity_account(account, client, base_url).await {
+        Ok(credential) => credential,
+        Err(error) => {
+            tracing::debug!(account = %account.name, error = %error.message, "usage poller: failed to resolve antigravity account credential");
+            return None;
+        }
+    };
+    let Credential::AntigravityOauth {
+        access_token,
+        project_id,
+    } = credential
+    else {
+        return None;
+    };
+    match antigravity::usage::fetch_usage(client, base_url, &access_token, &project_id).await {
+        Ok(buckets) if !buckets.is_empty() => Some(buckets),
+        Ok(_) => {
+            tracing::debug!(account = %account.name, "usage poller: antigravity usage reported no grouped quota windows, skipping");
+            None
+        }
+        Err(error) => {
+            tracing::debug!(account = %account.name, %error, "usage poller: antigravity usage fetch failed");
             None
         }
     }
@@ -373,6 +488,30 @@ async fn poll_codex_account(
     true
 }
 
+/// Poll one Antigravity account: skip non-refreshable credentials, resolve a
+/// valid access token, fetch its grouped model-family quota windows, and apply them to
+/// the pool. Mirrors [`poll_account`]. Every failure degrades quietly to a
+/// debug log — a missing bucket list just leaves the prior buckets in place
+/// until the next tick.
+#[cfg(test)]
+async fn poll_antigravity_account(
+    client: &reqwest::Client,
+    pool: &AccountPool,
+    provider: &str,
+    base_url: &str,
+    account: &AccountConfig,
+) -> bool {
+    if !antigravity_account_is_refreshable(account).await {
+        return false;
+    }
+    let Some(buckets) = fetch_antigravity_usage(client, base_url, account).await else {
+        return false;
+    };
+    pool.note_antigravity_usage(provider, account, buckets);
+    tracing::debug!(provider, account = %account.name, "usage poller: applied antigravity quota buckets");
+    true
+}
+
 /// Whether an account's credential is a refreshable imported login — the only
 /// kind the usage API accepts. `token_env` credentials are treated as static.
 /// The credential file (an explicit `credentials` path, or the store path for a
@@ -422,6 +561,42 @@ async fn codex_account_is_refreshable(account: &AccountConfig) -> bool {
     tokio::task::spawn_blocking(move || codex_credential_file_has_refresh_token(&path))
         .await
         .unwrap_or(false)
+}
+
+/// Whether an Antigravity account's credential is a refreshable imported login
+/// — the only kind the quota RPC accepts. `token_env` credentials are always
+/// static (mirroring `resolve_antigravity_account`'s own refusal). The
+/// credential file (an explicit `credentials` path, or the store path for a
+/// name-only account) is read on the blocking pool.
+async fn antigravity_account_is_refreshable(account: &AccountConfig) -> bool {
+    if account.token_env.is_some() {
+        return false;
+    }
+    let path = account
+        .credentials
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| antigravity::store::account_path(&account.name));
+    tokio::task::spawn_blocking(move || antigravity_credential_file_has_refresh_token(&path))
+        .await
+        .unwrap_or(false)
+}
+
+/// True when the credential file holds a non-empty top-level `refresh_token`.
+/// The Antigravity store writes a flat schema (`access_token`/`refresh_token`/
+/// `expiry_date`/`email`/`project_id` all at the top level), unlike Claude's
+/// nested `claudeAiOauth.refreshToken`.
+fn antigravity_credential_file_has_refresh_token(path: &Path) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Credential {
+        refresh_token: Option<String>,
+    }
+
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Credential>(&bytes).ok())
+        .and_then(|credential| credential.refresh_token)
+        .is_some_and(|token| !token.is_empty())
 }
 
 /// True when the credential file holds a non-empty `tokens.refresh_token` — the
@@ -2654,5 +2829,218 @@ mod tests {
 
         let _ = std::fs::remove_file(claude_creds);
         let _ = std::fs::remove_file(codex_creds);
+    }
+
+    fn antigravity_account_with_credentials(path: &Path) -> AccountConfig {
+        AccountConfig {
+            name: "agy-acct".to_string(),
+            credentials: Some(path.to_string_lossy().into_owned()),
+            token_env: None,
+            uuid: None,
+            ..Default::default()
+        }
+    }
+
+    /// Build a flat-schema Antigravity credential file body. The far-future
+    /// `expiry_date` keeps the fixture out of the refresh path; `project_id`
+    /// keeps it out of project discovery, so only the quota RPC hits the
+    /// network. `refresh_token: None` omits the field, producing a
+    /// non-refreshable credential.
+    fn antigravity_credential_json(refresh_token: Option<&str>) -> String {
+        let mut value = serde_json::json!({
+            "access_token": "live-token",
+            "expiry_date": 4_000_000_000_000u64,
+            "project_id": "test-project",
+        });
+        if let Some(refresh_token) = refresh_token {
+            value["refresh_token"] = serde_json::Value::String(refresh_token.to_string());
+        }
+        value.to_string()
+    }
+
+    #[tokio::test]
+    async fn antigravity_refreshable_only_for_imported_credential_files() {
+        // Imported login: top-level non-empty refresh_token -> eligible.
+        let imported = write_temp("agy-imported", &antigravity_credential_json(Some("r")));
+        assert!(
+            antigravity_account_is_refreshable(&antigravity_account_with_credentials(&imported))
+                .await
+        );
+
+        // No refresh_token -> not eligible.
+        let static_creds = write_temp("agy-static", &antigravity_credential_json(None));
+        assert!(
+            !antigravity_account_is_refreshable(&antigravity_account_with_credentials(
+                &static_creds
+            ))
+            .await
+        );
+
+        // token_env credential is static regardless of any file.
+        let env_account = AccountConfig {
+            name: "env".to_string(),
+            credentials: None,
+            token_env: Some("SOME_ENV".to_string()),
+            uuid: None,
+            ..Default::default()
+        };
+        assert!(!antigravity_account_is_refreshable(&env_account).await);
+
+        // Missing file -> not eligible (no panic).
+        let missing = AccountConfig {
+            name: "nope".to_string(),
+            credentials: Some("/no/such/shunt/usage/agy-file.json".to_string()),
+            token_env: None,
+            uuid: None,
+            ..Default::default()
+        };
+        assert!(!antigravity_account_is_refreshable(&missing).await);
+
+        for path in [imported, static_creds] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_antigravity_account_fetches_and_applies_buckets() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let creds = write_temp("agy-poll", &antigravity_credential_json(Some("r")));
+        let account = antigravity_account_with_credentials(&creds);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:retrieveUserQuotaSummary"))
+            // Regression guard for the live-tested finding: without the
+            // Antigravity Hub User-Agent, Google 403s the same token/project.
+            .and(header(
+                "user-agent",
+                crate::auth::antigravity::version::user_agent(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "groups": [
+                    {
+                        "displayName": "Gemini Models",
+                        "buckets": [{
+                            "bucketId": "gemini-5h",
+                            "window": "5h",
+                            "remainingFraction": 0.7,
+                            "resetTime": "2026-09-24T00:00:00Z"
+                        }]
+                    },
+                    {
+                        "displayName": "Claude and GPT models",
+                        "buckets": [{
+                            "bucketId": "3p-5h",
+                            "window": "5h",
+                            "remainingFraction": 0.92
+                        }]
+                    }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = AccountPool::new();
+        let applied = poll_antigravity_account(
+            &reqwest::Client::new(),
+            &pool,
+            "antigravity",
+            &server.uri(),
+            &account,
+        )
+        .await;
+        assert!(applied, "the poll must apply the quota buckets");
+
+        let snap = pool.snapshot("antigravity", std::slice::from_ref(&account), None, None);
+        assert!(snap[0].has_state, "the poll must have recorded state");
+        assert_eq!(snap[0].quota_buckets.len(), 2);
+        assert_eq!(snap[0].quota_buckets[0].label, "Gemini Models · 5h");
+        assert_eq!(snap[0].quota_buckets[0].remaining, Some(0.7));
+        assert_eq!(
+            snap[0].quota_buckets[0].reset_time.as_deref(),
+            Some("2026-09-24T00:00:00Z")
+        );
+        assert_eq!(snap[0].quota_buckets[1].label, "Claude + GPT Models · 5h");
+        // Display-only: no 5h/7d utilization is synthesized from the buckets.
+        assert_eq!(snap[0].utilization_5h, None);
+        assert_eq!(snap[0].utilization_7d, None);
+
+        let _ = std::fs::remove_file(creds);
+    }
+
+    #[tokio::test]
+    async fn poll_antigravity_account_records_no_state_on_fetch_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let creds = write_temp("agy-fetch-error", &antigravity_credential_json(Some("r")));
+        let account = antigravity_account_with_credentials(&creds);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:retrieveUserQuotaSummary"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = AccountPool::new();
+        let applied = poll_antigravity_account(
+            &reqwest::Client::new(),
+            &pool,
+            "antigravity",
+            &server.uri(),
+            &account,
+        )
+        .await;
+        assert!(!applied, "a failed fetch must not count as applied");
+
+        let snap = pool.snapshot("antigravity", std::slice::from_ref(&account), None, None);
+        assert!(
+            !snap[0].has_state,
+            "a failed quota fetch must not record state"
+        );
+
+        let _ = std::fs::remove_file(creds);
+    }
+
+    #[tokio::test]
+    async fn poll_antigravity_account_skips_empty_bucket_list() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let creds = write_temp("agy-empty", &antigravity_credential_json(Some("r")));
+        let account = antigravity_account_with_credentials(&creds);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1internal:retrieveUserQuotaSummary"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "groups": [] })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = AccountPool::new();
+        let applied = poll_antigravity_account(
+            &reqwest::Client::new(),
+            &pool,
+            "antigravity",
+            &server.uri(),
+            &account,
+        )
+        .await;
+        assert!(!applied, "an empty bucket list must not count as applied");
+        let snap = pool.snapshot("antigravity", std::slice::from_ref(&account), None, None);
+        assert!(
+            !snap[0].has_state,
+            "an empty bucket list must not mark the account observed"
+        );
+
+        let _ = std::fs::remove_file(creds);
     }
 }

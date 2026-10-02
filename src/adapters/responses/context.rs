@@ -19,6 +19,8 @@ use crate::{
     routing::Route,
 };
 
+use super::request::CodexDelegation;
+
 /// How to translate an upstream Responses stream back into Anthropic form:
 /// exactly `AnthropicSseMachine::new`'s arguments. Passed as one unit through
 /// every relay path (streaming SSE and collected JSON) so the model name and the
@@ -135,6 +137,15 @@ pub(super) struct ForwardOptions {
     /// the single-credential fallback after an account scan ran inside the
     /// dispatch — else the stream's first poll.
     pub started_at: Option<std::time::Instant>,
+    /// The composed identity key the window counter keys on — the same string
+    /// the websocket path receives as its pool/window key — so the HTTP
+    /// transport reads (and, on the mark's consumption, bumps) the same
+    /// counter. `None` for an unpoolable identity (the hashed user-id
+    /// fallback), which stays at window 0.
+    pub window_key: Option<String>,
+    /// The request's one-shot compaction mark: consumed by the first send
+    /// that reaches an upstream, on either transport.
+    pub compact: crate::request::CompactionMark,
 }
 
 /// Everything `forward_chatgpt_oauth` needs beyond `state`/`route`. The account
@@ -145,8 +156,16 @@ pub(super) struct ForwardOptions {
 /// into the pool vs. single-account dispatch.
 #[derive(Debug)]
 pub(super) struct PoolForward {
+    /// The composed identity key: the connection-pool key on the websocket
+    /// path and the window-counter key on both transports.
     pub pool_key: Option<String>,
     pub session_id: Option<String>,
+    /// The request's one-shot compaction mark, consumed by the first account
+    /// attempt that reaches an upstream.
+    pub compact: crate::request::CompactionMark,
+    /// The delegated-turn subagent identity, derived once at the adapter from
+    /// the inbound headers; `None` for a non-delegated turn.
+    pub delegation: Option<CodexDelegation>,
     pub upstream_body: Arc<Value>,
     pub accounts_config: Vec<AccountConfig>,
     pub turn: TurnOptions,

@@ -54,6 +54,26 @@ live endpoint here.** What is not in doubt is the direction: forwarding a value
 shunt invented into a field the server decrypts cannot be correct under any of
 the behaviours above.
 
+## A genuine block sent by another account
+
+A **genuine** Claude Sonnet 5.5 block sent by a different account is not an
+unissued signature, and it is not rejected. [Preserved thinking][account-bound]
+says those blocks "work only in the account that produced them, or in an
+account linked to it"; from
+another account "the API drops the block before the model sees it, and the
+request succeeds". The drop is reported only under the
+`thinking-binding-controls-2026-08-01` beta header (`input_transformations`,
+`reason: "organization_binding_mismatch"`), which shunt does not add, so it is
+silent here unless the client sends that beta itself (the Anthropic adapter
+keeps the client's `anthropic-beta` values and only appends
+`oauth-2025-04-20`). It matters to shunt because the Claude OAuth pool can move
+a session between accounts; the operator-facing guidance (pinning a model to
+one account) is in the site's Anthropic multi-account guide. The doc does not define
+"linked account", and whether a block becomes readable again once the session
+returns to its own account is not documented — neither is measured here. Nothing
+in `thinking.rs` should strip these blocks: they are Anthropic's, and the API
+already discards them.
+
 ## The documented remedy is the fix shunt implements
 
 For a history carrying an invalid block, the troubleshooting page says to
@@ -118,3 +138,4 @@ signed". Only the Anthropic *outbound* path lacked the mirror, which is what
 
 [thinking]: https://platform.claude.com/docs/en/build-with-claude/thinking
 [troubleshooting]: https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
+[account-bound]: https://platform.claude.com/docs/en/build-with-claude/preserved-thinking#account-bound-thinking

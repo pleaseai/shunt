@@ -208,6 +208,7 @@ async fn pooled_first_poll_never_waits_for_the_build_on_a_pre_frame_failure() {
         advance: true,
         remember: false,
         envelope: LazyEnvelope::Ready(Value::Null),
+        retry_after: None,
     })]);
     let build = async move {
         let (machine, start): (AnthropicSseMachine, Vec<String>) =
@@ -292,6 +293,7 @@ async fn send_classified_with_estimate_never_waits_for_the_estimate_on_a_classif
             status: StatusCode::BAD_GATEWAY,
             remember: false,
             advance: true,
+            retry_after: None,
         }
     };
     let raced = tokio::time::timeout(
@@ -353,6 +355,7 @@ async fn send_classified_with_estimate_headers_at_precedes_a_pending_estimate() 
             status: StatusCode::BAD_GATEWAY,
             remember: false,
             advance: true,
+            retry_after: None,
         }
     };
     let raced = tokio::time::timeout(
@@ -528,6 +531,9 @@ async fn http_events_stream_maps_non_success_to_error_envelope() {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
             upstream_body,
             auth: crate::config::AuthMode::ApiKey,
             codex_quota_account: None,
@@ -569,6 +575,9 @@ async fn http_events_stream_maps_ttfb_timeout_to_timeout_error_envelope() {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
             upstream_body,
             auth: crate::config::AuthMode::ApiKey,
             codex_quota_account: None,
@@ -616,6 +625,9 @@ async fn http_events_stream_yields_parsed_events_from_streaming_upstream() {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
             upstream_body,
             auth: crate::config::AuthMode::ApiKey,
             codex_quota_account: None,
@@ -795,6 +807,9 @@ async fn http_events_stream_turns_a_malformed_frame_into_a_terminal_error() {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
             upstream_body,
             auth: crate::config::AuthMode::ApiKey,
             codex_quota_account: None,
@@ -884,6 +899,9 @@ async fn http_events_stream_redacts_the_upstream_url_from_transport_errors() {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
             upstream_body,
             auth: crate::config::AuthMode::ApiKey,
             codex_quota_account: None,
@@ -933,6 +951,9 @@ async fn send_classified_defers_the_error_body_for_advance_statuses() {
             header: crate::config::ApiKeyHeader::Bearer,
         }),
         session_id: None,
+        window_key: None,
+        compact: crate::request::CompactionMark::default(),
+        delegation: None,
         upstream_body: std::sync::Arc::new(json!({"input": []})),
         auth: crate::config::AuthMode::ApiKey,
         codex_quota_account: None,
@@ -943,6 +964,7 @@ async fn send_classified_defers_the_error_body_for_advance_statuses() {
         status,
         remember,
         advance,
+        ..
     } = outcome
     else {
         panic!("expected a failed classification, got a relay");
@@ -978,6 +1000,9 @@ async fn send_classified_defers_the_envelope_for_terminal_statuses() {
             header: crate::config::ApiKeyHeader::Bearer,
         }),
         session_id: None,
+        window_key: None,
+        compact: crate::request::CompactionMark::default(),
+        delegation: None,
         upstream_body: std::sync::Arc::new(json!({"input": []})),
         auth: crate::config::AuthMode::ApiKey,
         codex_quota_account: None,
@@ -1023,6 +1048,8 @@ async fn forward_http_commits_before_resolving_the_credential() {
         codex_quota_account: None,
         estimate_input: None,
         started_at: None,
+        window_key: None,
+        compact: crate::request::CompactionMark::default(),
     };
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -1033,6 +1060,7 @@ async fn forward_http_commits_before_resolving_the_credential() {
             CredentialSource::Deferred(Box::pin(futures_util::future::pending::<
                 Result<Credential, crate::adapters::AdapterError>,
             >())),
+            None,
             None,
         ),
     )
@@ -1055,6 +1083,9 @@ async fn http_events_stream_turns_a_credential_resolution_failure_into_a_termina
         policy: crate::retry::RetryPolicy::DISABLED,
         credential: None,
         session_id: None,
+        window_key: None,
+        compact: crate::request::CompactionMark::default(),
+        delegation: None,
         upstream_body: std::sync::Arc::new(json!({"input": []})),
         auth: crate::config::AuthMode::ApiKey,
         codex_quota_account: None,
@@ -1188,6 +1219,9 @@ async fn http_events_stream_relays_crlf_framed_upstream() {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
             upstream_body,
             auth: crate::config::AuthMode::ApiKey,
             codex_quota_account: None,
@@ -1275,6 +1309,9 @@ async fn http_events_stream_records_the_sample_at_classification() {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: crate::config::AuthMode::ApiKey,
             codex_quota_account: None,
@@ -1317,6 +1354,9 @@ async fn http_events_stream_records_the_terminal_status_of_a_classified_failure(
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: crate::config::AuthMode::ApiKey,
             codex_quota_account: None,
@@ -1351,6 +1391,9 @@ async fn http_events_stream_records_the_credential_resolution_failure_status() {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: crate::config::AuthMode::ApiKey,
             codex_quota_account: None,
@@ -1456,6 +1499,9 @@ async fn a_terminal_status_defers_its_error_body_read() {
             header: crate::config::ApiKeyHeader::Bearer,
         }),
         session_id: None,
+        window_key: None,
+        compact: crate::request::CompactionMark::default(),
+        delegation: None,
         upstream_body: std::sync::Arc::new(json!({"input": []})),
         auth: crate::config::AuthMode::ApiKey,
         codex_quota_account: None,
@@ -1498,6 +1544,9 @@ async fn a_stalled_terminal_error_body_never_delays_the_latency_sample() {
             policy: crate::retry::RetryPolicy::DISABLED,
             credential: None,
             session_id: None,
+            window_key: None,
+            compact: crate::request::CompactionMark::default(),
+            delegation: None,
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: crate::config::AuthMode::ApiKey,
             codex_quota_account: None,

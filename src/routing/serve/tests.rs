@@ -594,6 +594,171 @@ mod caller_attribution {
     }
 }
 
+/// F9: the round-0 include force keys on the chatgpt flavor alone, so a judge
+/// or classifier consult to a chatgpt-flavor target requests encrypted
+/// reasoning it never round-trips — and the blobs count against
+/// `judge_max_response_bytes`. The discriminator between an internal call and
+/// a client turn is the request body's origin: consults build fresh bodies,
+/// while a client's turn is armed by the proxy entry — so the internal call
+/// must send NO `include`.
+///
+/// The judge target here is the built-in codex provider (chatgpt flavor) on a
+/// mock, so the consult's dispatch goes through the Responses translation the
+/// force lives in; the verdict text rides a `response.output_text.delta`, the
+/// same shape a real chatgpt judge replies with.
+mod internal_calls_do_not_force_encrypted_reasoning {
+    use std::collections::BTreeMap;
+
+    use axum::http::HeaderMap;
+    use serde_json::json;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    use base64::Engine as _;
+
+    use crate::config::{Config, ModelConfig};
+    use crate::proxy::failover::InboundContext;
+    use crate::routing::judge::{consult, JudgeOutcome};
+    use crate::routing::serve::AdmittedContext;
+    use crate::routing::stage::StageTier;
+
+    use super::judge_fixture;
+
+    const ROUTER_ID: &str = "claude-auto-chatgpt-judge";
+
+    #[tokio::test]
+    async fn a_judge_consult_to_a_chatgpt_target_does_not_request_encrypted_reasoning() {
+        // The env vars below are the codex store's own test env; its
+        // TEST_ENV_LOCK serializes them against every other reader/writer of
+        // those names in this binary.
+        let _env = crate::auth::codex::store::TEST_ENV_LOCK.lock().await;
+        let unique = format!(
+            "shunt-f9-judge-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let accounts = std::env::temp_dir().join(format!("{unique}-accounts"));
+        std::fs::create_dir_all(&accounts).unwrap();
+        let auth = std::env::temp_dir().join(format!("{unique}-auth.json"));
+        let payload = json!({
+            "exp": 4_102_444_800u64,
+            "https://api.openai.com/auth": {"chatgpt_account_id": "acct_f9"}
+        });
+        std::fs::write(
+            &auth,
+            serde_json::to_vec(&json!({
+                "tokens": {
+                    "access_token": format!(
+                        "x.{}.y",
+                        base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .encode(serde_json::to_vec(&payload).unwrap())
+                    ),
+                    "refresh_token": "refresh-xyz",
+                    "account_id": "acct_f9"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let _accounts_dir =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts);
+        let _auth_file = crate::auth::shared::EnvVarGuard::set("CODEX_AUTH_FILE", &auth);
+
+        let judge = MockServer::start().await;
+        let crux = json!({
+            "crux": "bounded task",
+            "primary_rule": "SUP-1",
+            "capability_boundary": "supported",
+            "p_solve": 0.1,
+        });
+        let delta = json!({"delta": serde_json::to_string(&crux).unwrap()}).to_string();
+        let sse = format!(
+            "event: response.created\ndata: {{\"response\":{{\"id\":\"resp_1\",\"usage\":{{\"output_tokens\":0}}}}}}\n\nevent: response.output_text.delta\ndata: {delta}\n\nevent: response.completed\ndata: {{\"response\":{{\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}}}\n\ndata: [DONE]\n\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/codex/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(sse))
+            .mount(&judge)
+            .await;
+
+        let stage = judge_fixture::stage();
+        let mut config = Config {
+            models: vec![
+                ModelConfig {
+                    subagents: None,
+                    id: ROUTER_ID.to_string(),
+                    display_name: None,
+                    upstream_model: None,
+                    router: Some(crate::config::RouterConfig::StageRouter(stage.clone())),
+                    stage_router: None,
+                },
+                ModelConfig {
+                    subagents: None,
+                    id: "judge-alias".to_string(),
+                    display_name: None,
+                    upstream_model: Some(BTreeMap::from([(
+                        "codex".to_string(),
+                        "gpt-5.2-codex".to_string(),
+                    )])),
+                    router: None,
+                    stage_router: None,
+                },
+            ],
+            ..Config::default()
+        };
+        // The built-in codex provider is the chatgpt-flavor one: its auth stays
+        // ChatgptOauth (which is what makes the flavor chatgpt and the path
+        // /codex/responses), pointed at the mock, with the fake login above for
+        // the credential.
+        let codex = config.providers.get_mut("codex").unwrap();
+        codex.base_url = judge.uri();
+        config.server.default_provider = "codex".to_string();
+        let state = crate::server::AppState::new(config, reqwest::Client::new())
+            .expect("the config is valid");
+
+        let inbound = InboundContext::internal();
+        let headers = HeaderMap::new();
+        let admitted = AdmittedContext::mint(&inbound, &headers, ROUTER_ID);
+        let request = json!({
+            "model": ROUTER_ID,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        });
+        let classifier = stage
+            .classifier
+            .as_ref()
+            .expect("the fixture names a judge");
+
+        let outcome = consult(&state, &admitted, &stage, classifier, &request).await;
+
+        // The flow worked: the consult dispatched, and the verdict parsed.
+        assert_eq!(
+            outcome,
+            JudgeOutcome::Decided(StageTier::Capable),
+            "a `p_solve` under the threshold is the judge declining the efficient tier"
+        );
+        let requests = judge
+            .received_requests()
+            .await
+            .expect("mock records requests");
+        assert_eq!(requests.len(), 1, "the consult dispatched exactly once");
+        // The chatgpt-flavor path compresses its request body (issue #285), so
+        // the include assertion reads the decompressed body.
+        let raw = zstd::decode_all(requests[0].body.as_slice()).expect("the body is zstd");
+        let body: serde_json::Value =
+            serde_json::from_slice(&raw).expect("the upstream body is JSON");
+        assert!(
+            body.get("include").is_none(),
+            "an internal call must not request encrypted reasoning: {body}"
+        );
+    }
+}
+
 /// `judge_max_response_bytes` has to bound what the call *allocates*, not just
 /// what reaches the JSON parser.
 ///
@@ -605,23 +770,19 @@ mod caller_attribution {
 /// [`super::bounds::collect_bounded`] ran on its output, so the cap bounded the
 /// parser's input and nothing else.
 ///
-/// The oracle is the outcome *label*, because a finite oversized body is
+/// The oracle is the outcome *label*, because a terminated oversized body is
 /// refused by the collector too and so cannot tell the two caps apart. This
-/// judge answers `200` and then streams for as long as anyone reads. Capped at
-/// the read, the call reports `oversized` in milliseconds, having taken a
-/// little over the cap. Uncapped, the adapter drains whatever the upstream
-/// sends and the call ends on whatever that drain produces — the deadline, or
-/// the abandoned connection — which is some other operator's key for an
-/// upstream that is not slow and did not fail.
+/// judge answers `200`, attempts complete chunk frames carrying one chunk more
+/// than the default `judge_max_response_bytes`, and deliberately omits the
+/// terminating zero chunk. Capped at
+/// the read, the call reports `oversized` in milliseconds and closes the
+/// unfinished response. Uncapped, the adapter waits for the missing terminator
+/// until the deadline and reports a different operator key.
 ///
 /// In-crate rather than in `tests/router_judge.rs` for the same reason
 /// [`caller_attribution`] is: it asserts on shunt's own view of the call rather
 /// than on what a client sees, and a fail-open looks identical from outside.
 mod oversized_reply {
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
     use std::time::{Duration, Instant};
 
     use axum::http::HeaderMap;
@@ -629,6 +790,7 @@ mod oversized_reply {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
+        sync::oneshot,
     };
 
     use crate::proxy::failover::InboundContext;
@@ -638,27 +800,23 @@ mod oversized_reply {
     use super::judge_fixture;
 
     const ROUTER_ID: &str = "claude-auto-oversized-reply";
-    /// A ceiling on the mock's own output, so a regression cannot turn this
-    /// test into a runaway writer. Far above `judge_max_response_bytes`
-    /// (64 KiB) and far below what an uncapped read would drain in two seconds.
-    const MOCK_WRITE_CEILING: usize = 4 * 1024 * 1024;
 
-    /// A judge that commits `200 application/json` and then streams a chunked
-    /// body that never ends.
+    const CHUNK: usize = 4096;
+    /// `judge_fixture::stage()` keeps the default reply cap, so this many
+    /// chunks cross it by exactly one.
+    const CHUNKS: usize = crate::config::DEFAULT_JUDGE_MAX_RESPONSE_BYTES / CHUNK + 1;
+
+    /// A judge that commits `200 application/json`, attempts `CHUNKS` complete
+    /// chunks, and leaves the chunked response unfinished.
     ///
-    /// A raw socket because no mock server can express "valid headers, then
-    /// more body than anyone asked for, forever" — and the endlessness is the
-    /// point: a finite oversized body is refused by the collector too, so it
-    /// could not tell the two caps apart.
-    ///
-    /// Returns the counter of bytes it managed to write, which is the second
-    /// half of the assertion: it is the memory the uncapped read would have
-    /// taken.
-    async fn endless_reply_judge() -> (String, Arc<AtomicUsize>) {
+    /// The bounded payload crosses the cap without a runaway producer.
+    /// Omitting the terminating zero chunk makes an uncapped reader wait for
+    /// the deadline, while the capped reader drops the body and closes the
+    /// connection.
+    async fn unfinished_reply_judge() -> (String, oneshot::Receiver<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let written = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&written);
+        let (closed, closed_rx) = oneshot::channel();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("the judge call connects");
             let mut buffer = [0u8; 8192];
@@ -666,28 +824,32 @@ mod oversized_reply {
             let _ = socket.read(&mut buffer).await;
             let head: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n";
             if socket.write_all(head).await.is_err() {
+                let _ = closed.send(());
                 return;
             }
-            // 4 KiB of chunk payload at a time: enough that the 64 KiB cap is
-            // crossed within the first handful, small enough that the writer
-            // notices a closed peer promptly.
-            let mut chunk = Vec::with_capacity(4096 + 8);
-            chunk.extend_from_slice(b"1000\r\n");
-            chunk.extend_from_slice(&[b'a'; 4096]);
+            let mut chunk = format!("{CHUNK:x}\r\n").into_bytes();
+            chunk.extend_from_slice(&[b'a'; CHUNK]);
             chunk.extend_from_slice(b"\r\n");
-            while counter.load(Ordering::Relaxed) < MOCK_WRITE_CEILING {
+            for _ in 0..CHUNKS {
                 if socket.write_all(&chunk).await.is_err() {
-                    break;
+                    let _ = closed.send(());
+                    return;
                 }
-                counter.fetch_add(4096, Ordering::Relaxed);
             }
+            loop {
+                match socket.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            let _ = closed.send(());
         });
-        (format!("http://{addr}"), written)
+        (format!("http://{addr}"), closed_rx)
     }
 
     #[tokio::test]
-    async fn an_endless_judge_reply_is_refused_at_the_cap_not_at_the_deadline() {
-        let (judge_url, written) = endless_reply_judge().await;
+    async fn an_unfinished_judge_reply_is_refused_at_the_cap_not_at_the_deadline() {
+        let (judge_url, closed) = unfinished_reply_judge().await;
         let stage = judge_fixture::stage();
         let state = judge_fixture::state(ROUTER_ID, judge_url, &stage);
         let classifier = stage
@@ -719,14 +881,10 @@ mod oversized_reply {
             elapsed < Duration::from_millis(2_000),
             "the refusal is the cap's, not the deadline's, but took {elapsed:?}"
         );
-        // The upstream never got to hand over more than a small multiple of the
-        // cap: whatever the socket buffers absorbed before the abandoned read
-        // closed the connection.
-        let written = written.load(Ordering::Relaxed);
-        assert!(
-            written < MOCK_WRITE_CEILING,
-            "the whole body was still being drained: the judge wrote {written} bytes"
-        );
+        tokio::time::timeout(Duration::from_secs(3), closed)
+            .await
+            .expect("the capped read closes the unfinished upstream response promptly")
+            .expect("the judge reports the peer close");
     }
 
     /// A judge that announces a body far over the cap and then sends none of
@@ -792,5 +950,32 @@ mod oversized_reply {
             "the refusal comes from the headers, well inside the 2s deadline, \
              but took {elapsed:?}"
         );
+    }
+}
+
+mod judge_header_marks {
+    //! The compaction mark is the client turn's: judge and advisor calls must
+    //! never carry it, so their handshakes never advance the conversation's
+    //! window (round-2 ruling).
+
+    use super::super::judge_headers;
+    use crate::routing::context::CONTEXT_COMPACTED_HEADER;
+    use crate::server::AppState;
+
+    #[test]
+    fn a_judge_call_does_not_carry_the_callers_compaction_mark() {
+        use axum::http::{HeaderMap, HeaderValue};
+        let state = AppState::new(crate::config::Config::default(), reqwest::Client::new())
+            .expect("default config builds");
+        let mut caller = HeaderMap::new();
+        caller.insert("anthropic-beta", HeaderValue::from_static("feature"));
+        caller.insert(CONTEXT_COMPACTED_HEADER, HeaderValue::from_static("auto"));
+        let headers = judge_headers(&state, &caller);
+        assert!(
+            headers.get(CONTEXT_COMPACTED_HEADER).is_none(),
+            "judge and advisor calls never carry the compaction mark"
+        );
+        // The other deliberate removals still apply beside it.
+        assert!(headers.get("anthropic-beta").is_none());
     }
 }

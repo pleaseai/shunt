@@ -69,9 +69,9 @@ When opted in, shunt registers three Responses routes mapping to one passthrough
 
 | Method | Path |
 | :-- | :-- |
-| `POST` | `/backend-api/codex/responses` |
-| `POST` | `/responses` |
-| `POST` | `/v1/responses` |
+| `GET`, `POST` | `/backend-api/codex/responses` |
+| `GET`, `POST` | `/responses` |
+| `GET`, `POST` | `/v1/responses` |
 
 Three Responses paths exist because the Codex CLI always appends `/responses` to whatever `base_url` it is
 pointed at: a base ending in `/backend-api/codex` produces `/backend-api/codex/responses` (the
@@ -152,10 +152,13 @@ narrower path:
   So the routed request is built from scratch: only `content-type` (defaulted to
   `application/json`) and `accept` come from the client. Added to that are the resolved credential
   and whatever identity the *routed upstream itself* gates on: `OpenAI-Beta: responses=experimental`
-  under the same flavor gate the outbound path uses (skipped for xAI/Grok), and — for an
-  `xai_oauth` route — the four Grok-CLI headers the subscription chat proxy requires, shared with
-  the outbound path so the two cannot drift. Everything else is dropped by construction, so a header
-  added later cannot start reaching a third party because nobody remembered to deny it.
+  under the same flavor gate the outbound path uses (skipped for xAI/Grok), for an `xai_oauth` route
+  the four Grok-CLI headers the subscription chat proxy requires, and for an `api_key` route to the
+  stock OpenAI host (`api.openai.com` exactly) the four session-affinity headers (`session-id`,
+  `thread-id`, `x-client-request-id`, `x-codex-window-id`) generated from the resolved conversation
+  id. The client's own `session-id` and `x-codex-*` stay stripped in every case — a stock-OpenAI
+  route's headers are generated, never forwarded. Everything else is dropped by construction, so a
+  header added later cannot start reaching a third party because nobody remembered to deny it.
 - **Body `model` rewrite.** When the route's `upstream_model` differs from what the client asked
   for, shunt parses the body, replaces the top-level `model`, and re-serializes it. Every other
   field is preserved. A body that is not a JSON object cannot be rewritten and is rejected with a
@@ -209,8 +212,12 @@ the Codex CLI speaks the same wire protocol to shunt that it would speak directl
 Because the inbound client **is** a real Codex CLI (unlike the `/v1/messages` path, where shunt
 *impersonates* one), the passthrough forwards the client's **own request headers verbatim** rather
 than synthesizing them. shunt's translating path builds a fresh request with a hardcoded Codex
-identity (`originator=codex_cli_rs`, `user-agent=codex_cli_rs/0.156.0`, `version=0.156.0`,
-`OpenAI-Beta: responses=experimental`, and session/window headers derived from the session id); the
+identity (`originator=codex_cli_rs`, `user-agent=codex_cli_rs/0.159.3`, `version=0.159.3`,
+`OpenAI-Beta: responses=experimental`) and session/window headers derived from the resolved
+conversation id — a routed request that arrives with the CLI's own `thread-id`,
+`x-client-request-id`, or `x-codex-window-id` keeps those values verbatim, and only the absent
+ones are generated (`session-id` always stays shunt's resolved id, so it equals the body's
+`prompt_cache_key`); the
 inbound passthrough does **not** — it forwards whatever `version`, `originator`, `user-agent`,
 `OpenAI-Beta`, `session-id`, `thread-id`, `x-codex-window-id`, `x-codex-*`, `content-type`, and
 `accept` the Codex CLI sent, so the client's **real** version drives the backend's
@@ -309,11 +316,28 @@ failover, no `x-shunt-account` header — mirroring M10's existing single-accoun
 outbound path. A user with one Codex login therefore works out of the box the moment
 `[server.codex_endpoint]` is set, with no account configuration at all.
 
-## Transport: HTTP/SSE only
+## Transports: HTTP/SSE and WebSocket
 
-Even if the configured provider sets `websocket = true`, this endpoint always uses the HTTP path.
-The experimental [Codex WebSocket v2 transport](m7-codex-websocket.md) is out of scope for
-M11 and is tracked as a follow-up (see below).
+Each of the three Responses paths serves two inbound transports, independent of whether the
+configured provider sets the outbound `websocket = true`
+([Codex WebSocket v2 transport](m7-codex-websocket.md)):
+
+- **HTTP `POST`** — the byte-faithful passthrough described above.
+- **WebSocket `GET` upgrade** — authentication completes before `101 Switching Protocols`. On an
+  open socket, a `response.create` frame with `generate: false` is a warmup answered locally; a
+  live `response.create` reuses the HTTP account pool, forces `stream: true` upstream, and
+  forwards each upstream SSE `data:` payload as one WebSocket text frame through the first
+  terminal event (`response.completed`, `response.done`, `response.failed`,
+  `response.incomplete`, or `error`). Replacing a turn or closing the socket cancels the active
+  upstream body. Client frames and SSE events are capped at 4 MiB, and protocol or upstream
+  failures arrive as standalone `type: "error"` frames carrying only safe response metadata.
+  Failures before the upgrade (missing client token, a handshake without valid upgrade headers,
+  an endpoint disabled by reload) return the OpenAI Responses error shape over HTTP.
+
+Without `[server.auth]`, a browser-originated upgrade is admitted only when its `Origin` matches
+the `Host` header. That check cannot tell `http` from `https` on the same host — shunt does not
+see the client-facing scheme when TLS terminates at a proxy — so gate the endpoint with
+`[server.auth]` for anything beyond loopback.
 
 ## Reload behavior
 
@@ -366,9 +390,6 @@ shunt this way — shunt supplies the account from its own pool, not the CLI's l
 
 ## Out of scope / follow-up
 
-- **WebSocket transport.** This endpoint is HTTP/SSE-only even when the target provider has
-  `websocket = true`; wiring the inbound path onto the
-  [Codex WebSocket v2 transport](m7-codex-websocket.md) is a separate follow-up.
 - **Chat-Completions-only upstreams.** A route may only name an upstream that natively implements
   the **Responses** API. The endpoint relays raw Responses bytes, so a provider that speaks only
   `/chat/completions` cannot serve them yet (the adapter exists, see the translation bullet below). Vendors

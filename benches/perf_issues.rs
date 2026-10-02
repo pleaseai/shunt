@@ -218,6 +218,7 @@ fn responses_translate(bencher: divan::Bencher, size: usize) {
             ResponsesFlavor::Chatgpt,
             false,
             None,
+            true,
         )
         .unwrap()
     });
@@ -234,6 +235,7 @@ fn responses_translate_and_serialize_once(bencher: divan::Bencher, size: usize) 
             ResponsesFlavor::Chatgpt,
             false,
             None,
+            true,
         )
         .unwrap();
         translated.to_string()
@@ -257,6 +259,7 @@ fn parse_once_http_front(body: &[u8], config: &Config, route: &Route) -> String 
         ResponsesFlavor::Chatgpt,
         false,
         None,
+        true,
     )
     .to_string()
 }
@@ -280,6 +283,7 @@ fn pre_parse_once_http_responses_cpu_front(bencher: divan::Bencher, size: usize)
             ResponsesFlavor::Chatgpt,
             false,
             None,
+            true,
         )
         .unwrap();
         translated.to_string()
@@ -307,6 +311,7 @@ fn continuation_fixture(size: usize) -> (StoredContinuation, Value) {
         ResponsesFlavor::Chatgpt,
         false,
         None,
+        true,
     )
     .unwrap();
     let input = translated.get("input").and_then(Value::as_array).unwrap();
