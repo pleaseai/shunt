@@ -230,14 +230,19 @@ pub fn terminal_status_from_type(type_str: &str) -> Option<TerminalStatus> {
 pub enum SseFrameError {
     #[error("upstream SSE frame exceeded {0} bytes")]
     TooLarge(usize),
-    #[error("upstream SSE chunk exceeded {0} frame limit")]
+    #[error("upstream SSE chunk exceeded {0} empty frame limit")]
     CountLimit(usize),
 }
 
 /// Byte-bounded SSE block framer scanning across arbitrary chunk boundaries.
 pub struct BoundedSseFrameBuffer {
     max_frame_bytes: usize,
-    max_frames_per_feed: usize,
+    /// Cap on delimiter-only (empty) blocks per [`Self::feed`], which guards
+    /// against a run of blank lines turning a few bytes into one allocation
+    /// each. Blocks with content are not counted: they are already bounded by
+    /// `max_frame_bytes` and by the chunk's own length, and counting them made
+    /// a valid stream fail or pass depending on how its bytes were chunked.
+    max_empty_blocks_per_feed: usize,
     delimiter_tail: Vec<u8>,
     candidate: Vec<u8>,
     disposed: bool,
@@ -246,10 +251,10 @@ pub struct BoundedSseFrameBuffer {
 impl BoundedSseFrameBuffer {
     pub fn new(max_frame_bytes: usize) -> Self {
         assert!(max_frame_bytes > 0, "max_frame_bytes must be positive");
-        let max_frames_per_feed = (max_frame_bytes / 1024).max(1);
+        let max_empty_blocks_per_feed = (max_frame_bytes / 1024).max(1);
         Self {
             max_frame_bytes,
-            max_frames_per_feed,
+            max_empty_blocks_per_feed,
             delimiter_tail: Vec::new(),
             candidate: Vec::new(),
             disposed: false,
@@ -312,6 +317,7 @@ impl BoundedSseFrameBuffer {
 
         let mut index = 0;
         let mut retained_through = 0;
+        let mut empty_blocks = 0;
 
         let result = (|| -> Result<(), SseFrameError> {
             while index < total_len {
@@ -320,14 +326,17 @@ impl BoundedSseFrameBuffer {
                     None => break,
                     Some(0) => index += 1,
                     Some(len) => {
-                        if frames.len() >= self.max_frames_per_feed {
-                            let max_frames = self.max_frames_per_feed;
-                            self.clear();
-                            self.disposed = true;
-                            return Err(SseFrameError::CountLimit(max_frames));
-                        }
                         retain_range(self, retained_through, index)?;
                         let block = std::mem::take(&mut self.candidate);
+                        if block.is_empty() {
+                            empty_blocks += 1;
+                            if empty_blocks > self.max_empty_blocks_per_feed {
+                                let max_empty = self.max_empty_blocks_per_feed;
+                                self.clear();
+                                self.disposed = true;
+                                return Err(SseFrameError::CountLimit(max_empty));
+                            }
+                        }
                         frames.push(block);
                         index += len;
                         retained_through = index;
