@@ -77,7 +77,9 @@ struct KeySnapshot {
 
 #[derive(Default)]
 struct FetchState {
-    /// Resolved once per issuer, from config or discovery.
+    /// The discovered `jwks_uri` the current key set was fetched from.
+    /// Recorded only after a successful fetch, so a discovery outage falls
+    /// back to an endpoint that has actually served keys.
     jwks_url: Option<String>,
     /// When a fetch was last *attempted*, successful or not, so a failing
     /// issuer is rate-limited exactly like a succeeding one.
@@ -183,28 +185,40 @@ impl JwksCache {
 
         // A discovered `jwks_uri` is re-resolved when the set expires, so a
         // URI the issuer moved is picked up; a configured URL never changes.
+        // Discovery is also redone while no set has been fetched yet, so a
+        // document that once advertised a broken endpoint does not pin it.
+        // When re-discovery fails, the URI the cached set came from is still
+        // the best guess: a discovery outage must not also block key rotation
+        // on a JWKS endpoint that is still up.
         let fetched = match (&rule.jwks_url, &state.jwks_url) {
             (Some(url), _) => Ok(url.clone()),
-            (None, Some(url)) if !stale => Ok(url.clone()),
-            (None, _) => self.resolve_jwks_url(rule).await,
+            (None, Some(url)) if !stale && snapshot.is_some() => Ok(url.clone()),
+            (None, previous) => match self.resolve_jwks_url(rule).await {
+                Ok(url) => Ok(url),
+                Err(JwksUnavailable) => previous.clone().ok_or(JwksUnavailable),
+            },
         };
         let fetched = match fetched {
-            Ok(url) => {
-                state.jwks_url = Some(url.clone());
-                self.fetch_jwks(&url).await.map_err(|error| {
+            Ok(url) => match self.fetch_jwks(&url).await {
+                Ok(keys) => Ok((url, keys)),
+                Err(error) => {
                     tracing::warn!(
                         issuer = %rule.issuer,
                         error = %error,
                         "inbound JWT: JWKS fetch failed"
                     );
-                })
-            }
+                    Err(())
+                }
+            },
             Err(JwksUnavailable) => Err(()),
         };
         match fetched {
-            Ok(keys) => {
+            Ok((url, keys)) => {
                 // Replace, never merge: a kid the issuer dropped must stop
                 // verifying.
+                if rule.jwks_url.is_none() {
+                    state.jwks_url = Some(url);
+                }
                 let keys = Arc::new(keys);
                 *entry
                     .snapshot

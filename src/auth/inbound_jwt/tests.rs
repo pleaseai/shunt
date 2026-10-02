@@ -978,6 +978,156 @@ async fn a_moved_discovered_jwks_uri_is_picked_up_after_the_max_age() {
     );
 }
 
+#[tokio::test]
+async fn a_cold_cache_rediscovers_after_the_advertised_jwks_uri_failed() {
+    let server = MockServer::start().await;
+    let issuer = server.uri();
+    let mount_discovery = |jwks_path: &'static str| {
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "jwks_uri": format!("{issuer}{jwks_path}"),
+            })))
+    };
+    // Discovery first advertises an endpoint that fails (unmounted → 404).
+    mount_discovery("/keys-broken").mount(&server).await;
+    let mut config = entry(&issuer, "");
+    config.jwks_url = None;
+    let auth = auth_with(vec![config], None);
+    let cache = JwksCache::with_max_age(Duration::from_millis(150));
+    let token = token(&claims(&issuer));
+
+    assert_eq!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Unavailable
+    );
+    // The issuer fixes its discovery document; nothing has been cached yet.
+    server.reset().await;
+    mount_discovery("/keys").mount(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(jwks()))
+        .mount(&server)
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert!(matches!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Verified { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_discovery_outage_falls_back_to_the_uri_that_last_served_keys() {
+    let server = MockServer::start().await;
+    let issuer = server.uri();
+    let mount_discovery = |jwks_path: &'static str| {
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "jwks_uri": format!("{issuer}{jwks_path}"),
+            })))
+    };
+    let mut retired = jwks();
+    retired["keys"][0]["kid"] = json!("key-retired");
+    let mount_keys_a = |document: serde_json::Value| {
+        Mock::given(method("GET"))
+            .and(path("/keys-a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(document))
+    };
+    mount_discovery("/keys-a").mount(&server).await;
+    mount_keys_a(retired.clone()).mount(&server).await;
+    let mut config = entry(&issuer, "");
+    config.jwks_url = None;
+    let auth = auth_with(vec![config], None);
+    let cache = JwksCache::with_max_age(Duration::from_millis(150));
+    let token = token(&claims(&issuer));
+
+    // `/keys-a` serves a set without the token's kid.
+    assert_eq!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Rejected
+    );
+    // Discovery now advertises `/keys-b`, which fails; the set from `/keys-a`
+    // keeps serving.
+    server.reset().await;
+    mount_discovery("/keys-b").mount(&server).await;
+    mount_keys_a(retired).mount(&server).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Rejected
+    );
+    // Discovery goes down and `/keys-a` rotates in the token's kid: the
+    // fallback is the URI that last served keys, not the one that never did.
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    mount_keys_a(jwks()).mount(&server).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert!(matches!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Verified { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_discovery_outage_still_refreshes_from_the_last_discovered_jwks_uri() {
+    let server = MockServer::start().await;
+    let issuer = server.uri();
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": issuer,
+            "jwks_uri": format!("{issuer}/keys"),
+        })))
+        .mount(&server)
+        .await;
+    // The first set publishes the signing key under a kid the token does not
+    // carry, so the token verifies only once the rotated set is fetched.
+    let mut retired = jwks();
+    retired["keys"][0]["kid"] = json!("key-retired");
+    Mock::given(method("GET"))
+        .and(path("/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(retired))
+        .mount(&server)
+        .await;
+    let mut config = entry(&issuer, "");
+    config.jwks_url = None;
+    let auth = auth_with(vec![config], None);
+    let cache = JwksCache::with_max_age(Duration::from_millis(150));
+    let token = token(&claims(&issuer));
+
+    assert_eq!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Rejected
+    );
+    // Discovery goes down; the JWKS endpoint stays up and rotates in `KID_ONE`.
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(jwks()))
+        .mount(&server)
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert!(matches!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Verified { .. }
+    ));
+}
+
 #[test]
 fn only_safe_key_set_endpoints_are_accepted() {
     assert!(super::validate_endpoint("https://issuer.example/jwks").is_ok());

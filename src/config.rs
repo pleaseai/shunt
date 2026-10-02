@@ -3996,11 +3996,19 @@ impl Config {
                 }) {
                     let gateway_issuer = public_url.as_str().trim_end_matches('/');
                     // Both sides normalized: the entry's issuer is stored as
-                    // configured, `public_url` is a bare origin.
+                    // configured, `public_url` is a bare origin. Only a root
+                    // path loses its slash; `https://idp//` is a distinct path,
+                    // not the gateway's origin.
                     if let Some((index, rule)) =
                         resolved.jwt().iter().enumerate().find(|(_, rule)| {
                             reqwest::Url::parse(&rule.issuer)
-                                .map(|url| url.as_str().trim_end_matches('/').to_string())
+                                .map(|url| {
+                                    if url.path() == "/" {
+                                        url.as_str().trim_end_matches('/').to_string()
+                                    } else {
+                                        url.as_str().to_string()
+                                    }
+                                })
                                 .unwrap_or_else(|_| rule.issuer.clone())
                                 == gateway_issuer
                         })
@@ -12978,6 +12986,30 @@ routes:
         assert!(matches!(
             config.validate().unwrap_err(),
             ConfigError::InboundJwtCollidesWithGateway { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_issuer_with_a_double_slash_path_does_not_collide_with_the_gateway() {
+        // Only a root path is normalized: `https://gw.example//` is its own
+        // issuer, not the gateway's bare origin.
+        let env = unset_tokens_env("ISSUER_DOUBLE_SLASH");
+        let mut entry = jwt_entry();
+        entry.issuer = "https://gw.example//".to_string();
+        // The entry itself is valid, so the assertion below reaches the
+        // collision check rather than an earlier rejection of the issuer.
+        let resolved = auth_with_jwt(vec![entry.clone()], &env).resolve().unwrap();
+        assert_eq!(resolved.jwt()[0].issuer, "https://gw.example//");
+        let mut config = Config::default();
+        config.server.auth = Some(auth_with_jwt(vec![entry], &env));
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gw.example".to_string(),
+            ..gateway_config()
+        });
+
+        assert!(!matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InboundJwtCollidesWithGateway { .. }
         ));
     }
 

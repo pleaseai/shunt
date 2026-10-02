@@ -120,11 +120,14 @@ rate-limited the same way. When a fetch fails but a previously-fetched key set i
 that cache is still the best available answer and an unknown `kid` remains a `401`.
 
 A cached key set is trusted for at most **5 minutes** (`KEY_SET_MAX_AGE`). After that, the
-next request that needs it refetches first — under the same 60-second floor — and a
-successful refetch replaces the set outright, so a key the issuer withdrew (a compromised
+next request that needs it attempts a refresh first — subject to the same 60-second floor,
+inside which the expired set keeps answering — and a successful refresh replaces the set outright, so a key the issuer withdrew (a compromised
 signing key is the case that matters) stops verifying within about five minutes. A
 discovered `jwks_uri` is re-resolved on the same refresh, so an issuer that moves its key
-set is followed. If the refresh fails, the expired set keeps serving and a warning is
+set is followed, and on every attempt while no key set has been fetched yet, so a discovery
+document that once advertised a broken endpoint does not pin it. When discovery itself
+fails, the last discovered `jwks_uri` is tried instead: a discovery outage must not also
+block a key rotation on a JWKS endpoint that is still up. If the refresh fails, the expired set keeps serving and a warning is
 logged: an IdP outage must not become a total outage, at the cost that a withdrawn key stays
 trusted until the issuer is reachable again.
 
@@ -133,17 +136,19 @@ one issuer's outage must not deny the others, two entries for one issuer that na
 different endpoints keep separate key sets, and a reload that changes an entry's `jwks_url`
 stops using the old endpoint's keys. The cache lives on `AppState` (beside `admin_stores` and
 `gateway_stores`) rather than on the hot-reloaded `InboundAuth`, so a config reload that
-leaves an entry's endpoint alone keeps its keys — otherwise a reload would refetch every
+leaves an entry's issuer and endpoint alone keeps its keys — otherwise a reload would refetch every
 configured issuer, and could be repeated to make shunt do so.
 
 ### Status codes
 
 - **`401`** — no credential, or one that verified against no entry. Every failure reason
   collapses into one response; nothing discloses which check failed.
-- **`503`** — a matching entry's key set could not be fetched and no entry verified the
-  token. This holds even when another, reachable entry for the same issuer rejected it: two
-  entries for one issuer may differ in `audience` or allowlist, so the unreachable one might
-  have accepted the token, and a `401` would misreport an outage as a bad credential.
+- **`503`** — a matching entry has no cached key set and could not fetch one, and no entry
+  verified the token. An entry whose refresh failed but still holds an expired set is not
+  unavailable: it answers from that set, so a token it rejects is a `401`. The `503` holds
+  even when another, reachable entry for the same issuer rejected the token: two entries for
+  one issuer may differ in `audience` or allowlist, so the unreachable one might have
+  accepted it, and a `401` would misreport an outage as a bad credential.
 
 The distinction matters operationally. A `401` for an IdP outage sends an operator hunting a
 credential that is fine.
