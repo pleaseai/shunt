@@ -100,7 +100,7 @@ email_domains = ["example.com"]
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `issuer` | required | Exact `iss` match. Must use HTTPS, except HTTP on loopback; a path is allowed |
+| `issuer` | required | Exact `iss` match. Must use HTTPS, except HTTP on `localhost` or `127.0.0.1`; a path is allowed |
 | `audience` | required | Accepted `aud` values, as a string or an array |
 | `email_domains` | `[]` | Case-insensitive domains, matched **exactly** against the part after the final `@` — never as a suffix |
 | `allowed_emails` | `[]` | Case-insensitive full email addresses |
@@ -114,9 +114,9 @@ Each entry needs `issuer`, `audience`, and at least one `email_domains` or `allo
 
 Once at least one entry exists, `tokens_env` may resolve empty: a deployment authenticating entirely through an IdP has no static tokens to set. With neither a resolvable token list nor an entry, `[server.auth]` still fails startup.
 
-A JWT is accepted **only** in `Authorization: Bearer` — not in the configured `header` and not in `x-api-key` — which is the slot Claude Code already sends `ANTHROPIC_AUTH_TOKEN` in. On a gated route the static token is checked first, then the gateway JWT where that route accepts it, then JWT entries by `iss`. Verification pins the algorithm from config (the token header's `alg` never selects it), requires `kid`, and checks `exp`/`nbf`, `aud`, `azp`, `exp - iat`, `email_verified = true`, and the email allowlist. The verified email becomes the caller identity in logs and usage attribution, capped at 256 bytes.
+A JWT is accepted **only** in `Authorization: Bearer` — not in the configured `header` and not in `x-api-key` — which is the slot Claude Code already sends `ANTHROPIC_AUTH_TOKEN` in. On a gated route the static token is checked first, then the gateway JWT where that route accepts it, then JWT entries by `iss`. Verification pins the algorithm from config (the token header's `alg` never selects it), requires `kid`, and checks `exp`/`nbf`, `aud`, `azp`, `exp - iat`, `email_verified = true`, and the email allowlist. The verified email becomes the caller identity in logs and usage attribution; an address longer than 256 bytes is rejected rather than truncated. Gated routes are the ones `[server.auth]` already guards: credential-injecting `/v1/messages` and `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage` (off loopback only), and the inbound Codex endpoint (HTTP, WebSocket, and analytics).
 
-Key sets are fetched lazily on first use per issuer, so an unreachable IdP does not block startup, and are cached for the process lifetime — a config reload re-resolves the entries without discarding keys. An unknown `kid` triggers at most one refetch per 60-second window per issuer. A token that verifies against no entry is `401`; an issuer whose key set cannot be fetched at all is **`503`**, so an IdP outage is not reported as a bad credential.
+Key sets are fetched lazily on first use per issuer, so an unreachable IdP does not block startup. A cached key set is trusted for at most 5 minutes; after that the next request refetches it, and a successful refetch replaces the set, so a key the issuer withdraws stops verifying within about 5 minutes. If the refetch fails, the expired set keeps serving rather than turning an IdP outage into a total one. A config reload keeps cached keys unless an entry's `jwks_url` changed. An unknown `kid` triggers at most one refetch per 60-second window per key set. A token that verifies against no entry is `401`; an issuer whose key set cannot be fetched at all is **`503`**, so an IdP outage is not reported as a bad credential.
 
 shunt keeps no revocation state, so a valid token works until it expires: `max_token_age_seconds` is what bounds that, and issuers should mint minutes-scale tokens. Removing a domain or address from the allowlist does take effect on the next request.
 

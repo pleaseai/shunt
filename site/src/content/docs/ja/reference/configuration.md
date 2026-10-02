@@ -64,7 +64,7 @@ email_domains = ["example.com"]
 
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
-| `issuer` | 必須 | `iss` の完全一致。HTTPS 必須（ループバックのみ HTTP 可）、パスは可 |
+| `issuer` | 必須 | `iss` の完全一致。HTTPS 必須（`localhost` と `127.0.0.1` のみ HTTP 可）、パスは可 |
 | `audience` | 必須 | 受け入れる `aud` 値。文字列または配列 |
 | `email_domains` | `[]` | 大文字小文字を区別しないドメイン。最後の `@` の後ろの部分と**完全一致**で、サフィックス一致ではない |
 | `allowed_emails` | `[]` | 大文字小文字を区別しない完全なメールアドレス |
@@ -78,9 +78,9 @@ email_domains = ["example.com"]
 
 エントリが 1 つでもあれば `tokens_env` は空でも構いません — 認証をすべて IdP に任せるデプロイには設定すべき静的トークンがありません。トークンリストもエントリもない場合、`[server.auth]` は従来どおり起動に失敗します。
 
-JWT は **`Authorization: Bearer` でのみ**受け付けます — 設定された `header` でも `x-api-key` でもありません。Claude Code がすでに `ANTHROPIC_AUTH_TOKEN` を送っているスロットです。ゲートされたルートでは、まず静的トークン、そのルートが受け付ける場合は gateway JWT、次に `iss` で JWT エントリの順に確認します。検証はアルゴリズムを config で固定し（トークンヘッダーの `alg` が選ぶことはありません）、`kid` を必須とし、`exp`/`nbf`、`aud`、`azp`、`exp - iat`、`email_verified = true`、メール許可リストを確認します。検証済みのメールがログと使用量の帰属における呼び出し元 identity になり、256 バイトに制限されます。
+JWT は **`Authorization: Bearer` でのみ**受け付けます — 設定された `header` でも `x-api-key` でもありません。Claude Code がすでに `ANTHROPIC_AUTH_TOKEN` を送っているスロットです。ゲートされたルートでは、まず静的トークン、そのルートが受け付ける場合は gateway JWT、次に `iss` で JWT エントリの順に確認します。検証はアルゴリズムを config で固定し（トークンヘッダーの `alg` が選ぶことはありません）、`kid` を必須とし、`exp`/`nbf`、`aud`、`azp`、`exp - iat`、`email_verified = true`、メール許可リストを確認します。検証済みのメールがログと使用量の帰属における呼び出し元 identity になり、256 バイトを超えるアドレスは切り詰めずに拒否します。ゲートされるルートは `[server.auth]` がすでに保護しているルートです: 認証情報を注入する `/v1/messages` と `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`（loopback 以外のみ）、そしてインバウンド Codex エンドポイント（HTTP、WebSocket、analytics）。
 
-key set は issuer ごとに初回使用時に遅延取得されるため、IdP に到達できなくても起動を妨げず、プロセス寿命の間キャッシュされます — config reload はエントリを解決し直すだけで鍵は破棄しません。未知の `kid` は issuer あたり 60 秒のウィンドウで最大 1 回しか再取得を起こしません。どのエントリでも検証できなかったトークンは `401`、key set 自体を取得できない issuer は **`503`** です — IdP の障害が不正な認証情報として報告されることはありません。
+key set は issuer ごとに初回使用時に遅延取得されるため、IdP に到達できなくても起動を妨げません。キャッシュした key set を信頼するのは最大 5 分で、その後は次のリクエストが再取得します。再取得に成功すると key set を丸ごと置き換えるため、issuer が取り下げた鍵は約 5 分以内に検証に使われなくなります。再取得に失敗した場合は、IdP の障害が全面停止に広がらないよう期限切れの key set を使い続けます。config reload は、エントリの `jwks_url` が変わらない限りキャッシュ済みの鍵を保持します。未知の `kid` は key set あたり 60 秒のウィンドウで最大 1 回しか再取得を起こしません。どのエントリでも検証できなかったトークンは `401`、key set 自体を取得できない issuer は **`503`** です — IdP の障害が不正な認証情報として報告されることはありません。
 
 shunt は失効状態を保持しないため、有効なトークンは期限まで使えます。その範囲を制限するのが `max_token_age_seconds` で、issuer は分単位の寿命のトークンを発行すべきです。許可リストからドメインやアドレスを削除した場合は次のリクエストから反映されます。
 

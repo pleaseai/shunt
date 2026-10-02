@@ -44,14 +44,14 @@ email_domains = ["example.com"]
 
 | Key | Required | Default | Meaning |
 | :-- | :-- | :-- | :-- |
-| `issuer` | yes | — | Exact `iss` match. HTTPS, except HTTP on loopback; a path is allowed |
+| `issuer` | yes | — | Exact `iss` match. HTTPS, except HTTP on `localhost` or `127.0.0.1`; a path is allowed |
 | `audience` | yes | — | Accepted `aud` values; a string or an array, so a client-id rotation is not a flag day |
 | `email_domains` | — | `[]` | Case-insensitive **exact** match on the part after the final `@` — never a suffix match |
 | `allowed_emails` | — | `[]` | Case-insensitive full-address match |
 | `algorithms` | — | `["RS256"]` | Accepted signing algorithms. Asymmetric only |
 | `authorized_parties` | — | `audience` | Accepted `azp` values when the claim is present |
 | `clock_skew_seconds` | — | `0` | Tolerance on `exp` and `nbf` |
-| `max_token_age_seconds` | — | `3600` | Reject when `exp - iat` exceeds this |
+| `max_token_age_seconds` | — | `3600` | Reject when `exp - iat` exceeds this; must be greater than zero |
 | `jwks_url` | — | discovery | Explicit JWKS endpoint, for issuers that serve no discovery document |
 
 Validation, all at startup:
@@ -63,6 +63,7 @@ Validation, all at startup:
 3. `algorithms` must be non-empty and must not name a symmetric algorithm (`HS256`, `HS384`,
    `HS512`).
 4. An entry's `issuer` may not equal `[server.gateway] public_url`.
+5. `max_token_age_seconds` must be greater than zero.
 
 Rule 2 is enforced rather than documented because for some issuers `audience` is not an
 authorization decision at all: a GitHub Actions workflow chooses its own `aud`, so any
@@ -97,9 +98,11 @@ replayed as an HMAC secret.
 rule.
 
 **Identity.** The verified `email` becomes the caller identity, in place of the `name` from
-a `name:token` pair. It is capped at 256 bytes: the identity namespaces the account pool's
-sticky key on the inbound Codex endpoint, so an unbounded caller-controlled string there
-would be the failure mode issue #296 records for the Codex `model` label.
+a `name:token` pair. An address over 256 bytes is rejected (`401`), never truncated: the
+identity namespaces the account pool's sticky key on the inbound Codex endpoint, so an
+unbounded caller-controlled string there would be the failure mode issue #296 records for
+the Codex `model` label, and truncation would fold two addresses that share a prefix into
+one identity — and so into one sticky key.
 
 ### Key sets
 
@@ -111,24 +114,36 @@ and both requests share the 10-second budget `gateway/idp_client.rs` uses. A res
 256 KiB is refused rather than truncated: a truncated JWKS would parse as "this issuer has
 fewer keys than it does" and silently reject tokens signed with the ones cut off.
 
-An unknown `kid` triggers at most one refetch per **60-second** window per issuer, so forged
-`kid` values cannot be used to make shunt hammer the issuer. A failed fetch is rate-limited
-the same way. When a fetch fails but a previously-fetched key set is cached, that cache is
-still the best available answer and an unknown `kid` remains a `401`.
+An unknown `kid` triggers at most one refetch per **60-second** window per key set, so
+forged `kid` values cannot be used to make shunt hammer the issuer. A failed fetch is
+rate-limited the same way. When a fetch fails but a previously-fetched key set is cached,
+that cache is still the best available answer and an unknown `kid` remains a `401`.
 
-The cache is per-issuer, and so is the failure domain: one issuer's outage must not deny the
-others. It lives on `AppState` (beside `admin_stores` and `gateway_stores`) rather than on
-the hot-reloaded `InboundAuth`, so a config reload re-resolves the entries without
-discarding keys — otherwise a reload would refetch every configured issuer, and could be
-repeated to make shunt do so.
+A cached key set is trusted for at most **5 minutes** (`KEY_SET_MAX_AGE`). After that, the
+next request that needs it refetches first — under the same 60-second floor — and a
+successful refetch replaces the set outright, so a key the issuer withdrew (a compromised
+signing key is the case that matters) stops verifying within about five minutes. A
+discovered `jwks_uri` is re-resolved on the same refresh, so an issuer that moves its key
+set is followed. If the refresh fails, the expired set keeps serving and a warning is
+logged: an IdP outage must not become a total outage, at the cost that a withdrawn key stays
+trusted until the issuer is reachable again.
+
+The cache is keyed by issuer **and** configured `jwks_url`, and so is the failure domain:
+one issuer's outage must not deny the others, two entries for one issuer that name
+different endpoints keep separate key sets, and a reload that changes an entry's `jwks_url`
+stops using the old endpoint's keys. The cache lives on `AppState` (beside `admin_stores` and
+`gateway_stores`) rather than on the hot-reloaded `InboundAuth`, so a config reload that
+leaves an entry's endpoint alone keeps its keys — otherwise a reload would refetch every
+configured issuer, and could be repeated to make shunt do so.
 
 ### Status codes
 
 - **`401`** — no credential, or one that verified against no entry. Every failure reason
   collapses into one response; nothing discloses which check failed.
-- **`503`** — a matching entry's key set could not be fetched, so no verdict was possible.
-  Reported only when *no* entry reached a verdict: a token a reachable entry rejected is a
-  `401` even if another entry for the same issuer happened to be unreachable.
+- **`503`** — a matching entry's key set could not be fetched and no entry verified the
+  token. This holds even when another, reachable entry for the same issuer rejected it: two
+  entries for one issuer may differ in `audience` or allowlist, so the unreachable one might
+  have accepted the token, and a `401` would misreport an outage as a bad credential.
 
 The distinction matters operationally. A `401` for an IdP outage sends an operator hunting a
 credential that is fine.
@@ -160,7 +175,7 @@ issuer is left alone, since it may be the caller's own upstream credential.
 
 The gate covers the routes `[server.auth]` already guards — injected-credential
 `/v1/messages` and `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`,
-`GET /api/oauth/usage`, and the inbound Codex Responses and analytics routes. Passthrough
+`GET /api/oauth/usage` (off loopback only), and the inbound Codex Responses and analytics routes. Passthrough
 inference is never checked, because the caller pays with their own credential; "per-user identity" therefore
 covers the gated routes, not the whole surface.
 

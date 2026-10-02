@@ -15,34 +15,21 @@
 //! algorithms come from config and the token header's `alg` is never honored,
 //! `kid` is required, and an unknown `kid` refetches at most once per window.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::collections::HashSet;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use futures_util::StreamExt;
-use jsonwebtoken::jwk::{Jwk, JwkSet};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
-/// The same 10s budget `crate::gateway::idp_client` gives discovery, token, and
-/// userinfo requests.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Floor between two JWKS fetches for one issuer. An unknown `kid` triggers at
-/// most one refetch per window, so a caller cannot use forged `kid` values to
-/// make shunt hammer the issuer's JWKS endpoint.
-const MIN_REFETCH_INTERVAL: Duration = Duration::from_secs(60);
-
-/// Cap on a JWKS (or discovery) document. Both are fetched from a configured,
-/// operator-chosen origin, so this is a runaway guard rather than a defence
-/// against a hostile peer.
-const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
+mod jwks;
+pub use jwks::{JwksCache, JwksUnavailable};
 
 /// Cap on the resolved caller identity. The identity namespaces the account
 /// pool's sticky key (`codex_endpoint`) and is logged per request, so it must
 /// not be an unbounded caller-controlled string — the failure mode #296 records
-/// for the inbound Codex `model` label.
+/// for the inbound Codex `model` label. An address over the cap is rejected,
+/// never truncated: truncation would fold two distinct addresses that share a
+/// prefix into one identity, and so into one sticky key.
 const MAX_IDENTITY_BYTES: usize = 256;
 
 /// One resolved `[[server.auth.jwt]]` entry. Config only: it carries no cache
@@ -50,7 +37,8 @@ const MAX_IDENTITY_BYTES: usize = 256;
 /// [`JwksCache`], which lives for the process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JwtIssuerRule {
-    /// Exact `iss` match, normalized at config resolution.
+    /// Exact `iss` match, exactly as configured (trimmed of whitespace only): an
+    /// IdP whose `iss` carries a trailing slash must keep it to be selected.
     pub issuer: String,
     /// Explicit JWKS endpoint. `None` ⇒ derive it from the issuer's discovery
     /// document on first use.
@@ -85,201 +73,6 @@ pub enum JwtOutcome {
     Rejected,
     /// A matching entry's JWKS could not be fetched, so no verdict is possible.
     Unavailable,
-}
-
-/// Process-lifetime, per-issuer JWKS state. Held on `AppState` alongside
-/// `admin_stores` / `gateway_stores` rather than on the hot-reloadable
-/// `InboundAuth`, so a config reload that leaves an entry unchanged does not
-/// throw its keys away and refetch.
-///
-/// The outer `Mutex` is held only long enough to look up an issuer's entry; the
-/// per-issuer `tokio::sync::Mutex` is held across the network fetch, so
-/// concurrent requests for one issuer collapse into a single fetch while a
-/// different issuer proceeds untouched. That is the isolation the design
-/// requires: one issuer's outage must not deny the others.
-pub struct JwksCache {
-    client: reqwest::Client,
-    issuers: Mutex<HashMap<String, Arc<tokio::sync::Mutex<IssuerState>>>>,
-}
-
-#[derive(Default)]
-struct IssuerState {
-    /// Resolved once per issuer, from config or discovery.
-    jwks_url: Option<String>,
-    keys: Option<Arc<JwkSet>>,
-    /// When a fetch was last *attempted*, successful or not, so a failing
-    /// issuer is rate-limited exactly like a succeeding one.
-    last_fetch: Option<Instant>,
-}
-
-/// A JWKS could not be produced. Deliberately opaque: the reason is logged, not
-/// returned, so a caller cannot probe an issuer's reachability through response
-/// differences.
-#[derive(Debug)]
-pub struct JwksUnavailable;
-
-impl Default for JwksCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl JwksCache {
-    pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .expect("JWKS HTTP client configuration is valid"),
-            issuers: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// The key for `kid`, fetching or refetching this issuer's JWKS as needed.
-    ///
-    /// `Ok(None)` means "this issuer has usable keys and none of them is `kid`"
-    /// — a `401`. `Err` means "no usable keys at all" — a `503`.
-    async fn key_for(
-        &self,
-        rule: &JwtIssuerRule,
-        kid: &str,
-    ) -> Result<Option<Jwk>, JwksUnavailable> {
-        let entry = {
-            let mut issuers = self.issuers.lock().expect("inbound JWKS lock poisoned");
-            issuers.entry(rule.issuer.clone()).or_default().clone()
-        };
-        let mut state = entry.lock().await;
-
-        if let Some(jwk) = state.keys.as_ref().and_then(|keys| keys.find(kid)) {
-            return Ok(Some(jwk.clone()));
-        }
-
-        let due = state
-            .last_fetch
-            .is_none_or(|at| at.elapsed() >= MIN_REFETCH_INTERVAL);
-        if !due {
-            // Inside the refetch floor. With keys cached this is simply an
-            // unknown `kid`; with none cached shunt still cannot verify
-            // anything for this issuer, and answering `401` would misreport a
-            // continuing outage as a bad credential.
-            return if state.keys.is_some() {
-                Ok(None)
-            } else {
-                Err(JwksUnavailable)
-            };
-        }
-        state.last_fetch = Some(Instant::now());
-
-        let url = match &state.jwks_url {
-            Some(url) => url.clone(),
-            None => {
-                let url = self.resolve_jwks_url(rule).await?;
-                state.jwks_url = Some(url.clone());
-                url
-            }
-        };
-        match self.fetch_jwks(&url).await {
-            Ok(keys) => {
-                let keys = Arc::new(keys);
-                state.keys = Some(keys.clone());
-                Ok(keys.find(kid).cloned())
-            }
-            Err(error) => {
-                tracing::warn!(
-                    issuer = %rule.issuer,
-                    error = %error,
-                    "inbound JWT: JWKS fetch failed"
-                );
-                // A previously-fetched key set is still the best available
-                // answer; only a cold cache is an outage from the caller's
-                // point of view.
-                if state.keys.is_some() {
-                    Ok(None)
-                } else {
-                    Err(JwksUnavailable)
-                }
-            }
-        }
-    }
-
-    /// The configured `jwks_url`, or the `jwks_uri` from the issuer's discovery
-    /// document. Both go through [`validate_endpoint`].
-    async fn resolve_jwks_url(&self, rule: &JwtIssuerRule) -> Result<String, JwksUnavailable> {
-        if let Some(url) = &rule.jwks_url {
-            return Ok(url.clone());
-        }
-        let discovery_url = format!(
-            "{}/.well-known/openid-configuration",
-            rule.issuer.trim_end_matches('/')
-        );
-        let document: DiscoveryDocument =
-            self.fetch_json(&discovery_url).await.map_err(|error| {
-                tracing::warn!(
-                    issuer = %rule.issuer,
-                    error = %error,
-                    "inbound JWT: OIDC discovery failed"
-                );
-                JwksUnavailable
-            })?;
-        if document.issuer.trim_end_matches('/') != rule.issuer.trim_end_matches('/') {
-            tracing::warn!(
-                issuer = %rule.issuer,
-                "inbound JWT: discovery document issuer does not match the configured issuer"
-            );
-            return Err(JwksUnavailable);
-        }
-        validate_endpoint(&document.jwks_uri).map_err(|message| {
-            tracing::warn!(issuer = %rule.issuer, %message, "inbound JWT: discovered jwks_uri rejected");
-            JwksUnavailable
-        })?;
-        Ok(document.jwks_uri)
-    }
-
-    async fn fetch_jwks(&self, url: &str) -> Result<JwkSet, String> {
-        self.fetch_json(url).await
-    }
-
-    async fn fetch_json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, String> {
-        let response = self
-            .client
-            .get(url)
-            .timeout(REQUEST_TIMEOUT)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .send()
-            .await
-            .map_err(|error| format!("request failed: {error}"))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(format!("returned HTTP {status}"));
-        }
-        let body = read_bounded(response).await?;
-        serde_json::from_slice(&body).map_err(|error| format!("invalid JSON: {error}"))
-    }
-}
-
-/// Only the two fields the JWKS path needs. `crate::gateway::idp_client`'s
-/// `DiscoveredEndpoints` requires the authorization/token/userinfo endpoints,
-/// which a verify-only deployment's issuer has no reason to serve.
-#[derive(Deserialize)]
-struct DiscoveryDocument {
-    issuer: String,
-    jwks_uri: String,
-}
-
-/// Read at most [`MAX_DOCUMENT_BYTES`], failing rather than truncating: a
-/// truncated JWKS would parse as "this issuer has fewer keys than it does" and
-/// silently reject tokens signed with the ones that were cut off.
-async fn read_bounded(response: reqwest::Response) -> Result<Vec<u8>, String> {
-    let mut stream = response.bytes_stream();
-    let mut body = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| format!("response stream failed: {error}"))?;
-        if body.len() + chunk.len() > MAX_DOCUMENT_BYTES {
-            return Err(format!("response exceeds {MAX_DOCUMENT_BYTES} bytes"));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
 }
 
 /// Reject an endpoint shunt should not fetch from. Mirrors
@@ -359,14 +152,15 @@ pub async fn verify(rules: &[JwtIssuerRule], cache: &JwksCache, token: &str) -> 
             continue;
         };
         return JwtOutcome::Verified {
-            identity: bounded_identity(&claims.email),
+            identity: claims.email,
             issuer: rule.issuer.clone(),
         };
     }
 
-    // Only report an outage when no entry reached a verdict. A token that a
-    // reachable entry rejected is a `401` even if some other entry for the same
-    // issuer happened to be unreachable.
+    // An outage wins over a rejection whenever any matching entry was
+    // unreachable and none verified: the unreachable entry might have accepted
+    // the token (duplicate issuer entries with different audiences, say), so
+    // `401` would claim a verdict nobody reached.
     if unavailable {
         JwtOutcome::Unavailable
     } else {
@@ -413,6 +207,10 @@ fn validate_claims(rule: &JwtIssuerRule, token: &str, key: &DecodingKey) -> Opti
     if !claims.email_verified {
         return None;
     }
+    // Over the cap is a rejection, not a truncation; see [`MAX_IDENTITY_BYTES`].
+    if claims.email.len() > MAX_IDENTITY_BYTES {
+        return None;
+    }
     if !crate::gateway::email_allowed(&claims.email, &rule.allowed_emails, &rule.allowed_domains) {
         return None;
     }
@@ -454,19 +252,6 @@ fn unverified_issuer(token: &str) -> Option<String> {
     serde_json::from_slice::<Unverified>(&bytes)
         .ok()
         .map(|claims| claims.iss)
-}
-
-/// Truncate on a char boundary so the identity stays valid UTF-8. See
-/// [`MAX_IDENTITY_BYTES`] for why it is bounded at all.
-fn bounded_identity(email: &str) -> String {
-    if email.len() <= MAX_IDENTITY_BYTES {
-        return email.to_string();
-    }
-    let mut end = MAX_IDENTITY_BYTES;
-    while end > 0 && !email.is_char_boundary(end) {
-        end -= 1;
-    }
-    email[..end].to_string()
 }
 
 #[cfg(test)]

@@ -5,6 +5,8 @@
 //! path a deployment does — including the network fetch, its cache, and the
 //! refetch floor.
 
+use std::time::Duration;
+
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
@@ -722,18 +724,258 @@ fn the_unverified_issuer_is_read_for_routing_only() {
     assert_eq!(super::unverified_issuer("only-one-segment"), None);
 }
 
-#[test]
-fn the_identity_is_bounded_and_stays_valid_utf8() {
-    assert_eq!(
-        super::bounded_identity("dev@example.com"),
-        "dev@example.com"
+#[tokio::test]
+async fn an_email_over_the_identity_cap_rejects_instead_of_truncating() {
+    // Truncation would fold two addresses sharing a 256-byte prefix into one
+    // identity, and so one account-pool sticky key.
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        None,
     );
-    let long = format!("{}@example.com", "\u{00e9}".repeat(400));
-    let bounded = super::bounded_identity(&long);
-    assert!(bounded.len() <= super::MAX_IDENTITY_BYTES);
-    // Truncation lands on a char boundary rather than splitting the multi-byte
-    // character that straddles the cap.
-    assert!(long.starts_with(&bounded));
+    let cache = JwksCache::new();
+    let suffix = "@example.com";
+    let at_cap = format!(
+        "{}{suffix}",
+        "a".repeat(super::MAX_IDENTITY_BYTES - suffix.len())
+    );
+    let over_cap = format!("x{at_cap}");
+    let mut accepted = claims(&server.uri());
+    accepted["email"] = json!(at_cap);
+    let mut refused = claims(&server.uri());
+    refused["email"] = json!(over_cap);
+
+    assert_eq!(
+        super::verify(auth.jwt(), &cache, &token(&accepted)).await,
+        JwtOutcome::Verified {
+            identity: at_cap,
+            issuer: server.uri(),
+        }
+    );
+    assert_eq!(
+        super::verify(auth.jwt(), &cache, &token(&refused)).await,
+        JwtOutcome::Rejected
+    );
+}
+
+#[tokio::test]
+async fn an_issuer_with_a_trailing_slash_is_matched_exactly_as_configured() {
+    // An IdP whose `iss` is `<origin>/` signs exactly that string; stripping
+    // the slash at resolution would make every one of its tokens unmatchable.
+    let server = issuer_serving(jwks()).await;
+    let issuer = format!("{}/", server.uri());
+    let auth = auth_with(
+        vec![entry(&issuer, &format!("{}/jwks", server.uri()))],
+        None,
+    );
+
+    assert_eq!(auth.jwt()[0].issuer, issuer);
+    assert_eq!(
+        verify_with(&auth, &token(&claims(&issuer))).await,
+        JwtOutcome::Verified {
+            identity: "dev@example.com".to_string(),
+            issuer,
+        }
+    );
+}
+
+#[tokio::test]
+async fn entries_for_one_issuer_with_different_jwks_urls_keep_separate_key_sets() {
+    // Keyed by issuer alone, the second entry (or a reload that changes the
+    // URL) would be answered from the first URL's keys.
+    const KID_B: &str = "key-b";
+    let issuer = "https://idp.example";
+    let first = issuer_serving(jwks()).await;
+    let mut document_b = jwks();
+    document_b["keys"][0]["kid"] = json!(KID_B);
+    let second = issuer_serving(document_b).await;
+    let auth = auth_with(
+        vec![
+            entry(issuer, &format!("{}/jwks", first.uri())),
+            entry(issuer, &format!("{}/jwks", second.uri())),
+        ],
+        None,
+    );
+    let cache = JwksCache::new();
+    let signed_a = sign(&claims(issuer), KEY_ONE_DER, KID_ONE, Algorithm::RS256);
+    let signed_b = sign(&claims(issuer), KEY_ONE_DER, KID_B, Algorithm::RS256);
+
+    assert!(matches!(
+        super::verify(auth.jwt(), &cache, &signed_a).await,
+        JwtOutcome::Verified { .. }
+    ));
+    assert!(matches!(
+        super::verify(auth.jwt(), &cache, &signed_b).await,
+        JwtOutcome::Verified { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_key_the_issuer_removed_stops_verifying_after_the_max_age() {
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        None,
+    );
+    let cache = JwksCache::with_max_age(Duration::from_secs(1));
+    let token = token(&claims(&server.uri()));
+
+    assert!(matches!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Verified { .. }
+    ));
+    // The issuer withdraws the key. Inside the max age the cached set still
+    // answers; past it the refetch replaces the set. A 1s max age leaves the
+    // in-window check a margin a loaded runner will not eat.
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "keys": [] })))
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Verified { .. }
+    ));
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert_eq!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Rejected
+    );
+}
+
+#[tokio::test]
+async fn a_fresh_cached_kid_is_not_stalled_by_another_requests_fetch() {
+    let server = issuer_serving(jwks()).await;
+    let issuer = server.uri();
+    let auth = auth_with(
+        vec![entry(&issuer, &format!("{}/jwks", server.uri()))],
+        None,
+    );
+    // A zero refetch floor makes the unknown-kid refetch due while the set is
+    // still fresh, so it really goes to the (slow) issuer.
+    let cache = JwksCache::with_limits(Duration::from_secs(300), Duration::ZERO);
+    let known = token(&claims(&issuer));
+    let unknown = sign(
+        &claims(&issuer),
+        KEY_ONE_DER,
+        "forged-kid",
+        Algorithm::RS256,
+    );
+
+    assert!(matches!(
+        super::verify(auth.jwt(), &cache, &known).await,
+        JwtOutcome::Verified { .. }
+    ));
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(jwks())
+                .set_delay(Duration::from_secs(5)),
+        )
+        .mount(&server)
+        .await;
+
+    let slow = super::verify(auth.jwt(), &cache, &unknown);
+    tokio::pin!(slow);
+    let fast = async {
+        // Wait until the forged-kid refetch is in flight at the issuer.
+        while server.received_requests().await.unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            super::verify(auth.jwt(), &cache, &known),
+        )
+        .await
+    };
+    tokio::select! {
+        outcome = &mut slow => panic!("the delayed fetch finished first: {outcome:?}"),
+        outcome = fast => assert!(
+            matches!(outcome, Ok(JwtOutcome::Verified { .. })),
+            "a fresh cached kid waited behind the in-flight fetch: {outcome:?}"
+        ),
+    }
+}
+
+#[tokio::test]
+async fn a_failed_refresh_past_the_max_age_keeps_serving_the_stale_key_set() {
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        None,
+    );
+    let cache = JwksCache::with_max_age(Duration::from_millis(150));
+    let token = token(&claims(&server.uri()));
+
+    assert!(matches!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Verified { .. }
+    ));
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // An IdP outage must not become a total outage.
+    assert!(matches!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Verified { .. }
+    ));
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "the failed refresh was attempted"
+    );
+}
+
+#[tokio::test]
+async fn a_moved_discovered_jwks_uri_is_picked_up_after_the_max_age() {
+    let server = MockServer::start().await;
+    let issuer = server.uri();
+    let mount_discovery = |jwks_path: &'static str| {
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "jwks_uri": format!("{issuer}{jwks_path}"),
+            })))
+    };
+    mount_discovery("/keys-old").mount(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/keys-old"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(jwks()))
+        .mount(&server)
+        .await;
+    let mut config = entry(&issuer, "");
+    config.jwks_url = None;
+    let auth = auth_with(vec![config], None);
+    let cache = JwksCache::with_max_age(Duration::from_millis(150));
+    let token = token(&claims(&issuer));
+
+    assert!(matches!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Verified { .. }
+    ));
+    server.reset().await;
+    mount_discovery("/keys-new").mount(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/keys-new"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "keys": [] })))
+        .mount(&server)
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Only the moved URI serves an empty set; the old one is gone (404).
+    assert_eq!(
+        super::verify(auth.jwt(), &cache, &token).await,
+        JwtOutcome::Rejected
+    );
 }
 
 #[test]

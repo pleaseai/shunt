@@ -64,7 +64,7 @@ email_domains = ["example.com"]
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
-| `issuer` | 필수 | 정확한 `iss` 일치. HTTPS여야 하며 루프백에서만 HTTP 허용, 경로는 가능 |
+| `issuer` | 필수 | 정확한 `iss` 일치. HTTPS여야 하며 `localhost`와 `127.0.0.1`에서만 HTTP 허용, 경로는 가능 |
 | `audience` | 필수 | 허용되는 `aud` 값. 문자열 또는 배열 |
 | `email_domains` | `[]` | 대소문자 무시 도메인. 마지막 `@` 뒤 부분과 **정확히** 일치해야 하며 접미사 매칭이 아님 |
 | `allowed_emails` | `[]` | 대소문자 무시 전체 이메일 주소 |
@@ -78,9 +78,9 @@ email_domains = ["example.com"]
 
 항목이 하나라도 있으면 `tokens_env`는 비어 있어도 됩니다 — 인증을 전부 IdP로 하는 배포에는 설정할 정적 토큰이 없습니다. 토큰 목록도 항목도 없으면 `[server.auth]`는 여전히 시작에 실패합니다.
 
-JWT는 **오직** `Authorization: Bearer`로만 받습니다 — 구성된 `header`도, `x-api-key`도 아닙니다. Claude Code가 이미 `ANTHROPIC_AUTH_TOKEN`을 보내는 슬롯입니다. 게이팅되는 라우트에서는 정적 토큰을 먼저 확인하고, 그 라우트가 받는 경우 gateway JWT를, 그다음 `iss`로 JWT 항목을 확인합니다. 검증은 알고리즘을 config에서 고정하고(토큰 헤더의 `alg`는 절대 선택하지 않습니다) `kid`를 요구하며, `exp`/`nbf`, `aud`, `azp`, `exp - iat`, `email_verified = true`, 이메일 허용 목록을 확인합니다. 검증된 이메일이 로그와 사용량 귀속에서 호출자 신원이 되며 256바이트로 제한됩니다.
+JWT는 **오직** `Authorization: Bearer`로만 받습니다 — 구성된 `header`도, `x-api-key`도 아닙니다. Claude Code가 이미 `ANTHROPIC_AUTH_TOKEN`을 보내는 슬롯입니다. 게이팅되는 라우트에서는 정적 토큰을 먼저 확인하고, 그 라우트가 받는 경우 gateway JWT를, 그다음 `iss`로 JWT 항목을 확인합니다. 검증은 알고리즘을 config에서 고정하고(토큰 헤더의 `alg`는 절대 선택하지 않습니다) `kid`를 요구하며, `exp`/`nbf`, `aud`, `azp`, `exp - iat`, `email_verified = true`, 이메일 허용 목록을 확인합니다. 검증된 이메일이 로그와 사용량 귀속에서 호출자 신원이 되며, 256바이트를 넘는 주소는 잘라내지 않고 거부합니다. 게이팅되는 라우트는 `[server.auth]`가 이미 보호하는 라우트입니다: 자격 증명을 주입하는 `/v1/messages`와 `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage`(loopback이 아닐 때만), 그리고 인바운드 Codex 엔드포인트(HTTP, WebSocket, analytics).
 
-key set은 issuer별로 최초 사용 시점에 lazy하게 가져오므로 IdP에 접근할 수 없어도 시작을 막지 않고, 프로세스 수명 동안 캐시됩니다 — config reload는 항목만 다시 해석하고 키는 버리지 않습니다. 알 수 없는 `kid`는 issuer당 60초 창에서 최대 한 번만 재조회를 유발합니다. 어떤 항목으로도 검증되지 않은 토큰은 `401`이고, key set 자체를 가져올 수 없는 issuer는 **`503`**입니다 — IdP 장애가 잘못된 자격 증명으로 보고되지 않습니다.
+key set은 issuer별로 최초 사용 시점에 lazy하게 가져오므로 IdP에 접근할 수 없어도 시작을 막지 않습니다. 캐시된 key set은 최대 5분 동안만 신뢰하고, 그 뒤에는 다음 요청이 다시 가져옵니다. 재조회에 성공하면 key set을 통째로 교체하므로 issuer가 철회한 키는 약 5분 안에 검증에서 빠집니다. 재조회에 실패하면 IdP 장애가 전면 장애로 번지지 않도록 만료된 key set을 계속 씁니다. config reload는 항목의 `jwks_url`이 바뀐 경우가 아니면 캐시된 키를 유지합니다. 알 수 없는 `kid`는 key set당 60초 창에서 최대 한 번만 재조회를 유발합니다. 어떤 항목으로도 검증되지 않은 토큰은 `401`이고, key set 자체를 가져올 수 없는 issuer는 **`503`**입니다 — IdP 장애가 잘못된 자격 증명으로 보고되지 않습니다.
 
 shunt는 취소(revocation) 상태를 보관하지 않으므로 유효한 토큰은 만료될 때까지 동작합니다. 그 범위를 제한하는 것이 `max_token_age_seconds`이며, issuer는 분 단위 수명의 토큰을 발급해야 합니다. 허용 목록에서 도메인이나 주소를 제거하면 다음 요청부터 적용됩니다.
 

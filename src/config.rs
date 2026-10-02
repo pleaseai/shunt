@@ -523,14 +523,12 @@ impl InboundJwtConfig {
         if issuer.is_empty() {
             return Err(invalid("issuer must not be empty".to_string()));
         }
-        let issuer_url = validate_idp_url(OidcSection::InboundJwt(index), issuer, true, "issuer")?;
-        // Normalize exactly as `[server.gateway] public_url` is, so the
-        // gateway-collision check below compares like with like.
-        let issuer = if issuer_url.path() == "/" {
-            issuer_url.as_str().trim_end_matches('/').to_string()
-        } else {
-            issuer_url.as_str().to_string()
-        };
+        validate_idp_url(OidcSection::InboundJwt(index), issuer, true, "issuer")?;
+        // Kept exactly as configured: verification selects a rule by exact
+        // `iss` equality, so an IdP whose `iss` is `https://idp.example/` would
+        // never match a slash-stripped form. Only the gateway-collision check
+        // normalizes (see `Config::validate`).
+        let issuer = issuer.to_string();
 
         let audience = self.audience.resolve();
         if audience.is_empty() {
@@ -3997,11 +3995,15 @@ impl Config {
                     ConfigError::InvalidGatewayPublicUrl { message }
                 }) {
                     let gateway_issuer = public_url.as_str().trim_end_matches('/');
-                    if let Some((index, rule)) = resolved
-                        .jwt()
-                        .iter()
-                        .enumerate()
-                        .find(|(_, rule)| rule.issuer == gateway_issuer)
+                    // Both sides normalized: the entry's issuer is stored as
+                    // configured, `public_url` is a bare origin.
+                    if let Some((index, rule)) =
+                        resolved.jwt().iter().enumerate().find(|(_, rule)| {
+                            reqwest::Url::parse(&rule.issuer)
+                                .map(|url| url.as_str().trim_end_matches('/').to_string())
+                                .unwrap_or_else(|_| rule.issuer.clone())
+                                == gateway_issuer
+                        })
                     {
                         return Err(ConfigError::InboundJwtCollidesWithGateway {
                             index,
@@ -12947,6 +12949,29 @@ routes:
         config.server.auth = Some(auth_with_jwt(vec![entry], &env));
         config.server.gateway = Some(GatewayConfig {
             public_url: "https://gw.example/".to_string(),
+            ..gateway_config()
+        });
+
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InboundJwtCollidesWithGateway { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_issuer_keeps_its_trailing_slash_but_still_collides_with_the_gateway() {
+        // Selection is by exact `iss`, so the rule keeps the configured form;
+        // the collision check normalizes both sides.
+        let env = unset_tokens_env("ISSUER_SLASH");
+        let mut entry = jwt_entry();
+        entry.issuer = "https://gw.example/".to_string();
+        let resolved = auth_with_jwt(vec![entry.clone()], &env).resolve().unwrap();
+        assert_eq!(resolved.jwt()[0].issuer, "https://gw.example/");
+
+        let mut config = Config::default();
+        config.server.auth = Some(auth_with_jwt(vec![entry], &env));
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gw.example".to_string(),
             ..gateway_config()
         });
 

@@ -78,7 +78,7 @@ JWT は **`Authorization: Bearer` でのみ**受け付けます — 設定され
 - **shunt 専用の audience を用意する。** shunt 専用の client id を作って `audience` に列挙すれば、同じテナントの別アプリケーション向けに発行されたトークンがここで認証されることはありません。
 - **短命なトークンを発行する。** shunt は失効状態を保持しないため、トークンは期限まで使えます。`max_token_age_seconds`（デフォルト `3600`）はそれより長い寿命で発行されたトークンを拒否します — 失効をより厳しくしたい場合はこの値を下げ、IdP に分単位のトークンを発行させてください。
 
-エントリの設定が誤っている場合は起動が fail closed します。`audience` はあるが `email_domains` / `allowed_emails` のルールがない場合も同様です。リクエストが `401` ではなく `503` で返る場合、shunt は issuer の key set をまったく取得できていません — 認証情報ではなく issuer の URL とネットワーク到達性を確認してください。キーの一覧は[設定リファレンス](/ja/reference/configuration/)にあります。
+エントリの設定が誤っている場合は起動が fail closed します。`audience` はあるが `email_domains` / `allowed_emails` のルールがない場合も同様です。JWT 認証が `api_error` ボディを伴う `503` を返す場合（後述の上限超過時の `overloaded_error` ではない場合）、shunt は issuer の key set を取得できていません — 認証情報ではなく issuer の URL とネットワーク到達性を確認してください。キーの一覧は[設定リファレンス](/ja/reference/configuration/)にあります。
 
 ## SSE キープアライブ ping
 
