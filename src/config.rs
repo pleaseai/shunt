@@ -4136,19 +4136,33 @@ impl Config {
         }) || self.routes.iter().any(|route| {
             route.provider == row.upstream
                 && (matches(&route.model) || route.upstream_model.as_deref().is_some_and(matches))
-        }) || self.route_prefixes.iter().any(|route| {
-            // Case-insensitive on purpose, even though prefix routing itself is
-            // case-sensitive. An override row matches the request model
-            // case-insensitively, so the row is reachable if *any* spelling of
-            // it reaches this upstream — and the client picks the spelling. A
-            // row `VENDOR-x` behind the prefix `vendor-` prices every request
-            // for `vendor-x`. `get(..len)` yields `None` on a non-char-boundary
-            // index, so a multi-byte model is never sliced mid-character.
-            route.provider == row.upstream
-                && model
-                    .get(..route.prefix.len())
-                    .is_some_and(|head| head.eq_ignore_ascii_case(&route.prefix))
-        })
+        }) || self
+            .route_prefixes
+            .iter()
+            .enumerate()
+            .any(|(index, route)| {
+                // Routing takes the FIRST prefix that matches, case-sensitively, in
+                // declaration order. A prefix is therefore shadowed only when an
+                // earlier prefix routed elsewhere is a case-exact prefix of it:
+                // then every string matching it also matches the earlier one. Any
+                // other overlap (a different case, a longer earlier prefix) leaves
+                // a spelling the client can send that still reaches it.
+                let shadowed = self.route_prefixes[..index].iter().any(|earlier| {
+                    earlier.provider != route.provider && route.prefix.starts_with(&earlier.prefix)
+                });
+                // Case-insensitive on purpose, even though prefix routing itself is
+                // case-sensitive. An override row matches the request model
+                // case-insensitively, so the row is reachable if *any* spelling of
+                // it reaches this upstream — and the client picks the spelling. A
+                // row `VENDOR-x` behind the prefix `vendor-` prices every request
+                // for `vendor-x`. `get(..len)` yields `None` on a non-char-boundary
+                // index, so a multi-byte model is never sliced mid-character.
+                !shadowed
+                    && route.provider == row.upstream
+                    && model
+                        .get(..route.prefix.len())
+                        .is_some_and(|head| head.eq_ignore_ascii_case(&route.prefix))
+            })
     }
 
     pub fn validate(mut self) -> Result<Self, ConfigError> {
@@ -8153,6 +8167,26 @@ cache_write = 4.125
                     prefix: "é".to_string(),
                     provider: "codex".to_string(),
                 },
+                // `shadow-` routes elsewhere ahead of `shadow-special-`, so no
+                // spelling that matches the latter case-exactly reaches `codex`.
+                RoutePrefixConfig {
+                    prefix: "shadow-".to_string(),
+                    provider: "bedrock-us".to_string(),
+                },
+                RoutePrefixConfig {
+                    prefix: "shadow-special-".to_string(),
+                    provider: "codex".to_string(),
+                },
+                // A different case is not shadowed: the client can send
+                // `Open-special-x`, which `open-` does not match.
+                RoutePrefixConfig {
+                    prefix: "open-".to_string(),
+                    provider: "bedrock-us".to_string(),
+                },
+                RoutePrefixConfig {
+                    prefix: "Open-special-".to_string(),
+                    provider: "codex".to_string(),
+                },
             ],
             ..Config::default()
         };
@@ -8185,6 +8219,7 @@ cache_write = 4.125
             // does route to `codex`.
             ("codex", "VENDOR-anything"),
             ("codex", "évariste"),
+            ("codex", "open-special-x"),
             // Everything routing did not claim goes to the default provider.
             ("anthropic", "my-sonnet-alias"),
         ] {
@@ -8210,6 +8245,9 @@ cache_write = 4.125
             // A model whose first char shares no byte-prefix boundary with the
             // configured `é` prefix: the check must answer, not panic.
             ("codex", "aé"),
+            // An earlier prefix routed elsewhere is a case-exact prefix of
+            // `shadow-special-`, so routing never picks the later one.
+            ("codex", "shadow-special-x"),
             // A `noop` router calls no upstream, so nothing ever prices it.
             ("bedrock-eu", "noop-model"),
             ("codex", "noop-model"),

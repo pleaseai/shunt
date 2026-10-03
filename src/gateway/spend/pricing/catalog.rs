@@ -9,6 +9,8 @@
 
 /// `(id, input, output, cache_read, cache_write)` in USD per million tokens.
 pub const LIST_PRICES: &[(&str, f64, f64, f64, f64)] = &[
+    ("claude-opus-5-5", 4.0, 20.0, 0.2, 5.0),
+    ("claude-sonnet-5-5", 2.0, 10.0, 0.2, 2.5),
     ("claude-fable-5-1", 10.0, 50.0, 0.25, 12.5),
     ("claude-mythos-5-1", 10.0, 50.0, 0.25, 12.5),
     ("claude-fable-5", 10.0, 50.0, 1.0, 12.5),
