@@ -189,22 +189,22 @@ For GitHub, SAML, or another non-OIDC provider, use an OIDC broker such as Dex; 
 
 ## `[server.spend]` (optional)
 
-Presence of this table registers the spend-limit Admin API under `/v1/organizations/spend_limits`. It is a top-level section holding **policy only** — no key material: the routes authenticate with the [`[server.admin]`](#serveradmin-optional) credential, so enabling spend limits does not require the gateway login surface. `[server.spend]` without `[server.admin]` fails configuration validation.
+Presence of this table registers the spend-limit Admin API under `/v1/organizations/spend_limits` and turns on spend metering and enforcement for `/v1/messages`. It is a top-level section holding **policy only** — no key material: the routes authenticate with the [`[server.admin]`](#serveradmin-optional) credential, so enabling spend limits does not require the gateway login surface. `[server.spend]` without `[server.admin]` fails configuration validation.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `blocked_message` | unset | Accepted for future enforcement errors; stage 1 does not use it |
+| `blocked_message` | unset | Appended after an em dash to the `429` refusal messages (`spend limit reached`, `spend limit unavailable`) |
 | `audit_retention_days` | `365` | Accepted for the later audit retention sweep |
-| `spend_retention_months` | `13` | Accepted for the later spend retention sweep |
+| `spend_retention_months` | `13` | Calendar months of meter counters kept in the counters file; a window still open is never pruned |
 | `identity_retention_days` | `90` | Accepted for the later identity retention sweep |
 | `group_limit_mode` | `min` | `min` or `max`; accepted for later group-limit resolution |
-| `state_path` | `~/.shunt/gateway-spend.json` | Versioned JSON file containing caps and audit records; `""` selects memory-only storage |
+| `state_path` | `~/.shunt/gateway-spend.json` | Versioned JSON file containing caps and audit records; `""` selects memory-only storage. The meter's counters live in a sibling file, `<stem>.counters.json` (default `~/.shunt/gateway-spend.counters.json`), flushed every 10 seconds and at shutdown |
 
 Send the admin credential in the configured `[server.admin] header` or in `x-api-key`; a `read_keys` credential can use `GET` only. The state file is replaced atomically with private permissions after each mutation. When no home directory resolves, the default is memory-only. Adding or removing the table, and the state path itself, are both fixed at boot; configuration reloads log a warning instead of applying them.
 
 ### `[server.spend.pricing]` (optional)
 
-States what a request costs. Omitting the table means the built-in list prices at multiplier 1. The table and its resolver are validated at boot, but stage 1 has no meter that reads token usage, so nothing prices a request yet.
+States what a request costs. Omitting the table means the built-in list prices at multiplier 1. The meter prices each metered `/v1/messages` response through this table, on the upstream model that served it; a model it cannot price is charged `$5 / $25 / $0.50 / $6.25` per million input / output / cache-read / cache-write tokens (times `multiplier`) with one warning per model id.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
@@ -243,9 +243,9 @@ Rates are matched most-specific-first for one upstream: an override matching the
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `fail_closed_on_error` | `false` | Accepted for the later enforcement stage; stage 1 does not read it |
+| `fail_closed_on_error` | `false` | When the meter cannot be trusted for a principal (a counter record that failed to restore, until its windows elapse): `false` forwards the request and logs a warning; `true` refuses it with `429` `spend limit unavailable` |
 
-Stage 1 does not enforce caps on `/v1/messages`. It also does not implement usage metering, `/effective`, `/audit`, retention sweeps, or group scopes.
+Enforcement applies to `POST /v1/messages` (never `count_tokens`). The principal is the static `[server.auth]` token name, the verified JWT email, or the gateway-login email, matched verbatim against a `user` cap's `user_id`; a credential-injecting request with no identity shares `shunt:anonymous`, and a chain of passthrough routes is neither enforced nor metered. The cap for each UTC period (daily, Monday-week, month) is the principal's `user` row, else the `organization` row (a per-seat default, not a shared pool), else unlimited; a `user` row with `amount: null` is an explicit unlimited. The check is a pre-check with no reservation, so in-flight requests can overshoot. A principal at a cap gets `429 billing_error` (`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`) with `retry-after` and `x-should-retry: false`, and a capped principal's responses carry its own `anthropic-ratelimit-unified-*` headers in place of the upstream's. The inbound Codex endpoint (`[server.codex_endpoint]`) is not enforced or metered yet ([#733](https://github.com/pleaseai/shunt/issues/733)). `/audit`, audit and identity retention sweeps, and group scopes are not implemented. See [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md) for the full behavior.
 
 ## `[server.gateway]` (optional)
 

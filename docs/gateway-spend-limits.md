@@ -1,6 +1,6 @@
-# Gateway spend limits: stage 1
+# Gateway spend limits
 
-This stage adds an authenticated Admin API for storing spend caps. It does not apply the caps to inference traffic yet.
+shunt stores per-user and organization spend caps behind an authenticated Admin API, meters what each principal spends on `/v1/messages`, and refuses a principal that has reached a cap with a `429 billing_error`. The sections below cover [configuration](#configuration), [enforcement](#enforcement), [metering](#metering), [rate-limit headers](#rate-limit-headers), [counter persistence](#counter-persistence), the [Admin API](#admin-api) and the [effective spend endpoint](#get-effective), and finish with what is [not yet implemented](#not-yet-implemented).
 
 ## Configuration
 
@@ -22,7 +22,7 @@ fail_closed_on_error = false
 
 `state_path = ""` keeps caps and audit records in memory only. Omit `state_path` to use `$HOME/.shunt/gateway-spend.json`; an explicitly configured path is used literally, without shell-style `~` expansion. When shunt cannot resolve a home directory, the default path also becomes memory-only. The state file uses a versioned JSON envelope and an atomic private-file replacement. At restore, shunt parses caps and audit records independently. If a cap or audit snapshot is malformed, fails validation, contains fields that the running version would discard, or uses a scope that the running version does not recognize, shunt logs a warning and carries the complete record through subsequent saves at its original list position. Carry-through caps remain hidden from list, get, and delete operations; carry-through audit records remain outside the stage 1 in-memory audit view. A rollback therefore preserves additive fields and scope variants without blocking startup or rewriting those records into an older schema. Invalid top-level JSON or an unsupported state version still aborts startup so a later mutation cannot overwrite an unreadable envelope. The path is fixed at boot; configuration reloads do not move the process-lifetime store to a different file.
 
-The retention settings, `blocked_message`, `group_limit_mode`, and `fail_closed_on_error` are parsed now for configuration compatibility. Stage 1 does not run a retention sweep, resolve group limits, customize an enforcement error, or perform enforcement.
+`blocked_message`, `enforcement.fail_closed_on_error` and `spend_retention_months` are live: the first two shape the refusals described under [Enforcement](#enforcement), and the third prunes the meter's counters (see [Counter persistence](#counter-persistence)). `audit_retention_days`, `identity_retention_days` and `group_limit_mode` are parsed for configuration compatibility only: no audit or identity retention sweep runs and no group limit is resolved. `state_path` also locates the counters file (`<state_path stem>.counters.json`).
 
 ### Pricing
 
@@ -57,7 +57,7 @@ The built-in list-price catalog is the fallback, in USD per million tokens, and 
 
 All amounts are USD **estimates**. They are computed from the token counts an upstream reports against published list prices, not read back from a provider invoice, so they will not reconcile to the cent with a bill.
 
-The pricing table and its resolver are implemented and validated at boot, but nothing calls them yet: the spend meter that will price requests is not implemented (see [Not yet implemented](#not-yet-implemented)).
+The meter prices every metered request through this table (see [Metering](#metering)). A model the table cannot price is charged at the unknown-model rate, `$5 / $25 / $0.50 / $6.25` per million input / output / cache-read / cache-write tokens, scaled by `multiplier` like any other rate, and shunt logs one warning per model id per process.
 
 ### Credentials
 
@@ -82,6 +82,67 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 - **Validation.** Every array `id` must be non-blank; every array key must be at least 32 characters. Ids and key values must both be unique across all three sets (`tokens_env`/`tokens_file`, `write_keys`, `read_keys`); a collision names the colliding ids and never logs a key value. A legacy `tokens_env` token shorter than 32 characters warns rather than failing, because those tokens predate the rule. `[server.admin]` still fails closed when all three sources are empty, but an array-only deployment (with `tokens_env` unset) boots.
 - **No literals.** An array key written literally in the config file is **rejected at load**: it must be supplied by `${VAR}`, `${file:/abs/path}`, or a `SHUNT_*` environment override. This is stricter than shunt's other secret-typed fields, which only warn — see [`config-secrets.md`](config-secrets.md).
 
+## Enforcement
+
+Enforcement applies to `POST /v1/messages` when `[server.spend]` is configured. It reads the same state the Admin API writes.
+
+**Principal.** A request is attributed to one principal, matched verbatim against a `user` cap's `user_id`: the static `[server.auth]` token's name, the verified inbound JWT's email, or the gateway-login email. A request whose chain injects a gateway-held credential but carries no identity shares the reserved principal `shunt:anonymous`. A chain made only of passthrough routes (the caller's own upstream credential) is neither enforced nor metered, since the caller pays.
+
+**Effective cap.** Per period (`daily`, `weekly`, `monthly`) the cap is the principal's own `user` row, else the `organization` row, else unlimited. The organization row is a per-seat default, not a shared pool: every principal gets its own counter against it. A `user` row with `amount: null` is an explicit unlimited and wins over the organization row.
+
+**Pre-check only.** The check runs before any upstream-capable step, with no reservation. Concurrent in-flight requests are all admitted against the same counters, so a principal can overshoot a cap by whatever is in flight when it is reached.
+
+**Windows** are UTC calendar windows: daily from 00:00 UTC, weekly from Monday 00:00 UTC, monthly from the 1st 00:00 UTC.
+
+**Refusal.** A principal at or over any cap gets `429` with an Anthropic-shape `billing_error`:
+
+```
+spend limit reached (monthly; resets 2026-11-01 00:00 UTC)
+```
+
+When `blocked_message` is set it follows after an em dash (`... UTC) — Request an increase from FinOps.`). The response carries `retry-after` (seconds to the reset, at least 1) and `x-should-retry: false`, and names the reached cap that resets last; when two caps reset at the same instant (daily and monthly on a month's last day) the longer period is named. `POST /v1/messages/count_tokens` is never refused and never metered.
+
+**`fail_closed_on_error`.** The meter is "unavailable" for a principal when one of that principal's persisted counter records failed to restore (see [Counter persistence](#counter-persistence)); the flag lifts when the windows that record could cover have elapsed. The default (`false`) forwards the request and logs a warning. With `true` the request is refused with `429 billing_error` `spend limit unavailable` (plus the `blocked_message` suffix), no `retry-after`, and `anthropic-ratelimit-unified-overage-disabled-reason: fetch_error`.
+
+## Metering
+
+The meter records a charge for each billed response, on the daily, weekly and monthly counters of the principal at once.
+
+- **Coverage.** Streamed and non-streamed responses, translated adapters, and committed streams. The charge is priced on the **upstream** model that served the turn, through the pricing table above. Server-side web search is added per request.
+- **Per route.** Metering is decided per serving route: a call served by a passthrough route is not metered, even inside a chain that also holds an injecting route. Enforcement is decided per request.
+- **Only 2xx is billed.** An error response is not generated output.
+- **Aborted streams.** The streamed `usage` is read from the upstream's cumulative counts. When the final output count never arrives (a client disconnect, an upstream cut, or an adapter-synthesized end after a cut), output is billed at a floor of one token per 4 characters of text delivered to the client, rounded up.
+- **Unreadable non-streamed bodies.** A non-streamed body larger than 4 MiB, cut, or without a readable `usage` is billed a byte floor of one output token per 4 bytes.
+- **Side calls.** Router judge, classifier and escalation calls, and gated turns, are metered exactly once against the requesting principal.
+
+Known unmetered cases: a router judge reply that is truncated, times out, or exceeds its size bound, and a non-streamed gated capture that was cut.
+
+## Rate-limit headers
+
+For a principal with a cap in any period, shunt strips every upstream `anthropic-ratelimit-*` header from the response (on every status) and, on a `2xx`, writes the principal's own binding-cap view in their place. Claude Code 2.1.225 and later reads these to show its usage warnings. The binding cap is the exceeded one if any, else the highest utilization (a tie goes to the longer period).
+
+| Header | Meaning |
+| :-- | :-- |
+| `anthropic-ratelimit-unified-status` | `allowed`, `allowed_warning` (above 75%) or, on the refusal, `rejected` |
+| `anthropic-ratelimit-unified-reset`, `...-overage-reset` | Unix seconds of the binding cap's reset |
+| `anthropic-ratelimit-unified-overage-utilization` | Utilization of the binding cap, 0 to 1 |
+| `anthropic-ratelimit-unified-overage-surpassed-threshold` | `0.75`, `0.95` or `1`, only once the utilization is strictly above that threshold |
+| `anthropic-ratelimit-unified-representative-claim`, `...-overage-status` | `overage` and the status again; 2xx only |
+| `anthropic-ratelimit-unified-overage-period` | Refusal only: the exceeded period |
+| `anthropic-ratelimit-unified-overage-disabled-reason` | `org_spend_cap_reached` on the over-cap refusal, `fetch_error` on the fail-closed refusal |
+
+The over-cap `429` carries the "exceeded" set without `representative-claim` or `overage-status`, so Claude Code shows the refusal's own message. A principal with no cap, an unmetered request, and a fail-open forward carry no shunt-written headers; for an uncapped principal the upstream's headers pass through untouched.
+
+## Counter persistence
+
+Counters live in a sibling of the caps file, `<state_path stem>.counters.json` (default `$HOME/.shunt/gateway-spend.counters.json`), with its own versioned envelope (`{"version": 1, "counters": [...]}`). The caps file is never rewritten by a counter flush, so rolling back to a build that only knows stage-1 caps still boots.
+
+- Changed counters are flushed at most every 10 seconds, and once more at shutdown after the listener drains, bounded by `[server] shutdown_timeout_seconds` (worst-case shutdown can therefore extend by that much).
+- `spend_retention_months` prunes, at flush time, windows that started before the first day of the month that many calendar months back and have already ended; a window that is still open is never pruned.
+- A counter record this build cannot read is carried through byte-for-byte; when it still names its principal, that principal is unavailable (see `fail_closed_on_error`) until the windows the record could cover have elapsed. Every other record loads normally.
+- An unreadable envelope or an unsupported version aborts startup, like the caps file.
+- `state_path = ""` keeps the counters in memory only.
+
 ## Admin API
 
 The following routes exist only when `[server.spend]` is configured at startup, independently of `[server.gateway]`:
@@ -90,6 +151,7 @@ The following routes exist only when `[server.spend]` is configured at startup, 
 - `POST /v1/organizations/spend_limits`
 - `GET /v1/organizations/spend_limits/{id}`
 - `DELETE /v1/organizations/spend_limits/{id}`
+- `GET /v1/organizations/spend_limits/effective`
 
 Send the `[server.admin]` credential in the configured admin header (`x-shunt-admin-token` by default) or in `x-api-key`; both slots are accepted. A write credential — a `write_keys` entry or a legacy `tokens_env`/`tokens_file` pair — can use every operation. A read credential (`read_keys`) can use `GET` and receives `403` on mutations. An invalid or missing credential receives `401`.
 
@@ -109,11 +171,27 @@ Every response includes `request-id`. Error bodies use:
 }
 ```
 
+### GET effective
+
+`GET /v1/organizations/spend_limits/effective` returns one row per principal and period: the cap that binds it and its period-to-date spend. A read or write credential works.
+
+Query parameters:
+
+| Parameter | Meaning |
+| :-- | :-- |
+| `limit` | Principals per page, 1–1000, default 20 (counts principals, not rows: each principal contributes one row per requested period) |
+| `period[]` | Repeatable: `daily`, `weekly`, `monthly`. Default: all three |
+| `user_ids[]` | Repeatable, at most 100. Returns exactly those principals (unpaginated, `next_page` null), whether or not they have spent; `q` still filters them |
+| `q` | Case-insensitive substring filter on the principal, at most 256 characters |
+| `sort` | `spend_desc`; requires exactly one `period[]` |
+| `page` | The opaque `next_page` token from the previous response |
+
+Without `user_ids[]` the rows cover every principal with a counter in a retained window. Each row has `scope` (`{"type": "user", "user_id": ...}`), `groups` (always `[]`), `actor`, `amount` and `source`/`spend_limit_id` (the binding row, or null when unlimited), `currency`, `period`, and `period_to_date_spend` in US cents with up to three decimals. `actor` is derived from the principal alone: a static `[server.auth]` token name fills `name`, an email principal fills `email_address`, and `shunt:anonymous` has both null. Invalid parameters return `400 invalid_request_error`: `limit: must be between 1 and 1000`, `period[]: must be one of daily, weekly, monthly`, `user_ids[]: at most 100 entries per request`, `q: too long`, `sort: must be spend_desc`, `sort=spend_desc requires exactly one period[]`, `page: invalid page token`.
+
 ## Not yet implemented
 
-- Spend enforcement on `/v1/messages`, including `429 billing_error`
-- Token usage metering — the pricing table and rate resolver (`[server.spend.pricing]`) are in place and validated at boot, but no meter reads token usage or prices a request yet, so nothing calls them
-- `GET /v1/organizations/spend_limits/effective`
 - `GET /v1/organizations/spend_limits/audit`
-- Hourly retention sweeps
-- `rbac_group`, `seat_tier`, and `organization_service` scopes
+- Retention sweeps of audit records and identity data (`audit_retention_days`, `identity_retention_days`)
+- `rbac_group`, `seat_tier` and `organization_service` scopes, and `group_limit_mode`
+- The dollar figure Claude Code requests from `GET /api/oauth/usage`
+- The inbound Codex endpoint (`[server.codex_endpoint]`): it is neither enforced nor metered, so a principal reaching shunt only through it spends uncapped. Tracked in [#733](https://github.com/pleaseai/shunt/issues/733)
