@@ -821,9 +821,10 @@ after the gap is still cut. An error response's body is read within the same
 gap. The one a `chatgpt_oauth` account pool relays after every account failed
 is read within a fresh gap, started when the last account failed. On an
 OpenAI Responses target, an error body's read also stops after 5 seconds: a
-body that has sent nothing by then
-is cut as a stall, even when the gap is longer, and one that has started
-arriving is relayed with its status. A retried request starts the gap again. A cold Antigravity
+body that has sent nothing by then is cut as a stall, even when the gap is
+longer. When one has started arriving but not finished, the error is relayed
+with its status, and a message naming that status replaces the unfinished
+body. A retried request starts the gap again. A cold Antigravity
 model-catalog fetch made during one of these calls is read under the same
 bounds; a refused catalog falls back to the model id shunt would guess without
 one, and the next client turn fetches it again.
