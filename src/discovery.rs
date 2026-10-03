@@ -414,6 +414,20 @@ mod tests {
         assert_eq!(ids.len(), BUILTIN_MODELS.len(), "duplicate builtin id");
     }
 
+    #[test]
+    fn every_builtin_claude_model_has_a_list_price() {
+        for model in BUILTIN_MODELS
+            .iter()
+            .filter(|model| model.id.starts_with("claude-"))
+        {
+            assert!(
+                crate::gateway::spend::pricing::canonical_builtin_id(model.id).is_some(),
+                "builtin model {} has no LIST_PRICES row",
+                model.id
+            );
+        }
+    }
+
     #[tokio::test]
     async fn default_returns_builtin_models_in_api_order() {
         let state =
