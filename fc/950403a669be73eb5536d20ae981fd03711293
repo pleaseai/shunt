@@ -1,0 +1,43 @@
+src/stream_metrics/spend_tap.rs
+  s_9f901e59727f87::t_2afc715a32d2b4 1-436
+tests/spend_metering.rs
+  s_9f901e59727f87::t_e5859a99256c9b 1-582
+  s_9f901e59727f87::t_1a1b647ab31887 583-604
+src/stream_metrics/spend_tap/tests.rs
+  s_9f901e59727f87::t_42a4f419de2a9a 1-329
+  s_9f901e59727f87::t_2f7d6012f3edc2 330-337
+.please/docs/tracks/active/spend-enforcement-20261003/plan.md
+  s_9f901e59727f87::t_f26a30311f6119 187-188,195-200,203-205
+src/proxy/chain_stream.rs
+  s_9f901e59727f87::t_09ba939bc47131 367-369,465,523,555,769-774,928,934
+src/proxy/failover.rs
+  s_9f901e59727f87::t_9c425f34498ac3 480-483,503,524-526,530-534,759-767,771,780,783-784,786
+src/proxy/failover/chain.rs
+  s_9f901e59727f87::t_1ee4b3fd38cf60 104-105,221,236,263,293,371,380,393
+src/proxy/failover/gated.rs
+  s_9f901e59727f87::t_71e3ebeee1d9dc 25,199-206,254-258,273,283-285
+src/reload.rs
+  s_9f901e59727f87::t_cb6740d462882f 64-67,93-99,107
+src/routing/serve/gated/tests.rs
+  s_9f901e59727f87::t_cb8c6ea1b90678 119,196,228
+src/server.rs
+  s_9f901e59727f87::t_749206721e46b4 67-69,137
+src/stream_metrics.rs
+  s_9f901e59727f87::t_6da0aef1c80c05 7-11,26-27,220-222,256,304-306,434-436,716-732,735-741,751-752,755
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fc950403a669be73eb5536d20ae981fd03711293",
+  "prompts": {},
+  "sessions": {
+    "s_9f901e59727f87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "321677c8-cff9-4c24-9b5d-93c0c797c39d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
