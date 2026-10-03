@@ -180,6 +180,9 @@ T001 → {T002, T003, T005, T007}; T003 → T004; T002 → T006; {T006, T007} �
 
 ## Progress
 
+- [x] (2026-10-04 12:00 KST) T001 Spend meter core
+  Evidence: `cargo test --all-features -- gateway::spend::meter` → 13 passed, 0 failed; `gateway::spend` 65 passed; fmt and clippy -D warnings clean
+
 ## Decision Log
 
 - 2026-10-03: Counters persist to a sibling file, not the stage-1 envelope. FR-11 was reworded to "under the existing spend state configuration". This keeps rollback safe for caps and audit, and counter flushes never rewrite the audit log.

@@ -5,6 +5,7 @@
 //! gateway login can still administer spend limits.
 
 pub mod api;
+pub mod meter;
 pub mod persist;
 pub mod pricing;
 pub mod store;

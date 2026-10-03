@@ -2,6 +2,8 @@ use std::{path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 
+use super::meter::{Check, SpendMeter};
+
 /// Largest supported amount in USD cents. The next enforcement stage uses
 /// unsigned 64-bit arithmetic, and this bound keeps the wire value at 19 digits.
 pub(crate) const MAX_AMOUNT: u64 = 9_999_999_999_999_999_999;
@@ -37,7 +39,7 @@ pub enum Scope {
     Organization,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Period {
     Daily,
@@ -121,6 +123,7 @@ pub struct SpendStore {
     state: Mutex<SpendState>,
     mutation_gate: tokio::sync::Mutex<()>,
     state_path: Option<PathBuf>,
+    meter: SpendMeter,
 }
 
 impl SpendStore {
@@ -132,7 +135,23 @@ impl SpendStore {
             }),
             mutation_gate: tokio::sync::Mutex::new(()),
             state_path,
+            meter: SpendMeter::default(),
         }
+    }
+
+    /// The process-lifetime spend counters, kept off `SpendState` so the
+    /// request path never clones the limit tables.
+    pub fn meter(&self) -> &SpendMeter {
+        &self.meter
+    }
+
+    /// Checks `principal` against the stored caps at `now_secs` (Unix seconds).
+    pub fn check(&self, principal: &str, now_secs: u64) -> Check {
+        let state = self
+            .state
+            .lock()
+            .expect("gateway spend-limit lock poisoned");
+        self.meter.check(&state.limits, principal, now_secs)
     }
 
     pub(crate) async fn mutation_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
