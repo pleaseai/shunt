@@ -127,7 +127,7 @@ proxy::post Ok ─► (capped principal) replace anthropic-ratelimit-unified-* �
 - [x] T004 Meter routing side calls and gated turns exactly once (file: src/routing/serve.rs) (depends on T003) [FR-7, AC-020]
   Validation: Judge and classifier costs land on the requesting principal. A replayed gated turn is metered once. A gated turn discarded for escalation is metered once, and the escalated turn is metered separately.
   Method: integration tests with router configs and wiremock upstreams asserting counter totals equal the sum of mocked usages
-- [ ] T005 Persist counters across restarts with background flush and retention pruning (file: src/gateway/spend/meter/persist.rs) (depends on T001) [FR-11, AC-010, AC-019]
+- [x] T005 Persist counters across restarts with background flush and retention pruning (file: src/gateway/spend/meter/persist.rs) (depends on T001) [FR-11, AC-010, AC-019]
   Validation: After a restart, enforcement uses pre-restart spend. Windows older than `spend_retention_months` are absent from the written file. A malformed counter record makes only its principal unavailable. `state_path = ""` keeps counters in memory. Counter flushes leave the stage-1 caps file byte-unchanged.
   Method: `cargo test --all-features -- gateway::spend` plus a restart test on a temp `state_path`
   STOP: shutdown offers no way to await a final flush within `shutdown_timeout_seconds`.
