@@ -4060,8 +4060,10 @@ impl Config {
     /// mapped only as the `codex` upstream model does not make an `anthropic`
     /// row usable. A client model *id* is scoped the same way — routing returns
     /// as soon as a `[[models]]` entry claims the id, and only for the upstreams
-    /// that entry names — except under a `stage_router`, whose tier target is
-    /// resolved through the whole chain again and can land anywhere.
+    /// that entry names — except under a `[models.router]` or a
+    /// `[models.subagents]` overlay, whose target is resolved through the whole
+    /// chain again and can land anywhere. A `noop` router is the exception to
+    /// the exception: it answers without calling any upstream.
     ///
     /// `routing::resolve_model_chain` ends by routing anything no `[[routes]]`
     /// or `[[route_prefixes]]` entry claimed to `server.default_provider` as a
@@ -4101,11 +4103,18 @@ impl Config {
             // upstreams that entry can route to. A row on any other upstream
             // is inert however the id is spelled.
             let id_reaches_this_upstream = matches(&entry.id)
-                && match (&entry.stage_router, &entry.upstream_model) {
-                    // A stage router resolves its tier target through the whole
-                    // chain again, so it can land on any upstream. Claiming
-                    // reachability is the safe answer: a warning here would be
-                    // a false one.
+                // A delegated-work overlay diverts a child's turn to its target
+                // and resolves that through the whole chain again, ahead of the
+                // entry's own router or map, so the id can land anywhere.
+                && (entry.subagents.is_some()
+                || match (&entry.router, &entry.upstream_model) {
+                    // A `noop` router synthesizes its answer and calls no
+                    // upstream, so no row on any upstream ever prices it.
+                    (Some(RouterConfig::Noop {}), _) => false,
+                    // Every other router resolves its chosen target through the
+                    // whole chain again, so it can land on any upstream.
+                    // Claiming reachability is the safe answer: a warning here
+                    // would be a false one.
                     (Some(_), _) => true,
                     // An `upstream_model` map routes to the providers it names
                     // and nowhere else.
@@ -4117,7 +4126,7 @@ impl Config {
                     // `[[route_prefixes]]`, and default-provider arms answer
                     // instead of claiming the id here.
                     (None, _) => false,
-                };
+                });
             id_reaches_this_upstream
                 || entry
                     .upstream_model
@@ -8109,6 +8118,22 @@ cache_write = 4.125
                 // A stage router resolves its tier target through the whole
                 // chain again, so its id can land on any upstream.
                 router_model("router-model", "capable-tier", "efficient-tier"),
+                // A `noop` router answers without any upstream call.
+                ModelConfig {
+                    router: Some(super::RouterConfig::Noop {}),
+                    ..model_config("noop-model", None)
+                },
+                // A delegated-work overlay re-resolves its target through the
+                // whole chain, ahead of the entry's own (absent) router or map.
+                ModelConfig {
+                    subagents: Some(super::SubagentsConfig::Passthrough(
+                        super::PassthroughSubagentsConfig {
+                            target: "efficient-tier".to_string(),
+                            by_type: BTreeMap::new(),
+                        },
+                    )),
+                    ..model_config("overlay-model", None)
+                },
             ],
             routes: vec![RouteConfig {
                 model: "legacy-alias".to_string(),
@@ -8147,6 +8172,7 @@ cache_write = 4.125
             // A stage router's target is resolved through the whole chain
             // again, so the router's id stays reachable anywhere.
             ("bedrock-eu", "router-model"),
+            ("bedrock-eu", "overlay-model"),
             ("codex", "legacy-alias"),
             ("codex", "vendor-sonnet"),
             // A prefix route on this row's upstream serves the model, at the
@@ -8184,6 +8210,9 @@ cache_write = 4.125
             // A model whose first char shares no byte-prefix boundary with the
             // configured `é` prefix: the check must answer, not panic.
             ("codex", "aé"),
+            // A `noop` router calls no upstream, so nothing ever prices it.
+            ("bedrock-eu", "noop-model"),
+            ("codex", "noop-model"),
             // A blank model reaches nothing, not even on the default provider.
             ("anthropic", "   "),
             ("anthropic", ""),
