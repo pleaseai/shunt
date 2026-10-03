@@ -66,14 +66,7 @@ pub(crate) fn enforce(
                 period = period_name(period),
                 "spend limit reached"
             );
-            let message = with_blocked_message(
-                format!(
-                    "spend limit reached ({}; resets {})",
-                    period_name(period),
-                    reset_label(reset_at)
-                ),
-                spend.blocked_message.as_deref(),
-            );
+            let message = reached_message(period, reset_at, spend.blocked_message.as_deref());
             let retry_after = reset_at.saturating_sub(now).max(1);
             // `Blocked` is derived from the binding cap, so it is always set.
             let headers = binding
@@ -102,6 +95,18 @@ pub(crate) fn enforce(
             Ok(binding.map_or(Plan::Unchanged, |_| Plan::Replace(Vec::new())))
         }
     }
+}
+
+/// The over-cap refusal's message, naming the binding cap's period and reset.
+fn reached_message(period: Period, reset_at: u64, blocked_message: Option<&str>) -> String {
+    with_blocked_message(
+        format!(
+            "spend limit reached ({}; resets {})",
+            period_name(period),
+            reset_label(reset_at)
+        ),
+        blocked_message,
+    )
 }
 
 /// Appends the operator's `blocked_message` after an em dash, as the reference
@@ -144,4 +149,59 @@ fn refusal(
         message,
         response: Box::new(response),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gateway::spend::{
+        meter::{window, SpendMeter, FEMTO_USD_PER_CENT},
+        store::{Scope, SpendLimit},
+    };
+
+    fn cap(period: Period) -> SpendLimit {
+        SpendLimit {
+            id: "spl_t".into(),
+            amount: Some("1".into()),
+            created_at: String::new(),
+            currency: "USD".into(),
+            period,
+            scope: Scope::User {
+                user_id: "a".into(),
+            },
+            object_type: "spend_limit".into(),
+            updated_at: String::new(),
+        }
+    }
+
+    /// 2026-10-31 (a Saturday) 12:00 UTC: the daily and monthly windows both
+    /// reset at 2026-11-01 00:00, the weekly one on Monday.
+    const LAST_DAY: u64 = 1_793_448_000;
+
+    #[test]
+    fn an_equal_reset_names_the_later_period_in_message_and_headers() {
+        assert_eq!(
+            window(Period::Daily, LAST_DAY).end,
+            window(Period::Monthly, LAST_DAY).end
+        );
+        let limits = [cap(Period::Daily), cap(Period::Monthly)];
+        let meter = SpendMeter::default();
+        meter.record("a", LAST_DAY, FEMTO_USD_PER_CENT as u64);
+
+        let assessment = meter.assess(&limits, "a", LAST_DAY);
+        let Check::Blocked { period, reset_at } = assessment.check else {
+            panic!("both caps are reached: {:?}", assessment.check);
+        };
+        assert_eq!(period, Period::Monthly);
+        assert_eq!(
+            assessment.binding.map(|binding| binding.period),
+            Some(period)
+        );
+        assert!(
+            reached_message(period, reset_at, None)
+                .starts_with("spend limit reached (monthly; resets 2026-11-01 00:00"),
+            "{}",
+            reached_message(period, reset_at, None)
+        );
+    }
 }

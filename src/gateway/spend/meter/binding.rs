@@ -6,8 +6,9 @@
 //! monthly in that order:
 //!
 //! - one exceeded, the other not: the exceeded one;
-//! - both exceeded: the one that resets later (an equal reset keeps the
-//!   earlier period, which is also the period [`Check::Blocked`] names);
+//! - both exceeded: the one that resets later, an equal reset taking the
+//!   later period (the reference's `e.resetsAt > t.resetsAt ? e : t`); the
+//!   refusal names the same period, since [`Check::Blocked`] is this cap;
 //! - neither: the higher utilization, a tie keeping the later period.
 //!
 //! Utilization is compared and rounded on the integer femto amounts, so no
@@ -101,8 +102,8 @@ fn prefer(earlier: Binding, later: Binding) -> Binding {
     match (earlier.exceeded(), later.exceeded()) {
         (true, false) => earlier,
         (false, true) => later,
-        (true, true) if later.reset_at > earlier.reset_at => later,
-        (true, true) => earlier,
+        (true, true) if earlier.reset_at > later.reset_at => earlier,
+        (true, true) => later,
         (false, false) if compare_utilization(&earlier, &later) == Ordering::Greater => earlier,
         (false, false) => later,
     }
@@ -191,13 +192,13 @@ mod tests {
     }
 
     #[test]
-    fn both_exceeded_keeps_the_later_reset_and_an_equal_reset_keeps_the_earlier() {
+    fn both_exceeded_keeps_the_later_reset_and_an_equal_reset_the_later_period() {
         let daily = at(Period::Daily, 5, 5, 10);
         let weekly = at(Period::Weekly, 9, 5, 20);
         let monthly = at(Period::Monthly, 5, 5, 15);
         assert_eq!(fold([daily, weekly, monthly]), Some(weekly));
         let same = at(Period::Monthly, 5, 5, 20);
-        assert_eq!(fold([weekly, same]), Some(weekly));
+        assert_eq!(fold([weekly, same]), Some(same));
     }
 
     #[test]
