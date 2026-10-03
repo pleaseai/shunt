@@ -114,7 +114,7 @@ proxy::post Ok ─► (capped principal) replace anthropic-ratelimit-unified-* �
 
 ## Tasks
 
-- [ ] T001 Spend meter core: counters, UTC windows, effective-cap resolution, pricing-to-cost with the unknown-model rate (file: src/gateway/spend/meter.rs) [FR-3, FR-6, FR-8, FR-10, NFR-4, AC-004, AC-005, AC-008, AC-009, SC-4]
+- [x] T001 Spend meter core: counters, UTC windows, effective-cap resolution, pricing-to-cost with the unknown-model rate (file: src/gateway/spend/meter.rs) [FR-3, FR-6, FR-8, FR-10, NFR-4, AC-004, AC-005, AC-008, AC-009, SC-4]
   Validation: Caps resolve user → org → unlimited per period. Windows roll at 00:00 UTC each day, on Monday, and on the 1st. `check` names the blocking cap that resets last. An unpriceable model costs the unknown-model rate times the multiplier and warns once per id. Concurrent records on one principal lose no spend.
   Method: `cargo test --all-features -- gateway::spend::meter`
   STOP: PR #472's merged `PriceTable`/`Rates` API differs from `resolve(upstream, client_model, upstream_model) -> Option<Rates>`.
