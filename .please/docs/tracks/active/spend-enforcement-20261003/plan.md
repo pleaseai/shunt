@@ -131,7 +131,7 @@ proxy::post Ok ─► (capped principal) replace anthropic-ratelimit-unified-* �
   Validation: After a restart, enforcement uses pre-restart spend. Windows older than `spend_retention_months` are absent from the written file. A malformed counter record makes only its principal unavailable. `state_path = ""` keeps counters in memory. Counter flushes leave the stage-1 caps file byte-unchanged.
   Method: `cargo test --all-features -- gateway::spend` plus a restart test on a temp `state_path`
   STOP: shutdown offers no way to await a final flush within `shutdown_timeout_seconds`.
-- [ ] T006 Report the principal's own cap in `anthropic-ratelimit-unified-*` headers (file: src/proxy.rs) (depends on T002) [FR-13, AC-016, AC-016b, SC-2]
+- [x] T006 Report the principal's own cap in `anthropic-ratelimit-unified-*` headers (file: src/proxy.rs) (depends on T002) [FR-13, AC-016, AC-016b, SC-2]
   Validation: A 2xx response to a capped principal carries unified headers for that principal's most-consumed cap. No upstream unified value reaches a capped principal on any 2xx path: relay, committed stream, or gated replay. Responses to uncapped principals are unchanged.
   Method: integration tests over the three 2xx paths
   STOP: the header names and value formats Claude Code reads for spend caps cannot be confirmed from the reference gateway's `GET /protocol` (`run-claude-gateway-ref` skill) or a Claude Code binary.
