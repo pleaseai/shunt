@@ -135,7 +135,7 @@ proxy::post Ok ─► (capped principal) replace anthropic-ratelimit-unified-* �
   Validation: A 2xx response to a capped principal carries unified headers for that principal's most-consumed cap. No upstream unified value reaches a capped principal on any 2xx path: relay, committed stream, or gated replay. Responses to uncapped principals are unchanged.
   Method: integration tests over the three 2xx paths
   STOP: the header names and value formats Claude Code reads for spend caps cannot be confirmed from the reference gateway's `GET /protocol` (`run-claude-gateway-ref` skill) or a Claude Code binary.
-- [ ] T007 [P] Serve `GET /v1/organizations/spend_limits/effective` (file: src/gateway/spend/api.rs) (depends on T001) [FR-14, AC-017, SC-3]
+- [x] T007 [P] Serve `GET /v1/organizations/spend_limits/effective` (file: src/gateway/spend/api.rs) (depends on T001) [FR-14, AC-017, SC-3]
   Validation: A read or write admin credential gets SpendSummary rows (principal, period, resolved cap, period-to-date spend, actor) for principals with recorded spend. `user_ids[]`, `period[]`, `sort=spend_desc` (exactly one `period[]`), `q`, `limit`, and `page` filter and paginate. A bad credential gets 401, and an invalid query gets 400 in the stage-1 envelope.
   Method: `cargo test --all-features -- gateway::spend` API tests in the stage-1 style
   STOP: Anthropic's `SpendSummary` field names cannot be confirmed from the public Admin API reference.
