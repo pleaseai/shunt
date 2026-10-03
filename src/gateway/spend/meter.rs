@@ -8,6 +8,7 @@
 //! is whole US cents, 1e13 femto-USD each. Counters are keyed by
 //! `(principal, period, window start)` and saturate rather than wrap.
 
+mod binding;
 pub mod persist;
 mod window;
 
@@ -23,6 +24,7 @@ use super::{
     pricing::{PriceTable, Rates, Usage},
     store::{Period, Scope, SpendLimit},
 };
+pub use binding::{Binding, Threshold};
 pub use window::{months_back_start, reset_label, window, Window};
 
 /// Reserved principal for requests with no client identity whose admission
@@ -52,6 +54,15 @@ pub enum Check {
     },
     /// The principal's counters could not be trusted (see [`SpendMeter::mark_unavailable`]).
     Unavailable,
+}
+
+/// Outcome of [`SpendMeter::assess`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Assessment {
+    pub check: Check,
+    /// The cap the principal's rate-limit headers describe; `None` when the
+    /// principal has no cap in any period.
+    pub binding: Option<Binding>,
 }
 
 /// One request's billable usage.
@@ -164,26 +175,38 @@ impl SpendMeter {
 
     /// Decides whether `principal` may spend, given the stage-1 `limits`.
     pub fn check(&self, limits: &[SpendLimit], principal: &str, now_secs: u64) -> Check {
-        if self.is_unavailable(principal, now_secs) {
-            return Check::Unavailable;
-        }
-        let mut blocking: Option<(Period, u64)> = None;
-        for period in PERIODS {
-            let Some(cap) = effective_cap(limits, principal, period) else {
-                continue;
-            };
-            if u128::from(self.spent(principal, period, now_secs)) < cap {
-                continue;
+        self.assess(limits, principal, now_secs).check
+    }
+
+    /// [`Self::check`] together with the binding cap the rate-limit headers
+    /// describe, both from one read of each counter so they cannot disagree.
+    ///
+    /// When any cap is reached, `check` is `Blocked` on exactly the binding
+    /// cap's period and reset. `binding` is `None` only for a principal with
+    /// no cap in any period; it is still computed for an unavailable
+    /// principal, where only its presence is meaningful.
+    pub fn assess(&self, limits: &[SpendLimit], principal: &str, now_secs: u64) -> Assessment {
+        let binding = binding::fold(PERIODS.into_iter().filter_map(|period| {
+            let cap = effective_cap(limits, principal, period)?;
+            Some(Binding {
+                period,
+                spent: u128::from(self.spent(principal, period, now_secs)),
+                cap,
+                reset_at: window(period, now_secs).end,
+            })
+        }));
+        let check = if self.is_unavailable(principal, now_secs) {
+            Check::Unavailable
+        } else {
+            match binding {
+                Some(binding) if binding.exceeded() => Check::Blocked {
+                    period: binding.period,
+                    reset_at: binding.reset_at,
+                },
+                _ => Check::Allow,
             }
-            let reset_at = window(period, now_secs).end;
-            if blocking.is_none_or(|(_, latest)| reset_at > latest) {
-                blocking = Some((period, reset_at));
-            }
-        }
-        blocking.map_or(Check::Allow, |(period, reset_at)| Check::Blocked {
-            period,
-            reset_at,
-        })
+        };
+        Assessment { check, binding }
     }
 
     /// Prices one request in femto-USD. An unpriceable model is charged the

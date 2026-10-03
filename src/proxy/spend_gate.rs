@@ -13,7 +13,7 @@ use axum::{
     response::IntoResponse,
 };
 
-use super::ForwardError;
+use super::{spend_headers, spend_headers::Plan, ForwardError};
 use crate::{
     error::ShuntError,
     gateway::spend::{
@@ -38,26 +38,29 @@ pub(crate) fn principal_for(client: Option<&str>, injects_credential: bool) -> O
     Some(client.map_or_else(|| ANONYMOUS_PRINCIPAL.to_string(), ToOwned::to_owned))
 }
 
-/// Refuses `principal` when it has reached a cap. A no-op without
-/// `[server.spend]`, for an unmetered request, and for `count_tokens`, which
-/// is never refused.
+/// Refuses `principal` when it has reached a cap, and otherwise returns what
+/// the response must do with its `anthropic-ratelimit-*` headers. A no-op
+/// ([`Plan::Unchanged`]) without `[server.spend]`, for an unmetered request,
+/// for `count_tokens` (never refused), and for a principal with no cap.
 pub(crate) fn enforce(
     state: &AppState,
     principal: Option<&str>,
     count_tokens: bool,
-) -> Result<(), Box<ForwardError>> {
+) -> Result<Plan, Box<ForwardError>> {
     let (Some(spend), Some(principal)) = (state.config.server.spend.as_ref(), principal) else {
-        return Ok(());
+        return Ok(Plan::Unchanged);
     };
     if count_tokens {
-        return Ok(());
+        return Ok(Plan::Unchanged);
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
-    match state.gateway_stores.spend.check(principal, now) {
-        Check::Allow => Ok(()),
-        Check::Blocked { period, reset_at } => {
+    let assessment = state.gateway_stores.spend.assess(principal, now);
+    match (assessment.check, assessment.binding) {
+        (Check::Allow, None) => Ok(Plan::Unchanged),
+        (Check::Allow, Some(binding)) => Ok(Plan::Replace(spend_headers::allowed(&binding))),
+        (Check::Blocked { period, reset_at }, binding) => {
             tracing::info!(
                 principal,
                 period = period_name(period),
@@ -72,9 +75,13 @@ pub(crate) fn enforce(
                 spend.blocked_message.as_deref(),
             );
             let retry_after = reset_at.saturating_sub(now).max(1);
-            Err(refusal(message, Some(retry_after)))
+            // `Blocked` is derived from the binding cap, so it is always set.
+            let headers = binding
+                .map(|binding| spend_headers::exceeded(&binding, period_name(period)))
+                .unwrap_or_default();
+            Err(refusal(message, Some(retry_after), headers))
         }
-        Check::Unavailable if spend.enforcement.fail_closed_on_error => {
+        (Check::Unavailable, _) if spend.enforcement.fail_closed_on_error => {
             tracing::warn!(
                 principal,
                 "spend state unavailable; refusing (fail_closed_on_error)"
@@ -85,11 +92,14 @@ pub(crate) fn enforce(
                     spend.blocked_message.as_deref(),
                 ),
                 None,
+                vec![spend_headers::fetch_error()],
             ))
         }
-        Check::Unavailable => {
+        (Check::Unavailable, binding) => {
             tracing::warn!(principal, "spend state unavailable; forwarding the request");
-            Ok(())
+            // Fail-open carries no rate-limit headers; a capped principal
+            // still never sees the upstream's own.
+            Ok(binding.map_or(Plan::Unchanged, |_| Plan::Replace(Vec::new())))
         }
     }
 }
@@ -111,7 +121,11 @@ fn period_name(period: Period) -> &'static str {
     }
 }
 
-fn refusal(message: String, retry_after: Option<u64>) -> Box<ForwardError> {
+fn refusal(
+    message: String,
+    retry_after: Option<u64>,
+    rate_limit: Vec<(HeaderName, HeaderValue)>,
+) -> Box<ForwardError> {
     let mut response = ShuntError::new(
         StatusCode::TOO_MANY_REQUESTS,
         "billing_error",
@@ -123,6 +137,9 @@ fn refusal(message: String, retry_after: Option<u64>) -> Box<ForwardError> {
         headers.insert(RETRY_AFTER, HeaderValue::from(seconds));
     }
     headers.insert(SHOULD_RETRY, HeaderValue::from_static("false"));
+    for (name, value) in rate_limit {
+        headers.insert(name, value);
+    }
     Box::new(ForwardError {
         message,
         response: Box::new(response),

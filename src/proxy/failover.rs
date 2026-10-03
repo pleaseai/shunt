@@ -21,7 +21,7 @@ use crate::{
 
 use super::{
     count_tokens_unsupported, is_count_tokens, normalize_request_body, safeguards, spend_gate,
-    ForwardError,
+    spend_headers, ForwardError,
 };
 
 pub(crate) mod chain;
@@ -38,6 +38,31 @@ pub(super) async fn forward(
     headers: &HeaderMap,
     body: Body,
     started_at: Instant,
+) -> Result<(StatusCode, axum::response::Response), ForwardError> {
+    // Set at spend admission, and applied here at the one exit every response
+    // path returns through — the ordered chain, the committed stream, the
+    // gated replay, and every failure — so no path can carry an upstream's
+    // rate-limit values to a capped principal (`spend_headers`).
+    let mut rate_limit = spend_headers::Plan::Unchanged;
+    match forward_admitted(state, uri, headers, body, started_at, &mut rate_limit).await {
+        Ok((status, mut response)) => {
+            rate_limit.apply(response.status(), response.headers_mut());
+            Ok((status, response))
+        }
+        Err(mut error) => {
+            rate_limit.apply(error.response.status(), error.response.headers_mut());
+            Err(error)
+        }
+    }
+}
+
+async fn forward_admitted(
+    state: AppState,
+    uri: &Uri,
+    headers: &HeaderMap,
+    body: Body,
+    started_at: Instant,
+    rate_limit: &mut spend_headers::Plan,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     let max_request_bytes = state.config.server.limits.max_request_bytes;
     if crate::http_tuning::content_length_exceeds(headers, max_request_bytes) {
@@ -233,7 +258,7 @@ pub(super) async fn forward(
     // Spend admission. After both gates above (a caller who is refused for
     // auth or policy never learns their spend state) and before anything that
     // can reach an upstream, the router judge included.
-    spend_gate::enforce(&state, inbound.spend_principal(), is_count_tokens(uri))
+    *rate_limit = spend_gate::enforce(&state, inbound.spend_principal(), is_count_tokens(uri))
         .map_err(|error| *error)?;
     // The request is admitted, so the tier it was routed at may be recorded —
     // and, for a driven entry, a judge may now be consulted. Both gates above

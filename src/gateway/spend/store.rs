@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 
-use super::meter::{Check, SpendMeter};
+use super::meter::{Assessment, Check, SpendMeter};
 
 /// Largest supported amount in USD cents. The next enforcement stage uses
 /// unsigned 64-bit arithmetic, and this bound keeps the wire value at 19 digits.
@@ -152,6 +152,16 @@ impl SpendStore {
             .lock()
             .expect("gateway spend-limit lock poisoned");
         self.meter.check(&state.limits, principal, now_secs)
+    }
+
+    /// [`Self::check`] plus the binding cap, from one snapshot (see
+    /// [`SpendMeter::assess`]).
+    pub fn assess(&self, principal: &str, now_secs: u64) -> Assessment {
+        let state = self
+            .state
+            .lock()
+            .expect("gateway spend-limit lock poisoned");
+        self.meter.assess(&state.limits, principal, now_secs)
     }
 
     pub(crate) async fn mutation_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
