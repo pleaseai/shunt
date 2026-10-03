@@ -3384,10 +3384,22 @@ mod tests {
         );
         forward.turn.response_bounds.idle = Some(DEFAULT_GAP);
         let state = pool_state(format!("http://{address}"));
-        let call = tokio::spawn(forward_chatgpt_oauth(state, pool_route(), forward));
-        received_rx
-            .await
-            .expect("the upstream received the request");
+        let mut call = tokio::spawn(forward_chatgpt_oauth(state, pool_route(), forward));
+        // Race the forward itself, so a call that ends before it reaches the
+        // upstream fails the test with its own answer instead of hanging on a
+        // listener still waiting in `accept`.
+        tokio::select! {
+            received = received_rx => received.expect("the upstream received the request"),
+            joined = &mut call => match joined.expect("the forward task joins") {
+                Ok((status, _)) => {
+                    panic!("the forward answered {status} without reaching the upstream")
+                }
+                Err(error) => panic!(
+                    "the forward failed before reaching the upstream: {}",
+                    error.message
+                ),
+            },
+        }
         drop(token_a);
         drop(env);
         let error = call
