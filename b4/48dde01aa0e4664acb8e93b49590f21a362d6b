@@ -1,0 +1,57 @@
+src/gateway/spend/pricing.rs
+  s_fd663a4c0c71df::t_bbf52c00f5cdb3 181-187,189
+  s_fd663a4c0c71df::t_361d729cc13711 82
+  s_fd663a4c0c71df::t_9c8ac2c985efb8 312
+  s_fd663a4c0c71df::t_51d9d102a3b6ee 119-120,136-139,224-227,230,234,236,239,242-253,259,261,263,269,273,275,287-295
+  s_fd663a4c0c71df::t_f274b625136551 18
+  s_fd663a4c0c71df::t_93b3e70d486f0f 127-130,135
+  s_fd663a4c0c71df::t_f159416b1703c9 254-258
+  s_fd663a4c0c71df::t_e950aed0876fd1 134
+  s_fd663a4c0c71df::t_82951b3295ee0f 170,176-178
+  s_fd663a4c0c71df::t_280b8a36956350 150,153
+  s_fd663a4c0c71df::t_942ac1241fffb6 296-297
+docs/gateway-spend-limits.md
+  s_fd663a4c0c71df::t_d87650d083e8a3 44-46
+  s_fd663a4c0c71df::t_51d9d102a3b6ee 53
+site/src/content/docs/ko/reference/configuration.md
+  s_fd663a4c0c71df::t_51d9d102a3b6ee 175
+  s_fd663a4c0c71df::t_683dba82ddcae8 144-174,176
+src/config.rs
+  s_fd663a4c0c71df::t_8c6f01d952e2b7 3999
+  s_fd663a4c0c71df::t_c494e2a0f61c2f 4048-4051,4056
+  s_fd663a4c0c71df::t_6b27c6d9d8ae9b 3979-3981
+  s_fd663a4c0c71df::t_b5b8f14a4cfd2c 3023,3025
+  s_fd663a4c0c71df::t_e950aed0876fd1 3998
+  s_fd663a4c0c71df::t_11eb91216d984f 4057-4058
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_fd663a4c0c71df::t_51d9d102a3b6ee 175
+  s_fd663a4c0c71df::t_9b70a3eb415dba 146,150,152,157-158,173
+  s_fd663a4c0c71df::t_d9e6de68c2786d 144-145,147-149,151,153-156,159-172,174,176
+src/gateway/spend/pricing/catalog.rs
+  s_fd663a4c0c71df::t_e950aed0876fd1 132-135
+  s_fd663a4c0c71df::t_7a3e40bd0e38d6 94
+  s_fd663a4c0c71df::t_ff2f2f22daceb8 127-131,136-153
+  s_fd663a4c0c71df::t_3629668d870f53 35-40,44-55,58-61,67-70
+site/src/content/docs/reference/configuration.md
+  s_fd663a4c0c71df::t_51d9d102a3b6ee 236
+  s_fd663a4c0c71df::t_af99c205f1356f 205-235,237
+site/src/content/docs/ja/reference/configuration.md
+  s_fd663a4c0c71df::t_51d9d102a3b6ee 175
+  s_fd663a4c0c71df::t_128a8b203819e4 144-174,176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "b448dde01aa0e4664acb8e93b49590f21a362d6b",
+  "prompts": {},
+  "sessions": {
+    "s_fd663a4c0c71df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "27f91ae9-2921-44db-8aa0-996c83a4befb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}

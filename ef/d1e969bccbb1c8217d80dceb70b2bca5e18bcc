@@ -1,0 +1,41 @@
+site/src/content/docs/ja/reference/configuration.md
+  s_fd663a4c0c71df::t_0946ef9e232d34 158,175
+site/src/content/docs/ko/reference/configuration.md
+  s_fd663a4c0c71df::t_0946ef9e232d34 158,175
+src/config.rs
+  s_fd663a4c0c71df::t_759d98a645ee1d 8048,8050-8052,8055-8057,8065,8070-8081,8084,8086,8091-8092,8095,8098-8105,8108,8113-8127,8130,8135-8136,8138-8139
+  s_fd663a4c0c71df::t_c7e6b930043ce8 3025,3998-4000,4064-4067,4069-4071,4075,4090-4094
+  s_fd663a4c0c71df::t_4e4e8593a4ac37 7860-7879,7905-7913
+  s_fd663a4c0c71df::t_f2b4b05df37370 7914
+site/src/content/docs/reference/configuration.md
+  s_fd663a4c0c71df::t_0946ef9e232d34 219,236
+docs/gateway-spend-limits.md
+  s_fd663a4c0c71df::t_0946ef9e232d34 44
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_fd663a4c0c71df::t_0946ef9e232d34 158,175
+src/gateway/spend/pricing.rs
+  s_fd663a4c0c71df::t_5a4b79ac8d3fb8 16-19,198-199,201-204,210-211,437-440,444,465-475
+  s_fd663a4c0c71df::t_7b88f699f49b54 453-458
+  s_fd663a4c0c71df::t_f1ca6f02d1a5c8 6-7,418-419,441
+  s_fd663a4c0c71df::t_9e801f0445db3f 327-330,332,335-338,341
+  s_fd663a4c0c71df::t_6806c2e2f94347 208-209,212-213,236-237
+  s_fd663a4c0c71df::t_5464cf2a65b78a 459-462
+  s_fd663a4c0c71df::t_23c552c7b51864 483-487,490-494
+  s_fd663a4c0c71df::t_6544670b6d01f2 476
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.23",
+  "base_commit_sha": "efd1e969bccbb1c8217d80dceb70b2bca5e18bcc",
+  "prompts": {},
+  "sessions": {
+    "s_fd663a4c0c71df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "27f91ae9-2921-44db-8aa0-996c83a4befb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
