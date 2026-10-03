@@ -139,7 +139,7 @@ proxy::post Ok ─► (capped principal) replace anthropic-ratelimit-unified-* �
   Validation: A read or write admin credential gets SpendSummary rows (principal, period, resolved cap, period-to-date spend, actor) for principals with recorded spend. `user_ids[]`, `period[]`, `sort=spend_desc` (exactly one `period[]`), `q`, `limit`, and `page` filter and paginate. A bad credential gets 401, and an invalid query gets 400 in the stage-1 envelope.
   Method: `cargo test --all-features -- gateway::spend` API tests in the stage-1 style
   STOP: Anthropic's `SpendSummary` field names cannot be confirmed from the public Admin API reference.
-- [ ] T008 Document enforcement, pricing interaction, headers, `/effective`, and the Codex-endpoint gap (file: docs/gateway-spend-limits.md) (depends on T006, T007) [FR-17]
+- [x] T008 Document enforcement, pricing interaction, headers, `/effective`, and the Codex-endpoint gap (file: docs/gateway-spend-limits.md) (depends on T006, T007) [FR-17]
   Validation: `docs/gateway-spend-limits.md` no longer lists the shipped items as "Not yet implemented" and states the Codex-endpoint gap. The four README locales and the four site configuration-reference locales describe the same behavior. Cross-locale anchors resolve in the built site.
   Method: `bun run build` in `site/` plus a grep of `site/dist` for the linked anchors
 
