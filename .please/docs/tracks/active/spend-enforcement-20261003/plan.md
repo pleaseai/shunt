@@ -124,7 +124,7 @@ proxy::post Ok ─► (capped principal) replace anthropic-ratelimit-unified-* �
 - [x] T003 Meter served `/v1/messages` responses, streamed and non-streamed, priced on the real upstream model (file: src/stream_metrics.rs) (depends on T001) [FR-7, FR-9, NFR-1, NFR-2, AC-006, AC-007, AC-018]
   Validation: A completed stream and a non-stream JSON response each add exactly their priced usage, priced on the upstream model rather than the alias, to all three counters. This holds on the committed-stream path and on translated adapters. A stream cut before final usage adds a non-zero floor from its delivered text. Client bytes are byte-identical to a meter-off run, and a meter failure never fails the response. `count_tokens` and all-passthrough chains add nothing.
   Method: `cargo test --all-features` stream-metrics and failover integration tests, including a byte-equality check
-- [ ] T004 Meter routing side calls and gated turns exactly once (file: src/routing/serve.rs) (depends on T003) [FR-7, AC-020]
+- [x] T004 Meter routing side calls and gated turns exactly once (file: src/routing/serve.rs) (depends on T003) [FR-7, AC-020]
   Validation: Judge and classifier costs land on the requesting principal. A replayed gated turn is metered once. A gated turn discarded for escalation is metered once, and the escalated turn is metered separately.
   Method: integration tests with router configs and wiremock upstreams asserting counter totals equal the sum of mocked usages
 - [ ] T005 Persist counters across restarts with background flush and retention pruning (file: src/gateway/spend/meter/persist.rs) (depends on T001) [FR-11, AC-010, AC-019]
