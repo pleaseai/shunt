@@ -732,6 +732,28 @@ Four points were left open in the proposed draft and decided on 2026-09-18:
   so a stall there is a cut only when `gated_idle_ms` is under 5 s and no
   late chunk has pushed the deadline past the budget's end.
 
+- **2026-10-03 (issue #710) — an error body that sends nothing within the
+  envelope budget is a cut.** This changes one case of the rule in the
+  2026-09-30 (the #709 review) amendment above. On a gated call, when the 5 s
+  error-envelope budget ends before the error body has sent a single byte,
+  the read now returns the idle marker, with `failure: None`, so the call is
+  the cut whatever `gated_idle_ms` is. An escalation entry then falls back to
+  its strong target after 5 s rather than relaying the weak target's
+  refusal. The rule covers every Responses gated error-body read: the
+  single-account HTTP path, the pooled ChatGPT-OAuth refusal check, the
+  pool's non-failover relays (first attempt and the retry after a refresh),
+  and the pool-exhausted read of the 2026-09-30 (#707) amendment. The cut
+  reuses the idle marker, and so the `gated_idle_ms` cut reason, because a
+  body that never started is a stall whichever bound ends it. The marker
+  carries the 5 s budget as the silence it measured. The rest of the rule
+  above is unchanged. A gap that closes inside the budget is still the cut it
+  was, and a body that completes inside the budget is relayed as before. A
+  body that sent at least one byte before the budget ended is still relayed
+  with its status, its `retry-after`, and a message naming the status in
+  place of the unfinished body (`gated_error`). In the pooled refusal check
+  that body is still left unjudged. The 256 KiB cap is unchanged, and client
+  turns read error bodies as before, with no clock.
+
 ### 10. Verification before code
 
 Three external facts to capture live through `shunt run` before the

@@ -103,7 +103,9 @@ pub(crate) fn mark_body_broke(mut error: AdapterError) -> AdapterError {
     error
 }
 
-/// The idle gap a bounded call's upstream body went silent past.
+/// The silence that ended a bounded call's upstream body: the call's idle gap,
+/// or the error-envelope budget when a gated error body sent no byte before
+/// that budget ended (#710).
 ///
 /// Travels as an extension on the adapter error's response, like
 /// [`UpstreamBodyTooLarge`]: `routing::serve` reads it back to cut a gated turn

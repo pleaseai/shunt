@@ -1672,7 +1672,8 @@ const MODEL_NOT_SUPPORTED: &str = "model_not_supported";
 /// bytes are returned only when the whole body arrived within those bounds: a
 /// body that declares or passes the cap, trips the budget, or breaks is not a
 /// refusal, and is passed on unjudged. Only an idle cut is an error: it is the
-/// caller's bound, carried back to `routing::serve` as its marker.
+/// caller's bound, carried back to `routing::serve` as its marker. With a
+/// clock, a budget trip before the body sent a byte is that cut too (#710).
 ///
 /// What an unjudged body becomes depends on who relays it. `verbatim` (the
 /// inbound passthrough) replays every byte read followed by whatever the
@@ -1722,6 +1723,16 @@ async fn buffer_error_body(
                     (Some((idle, _)), Some(deadline)) if deadline < budget => {
                         return Err(crate::adapters::idle_error(
                             crate::adapters::UpstreamBodyIdle { idle },
+                        ));
+                    }
+                    // The budget ended a body that never sent a byte: on a
+                    // gated call that is a stall too, as
+                    // `bounded_upstream_text_within` cuts it (#710).
+                    (Some(_), _) if total == 0 => {
+                        return Err(crate::adapters::idle_error(
+                            crate::adapters::UpstreamBodyIdle {
+                                idle: crate::error::ERROR_ENVELOPE_BUDGET,
+                            },
                         ));
                     }
                     _ => break false,
@@ -2970,6 +2981,82 @@ mod tests {
         assert_eq!(judged.as_deref(), Some(body), "the whole body is judged");
     }
 
+    /// The default `gated_idle_ms`, well past the 5 s envelope budget, so the
+    /// gap never ends one of #710's reads on its own.
+    const DEFAULT_GAP: Duration = Duration::from_secs(60);
+
+    /// #710 in the refusal check: on a gated call whose gap outlasts the
+    /// envelope budget, a `400` whose body never sends a byte is cut when the
+    /// budget ends, with the idle marker carrying the budget, rather than
+    /// passed on unjudged for the pool to relay. Unit-level, since
+    /// `routing::serve` would read a relayed `400` again under its own gap.
+    ///
+    /// Non-vacuity: drop the no-byte arm and the body is passed on unjudged.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_refusal_body_silent_through_the_envelope_budget_is_cut() {
+        let sent_at = tokio::time::Instant::now();
+        let upstream = super::super::error::tests::timed_error(400, Vec::new(), true);
+        let error = buffer_error_body(upstream, Some((DEFAULT_GAP, sent_at)), false)
+            .await
+            .expect_err("a body that sent nothing within the budget is cut");
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle {
+                idle: crate::error::ERROR_ENVELOPE_BUDGET
+            }),
+            "got: {}",
+            error.message
+        );
+        assert!(error.failure.is_none(), "a cut is not a failover");
+        assert_eq!(sent_at.elapsed(), crate::error::ERROR_ENVELOPE_BUDGET);
+    }
+
+    /// The twin: the same `400` whose body arrives 4 s into the read is read
+    /// whole and judged, as it always was.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_refusal_body_inside_the_envelope_budget_is_judged() {
+        let sent_at = tokio::time::Instant::now();
+        let body: &'static [u8] = br#"{"detail":"The model is not supported"}"#;
+        let upstream = super::super::error::tests::timed_error(
+            400,
+            vec![(sent_at + Duration::from_secs(4), body)],
+            false,
+        );
+        let (relayed, judged) = buffer_error_body(upstream, Some((DEFAULT_GAP, sent_at)), false)
+            .await
+            .expect("a body inside the budget is read");
+        assert_eq!(relayed.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(judged.as_deref(), Some(body), "the whole body is judged");
+    }
+
+    /// The other twin, which pins the no-byte condition: a `400` that sent its
+    /// first bytes 1 s into the read and then stalls past the budget is
+    /// passed on unjudged, with the text the envelope read falls back to, as
+    /// before.
+    ///
+    /// Non-vacuity: cut on every budget trip, bytes or none, and this is an
+    /// `Err`.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_refusal_body_that_started_before_the_budget_ended_is_unjudged() {
+        let sent_at = tokio::time::Instant::now();
+        let upstream = super::super::error::tests::timed_error(
+            400,
+            vec![(sent_at + Duration::from_secs(1), br#"{"detail":"#)],
+            true,
+        );
+        let (relayed, judged) = buffer_error_body(upstream, Some((DEFAULT_GAP, sent_at)), false)
+            .await
+            .expect("a body that started is passed on");
+        assert_eq!(sent_at.elapsed(), crate::error::ERROR_ENVELOPE_BUDGET);
+        assert!(judged.is_none(), "an unfinished body is not judged");
+        assert_eq!(relayed.status(), StatusCode::BAD_REQUEST);
+        let bytes = relayed.bytes().await.expect("body is readable");
+        assert_eq!(bytes, "upstream returned 400 Bad Request");
+    }
+
     /// A `429` built in-process, as a pool account's rate limit answers it,
     /// with a `retry-after`: `body` is sent whole at its absolute instant and
     /// then ends, and `None` is a body that never sends a byte.
@@ -3080,6 +3167,97 @@ mod tests {
         );
     }
 
+    /// #710 at exhaustion: on a gated call whose gap outlasts the envelope
+    /// budget, a kept `429` whose body never sends a byte is cut when the
+    /// budget ends, with the idle marker carrying the budget, rather than
+    /// relayed as the pool's last answer.
+    ///
+    /// Non-vacuity: drop the no-byte arm of `bounded_upstream_text_within` and
+    /// the `429` is relayed with no marker.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_pool_exhausted_on_a_429_silent_through_the_budget_is_cut() {
+        let exhausted_at = tokio::time::Instant::now();
+        let kept = super::super::error::tests::timed_error(429, Vec::new(), true);
+        let error = exhausted_error(Some(kept), AuthMode::ChatgptOauth, Some(DEFAULT_GAP)).await;
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle {
+                idle: crate::error::ERROR_ENVELOPE_BUDGET
+            }),
+            "got: {}",
+            error.message
+        );
+        assert!(error.failure.is_none(), "a cut is not a failover");
+        assert_eq!(exhausted_at.elapsed(), crate::error::ERROR_ENVELOPE_BUDGET);
+    }
+
+    /// The twin: the kept `429` whose body arrives 4 s after the exhaustion
+    /// is relayed as the `429` it was, with its `retry-after` and message.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_pool_exhausted_on_a_429_inside_the_budget_relays_it() {
+        let message = "Rate limit reached for the account";
+        let body: &'static [u8] = br#"{"detail":"Rate limit reached for the account"}"#;
+        let exhausted_at = tokio::time::Instant::now();
+        let kept = super::super::error::tests::timed_error(
+            429,
+            vec![(exhausted_at + Duration::from_secs(4), body)],
+            false,
+        );
+        let error = exhausted_error(Some(kept), AuthMode::ChatgptOauth, Some(DEFAULT_GAP)).await;
+        assert!(error
+            .response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyIdle>()
+            .is_none());
+        assert!(matches!(
+            error.failure,
+            Some(crate::adapters::AdapterFailure::UpstreamStatus(
+                StatusCode::TOO_MANY_REQUESTS
+            ))
+        ));
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            error.response.headers().get("retry-after"),
+            Some(&HeaderValue::from_static("7"))
+        );
+        let bytes = axum::body::to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .expect("body is readable");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains(message), "got: {text}");
+    }
+
+    /// The other twin, which pins the no-byte condition: a kept `429` whose
+    /// body sent its first bytes 1 s after the exhaustion and then stalls past
+    /// the budget is relayed as the `429` it was, as before.
+    ///
+    /// Non-vacuity: cut on every budget trip, bytes or none, and this gets
+    /// the marker instead.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_pool_exhausted_on_a_429_that_started_before_the_budget_ended_relays_it() {
+        let exhausted_at = tokio::time::Instant::now();
+        let kept = super::super::error::tests::timed_error(
+            429,
+            vec![(exhausted_at + Duration::from_secs(1), br#"{"detail":"#)],
+            true,
+        );
+        let error = exhausted_error(Some(kept), AuthMode::ChatgptOauth, Some(DEFAULT_GAP)).await;
+        assert_eq!(exhausted_at.elapsed(), crate::error::ERROR_ENVELOPE_BUDGET);
+        assert!(error
+            .response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyIdle>()
+            .is_none());
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            error.response.headers().get("retry-after"),
+            Some(&HeaderValue::from_static("7"))
+        );
+    }
+
     /// End to end through [`forward_chatgpt_oauth`]: a gated call whose only
     /// account answers `429` with headers and then a body that never arrives
     /// is cut with the idle marker once the pool is exhausted, rather than
@@ -3152,6 +3330,94 @@ mod tests {
             snapshot[0].cooldown_secs_remaining.is_some(),
             "the 429 reached classification and rotated the account, so the cut is the exhausted read's, not the header wait's"
         );
+    }
+
+    /// #710 end to end through [`forward_chatgpt_oauth`]'s non-failover
+    /// relay: at the default 60 s gap, an account that answers `422` with
+    /// headers and then a body that never arrives is cut once the 5 s
+    /// envelope budget ends, rather than relayed. A `422` because it relays
+    /// without a refusal check and is not a status `routing::serve` reads
+    /// again. Real time, since the send crosses a socket; the marker's
+    /// budget value tells this cut from the header wait's, which would carry
+    /// the 60 s gap.
+    ///
+    /// The env lock is released once the request reached the upstream, since
+    /// the credential has been read by then.
+    ///
+    /// Non-vacuity: drop the no-byte arm of `bounded_upstream_text_within` and
+    /// the `422` is relayed with no marker.
+    #[tokio::test]
+    async fn a_gated_pool_relay_whose_body_sends_nothing_is_cut_end_to_end() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let env = ENV_LOCK.lock().await;
+        let token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let (received_tx, received_rx) = tokio::sync::oneshot::channel::<()>();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).await.expect("read");
+                assert!(read > 0, "the request ended before its headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let _ = received_tx.send(());
+            socket
+                .write_all(
+                    b"HTTP/1.1 422 Unprocessable Entity\r\ncontent-type: application/json\r\n\
+                      content-length: 64\r\n\r\n",
+                )
+                .await
+                .expect("write");
+            // Hold the connection open with the promised body unsent.
+            futures_util::future::pending::<()>().await;
+            drop(socket);
+        });
+        let mut forward = pool_turn(
+            vec![pool_account("pool-probe-a", "SHUNT_POOL_PROBE_A")],
+            false,
+        );
+        forward.turn.response_bounds.idle = Some(DEFAULT_GAP);
+        let state = pool_state(format!("http://{address}"));
+        let mut call = tokio::spawn(forward_chatgpt_oauth(state, pool_route(), forward));
+        // Race the forward itself, so a call that ends before it reaches the
+        // upstream fails the test with its own answer instead of hanging on a
+        // listener still waiting in `accept`.
+        tokio::select! {
+            received = received_rx => received.expect("the upstream received the request"),
+            joined = &mut call => match joined.expect("the forward task joins") {
+                Ok((status, _)) => {
+                    panic!("the forward answered {status} without reaching the upstream")
+                }
+                Err(error) => panic!(
+                    "the forward failed before reaching the upstream: {}",
+                    error.message
+                ),
+            },
+        }
+        drop(token_a);
+        drop(env);
+        let error = call
+            .await
+            .expect("the forward task joins")
+            .expect_err("a relayed refusal fails the call");
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle {
+                idle: crate::error::ERROR_ENVELOPE_BUDGET
+            }),
+            "got: {}",
+            error.message
+        );
+        assert!(error.failure.is_none(), "a cut is not a failover");
     }
 
     /// Positive twin: on the translating path an unjudged 400 falls back to the

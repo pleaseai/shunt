@@ -127,7 +127,8 @@ impl ForwardError {
     }
 
     /// Whether an adapter's whole-body read went silent past the call's idle
-    /// gap.
+    /// gap, or a gated error body sent no byte within the error-envelope
+    /// budget (#710).
     ///
     /// Read by `routing::serve`, which cuts a gated turn at its idle bound
     /// whether the stall happened inside the adapter or in its own collector.
