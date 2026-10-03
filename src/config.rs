@@ -4060,10 +4060,11 @@ impl Config {
     /// mapped only as the `codex` upstream model does not make an `anthropic`
     /// row usable. A client model *id* is scoped the same way — routing returns
     /// as soon as a `[[models]]` entry claims the id, and only for the upstreams
-    /// that entry names — except under a `[models.router]` or a
-    /// `[models.subagents]` overlay, whose target is resolved through the whole
-    /// chain again and can land anywhere. A `noop` router is the exception to
-    /// the exception: it answers without calling any upstream.
+    /// that entry names — except under a `[models.router]`, whose target is
+    /// resolved through the whole chain again and can land anywhere. A `noop`
+    /// router is the exception to the exception: it answers without calling
+    /// any upstream. A `[models.subagents]` overlay adds the upstreams its
+    /// named targets resolve to.
     ///
     /// `routing::resolve_model_chain` ends by routing anything no `[[routes]]`
     /// or `[[route_prefixes]]` entry claimed to `server.default_provider` as a
@@ -4103,11 +4104,20 @@ impl Config {
             // upstreams that entry can route to. A row on any other upstream
             // is inert however the id is spelled.
             let id_reaches_this_upstream = matches(&entry.id)
-                // A delegated-work overlay diverts a child's turn to its target
-                // and resolves that through the whole chain again, ahead of the
-                // entry's own router or map, so the id can land anywhere.
-                && (entry.subagents.is_some()
-                || match (&entry.router, &entry.upstream_model) {
+                // A delegated-work overlay diverts a child's turn to one of its
+                // named targets, ahead of the entry's own router or map, and
+                // resolves that target through the chain again under the
+                // parent's id. Validation keeps every target one hop deep (no
+                // router or overlay of its own), so resolving each target here
+                // names exactly the upstreams a child turn can land on. The
+                // parent's own turns still take the arms below.
+                && (entry.subagents.as_ref().is_some_and(|overlay| {
+                    overlay.named_targets().iter().any(|(_, target)| {
+                        crate::routing::resolve_model_chain(self, target)
+                            .iter()
+                            .any(|route| route.provider == row.upstream)
+                    })
+                }) || match (&entry.router, &entry.upstream_model) {
                     // A `noop` router synthesizes its answer and calls no
                     // upstream, so no row on any upstream ever prices it.
                     (Some(RouterConfig::Noop {}), _) => false,
@@ -4267,10 +4277,6 @@ impl Config {
         if self.server.spend.is_some() && self.server.admin.is_none() {
             return Err(ConfigError::SpendRequiresAdmin);
         }
-        // The pricing table is read by the (not yet implemented) spend meter,
-        // which has no way to report a bad rate per request. Reject an
-        // unusable multiplier, rate, or upstream reference at boot instead.
-        self.validate_pricing()?;
         // Fail closed at boot: an unsandboxed Antigravity provider runs an
         // autonomous agent with shell access and no workspace boundary, as the
         // user running shunt. That is defensible as a personal loopback
@@ -5033,6 +5039,14 @@ impl Config {
                 );
             }
         }
+        // The pricing table is read by the (not yet implemented) spend meter,
+        // which has no way to report a bad rate per request. Reject an
+        // unusable multiplier, rate, or upstream reference at boot instead.
+        // Last, because its reachability check resolves overlay targets
+        // through `routing::resolve_model_chain`, which recurses without
+        // bound on a router cycle; the router and overlay checks above
+        // reject those first.
+        self.validate_pricing()?;
         self.warn_service_tier_withheld_for_flavor();
         Ok(self)
     }
@@ -8138,24 +8152,57 @@ cache_write = 4.125
                     ..model_config("noop-model", None)
                 },
                 // A delegated-work overlay re-resolves its target through the
-                // whole chain, ahead of the entry's own (absent) router or map.
+                // chain, ahead of the entry's own (absent) router or map. Its
+                // default target is unrouted and lands on the default
+                // provider; only its `by_type` target's exact route reaches
+                // `bedrock-eu`, so every named target has to be checked.
                 ModelConfig {
                     subagents: Some(super::SubagentsConfig::Passthrough(
                         super::PassthroughSubagentsConfig {
-                            target: "efficient-tier".to_string(),
-                            by_type: BTreeMap::new(),
+                            target: "unrouted-target".to_string(),
+                            by_type: BTreeMap::from([(
+                                "Explore".to_string(),
+                                "eu-target".to_string(),
+                            )]),
                         },
                     )),
                     ..model_config("overlay-model", None)
                 },
             ],
-            routes: vec![RouteConfig {
-                model: "legacy-alias".to_string(),
-                provider: "codex".to_string(),
-                upstream_model: Some("vendor-sonnet".to_string()),
-                effort: None,
-                service_tier: None,
-            }],
+            routes: vec![
+                RouteConfig {
+                    model: "legacy-alias".to_string(),
+                    provider: "codex".to_string(),
+                    upstream_model: Some("vendor-sonnet".to_string()),
+                    effort: None,
+                    service_tier: None,
+                },
+                RouteConfig {
+                    model: "eu-target".to_string(),
+                    provider: "bedrock-eu".to_string(),
+                    upstream_model: None,
+                    effort: None,
+                    service_tier: None,
+                },
+                // Exact routes are checked before the `vendor-` prefix, but
+                // they never exhaust the spellings that reach it: the client
+                // can change the case (`vendor-Special`) or add trailing
+                // whitespace, which routing keeps and the override match trims.
+                RouteConfig {
+                    model: "vendor-123".to_string(),
+                    provider: "bedrock-us".to_string(),
+                    upstream_model: None,
+                    effort: None,
+                    service_tier: None,
+                },
+                RouteConfig {
+                    model: "vendor-special".to_string(),
+                    provider: "bedrock-us".to_string(),
+                    upstream_model: None,
+                    effort: None,
+                    service_tier: None,
+                },
+            ],
             route_prefixes: vec![
                 RoutePrefixConfig {
                     prefix: "vendor-".to_string(),
@@ -8220,6 +8267,11 @@ cache_write = 4.125
             ("codex", "VENDOR-anything"),
             ("codex", "évariste"),
             ("codex", "open-special-x"),
+            ("codex", "vendor-special"),
+            // No letters to re-case, but `vendor-123 ` with trailing whitespace
+            // misses the exact route, reaches the prefix, and is priced by
+            // this row once the override match trims it.
+            ("codex", "vendor-123"),
             // Everything routing did not claim goes to the default provider.
             ("anthropic", "my-sonnet-alias"),
         ] {
@@ -8248,6 +8300,9 @@ cache_write = 4.125
             // An earlier prefix routed elsewhere is a case-exact prefix of
             // `shadow-special-`, so routing never picks the later one.
             ("codex", "shadow-special-x"),
+            // The overlay's only target resolves to `bedrock-eu`, and the
+            // parent's own turn falls through to the default provider.
+            ("codex", "overlay-model"),
             // A `noop` router calls no upstream, so nothing ever prices it.
             ("bedrock-eu", "noop-model"),
             ("codex", "noop-model"),
@@ -8266,6 +8321,48 @@ cache_write = 4.125
         let passthrough = Config::default();
         assert!(requestable(&passthrough, "anthropic", "my-sonnet-alias"));
         assert!(!requestable(&passthrough, "codex", "my-sonnet-alias"));
+    }
+
+    /// Pricing reachability resolves an overlay's targets through
+    /// `routing::resolve_model_chain`, which recurses without bound on a
+    /// router that targets itself. The one-hop check has to reject that config
+    /// first, or validating it overflows the stack instead of returning an
+    /// error.
+    #[test]
+    fn pricing_reachability_runs_after_the_router_one_hop_check() {
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut config = Config::default();
+        config.providers.insert(
+            "eu".to_string(),
+            ProviderConfig::anthropic("https://eu.example.invalid"),
+        );
+        config.server.admin = Some(admin_config_with_keys(
+            "SHUNT_TEST_PRICING_UNUSED",
+            vec![admin_key("terraform", ADMIN_KEY_A)],
+            Vec::new(),
+        ));
+        config.server.spend = Some(SpendConfig {
+            pricing: Some(PricingConfig {
+                multiplier: 1.0,
+                overrides: vec![pricing_override("eu", "parent", 1.0)],
+            }),
+            ..SpendConfig::default()
+        });
+        config.models = vec![
+            router_model("loop", "loop", "loop"),
+            ModelConfig {
+                subagents: Some(super::SubagentsConfig::Passthrough(
+                    super::PassthroughSubagentsConfig {
+                        target: "loop".to_string(),
+                        by_type: BTreeMap::new(),
+                    },
+                )),
+                ..model_config("parent", None)
+            },
+        ];
+        assert!(config.validate().is_err());
     }
 
     /// `Config` derives `Debug`, and shunt's convention elsewhere is to keep only
