@@ -335,3 +335,38 @@ async fn an_error_json_body_is_not_billed() {
     to_bytes(Body::new(body), usize::MAX).await.unwrap();
     assert_eq!(spent(&tap), 0);
 }
+
+/// A gated capture billed after the fact: whole frames only, the partial
+/// trailing frame ignored, and the delivered-text floor when the capture was
+/// cut before its final usage.
+#[test]
+fn captured_sse_bytes_bill_like_the_stream_they_were() {
+    let tap = tap();
+    let cut = format!(
+        "{}\r\n\r\n{}\n\n{}",
+        start(40, 1),
+        text("abcdefghijkl"),
+        "event: content_block_delta\ndata: {\"delta\":{\"text\":\"never fin"
+    );
+    tap.bill_sse(StatusCode::OK, cut.as_bytes());
+    assert_eq!(
+        spent(&tap),
+        priced(Usage {
+            input_tokens: 40,
+            output_tokens: 3,
+            ..Usage::default()
+        })
+    );
+
+    tap.bill_sse(StatusCode::BAD_GATEWAY, cut.as_bytes());
+    tap.bill_json(StatusCode::BAD_GATEWAY, MESSAGE);
+    assert_eq!(
+        spent(&tap),
+        priced(Usage {
+            input_tokens: 40,
+            output_tokens: 3,
+            ..Usage::default()
+        }),
+        "a non-2xx capture or reply is not billed"
+    );
+}

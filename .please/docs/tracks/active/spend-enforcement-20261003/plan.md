@@ -186,6 +186,8 @@ T001 → {T002, T003, T005, T007}; T003 → T004; T002 → T006; {T006, T007} �
   Evidence: `cargo test --all-features --test spend_enforcement` → 11 passed, 0 failed; mutation (enforce call removed) → 8 failed; fmt and clippy -D warnings clean; full suite: only pre-existing env failures (responses_chain_stream refused-port x3 and codex_multi_account pool_http_dispatch_seeds_*, both also red on the base commit)
 - [x] (2026-10-04 KST) T003 Meter served `/v1/messages` responses, streamed and non-streamed
   Evidence: `cargo test --all-features --test spend_metering` → 8 passed (stream, non-stream, translated Responses adapter, committed-stream winner, cut-stream floor, byte equality meter on/off, unreadable usage, count_tokens + all-passthrough zero); `cargo test --all-features --lib -- spend_tap` → 12 passed; mutations (tap removed → 7 red; upstream model replaced by the alias → 6 red); fmt and clippy -D warnings clean; full suite 3737 passed, 2 failed — `refused_port_is_deterministically_refused` (pre-existing) and `streaming_ws_fallback_still_seeds_message_start_estimate` (the load-dependent `*_seeds_*_estimate` flake; 3/3 green in isolation)
+- [x] (2026-10-04 KST) T004 Meter routing side calls and gated turns exactly once
+  Evidence: `cargo test --all-features --test spend_metering_routing` → 3 passed (capability judge + served strong turn; declined escalation replayed, weak billed once; escalated turn: discarded weak + judge + strong, each once); `cargo test --all-features --lib -- spend_tap` → 13 passed; mutations (judge `bill_json` removed → 3/3 red; capture billing removed → both gated tests red); fmt and clippy -D warnings clean; full suite 3740 passed, 3 failed — the known `responses_chain_stream` trio (refused port, two body-error relays)
 
 ## Decision Log
 
@@ -197,6 +199,9 @@ T001 → {T002, T003, T005, T007}; T003 → T004; T002 → T006; {T006, T007} �
   Date/Author: 2026-10-04 / implement-executor
 - Decision: The served-response sinks bill only `2xx` responses. A JSON body whose `usage` is unreadable, cut, or over the 4 MiB tee bound bills `ceil(bytes / 4)` output tokens.
   Rationale: An upstream error response is not generated output. The plan asks for a floor rather than zero whenever usage cannot be read.
+  Date/Author: 2026-10-04 / implement-executor
+- Decision: Spend is attributed to the request's admission principal even when the route that served the call is passthrough. On a mixed envelope (an injecting judge with a passthrough answer tier), the caller's own-key turn is therefore billed against their cap. T004 does not change this; it is flagged for review.
+  Rationale: The plan defines the principal per request (`InboundContext.spend_principal`), not per route. Excluding passthrough routes would change the documented attribution, which needs a decision. Billing too much is also the safe direction for enforcement.
   Date/Author: 2026-10-04 / implement-executor
 
 ## Surprises & Discoveries

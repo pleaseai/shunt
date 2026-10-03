@@ -103,6 +103,28 @@ impl SpendTap {
         });
     }
 
+    /// Bills a whole, already-collected JSON reply — a judge answer or a
+    /// gated turn's message — under the non-streamed rule: its `usage`, or a
+    /// byte floor when that is unreadable. Only a `2xx` reply is billed.
+    pub(crate) fn bill_json(&self, status: StatusCode, body: &[u8]) {
+        if status.is_success() {
+            self.record(&json_usage(Some(body), body.len() as u64));
+        }
+    }
+
+    /// Bills already-collected SSE bytes — a gated turn's captured stream,
+    /// whole or cut — under the streamed rule, so a capture that never got
+    /// its final usage bills the delivered-text floor. A partial trailing
+    /// frame is ignored.
+    pub(crate) fn bill_sse(&self, status: StatusCode, mut bytes: &[u8]) {
+        let mut spend = StreamSpend::new(self.clone());
+        while let Some((boundary, delimiter)) = super::find_boundary(bytes) {
+            spend.observe_frame(&bytes[..boundary]);
+            bytes = &bytes[boundary + delimiter..];
+        }
+        spend.settle(status);
+    }
+
     /// Prices `usage` on the target and adds it to the principal's counters.
     /// Never panics into the response: a failure inside the meter is caught,
     /// logged, and the response it was metering carries on.
@@ -376,24 +398,24 @@ impl JsonSpend {
         if !self.status.is_success() {
             return;
         }
-        let parsed = (!self.overflowed)
-            .then(|| serde_json::from_slice::<UsageHolder>(&self.kept).ok())
-            .flatten()
-            .and_then(|holder| holder.usage);
-        let usage = match parsed {
-            Some(fields) => {
-                let mut usage = RequestUsage::default();
-                fields.apply_to(&mut usage);
-                usage
-            }
-            None => {
-                let mut usage = RequestUsage::default();
-                usage.tokens.output_tokens = floor_tokens(self.bytes);
-                usage
-            }
-        };
-        self.tap.record(&usage);
+        let kept = (!self.overflowed).then_some(self.kept.as_slice());
+        self.tap.record(&json_usage(kept, self.bytes));
     }
+}
+
+/// A whole JSON message's billable usage: its `usage` block when `kept`
+/// holds a body that parses with one, otherwise `ceil(bytes / 4)` output
+/// tokens.
+fn json_usage(kept: Option<&[u8]>, bytes: u64) -> RequestUsage {
+    let parsed = kept
+        .and_then(|kept| serde_json::from_slice::<UsageHolder>(kept).ok())
+        .and_then(|holder| holder.usage);
+    let mut usage = RequestUsage::default();
+    match parsed {
+        Some(fields) => fields.apply_to(&mut usage),
+        None => usage.tokens.output_tokens = floor_tokens(bytes),
+    }
+    usage
 }
 
 impl http_body::Body for JsonSpendBody {

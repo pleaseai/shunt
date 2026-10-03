@@ -123,10 +123,12 @@ async fn a_held_open_stream_is_cut_at_its_error_frame() {
         idle: Duration::from_secs(30),
         max_duration: Duration::from_secs(30),
     };
-    let capture =
-        tokio::time::timeout(Duration::from_secs(5), retain_stream(success, gated, false))
-            .await
-            .expect("the capture ends at the error frame, not at a bound");
+    let capture = tokio::time::timeout(
+        Duration::from_secs(5),
+        retain_stream(success, gated, false, None),
+    )
+    .await
+    .expect("the capture ends at the error frame, not at a bound");
     assert!(matches!(capture, GatedCapture::Cut(CutReason::Nonterminal)));
 }
 
@@ -200,7 +202,7 @@ async fn the_byte_cap_counts_the_turn_not_the_bytes_after_it() {
             idle: Duration::from_secs(5),
             max_duration: Duration::from_secs(5),
         };
-        retain_stream(success, gated, false)
+        retain_stream(success, gated, false, None)
     };
     match capture(turn.len()).await {
         GatedCapture::Retained(retained) => assert_eq!(retained.body, turn.as_bytes()),
