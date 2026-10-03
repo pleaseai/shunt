@@ -53,6 +53,11 @@ impl InboundAuth {
         self
     }
 
+    /// True when `name` is the label of a configured static token.
+    pub fn has_token_name(&self, name: &str) -> bool {
+        self.tokens.iter().any(|(token_name, _)| token_name == name)
+    }
+
     pub fn header(&self) -> &HeaderName {
         &self.header
     }

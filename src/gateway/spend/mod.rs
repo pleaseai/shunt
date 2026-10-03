@@ -5,6 +5,7 @@
 //! gateway login can still administer spend limits.
 
 pub mod api;
+mod effective;
 pub mod meter;
 pub mod persist;
 pub mod pricing;
@@ -25,6 +26,10 @@ pub fn spend_router() -> Router<AppState> {
             get(api::list)
                 .post(api::create)
                 .fallback(api::method_not_allowed),
+        )
+        .route(
+            "/v1/organizations/spend_limits/effective",
+            get(effective::effective).fallback(api::method_not_allowed),
         )
         .route(
             "/v1/organizations/spend_limits/{id}",

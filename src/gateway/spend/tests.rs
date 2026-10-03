@@ -176,6 +176,8 @@ fn failing_state_path(directory: &Path) -> PathBuf {
     blocker.join("state.json")
 }
 
+mod effective;
+
 #[tokio::test]
 async fn upsert_preserves_identity_and_distinguishes_unlimited_from_zero() {
     let (config, _env) = SpendEnv::config("upsert");

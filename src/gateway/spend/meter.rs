@@ -117,6 +117,19 @@ impl SpendMeter {
             .unwrap_or(0)
     }
 
+    /// Every principal with a counter in any retained window, ascending.
+    pub fn principals(&self) -> Vec<String> {
+        let counters = self.counters.lock().expect("spend meter lock poisoned");
+        let mut principals: Vec<String> = counters
+            .keys()
+            .map(|(principal, _, _)| principal.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        principals.sort();
+        principals
+    }
+
     /// Flags a principal whose persisted counters could not be read.
     pub fn mark_unavailable(&self, principal: &str) {
         self.unavailable
@@ -274,13 +287,26 @@ pub fn unknown_model_rates() -> Rates {
 /// organization row. The organization cap is a per-principal default, not a
 /// shared pool.
 pub fn effective_cap(limits: &[SpendLimit], principal: &str, period: Period) -> Option<u128> {
+    let cents = effective_limit(limits, principal, period)?
+        .amount
+        .as_deref()?
+        .parse::<u128>()
+        .ok()?;
+    Some(cents * FEMTO_USD_PER_CENT)
+}
+
+/// The stored row that decides [`effective_cap`]: the principal's own `user`
+/// row if one exists (even an explicit unlimited), else the `organization` row.
+pub fn effective_limit<'a>(
+    limits: &'a [SpendLimit],
+    principal: &str,
+    period: Period,
+) -> Option<&'a SpendLimit> {
     let find = |wanted: &dyn Fn(&Scope) -> bool| {
         limits
             .iter()
             .find(|limit| limit.period == period && wanted(&limit.scope))
     };
-    let row = find(&|scope| matches!(scope, Scope::User { user_id } if user_id == principal))
-        .or_else(|| find(&|scope| matches!(scope, Scope::Organization)))?;
-    let cents = row.amount.as_deref()?.parse::<u128>().ok()?;
-    Some(cents * FEMTO_USD_PER_CENT)
+    find(&|scope| matches!(scope, Scope::User { user_id } if user_id == principal))
+        .or_else(|| find(&|scope| matches!(scope, Scope::Organization)))
 }
