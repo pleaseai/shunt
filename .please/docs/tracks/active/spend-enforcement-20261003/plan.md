@@ -114,32 +114,32 @@ proxy::post Ok ─► (capped principal) replace anthropic-ratelimit-unified-* �
 
 ## Tasks
 
-- [ ] T001 Spend meter core: counters, UTC windows, effective-cap resolution, pricing-to-cost with the unknown-model rate (file: src/gateway/spend/meter.rs)
+- [ ] T001 Spend meter core: counters, UTC windows, effective-cap resolution, pricing-to-cost with the unknown-model rate (file: src/gateway/spend/meter.rs) [FR-3, FR-6, FR-8, FR-10, NFR-4, AC-004, AC-005, AC-008, AC-009, SC-4]
   Validation: Caps resolve user → org → unlimited per period. Windows roll at 00:00 UTC each day, on Monday, and on the 1st. `check` names the blocking cap that resets last. An unpriceable model costs the unknown-model rate times the multiplier and warns once per id. Concurrent records on one principal lose no spend.
   Method: `cargo test --all-features -- gateway::spend::meter`
   STOP: PR #472's merged `PriceTable`/`Rates` API differs from `resolve(upstream, client_model, upstream_model) -> Option<Rates>`.
-- [ ] T002 Refuse over-cap principals at `/v1/messages` admission (file: src/proxy/failover.rs) (depends on T001)
+- [ ] T002 Refuse over-cap principals at `/v1/messages` admission (file: src/proxy/failover.rs) (depends on T001) [FR-1, FR-2, FR-4, FR-5, FR-12, FR-15, FR-16, NFR-3, AC-001, AC-001b, AC-002, AC-003, AC-003b, AC-011, AC-012, AC-013, AC-014, AC-015, SC-1]
   Validation: An over-cap principal gets `429 billing_error` with the period/reset message and `blocked_message`, plus `retry-after` and `x-should-retry: false`. No upstream receives the request, judge calls included. `count_tokens` and all-passthrough chains are never refused. Unauthenticated credential-injecting requests are enforced as `shunt:anonymous`. When the meter is unavailable, the request is forwarded with a warning by default; with `fail_closed_on_error = true` it is refused with `spend limit unavailable` and no `retry-after`.
   Method: integration tests in `tests/` driving `/v1/messages` against wiremock upstreams with seeded counters
-- [ ] T003 Meter served `/v1/messages` responses, streamed and non-streamed, priced on the real upstream model (file: src/stream_metrics.rs) (depends on T001)
+- [ ] T003 Meter served `/v1/messages` responses, streamed and non-streamed, priced on the real upstream model (file: src/stream_metrics.rs) (depends on T001) [FR-7, FR-9, NFR-1, NFR-2, AC-006, AC-007, AC-018]
   Validation: A completed stream and a non-stream JSON response each add exactly their priced usage, priced on the upstream model rather than the alias, to all three counters. This holds on the committed-stream path and on translated adapters. A stream cut before final usage adds a non-zero floor from its delivered text. Client bytes are byte-identical to a meter-off run, and a meter failure never fails the response. `count_tokens` and all-passthrough chains add nothing.
   Method: `cargo test --all-features` stream-metrics and failover integration tests, including a byte-equality check
-- [ ] T004 Meter routing side calls and gated turns exactly once (file: src/routing/serve.rs) (depends on T003)
+- [ ] T004 Meter routing side calls and gated turns exactly once (file: src/routing/serve.rs) (depends on T003) [FR-7, AC-020]
   Validation: Judge and classifier costs land on the requesting principal. A replayed gated turn is metered once. A gated turn discarded for escalation is metered once, and the escalated turn is metered separately.
   Method: integration tests with router configs and wiremock upstreams asserting counter totals equal the sum of mocked usages
-- [ ] T005 Persist counters across restarts with background flush and retention pruning (file: src/gateway/spend/meter/persist.rs) (depends on T001)
+- [ ] T005 Persist counters across restarts with background flush and retention pruning (file: src/gateway/spend/meter/persist.rs) (depends on T001) [FR-11, AC-010, AC-019]
   Validation: After a restart, enforcement uses pre-restart spend. Windows older than `spend_retention_months` are absent from the written file. A malformed counter record makes only its principal unavailable. `state_path = ""` keeps counters in memory. Counter flushes leave the stage-1 caps file byte-unchanged.
   Method: `cargo test --all-features -- gateway::spend` plus a restart test on a temp `state_path`
   STOP: shutdown offers no way to await a final flush within `shutdown_timeout_seconds`.
-- [ ] T006 Report the principal's own cap in `anthropic-ratelimit-unified-*` headers (file: src/proxy.rs) (depends on T002)
+- [ ] T006 Report the principal's own cap in `anthropic-ratelimit-unified-*` headers (file: src/proxy.rs) (depends on T002) [FR-13, AC-016, AC-016b, SC-2]
   Validation: A 2xx response to a capped principal carries unified headers for that principal's most-consumed cap. No upstream unified value reaches a capped principal on any 2xx path: relay, committed stream, or gated replay. Responses to uncapped principals are unchanged.
   Method: integration tests over the three 2xx paths
   STOP: the header names and value formats Claude Code reads for spend caps cannot be confirmed from the reference gateway's `GET /protocol` (`run-claude-gateway-ref` skill) or a Claude Code binary.
-- [ ] T007 [P] Serve `GET /v1/organizations/spend_limits/effective` (file: src/gateway/spend/api.rs) (depends on T001)
+- [ ] T007 [P] Serve `GET /v1/organizations/spend_limits/effective` (file: src/gateway/spend/api.rs) (depends on T001) [FR-14, AC-017, SC-3]
   Validation: A read or write admin credential gets SpendSummary rows (principal, period, resolved cap, period-to-date spend, actor) for principals with recorded spend. `user_ids[]`, `period[]`, `sort=spend_desc` (exactly one `period[]`), `q`, `limit`, and `page` filter and paginate. A bad credential gets 401, and an invalid query gets 400 in the stage-1 envelope.
   Method: `cargo test --all-features -- gateway::spend` API tests in the stage-1 style
   STOP: Anthropic's `SpendSummary` field names cannot be confirmed from the public Admin API reference.
-- [ ] T008 Document enforcement, pricing interaction, headers, `/effective`, and the Codex-endpoint gap (file: docs/gateway-spend-limits.md) (depends on T006, T007)
+- [ ] T008 Document enforcement, pricing interaction, headers, `/effective`, and the Codex-endpoint gap (file: docs/gateway-spend-limits.md) (depends on T006, T007) [FR-17]
   Validation: `docs/gateway-spend-limits.md` no longer lists the shipped items as "Not yet implemented" and states the Codex-endpoint gap. The four README locales and the four site configuration-reference locales describe the same behavior. Cross-locale anchors resolve in the built site.
   Method: `bun run build` in `site/` plus a grep of `site/dist` for the linked anchors
 
