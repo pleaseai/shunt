@@ -427,9 +427,19 @@ async fn retain_stream(
         match winner {
             Some(winner) => {
                 let (provider, model) = winner.get();
-                tap.set_target(&provider, &model, &winner.upstream_model());
+                tap.set_target(
+                    &provider,
+                    &model,
+                    &winner.upstream_model(),
+                    winner.injects_credential(),
+                );
             }
-            None => tap.set_target(&success.provider, &success.model, &success.upstream_model),
+            None => tap.set_target(
+                &success.provider,
+                &success.model,
+                &success.upstream_model,
+                success.injects_credential,
+            ),
         }
         tap.bill_sse(success.status, &retained);
     }
@@ -502,7 +512,12 @@ async fn retain_message(
         Err(reason) => return GatedCapture::Cut(reason),
     };
     if let Some(tap) = spend {
-        tap.set_target(&success.provider, &success.model, &success.upstream_model);
+        tap.set_target(
+            &success.provider,
+            &success.model,
+            &success.upstream_model,
+            success.injects_credential,
+        );
         tap.bill_json(success.status, &retained);
     }
     if !is_single_message(&retained) {

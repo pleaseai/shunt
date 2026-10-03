@@ -378,6 +378,9 @@ pub(crate) struct ChainStreamWinner {
     /// The model string the winning route was sent, set only when a route
     /// wins the stream: what a captured turn is priced on.
     upstream_model: std::sync::Arc<std::sync::Mutex<String>>,
+    /// Whether the winning route injects a gateway credential; the first
+    /// route's until a route wins.
+    injects_credential: std::sync::Arc<std::sync::atomic::AtomicBool>,
     refusal: RefusalSlot,
 }
 
@@ -442,6 +445,12 @@ impl ChainStreamWinner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// Whether the winning route injects a gateway credential, as of now.
+    pub(crate) fn injects_credential(&self) -> bool {
+        self.injects_credential
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The chain's refusal when no route produced a stream, as of now.
@@ -533,6 +542,10 @@ pub(super) async fn forward_chain_stream(
     let winner_upstream_slot =
         std::sync::Arc::new(std::sync::Mutex::new(first_route.upstream_model.clone()));
     let closure_upstream_slot = winner_upstream_slot.clone();
+    let winner_injects_slot = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+        !state.config.route_is_passthrough(first_route),
+    ));
+    let closure_injects_slot = winner_injects_slot.clone();
     let refusal_slot = RefusalSlot::default();
     let closure_refusal = refusal_slot.clone();
     let closure_spend = spend.clone();
@@ -569,6 +582,7 @@ pub(super) async fn forward_chain_stream(
             let refusal_slot = closure_refusal.clone();
             let spend = closure_spend.clone();
             let winner_upstream_slot = closure_upstream_slot.clone();
+            let winner_injects_slot = closure_injects_slot.clone();
             let estimate_cache = estimate_cache.clone();
             async move {
                 let mut body = body;
@@ -785,9 +799,19 @@ pub(super) async fn forward_chain_stream(
                                     // Priced on the winner, not the routed
                                     // primary: its usage is what the relay
                                     // carries.
+                                    // A passthrough winner is paid with the
+                                    // caller's own credential: not billed.
+                                    let injects = !state.config.route_is_passthrough(&route);
                                     if let Some(tap) = &spend {
-                                        tap.set_target(&provider, &model, &route.upstream_model);
+                                        tap.set_target(
+                                            &provider,
+                                            &model,
+                                            &route.upstream_model,
+                                            injects,
+                                        );
                                     }
+                                    winner_injects_slot
+                                        .store(injects, std::sync::atomic::Ordering::Relaxed);
                                     route.upstream_model.clone_into(
                                         &mut winner_upstream_slot
                                             .lock()
@@ -960,6 +984,7 @@ pub(super) async fn forward_chain_stream(
             provider: winner_slot,
             model: winner_model_slot,
             upstream_model: winner_upstream_slot,
+            injects_credential: winner_injects_slot,
             refusal: refusal_slot,
         });
         response

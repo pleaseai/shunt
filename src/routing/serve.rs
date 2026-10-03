@@ -237,7 +237,12 @@ async fn dispatch(
             }
         };
         if let Some(tap) = &spend {
-            tap.set_target(&outcome.provider, &outcome.model, &outcome.upstream_model);
+            tap.set_target(
+                &outcome.provider,
+                &outcome.model,
+                &outcome.upstream_model,
+                outcome.injects_credential,
+            );
         }
         // A Responses target answers an upstream that ended before
         // `response.completed` with a whole-looking message, marked. The bytes

@@ -188,6 +188,7 @@ T001 → {T002, T003, T005, T007}; T003 → T004; T002 → T006; {T006, T007} �
   Evidence: `cargo test --all-features --test spend_metering` → 8 passed (stream, non-stream, translated Responses adapter, committed-stream winner, cut-stream floor, byte equality meter on/off, unreadable usage, count_tokens + all-passthrough zero); `cargo test --all-features --lib -- spend_tap` → 12 passed; mutations (tap removed → 7 red; upstream model replaced by the alias → 6 red); fmt and clippy -D warnings clean; full suite 3737 passed, 2 failed — `refused_port_is_deterministically_refused` (pre-existing) and `streaming_ws_fallback_still_seeds_message_start_estimate` (the load-dependent `*_seeds_*_estimate` flake; 3/3 green in isolation)
 - [x] (2026-10-04 KST) T004 Meter routing side calls and gated turns exactly once
   Evidence: `cargo test --all-features --test spend_metering_routing` → 3 passed (capability judge + served strong turn; declined escalation replayed, weak billed once; escalated turn: discarded weak + judge + strong, each once); `cargo test --all-features --lib -- spend_tap` → 13 passed; mutations (judge `bill_json` removed → 3/3 red; capture billing removed → both gated tests red); fmt and clippy -D warnings clean; full suite 3740 passed, 3 failed — the known `responses_chain_stream` trio (refused port, two body-error relays)
+  Evidence (per-route attribution follow-up): `cargo test --all-features --test spend_metering_routing` → 6 passed. Added: a passthrough-served turn bills only the judge; its positive twin with an injecting tier bills judge + turn; a gated capture from a passthrough tier is not billed. Mutation (ignore `injects_credential`) → both passthrough tests red
 
 ## Decision Log
 
@@ -200,9 +201,9 @@ T001 → {T002, T003, T005, T007}; T003 → T004; T002 → T006; {T006, T007} �
 - Decision: The served-response sinks bill only `2xx` responses. A JSON body whose `usage` is unreadable, cut, or over the 4 MiB tee bound bills `ceil(bytes / 4)` output tokens.
   Rationale: An upstream error response is not generated output. The plan asks for a floor rather than zero whenever usage cannot be read.
   Date/Author: 2026-10-04 / implement-executor
-- Decision: Spend is attributed to the request's admission principal even when the route that served the call is passthrough. On a mixed envelope (an injecting judge with a passthrough answer tier), the caller's own-key turn is therefore billed against their cap. T004 does not change this; it is flagged for review.
-  Rationale: The plan defines the principal per request (`InboundContext.spend_principal`), not per route. Excluding passthrough routes would change the documented attribution, which needs a decision. Billing too much is also the safe direction for enforcement.
-  Date/Author: 2026-10-04 / implement-executor
+- Decision: Metering is attributed per route, decided at the winner. A call whose serving route is passthrough (`Config::route_is_passthrough`, the rule the auth gate uses) is not billed, even when the request was admitted against an injecting envelope. This covers the served response (ordered winner and committed-stream winner), the gated capture, and judge and side calls. Admission enforcement stays per request.
+  Rationale: FR-16: a passthrough route is paid with the caller's own credential. This is the lead's decision on the mixed-envelope gap raised after T004 (an injecting judge with a passthrough answer tier). `SpendTap::set_target` takes `injects_credential`. That flag rides on `ChainSuccess` and `ChainStreamWinner` from the route that actually answered.
+  Date/Author: 2026-10-04 / lead decision, implemented by implement-executor
 
 ## Surprises & Discoveries
 

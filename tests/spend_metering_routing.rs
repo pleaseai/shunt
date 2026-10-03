@@ -23,8 +23,8 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
     config::{
-        AdminConfig, ApiKeyHeader, AuthMap, Config, InboundAuthConfig, ModelConfig, PricingConfig,
-        PricingOverride, RouterConfig, SpendConfig, UpstreamAuth,
+        AdminConfig, ApiKeyHeader, AuthMap, AuthMode, Config, InboundAuthConfig, ModelConfig,
+        PricingConfig, PricingOverride, RouterConfig, SpendConfig, UpstreamAuth,
     },
     gateway::spend::{
         meter::PERIODS,
@@ -211,19 +211,27 @@ impl Drop for Gateway {
 }
 
 fn config(upstream: &MockServer, router: &str) -> Config {
+    config_with(upstream, router, false)
+}
+
+/// [`config`], with the weak tier passthrough when `weak_passthrough`: a
+/// mixed envelope, where the injecting judge makes the request metered but a
+/// turn the weak tier serves is paid with the caller's own credential.
+fn config_with(upstream: &MockServer, router: &str, weak_passthrough: bool) -> Config {
     let mut config = Config::default();
     config.providers.clear();
     config.upstreams = [STRONG, WEAK, JUDGE]
         .iter()
         .map(|tier| {
-            upstream_with(
-                tier.upstream,
-                upstream.uri(),
+            let auth = if weak_passthrough && tier.upstream == WEAK.upstream {
+                UpstreamAuth::Shorthand(AuthMode::Passthrough)
+            } else {
                 UpstreamAuth::Map(AuthMap::ApiKey {
                     env: Some(KEY_ENV.to_string()),
                     header: Some(ApiKeyHeader::XApiKey),
-                }),
-            )
+                })
+            };
+            upstream_with(tier.upstream, upstream.uri(), auth)
         })
         .collect();
     config.server.default_provider = "strong".to_string();
@@ -441,5 +449,105 @@ async fn a_turn_discarded_for_escalation_and_the_escalated_turn_are_each_billed_
         spent(&gateway),
         [WEAK.cost() + JUDGE.cost() + STRONG.cost(); 3]
     );
+    upstream.verify().await;
+}
+
+fn capability_verdict(p_solve: f64) -> ResponseTemplate {
+    verdict(json!({"crux": "bounded task", "primary_rule": "SUP-1",
+                   "capability_boundary": "supported", "p_solve": p_solve}))
+}
+
+/// A mixed envelope: the injecting judge makes the request metered, but the
+/// turn it routes to the passthrough weak tier is paid with the caller's own
+/// credential, so only the judge is billed. The positive twin below is the
+/// same deployment routed to the injecting strong tier.
+#[tokio::test]
+async fn a_turn_served_by_a_passthrough_tier_bills_only_the_injecting_judge() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let upstream = MockServer::start().await;
+    // `p_solve` over the threshold: the weak tier is trusted with the task.
+    JUDGE
+        .mock(capability_verdict(0.9), 1)
+        .mount(&upstream)
+        .await;
+    WEAK.mock(WEAK.json_reply("WEAK-ANSWER"), 1)
+        .mount(&upstream)
+        .await;
+    STRONG
+        .mock(STRONG.json_reply("STRONG-ANSWER"), 0)
+        .mount(&upstream)
+        .await;
+    let gateway = start(config_with(&upstream, CAPABILITY_ROUTER, true)).await;
+
+    let response = turn(&gateway, false).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-gateway-routed-model"], "weak-alias");
+    assert!(response.text().await.unwrap().contains("WEAK-ANSWER"));
+
+    assert_eq!(spent(&gateway), [JUDGE.cost(); 3]);
+    upstream.verify().await;
+}
+
+/// Positive twin of the test above: the same mixed deployment, routed to the
+/// injecting strong tier, bills the judge and the turn.
+#[tokio::test]
+async fn the_same_mixed_envelope_bills_a_turn_served_by_an_injecting_tier() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let upstream = MockServer::start().await;
+    JUDGE
+        .mock(capability_verdict(0.1), 1)
+        .mount(&upstream)
+        .await;
+    STRONG
+        .mock(STRONG.json_reply("STRONG-ANSWER"), 1)
+        .mount(&upstream)
+        .await;
+    WEAK.mock(WEAK.json_reply("WEAK-ANSWER"), 0)
+        .mount(&upstream)
+        .await;
+    let gateway = start(config_with(&upstream, CAPABILITY_ROUTER, true)).await;
+
+    let response = turn(&gateway, false).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-gateway-routed-model"], "strong-alias");
+
+    assert_eq!(spent(&gateway), [JUDGE.cost() + STRONG.cost(); 3]);
+    upstream.verify().await;
+}
+
+/// The capture side of the same rule: a gated weak turn on a passthrough
+/// tier, replayed, is not billed; the injecting judge that declined to
+/// escalate it is.
+#[tokio::test]
+async fn a_gated_turn_captured_from_a_passthrough_tier_is_not_billed() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let upstream = MockServer::start().await;
+    WEAK.mock(WEAK.sse_reply("WEAK-ANSWER"), 1)
+        .mount(&upstream)
+        .await;
+    JUDGE
+        .mock(
+            verdict(json!({"escalate": false, "reason": "progressing"})),
+            1,
+        )
+        .mount(&upstream)
+        .await;
+    let gateway = start(config_with(&upstream, ESCALATION_ROUTER, true)).await;
+
+    let response = turn(&gateway, true).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(source(&response), "escalation_weak");
+    response.bytes().await.unwrap();
+
+    assert_eq!(spent(&gateway), [JUDGE.cost(); 3]);
     upstream.verify().await;
 }

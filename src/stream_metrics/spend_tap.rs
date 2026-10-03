@@ -95,12 +95,26 @@ impl SpendTap {
     /// Names the upstream that served the turn. Until this is called nothing
     /// is billed: a committed stream that never selected a winner served no
     /// upstream's output.
-    pub(crate) fn set_target(&self, provider: &str, client_model: &str, upstream_model: &str) {
-        *self.target.lock().unwrap_or_else(PoisonError::into_inner) = Some(Target {
-            provider: provider.to_string(),
-            client_model: client_model.to_string(),
-            upstream_model: upstream_model.to_string(),
-        });
+    ///
+    /// `injects_credential` is whether that serving route injects a gateway
+    /// credential (`!Config::route_is_passthrough`). A passthrough route is
+    /// paid with the caller's own credential, so it clears the target and the
+    /// call is not billed — decided at the winner, not at admission, because a
+    /// request admitted against an injecting envelope can still be served by
+    /// a passthrough route.
+    pub(crate) fn set_target(
+        &self,
+        provider: &str,
+        client_model: &str,
+        upstream_model: &str,
+        injects_credential: bool,
+    ) {
+        *self.target.lock().unwrap_or_else(PoisonError::into_inner) =
+            injects_credential.then(|| Target {
+                provider: provider.to_string(),
+                client_model: client_model.to_string(),
+                upstream_model: upstream_model.to_string(),
+            });
     }
 
     /// Bills a whole, already-collected JSON reply — a judge answer or a

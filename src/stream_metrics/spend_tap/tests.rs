@@ -35,7 +35,7 @@ fn tap() -> SpendTap {
         principal: Arc::from(PRINCIPAL),
         target: Arc::default(),
     };
-    tap.set_target("anthropic", "an-alias", UPSTREAM_MODEL);
+    tap.set_target("anthropic", "an-alias", UPSTREAM_MODEL, true);
     tap
 }
 

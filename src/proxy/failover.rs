@@ -522,7 +522,12 @@ pub(super) async fn forward(
     };
     let success = chain::run_chain(chain).await?;
     if let Some(tap) = &spend {
-        tap.set_target(&success.provider, &success.model, &success.upstream_model);
+        tap.set_target(
+            &success.provider,
+            &success.model,
+            &success.upstream_model,
+            success.injects_credential,
+        );
     }
     Ok(observe_response(
         success.status,

@@ -256,6 +256,7 @@ pub(crate) async fn committed_stream(
         first.model.clone(),
         first.upstream_model.clone(),
     );
+    let injects_credential = !request.state.config.route_is_passthrough(first);
     let outcome = crate::proxy::chain_stream::forward_chain_stream(
         crate::proxy::chain_stream::ChainStreamRequest {
             state: request.state.clone(),
@@ -283,6 +284,7 @@ pub(crate) async fn committed_stream(
             // The first route's, like `provider`: the committed stream's real
             // winner is on its `ChainStreamWinner` extension once drained.
             upstream_model,
+            injects_credential,
         }),
     )
 }
