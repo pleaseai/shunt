@@ -8,6 +8,7 @@
 //! is whole US cents, 1e13 femto-USD each. Counters are keyed by
 //! `(principal, period, window start)` and saturate rather than wrap.
 
+pub mod persist;
 mod window;
 
 #[cfg(test)]
@@ -22,7 +23,7 @@ use super::{
     pricing::{PriceTable, Rates, Usage},
     store::{Period, Scope, SpendLimit},
 };
-pub use window::{reset_label, window, Window};
+pub use window::{months_back_start, reset_label, window, Window};
 
 /// Reserved principal for requests with no client identity whose admission
 /// envelope injects a credential.
@@ -66,6 +67,10 @@ type CounterKey = (String, Period, u64);
 pub struct SpendMeter {
     counters: Mutex<HashMap<CounterKey, u64>>,
     unavailable: Mutex<HashSet<String>>,
+    /// Instant (Unix seconds) after which a flagged principal is trusted again;
+    /// absent means the flag stays until [`SpendMeter::clear_unavailable`].
+    unavailable_until: Mutex<HashMap<String, u64>>,
+    persist: persist::PersistState,
     warned_models: Mutex<HashSet<String>>,
 }
 
@@ -83,6 +88,7 @@ impl SpendMeter {
             let slot = counters.entry(key).or_insert(0);
             *slot = slot.saturating_add(cost);
         }
+        self.persist.mark_changed();
     }
 
     /// Period-to-date spend of `principal` in femto-USD.
@@ -108,22 +114,57 @@ impl SpendMeter {
             .insert(principal.to_string());
     }
 
+    /// [`Self::mark_unavailable`] that lifts itself once `until` (Unix
+    /// seconds) has passed, i.e. once every window the unreadable record could
+    /// have covered has elapsed. A later, longer mark wins.
+    pub fn mark_unavailable_until(&self, principal: &str, until: u64) {
+        self.mark_unavailable(principal);
+        let mut map = self
+            .unavailable_until
+            .lock()
+            .expect("spend meter lock poisoned");
+        let slot = map.entry(principal.to_string()).or_insert(until);
+        *slot = (*slot).max(until);
+    }
+
     /// Clears the flag, e.g. once the poisoned windows have elapsed.
     pub fn clear_unavailable(&self, principal: &str) {
         self.unavailable
             .lock()
             .expect("spend meter lock poisoned")
             .remove(principal);
+        self.unavailable_until
+            .lock()
+            .expect("spend meter lock poisoned")
+            .remove(principal);
+    }
+
+    /// True while `principal` is flagged; a time-boxed flag whose deadline has
+    /// passed at `now_secs` is cleared on the way.
+    fn is_unavailable(&self, principal: &str, now_secs: u64) -> bool {
+        let flagged = self
+            .unavailable
+            .lock()
+            .expect("spend meter lock poisoned")
+            .contains(principal);
+        if !flagged {
+            return false;
+        }
+        let expired = self
+            .unavailable_until
+            .lock()
+            .expect("spend meter lock poisoned")
+            .get(principal)
+            .is_some_and(|until| now_secs >= *until);
+        if expired {
+            self.clear_unavailable(principal);
+        }
+        !expired
     }
 
     /// Decides whether `principal` may spend, given the stage-1 `limits`.
     pub fn check(&self, limits: &[SpendLimit], principal: &str, now_secs: u64) -> Check {
-        if self
-            .unavailable
-            .lock()
-            .expect("spend meter lock poisoned")
-            .contains(principal)
-        {
+        if self.is_unavailable(principal, now_secs) {
             return Check::Unavailable;
         }
         let mut blocking: Option<(Period, u64)> = None;

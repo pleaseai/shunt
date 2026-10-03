@@ -49,6 +49,22 @@ pub fn window(period: Period, now_secs: u64) -> Window {
     }
 }
 
+/// The first instant of the calendar month `months` before the one containing
+/// `now_secs`; the retention horizon for monthly-granular pruning.
+pub fn months_back_start(now_secs: u64, months: u64) -> u64 {
+    // A thousand years is far past any retention; the clamp keeps the calendar
+    // arithmetic below inside `i64`.
+    let months = months.min(12_000);
+    let (year, month, _) = civil_from_days((now_secs / DAY) as i64);
+    let index = year
+        .saturating_mul(12)
+        .saturating_add(month - 1)
+        .saturating_sub(i64::try_from(months).unwrap_or(i64::MAX));
+    let (year, month) = (index.div_euclid(12), index.rem_euclid(12) + 1);
+    // Before the Unix epoch there is nothing to prune.
+    u64::try_from(days_from_civil(year, month, 1)).map_or(0, |days| days * DAY)
+}
+
 /// `YYYY-MM-DD 00:00 UTC` for the day containing `secs`. Every window ends at
 /// a UTC midnight, so this is how a reset instant is shown to a client.
 pub fn reset_label(secs: u64) -> String {

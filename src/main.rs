@@ -746,6 +746,13 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     shunt::gateway::spend::persist::restore(&state)
         .await
         .context("failed to restore gateway spend-limit state")?;
+    // Spend counters live in a sibling file so a rollback binary that only
+    // knows the caps file still boots. An unreadable envelope aborts startup
+    // like the caps file does; an unreadable record only flags its principal.
+    shunt::gateway::spend::meter::persist::restore(&state)
+        .await
+        .context("failed to restore gateway spend counters")?;
+    shunt::gateway::spend::meter::persist::spawn_flusher(state.clone());
     // Opt-in `[server.status]`: poll provider Statuspage `summary.json`
     // endpoints in the background, sharing the router's status store.
     // Observation-only (see AGENTS.md) and a no-op when `sources` is empty.
@@ -753,7 +760,7 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // Opt-in `[server.pool] usage_refresh_seconds`: poll imported Claude,
     // ChatGPT/Codex, and Antigravity OAuth usage APIs in the background,
     // sharing the router's account pool. A no-op when the key is unset.
-    shunt::usage_poll::spawn_usage_poller(state);
+    shunt::usage_poll::spawn_usage_poller(state.clone());
     let (drain_started_tx, drain_started_rx) = tokio::sync::oneshot::channel();
     let server = axum::serve(
         listener,
@@ -776,6 +783,10 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
             );
         }
     }
+    // The listener is closed and in-flight turns have had their chance to
+    // record spend; persist the counters once more, bounded by the same
+    // deadline, so a restart enforces against what was spent before it.
+    shunt::gateway::spend::meter::persist::flush_final(&state, shutdown_timeout).await;
     Ok(())
 }
 
