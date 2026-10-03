@@ -254,7 +254,7 @@ impl RouterConfig {
     /// Exhaustive on purpose, like the match in `routing::resolve_chain`: a new
     /// router type fails to compile here until its author decides whether it
     /// calls an upstream, instead of silently counting as reachable everywhere.
-    pub fn can_reach_any_upstream(&self) -> bool {
+    pub(crate) fn can_reach_any_upstream(&self) -> bool {
         match self {
             // Synthesizes its answer and calls no upstream, so no row on any
             // upstream ever prices it.
