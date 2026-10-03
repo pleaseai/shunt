@@ -4118,7 +4118,7 @@ impl Config {
                             .any(|route| route.provider == row.upstream)
                     })
                 }) || match (&entry.router, &entry.upstream_model) {
-                    (Some(router), _) => Self::router_can_reach_any_upstream(router),
+                    (Some(router), _) => router.can_reach_any_upstream(),
                     // An `upstream_model` map routes to the providers it names
                     // and nowhere else.
                     (None, Some(upstreams)) if !upstreams.is_empty() => {
@@ -4166,30 +4166,6 @@ impl Config {
                         .get(..route.prefix.len())
                         .is_some_and(|head| head.eq_ignore_ascii_case(&route.prefix))
             })
-    }
-
-    /// Whether a `[models.router]` id can reach an override row on some
-    /// upstream, for [`Self::pricing_model_is_requestable`].
-    ///
-    /// Exhaustive on purpose, like the match in `routing::resolve_chain`: a new
-    /// router type fails to compile here until its author decides whether it
-    /// calls an upstream, instead of silently counting as reachable everywhere.
-    fn router_can_reach_any_upstream(router: &RouterConfig) -> bool {
-        match router {
-            // Synthesizes its answer and calls no upstream, so no row on any
-            // upstream ever prices it.
-            RouterConfig::Noop {} => false,
-            // Each resolves its chosen target through the whole chain again,
-            // so it can land on any upstream. Claiming reachability is the
-            // safe answer: a warning here would be a false one.
-            RouterConfig::StageRouter(_)
-            | RouterConfig::Auto(_)
-            | RouterConfig::Random(_)
-            | RouterConfig::PrefillRouter(_)
-            | RouterConfig::LlmClassifier(_)
-            | RouterConfig::Composite(_)
-            | RouterConfig::Advisor(_) => true,
-        }
     }
 
     pub fn validate(mut self) -> Result<Self, ConfigError> {
