@@ -1,0 +1,21 @@
+src/adapters/mod.rs
+  s_f1e87d2a32db6d::t_fef6667b3e5135 106-108
+src/proxy.rs
+  s_f1e87d2a32db6d::t_fef6667b3e5135 130-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8a41c4cc5e0e4f655374f646820cec3374d40069",
+  "prompts": {},
+  "sessions": {
+    "s_f1e87d2a32db6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "46c05d9a-af20-4dbd-92a4-76e9440db20b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
