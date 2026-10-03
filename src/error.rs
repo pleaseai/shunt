@@ -145,8 +145,11 @@ pub(crate) async fn bounded_upstream_text(
 /// is the gap and the instant it started, the request's send, so the first
 /// wait for the body is the rest of the gap the header wait began, and each
 /// chunk after it refreshes the gap (#704). `Err` when the gap closes inside
-/// the budget: that is the caller's bound, carried back as its marker. Every
-/// other outcome is [`bounded_upstream_text`]'s.
+/// the budget: that is the caller's bound, carried back as its marker. `Err`
+/// too when the budget ends before the body sent a single byte, carrying the
+/// budget as the silence it measured: a body that never started is a stall
+/// whichever bound ends it, so a gap longer than the budget still cuts it
+/// (#710). Every other outcome is [`bounded_upstream_text`]'s.
 pub(crate) async fn bounded_upstream_text_within(
     mut upstream: reqwest::Response,
     budget: std::time::Duration,
@@ -157,6 +160,7 @@ pub(crate) async fn bounded_upstream_text_within(
     let mut deadline = since + idle;
     let mut bytes: Vec<u8> = Vec::new();
     let mut over_cap = false;
+    let mut delivered = false;
     loop {
         let chunk = match tokio::time::timeout_at(deadline.min(budget_at), upstream.chunk()).await {
             Ok(Ok(Some(chunk))) => chunk,
@@ -167,8 +171,10 @@ pub(crate) async fn bounded_upstream_text_within(
             Err(_) if deadline < budget_at => {
                 return Err(crate::adapters::UpstreamBodyIdle { idle })
             }
+            Err(_) if !delivered => return Err(crate::adapters::UpstreamBodyIdle { idle: budget }),
             Err(_) => return Ok(None),
         };
+        delivered |= !chunk.is_empty();
         deadline = tokio::time::Instant::now() + idle;
         // Past the cap, keep draining (as `bounded_upstream_text` does) so the
         // connection can be reused, retaining only the prefix.

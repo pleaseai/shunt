@@ -1171,4 +1171,87 @@ mod tests {
              must not advance the failover chain"
         );
     }
+
+    /// #710 end to end through `forward_http`: at the default 60 s gap, an
+    /// upstream that answers `422` with headers and then a body that never
+    /// arrives is cut once the 5 s envelope budget ends, rather than relayed.
+    /// A `422` because the single-account path retries a `429`, and
+    /// `routing::serve` reads a relayed `400` again. Real time, since the
+    /// send crosses a socket; the marker's budget value tells this cut from
+    /// the header wait's, which would carry the 60 s gap.
+    ///
+    /// Non-vacuity: drop the no-byte arm of `bounded_upstream_text_within` and
+    /// the `422` is relayed with no marker.
+    #[tokio::test]
+    async fn a_gated_error_body_that_sends_nothing_is_cut_end_to_end() {
+        use crate::adapters::Adapter;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).await.expect("read");
+                assert!(read > 0, "the request ended before its headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 422 Unprocessable Entity\r\ncontent-type: application/json\r\n\
+                      content-length: 64\r\n\r\n",
+                )
+                .await
+                .expect("write");
+            // Hold the connection open with the promised body unsent.
+            futures_util::future::pending::<()>().await;
+            drop(socket);
+        });
+
+        let mut config = crate::config::Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = format!("http://{address}");
+        config.providers.get_mut("codex").unwrap().auth = crate::config::AuthMode::None;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
+        let body = crate::request::RequestBody::parse(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5-codex",
+                "messages": [{"role": "user", "content": "hi"}],
+            }))
+            .unwrap(),
+        )
+        .expect("request body parses");
+
+        let error = super::super::ResponsesAdapter
+            .forward(
+                state,
+                codex_route(),
+                &uri,
+                &axum::http::HeaderMap::new(),
+                body,
+                crate::adapters::ResponseBounds {
+                    max_bytes: None,
+                    idle: Some(std::time::Duration::from_secs(60)),
+                },
+            )
+            .await
+            .expect_err("a refusal fails the call");
+
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle {
+                idle: crate::error::ERROR_ENVELOPE_BUDGET
+            }),
+            "got: {}",
+            error.message
+        );
+        assert!(error.failure.is_none(), "a cut is not a failover");
+    }
 }

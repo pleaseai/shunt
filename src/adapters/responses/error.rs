@@ -499,4 +499,148 @@ pub(super) mod tests {
         ));
         assert_eq!(body_json(error).await["error"]["message"], "bad field");
     }
+
+    /// An upstream error built in-process, with a `retry-after`: each of
+    /// `chunks` is sent at its absolute instant, and the body then ends, or
+    /// never sends another byte when `stall` is set.
+    pub(in crate::adapters::responses) fn timed_error(
+        status: u16,
+        chunks: Vec<(tokio::time::Instant, &'static [u8])>,
+        stall: bool,
+    ) -> reqwest::Response {
+        use futures_util::StreamExt;
+        let sent = futures_util::stream::iter(chunks).then(|(at, bytes)| async move {
+            tokio::time::sleep_until(at).await;
+            Ok::<_, std::io::Error>(Bytes::from_static(bytes))
+        });
+        let end = futures_util::stream::once(async move {
+            if stall {
+                futures_util::future::pending::<()>().await;
+            }
+        })
+        .filter_map(|()| async { None });
+        reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(status)
+                .header("content-type", "application/json")
+                .header("retry-after", "7")
+                .body(reqwest::Body::wrap_stream(sent.chain(end)))
+                .unwrap(),
+        )
+    }
+
+    /// The gap of #710's tests: the default `gated_idle_ms`, well past the
+    /// 5 s envelope budget, so the gap never ends a read on its own.
+    const DEFAULT_GAP: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// #710: on a gated call whose gap outlasts the envelope budget, a `429`
+    /// whose body never sends a byte is cut when the budget ends, with the
+    /// idle marker carrying the budget, rather than relayed as the upstream's
+    /// error. This is the read of the single-account path (`forward_http`)
+    /// and of the pool's non-failover relays.
+    ///
+    /// Non-vacuity: drop the no-byte arm of `bounded_upstream_text_within` and
+    /// the `429` is relayed with `failure: Some(..)` and no marker.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_error_body_silent_through_the_envelope_budget_is_cut() {
+        let sent_at = tokio::time::Instant::now();
+        let error = mapped_upstream_error_within(
+            StatusCode::TOO_MANY_REQUESTS,
+            timed_error(429, Vec::new(), true),
+            AuthMode::ApiKey,
+            Some((DEFAULT_GAP, sent_at)),
+        )
+        .await;
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle {
+                idle: crate::error::ERROR_ENVELOPE_BUDGET
+            }),
+            "got: {}",
+            error.message
+        );
+        assert!(error.failure.is_none(), "a cut is not a failover");
+        assert_eq!(sent_at.elapsed(), crate::error::ERROR_ENVELOPE_BUDGET);
+    }
+
+    /// The twin: the same `429` whose body arrives 4 s into the read is
+    /// relayed as it always was, with its status, `retry-after`, message, and
+    /// failure.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_error_body_inside_the_envelope_budget_is_relayed() {
+        let sent_at = tokio::time::Instant::now();
+        let body = (
+            sent_at + std::time::Duration::from_secs(4),
+            &br#"{"error":{"message":"slow down"}}"#[..],
+        );
+        let error = mapped_upstream_error_within(
+            StatusCode::TOO_MANY_REQUESTS,
+            timed_error(429, vec![body], false),
+            AuthMode::ApiKey,
+            Some((DEFAULT_GAP, sent_at)),
+        )
+        .await;
+        assert!(error
+            .response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyIdle>()
+            .is_none());
+        assert!(matches!(
+            error.failure,
+            Some(crate::adapters::AdapterFailure::UpstreamStatus(
+                StatusCode::TOO_MANY_REQUESTS
+            ))
+        ));
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.response.headers().get("retry-after").unwrap(), "7");
+        assert_eq!(body_json(error).await["error"]["message"], "slow down");
+    }
+
+    /// The other twin, which pins the no-byte condition: a body that sent its
+    /// first bytes 1 s into the read and then stalls past the budget is
+    /// relayed as before, with the message naming the status in place of the
+    /// unfinished body.
+    ///
+    /// Non-vacuity: cut on every budget trip, bytes or none, and this gets
+    /// the marker instead.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_error_body_that_started_before_the_budget_ended_is_relayed() {
+        let sent_at = tokio::time::Instant::now();
+        let head = (
+            sent_at + std::time::Duration::from_secs(1),
+            &br#"{"error":"#[..],
+        );
+        let error = mapped_upstream_error_within(
+            StatusCode::TOO_MANY_REQUESTS,
+            timed_error(429, vec![head], true),
+            AuthMode::ApiKey,
+            Some((DEFAULT_GAP, sent_at)),
+        )
+        .await;
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>()
+                .is_none(),
+            "got: {}",
+            error.message
+        );
+        assert!(matches!(
+            error.failure,
+            Some(crate::adapters::AdapterFailure::UpstreamStatus(
+                StatusCode::TOO_MANY_REQUESTS
+            ))
+        ));
+        assert_eq!(sent_at.elapsed(), crate::error::ERROR_ENVELOPE_BUDGET);
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.response.headers().get("retry-after").unwrap(), "7");
+        assert_eq!(
+            body_json(error).await["error"]["message"],
+            "upstream returned 429 Too Many Requests"
+        );
+    }
 }
