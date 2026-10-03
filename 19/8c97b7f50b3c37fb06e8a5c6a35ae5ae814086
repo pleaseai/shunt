@@ -15,12 +15,21 @@ src/config.rs
   s_fd663a4c0c71df::t_7651d9294b0cf6 4164-4167
   s_fd663a4c0c71df::t_016faaa2a6e150 7778-7782,7787-7902,7904-7909,7911-7964,7979-8000
   s_fd663a4c0c71df::t_cd2b9ebd9a809b 17,30
+  s_ce69ea718ceeae::t_decd1abab7b19c 5697-5700
 src/config/spend.rs
   s_fd663a4c0c71df::t_108dcf7ba7543d 16-17,49-52,65
 src/gateway/spend/mod.rs
   s_fd663a4c0c71df::t_cd2b9ebd9a809b 9
 docs/gateway-spend-limits.md
   s_fd663a4c0c71df::t_1d5473fcc3cad9 27-59,113
+README.md
+  s_ce69ea718ceeae::t_2d370cadc5503e 205
+README.ko.md
+  s_ce69ea718ceeae::t_2d370cadc5503e 206
+README.zh-CN.md
+  s_ce69ea718ceeae::t_2d370cadc5503e 203
+README.ja.md
+  s_ce69ea718ceeae::t_2d370cadc5503e 205
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -28,6 +37,14 @@ docs/gateway-spend-limits.md
   "base_commit_sha": "198c97b7f50b3c37fb06e8a5c6a35ae5ae814086",
   "prompts": {},
   "sessions": {
+    "s_ce69ea718ceeae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf3847db-e201-4d79-9b6a-befd4591b630",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
     "s_fd663a4c0c71df": {
       "agent_id": {
         "tool": "claude",
