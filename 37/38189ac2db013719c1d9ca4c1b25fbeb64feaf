@@ -1,0 +1,19 @@
+.please/docs/tracks/active/spend-enforcement-20261003/plan.md
+  s_3fdc9fa43892aa::t_8595c3fde260ae 117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3738189ac2db013719c1d9ca4c1b25fbeb64feaf",
+  "prompts": {},
+  "sessions": {
+    "s_3fdc9fa43892aa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e1c1f116-b955-4d79-b028-aa4626932ca3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
