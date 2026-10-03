@@ -364,6 +364,9 @@ pub(super) struct ChainStreamRequest {
     /// when that turn is replayed, and the winner it needs travels on the
     /// response as a [`ChainStreamWinner`] extension instead.
     pub(super) observe_stream: bool,
+    /// The served-response spend hook, pointed at the winner when one is
+    /// selected. Used only when `observe_stream` is set.
+    pub(super) spend: Option<stream_metrics::SpendTap>,
 }
 
 /// Which upstream won an unobserved committed stream, filled in as the stream
@@ -459,6 +462,7 @@ pub(super) async fn forward_chain_stream(
         started_at,
         router_stamp,
         observe_stream,
+        spend,
     } = request;
     // Read before the body moves into the chain: the committed stream's
     // `message_delta` carries the auto-mode classifier's answer, which only a
@@ -516,6 +520,7 @@ pub(super) async fn forward_chain_stream(
     let closure_model_slot = winner_model_slot.clone();
     let refusal_slot = RefusalSlot::default();
     let closure_refusal = refusal_slot.clone();
+    let closure_spend = spend.clone();
     // One chain, one token estimate: the first opted-in attempt starts the
     // bounded blocking encode and later opted-in attempts reuse the same
     // compute (see `ChainEstimate`) instead of re-tokenizing the identical
@@ -547,6 +552,7 @@ pub(super) async fn forward_chain_stream(
             let winner_slot = closure_slot.clone();
             let winner_model_slot = closure_model_slot.clone();
             let refusal_slot = closure_refusal.clone();
+            let spend = closure_spend.clone();
             let estimate_cache = estimate_cache.clone();
             async move {
                 let mut body = body;
@@ -760,6 +766,12 @@ pub(super) async fn forward_chain_stream(
                             };
                             match outcome {
                                 Attempt::Winner { headers_at, relay } => {
+                                    // Priced on the winner, not the routed
+                                    // primary: its usage is what the relay
+                                    // carries.
+                                    if let Some(tap) = &spend {
+                                        tap.set_target(&provider, &model, &route.upstream_model);
+                                    }
                                     let (start, frames) = resolve_winner(
                                         &provider,
                                         &model,
@@ -913,12 +925,13 @@ pub(super) async fn forward_chain_stream(
         crate::proxy::safeguards::synthesize(response, &requested_safeguards, max_request_bytes)
             .await;
     let mut response = if observe_stream {
-        stream_metrics::observe_response_with_slot(
+        stream_metrics::observe_served(
             response,
             Protocol::Anthropic,
             winner_slot,
             winner_model_slot,
             started_at,
+            spend,
         )
     } else {
         let mut response = response;

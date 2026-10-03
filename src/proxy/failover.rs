@@ -477,6 +477,10 @@ pub(super) async fn forward(
         .await;
     }
 
+    // The served-response spend hook: `None` when nothing is metered. Built
+    // after the `count_tokens` return above, which is never metered.
+    let spend = crate::stream_metrics::SpendTap::for_request(&state, inbound.spend_principal());
+
     // Kept in `forward` rather than moved into `chain`: the committed streaming
     // chain races its attempts and returns its own response, so it is a
     // different dispatch shape, not a mode of the ordered loop. An internal
@@ -496,6 +500,7 @@ pub(super) async fn forward(
                 started_at,
                 router_stamp: owned_router_stamp,
                 observe_stream: true,
+                spend,
             },
         )
         .await;
@@ -516,11 +521,17 @@ pub(super) async fn forward(
         response_bounds: crate::adapters::ResponseBounds::default(),
     };
     let success = chain::run_chain(chain).await?;
+    if let Some(tap) = &spend {
+        tap.set_target(&success.provider, &success.model, &success.upstream_model);
+    }
     Ok(observe_response(
         success.status,
         success.response,
-        success.provider,
-        success.model,
+        ServedBy {
+            provider: success.provider,
+            model: success.model,
+            spend,
+        },
         started_at,
         &requested_safeguards,
         max_request_bytes,
@@ -745,11 +756,19 @@ async fn dispatch(
     }
 }
 
+/// The upstream a response is attributed to, and the spend hook that bills it.
+pub(super) struct ServedBy {
+    pub(super) provider: String,
+    pub(super) model: String,
+    /// Already pointed at the serving upstream; `None` leaves the response
+    /// unmetered here.
+    pub(super) spend: Option<crate::stream_metrics::SpendTap>,
+}
+
 async fn observe_response(
     status: StatusCode,
     response: axum::response::Response,
-    provider: String,
-    model: String,
+    served: ServedBy,
     started_at: Instant,
     requested_safeguards: &[String],
     max_body_bytes: usize,
@@ -758,12 +777,13 @@ async fn observe_response(
     // the synthesis only adds a field to `message_delta`, leaving the frames the
     // observer samples (`stop_reason`, usage, error events) exactly as relayed.
     let response = safeguards::synthesize(response, requested_safeguards, max_body_bytes).await;
-    let response = crate::stream_metrics::observe_response(
+    let response = crate::stream_metrics::observe_served(
         response,
         crate::stream_metrics::Protocol::Anthropic,
-        provider,
-        model,
+        std::sync::Arc::new(std::sync::Mutex::new(served.provider)),
+        std::sync::Arc::new(std::sync::Mutex::new(served.model)),
         started_at,
+        served.spend,
     );
     (status, response)
 }

@@ -184,11 +184,22 @@ T001 → {T002, T003, T005, T007}; T003 → T004; T002 → T006; {T006, T007} �
   Evidence: `cargo test --all-features -- gateway::spend::meter` → 13 passed, 0 failed; `gateway::spend` 65 passed; fmt and clippy -D warnings clean
 - [x] (2026-10-04 KST) T002 Refuse over-cap principals at `/v1/messages` admission
   Evidence: `cargo test --all-features --test spend_enforcement` → 11 passed, 0 failed; mutation (enforce call removed) → 8 failed; fmt and clippy -D warnings clean; full suite: only pre-existing env failures (responses_chain_stream refused-port x3 and codex_multi_account pool_http_dispatch_seeds_*, both also red on the base commit)
+- [x] (2026-10-04 KST) T003 Meter served `/v1/messages` responses, streamed and non-streamed
+  Evidence: `cargo test --all-features --test spend_metering` → 8 passed (stream, non-stream, translated Responses adapter, committed-stream winner, cut-stream floor, byte equality meter on/off, unreadable usage, count_tokens + all-passthrough zero); `cargo test --all-features --lib -- spend_tap` → 12 passed; mutations (tap removed → 7 red; upstream model replaced by the alias → 6 red); fmt and clippy -D warnings clean; full suite 3737 passed, 2 failed — `refused_port_is_deterministically_refused` (pre-existing) and `streaming_ws_fallback_still_seeds_message_start_estimate` (the load-dependent `*_seeds_*_estimate` flake; 3/3 green in isolation)
 
 ## Decision Log
 
 - 2026-10-03: Counters persist to a sibling file, not the stage-1 envelope. FR-11 was reworded to "under the existing spend state configuration". This keeps rollback safe for caps and audit, and counter flushes never rewrite the audit log.
 - 2026-10-03: One inline architecture pass instead of competing architects. Spec and reference-gateway parity settle the strategy, and the rejected alternatives are recorded above.
 - 2026-10-03: The anonymous principal id is `shunt:anonymous`, which cannot collide with another principal by construction.
+- Decision: Until T004 lands, a replayed gated turn is served with no spend tap (`ServedBy { spend: None }` in `proxy/failover/gated.rs::finish`), so gated turns are unmetered in between. T004 meters them at capture.
+  Rationale: Metering the replay here would make T004 remove it again, and the replay alone cannot meter a captured turn that was discarded for escalation. `None` is the off switch the architecture asks for.
+  Date/Author: 2026-10-04 / implement-executor
+- Decision: The served-response sinks bill only `2xx` responses. A JSON body whose `usage` is unreadable, cut, or over the 4 MiB tee bound bills `ceil(bytes / 4)` output tokens.
+  Rationale: An upstream error response is not generated output. The plan asks for a floor rather than zero whenever usage cannot be read.
+  Date/Author: 2026-10-04 / implement-executor
 
 ## Surprises & Discoveries
+
+- Observation: A "final usage" frame is not always the upstream's own count. After an upstream cut, the Responses adapter emits `:shunt-upstream-truncated` and then a synthesized `message_delta` whose `output_tokens` is 0, so trusting the last `message_delta` would bill a cut turn's text as free.
+  Evidence: `model::responses::AnthropicSseMachine::usage_value` reports the unobserved output as 0. The stream tap applies the delivered-text floor whenever the marker was seen (`spend_tap::tests::a_synthesized_end_after_a_cut_still_bills_the_floor`).

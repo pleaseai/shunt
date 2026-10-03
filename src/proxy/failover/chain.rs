@@ -101,6 +101,8 @@ pub(crate) struct ChainSuccess {
     /// The upstream that answered, for the observers `forward` applies.
     pub provider: String,
     pub model: String,
+    /// The model string that upstream was sent — what its usage is priced on.
+    pub upstream_model: String,
 }
 
 /// Attempt each route in order until one answers with a status the chain does
@@ -216,6 +218,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                         response,
                         provider,
                         model,
+                        upstream_model,
                     });
                 }
                 tracing::warn!(
@@ -230,6 +233,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                     FinalResponse::Relayed(response),
                     provider.clone(),
                     model,
+                    upstream_model,
                 );
             }
             Err(error) => {
@@ -256,6 +260,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                             FinalResponse::MappedError { message, response },
                             provider.clone(),
                             model,
+                            upstream_model,
                         );
                     }
                     Some(AdapterFailure::BeforeHeaders) => {
@@ -285,6 +290,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                     response,
                     provider: failure.provider,
                     model: failure.model,
+                    upstream_model: failure.upstream_model,
                 })
             }
             FinalResponse::MappedError { message, response } => {
@@ -362,6 +368,7 @@ struct RememberedFailure {
     response: FinalResponse,
     provider: String,
     model: String,
+    upstream_model: String,
 }
 
 fn remember_failure(
@@ -370,6 +377,7 @@ fn remember_failure(
     response: FinalResponse,
     provider: String,
     model: String,
+    upstream_model: String,
 ) {
     if remembered
         .as_ref()
@@ -382,6 +390,7 @@ fn remember_failure(
         response,
         provider,
         model,
+        upstream_model,
     });
 }
 
