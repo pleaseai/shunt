@@ -3341,14 +3341,18 @@ mod tests {
     /// budget value tells this cut from the header wait's, which would carry
     /// the 60 s gap.
     ///
+    /// The env lock is released once the request reached the upstream, since
+    /// the credential has been read by then.
+    ///
     /// Non-vacuity: drop the no-byte arm of `bounded_upstream_text_within` and
     /// the `422` is relayed with no marker.
     #[tokio::test]
     async fn a_gated_pool_relay_whose_body_sends_nothing_is_cut_end_to_end() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let _env = ENV_LOCK.lock().await;
-        let _token_a =
+        let env = ENV_LOCK.lock().await;
+        let token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let (received_tx, received_rx) = tokio::sync::oneshot::channel::<()>();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -3362,6 +3366,7 @@ mod tests {
                 assert!(read > 0, "the request ended before its headers");
                 request.extend_from_slice(&buffer[..read]);
             }
+            let _ = received_tx.send(());
             socket
                 .write_all(
                     b"HTTP/1.1 422 Unprocessable Entity\r\ncontent-type: application/json\r\n\
@@ -3379,8 +3384,15 @@ mod tests {
         );
         forward.turn.response_bounds.idle = Some(DEFAULT_GAP);
         let state = pool_state(format!("http://{address}"));
-        let error = forward_chatgpt_oauth(state, pool_route(), forward)
+        let call = tokio::spawn(forward_chatgpt_oauth(state, pool_route(), forward));
+        received_rx
             .await
+            .expect("the upstream received the request");
+        drop(token_a);
+        drop(env);
+        let error = call
+            .await
+            .expect("the forward task joins")
             .expect_err("a relayed refusal fails the call");
         assert_eq!(
             error
