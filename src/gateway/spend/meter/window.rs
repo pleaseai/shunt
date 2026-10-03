@@ -49,6 +49,13 @@ pub fn window(period: Period, now_secs: u64) -> Window {
     }
 }
 
+/// `YYYY-MM-DD 00:00 UTC` for the day containing `secs`. Every window ends at
+/// a UTC midnight, so this is how a reset instant is shown to a client.
+pub fn reset_label(secs: u64) -> String {
+    let (year, month, day) = civil_from_days((secs / DAY) as i64);
+    format!("{year:04}-{month:02}-{day:02} 00:00 UTC")
+}
+
 /// Howard Hinnant's `civil_from_days`: `(year, month, day)` of a Unix day.
 fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;

@@ -122,6 +122,7 @@ fn context_for(state: &AppState, headers: &HeaderMap) -> InboundContext {
         client: None,
         static_client: false,
         gateway_claims,
+        spend_principal: None,
     }
 }
 

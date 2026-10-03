@@ -22,7 +22,7 @@ use super::{
     pricing::{PriceTable, Rates, Usage},
     store::{Period, Scope, SpendLimit},
 };
-pub use window::{window, Window};
+pub use window::{reset_label, window, Window};
 
 /// Reserved principal for requests with no client identity whose admission
 /// envelope injects a credential.

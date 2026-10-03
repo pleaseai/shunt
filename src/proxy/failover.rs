@@ -20,7 +20,8 @@ use crate::{
 };
 
 use super::{
-    count_tokens_unsupported, is_count_tokens, normalize_request_body, safeguards, ForwardError,
+    count_tokens_unsupported, is_count_tokens, normalize_request_body, safeguards, spend_gate,
+    ForwardError,
 };
 
 pub(crate) mod chain;
@@ -228,6 +229,11 @@ pub(super) async fn forward(
         .await
         .map_err(|error| *error)?;
     enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)
+        .map_err(|error| *error)?;
+    // Spend admission. After both gates above (a caller who is refused for
+    // auth or policy never learns their spend state) and before anything that
+    // can reach an upstream, the router judge included.
+    spend_gate::enforce(&state, inbound.spend_principal(), is_count_tokens(uri))
         .map_err(|error| *error)?;
     // The request is admitted, so the tier it was routed at may be recorded —
     // and, for a driven entry, a judge may now be consulted. Both gates above
@@ -799,9 +805,19 @@ pub(crate) struct InboundContext {
     gateway_claims: Option<crate::gateway::jwt::Claims>,
     client: Option<String>,
     static_client: bool,
+    /// Who this request's spend is attributed to; `None` is unmetered. Resolved
+    /// once in [`check_inbound_auth`] (see [`spend_gate::principal_for`]) so
+    /// that admission and every metering sink read the same value.
+    spend_principal: Option<String>,
 }
 
 impl InboundContext {
+    /// The spend principal, or `None` for a request that is neither enforced
+    /// nor metered (an all-passthrough chain).
+    pub(crate) fn spend_principal(&self) -> Option<&str> {
+        self.spend_principal.as_deref()
+    }
+
     /// The context a gateway-internal call rides on: no gateway claims, no
     /// client, not a static client.
     ///
@@ -818,6 +834,7 @@ impl InboundContext {
             gateway_claims: None,
             client: None,
             static_client: false,
+            spend_principal: None,
         }
     }
 }
@@ -861,6 +878,7 @@ pub(crate) async fn check_inbound_auth(
                 gateway_claims,
                 client: None,
                 static_client: false,
+                spend_principal: spend_gate::principal_for(None, injects_credential),
             },
         ));
     }
@@ -899,6 +917,7 @@ pub(crate) async fn check_inbound_auth(
             forwarded,
             InboundContext {
                 gateway_claims,
+                spend_principal: spend_gate::principal_for(Some(&client), injects_credential),
                 client: Some(client),
                 static_client,
             },

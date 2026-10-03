@@ -182,6 +182,8 @@ T001 → {T002, T003, T005, T007}; T003 → T004; T002 → T006; {T006, T007} �
 
 - [x] (2026-10-04 12:00 KST) T001 Spend meter core
   Evidence: `cargo test --all-features -- gateway::spend::meter` → 13 passed, 0 failed; `gateway::spend` 65 passed; fmt and clippy -D warnings clean
+- [x] (2026-10-04 KST) T002 Refuse over-cap principals at `/v1/messages` admission
+  Evidence: `cargo test --all-features --test spend_enforcement` → 11 passed, 0 failed; mutation (enforce call removed) → 8 failed; fmt and clippy -D warnings clean; full suite: only pre-existing env failures (responses_chain_stream refused-port x3 and codex_multi_account pool_http_dispatch_seeds_*, both also red on the base commit)
 
 ## Decision Log
 

@@ -231,3 +231,14 @@ fn unknown_model_warns_once_per_id() {
     assert!(!meter.first_sighting("m1"));
     assert!(meter.first_sighting("m3"));
 }
+
+#[test]
+fn reset_label_names_the_utc_midnight_of_the_given_day() {
+    assert_eq!(reset_label(0), "1970-01-01 00:00 UTC");
+    // 2026-10-04 12:34:56 UTC, mid-day: the label is still that date's midnight.
+    assert_eq!(reset_label(1_791_117_296), "2026-10-04 00:00 UTC");
+    assert_eq!(
+        reset_label(window(Period::Monthly, 1_791_117_296).end),
+        "2026-11-01 00:00 UTC"
+    );
+}
