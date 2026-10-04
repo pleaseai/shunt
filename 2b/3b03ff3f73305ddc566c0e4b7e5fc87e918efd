@@ -1,0 +1,41 @@
+site/src/content/docs/ja/guides/anthropic-multi-account.mdx
+  s_afd8879efb217f::t_0d0babcf8434a6 186
+src/adapters/mod.rs
+  s_afd8879efb217f::t_0d0babcf8434a6 74
+site/src/content/docs/guides/anthropic-multi-account.mdx
+  s_afd8879efb217f::t_0d0babcf8434a6 186
+site/src/content/docs/ko/reference/configuration.md
+  s_afd8879efb217f::t_0d0babcf8434a6 319
+site/src/content/docs/reference/configuration.md
+  s_afd8879efb217f::t_0d0babcf8434a6 423
+src/adapters/anthropic/mod.rs
+  s_afd8879efb217f::t_6ee8b67cd04cba 936-953
+tests/kimi_multi_account.rs
+  s_afd8879efb217f::t_10664fb2f76d93 635-685
+docs/m8-anthropic-multi-account.md
+  s_afd8879efb217f::t_0d0babcf8434a6 135
+site/src/content/docs/ko/guides/anthropic-multi-account.mdx
+  s_afd8879efb217f::t_0d0babcf8434a6 186
+site/src/content/docs/ja/reference/configuration.md
+  s_afd8879efb217f::t_0d0babcf8434a6 320
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.mdx
+  s_afd8879efb217f::t_0d0babcf8434a6 186
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_afd8879efb217f::t_0d0babcf8434a6 320
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2b3b03ff3f73305ddc566c0e4b7e5fc87e918efd",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
