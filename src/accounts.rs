@@ -812,9 +812,10 @@ impl AccountPool {
 
     /// Whether a hard `max_utilization` cap excluded at least one non-disabled
     /// account for this request, and the earliest known time one becomes
-    /// eligible again. Callers ask only after [`select_order`] came back empty,
-    /// to tell a cap-driven exhaustion from a pause or outage. `None` means no
-    /// account is capped; `Some(None)` means capped with no known reset.
+    /// eligible again; paused accounts are skipped. Callers ask only after
+    /// [`select_order`] came back empty, to tell a cap-driven exhaustion from a
+    /// pause or outage. `None` means no selectable account is capped;
+    /// `Some(None)` means capped with no known eligibility time.
     pub(crate) fn cap_exhaustion(
         &self,
         provider: &str,
@@ -836,6 +837,12 @@ impl AccountPool {
                 continue;
             };
             expired |= expire_stale_quota(&mut health.quota, unix_now);
+            // A paused account is not selectable regardless of its cap, and
+            // its pause can outlive the cap reset, so it must not drive the
+            // cap error or its `eligible_at`.
+            if health.paused_providers.contains(provider) {
+                continue;
+            }
             if let Some(exclusion) = cap_exclusion(&health.quota, account, is_fable, pool) {
                 any = true;
                 earliest = match (earliest, exclusion.eligible_at) {
@@ -3093,8 +3100,10 @@ pub(crate) struct CapExhaustion {
 /// report cap exhaustion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CapExclusion {
-    /// Unix seconds at which every capping window has reset: the max reset
-    /// across them, or `None` when any capping window has no known reset.
+    /// Unix seconds at which every capping window has cleared: the max of each
+    /// window's deadline (the earlier of its known reset and its observation
+    /// lifetime end, matching `expire_stale_quota`), or `None` when any capping
+    /// window has neither.
     pub(crate) eligible_at: Option<u64>,
 }
 
@@ -3127,8 +3136,20 @@ pub(crate) fn cap_exclusion(
     pool: Option<&PoolConfig>,
 ) -> Option<CapExclusion> {
     let windows = [
-        (QuotaWindow::FiveHour, quota.utilization_5h, quota.reset_5h),
-        (QuotaWindow::Weekly, quota.utilization_7d, quota.reset_7d),
+        (
+            QuotaWindow::FiveHour,
+            quota.utilization_5h,
+            quota.reset_5h,
+            quota.observed_at_5h,
+            WINDOW_5H_SECS,
+        ),
+        (
+            QuotaWindow::Weekly,
+            quota.utilization_7d,
+            quota.reset_7d,
+            quota.observed_at_7d,
+            WINDOW_7D_SECS,
+        ),
         (
             QuotaWindow::Fable,
             if is_fable {
@@ -3137,11 +3158,13 @@ pub(crate) fn cap_exclusion(
                 None
             },
             quota.reset_7d_oi,
+            quota.observed_at_7d_oi,
+            WINDOW_7D_SECS,
         ),
     ];
     let mut capped = false;
     let mut eligible_at = Some(0u64);
-    for (window, utilization, reset) in windows {
+    for (window, utilization, reset, observed_at, len) in windows {
         let (Some(utilization), Some(cap)) =
             (utilization, resolved_max_utilization(window, account, pool))
         else {
@@ -3149,7 +3172,11 @@ pub(crate) fn cap_exclusion(
         };
         if utilization >= cap {
             capped = true;
-            eligible_at = eligible_at.zip(reset).map(|(a, b)| a.max(b));
+            let deadline = [reset, observed_at.map(|at| at.saturating_add(len))]
+                .into_iter()
+                .flatten()
+                .min();
+            eligible_at = eligible_at.zip(deadline).map(|(a, b)| a.max(b));
         }
     }
     capped.then_some(CapExclusion { eligible_at })
@@ -9284,6 +9311,29 @@ mod tests {
     }
 
     #[test]
+    fn cap_exhaustion_skips_paused_accounts() {
+        let pool = AccountPool::new();
+        let mut accts = vec![account("a"), account("b")];
+        accts[0].max_utilization_5h = Some(0.5);
+        set_quota(&pool, "anthropic", &accts[0], |q| {
+            q.utilization_5h = Some(0.9);
+            q.reset_5h = Some(unix_now() + 1_800);
+        });
+        set_quota(&pool, "anthropic", &accts[1], |_| {});
+        {
+            let mut entries = pool.entries.lock().unwrap();
+            for acct in &accts {
+                entries
+                    .get_mut(&account_key("anthropic", acct))
+                    .unwrap()
+                    .paused_providers
+                    .insert("anthropic".to_string());
+            }
+        }
+        assert_eq!(pool.cap_exhaustion("anthropic", &accts, OPUS, None), None);
+    }
+
+    #[test]
     fn snapshot_reports_cap_flags_and_scopes_availability_by_model() {
         let pool = AccountPool::new();
         let mut accts = vec![account("a"), account("b"), account("unseen")];
@@ -9356,6 +9406,28 @@ mod tests {
         assert_eq!(
             cap_exclusion(&unknown, &acct, false, None),
             Some(CapExclusion { eligible_at: None })
+        );
+        // No reset but an observation: the lifetime end is the deadline.
+        let observed = QuotaState {
+            observed_at_7d: Some(100),
+            ..unknown.clone()
+        };
+        assert_eq!(
+            cap_exclusion(&observed, &acct, false, None),
+            Some(CapExclusion {
+                eligible_at: Some(100 + WINDOW_7D_SECS)
+            })
+        );
+        // A reset later than the observation lifetime is capped by it.
+        let late = QuotaState {
+            reset_7d: Some(100 + WINDOW_7D_SECS + 50_000),
+            ..observed.clone()
+        };
+        assert_eq!(
+            cap_exclusion(&late, &acct, false, None),
+            Some(CapExclusion {
+                eligible_at: Some(100 + WINDOW_7D_SECS)
+            })
         );
         assert_eq!(
             cap_exclusion(&QuotaState::default(), &acct, true, None),
