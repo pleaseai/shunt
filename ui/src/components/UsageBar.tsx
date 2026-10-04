@@ -60,7 +60,7 @@ export function UsageBar({
           aria-valuenow={used}
           max={100}
           value={used}
-          data-level={used >= 100 || (cap != null && 1 - remaining >= cap) ? 'full' : undefined}
+          data-level={used >= 100 || (cap != null && remaining <= 1 - cap) ? 'full' : undefined}
         />
         {capPct === null ? null : (
           <span

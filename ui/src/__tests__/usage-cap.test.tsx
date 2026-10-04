@@ -55,6 +55,14 @@ describe('the configured hard cap is shown beside the usage it limits', () => {
     expect(bar('Week').track).not.toHaveAttribute('data-level');
   });
 
+  it.each([0.1, 0.2, 0.45])(
+    'reads a bar exactly at a %s cap as full despite float rounding',
+    async (value) => {
+      await renderDashboard(poolWith({ utilization_5h: value, max_utilization_5h: value }));
+      expect(bar('5h').track).toHaveAttribute('data-level', 'full');
+    },
+  );
+
   it('treats a cap of zero as present', async () => {
     await renderDashboard(poolWith({ utilization_5h: 0, max_utilization_5h: 0 }));
     const { caption, tick, track } = bar('5h');

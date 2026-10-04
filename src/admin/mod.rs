@@ -1145,6 +1145,21 @@ async fn build_grok_observed_row(
     }
 }
 
+/// `resolved_caps` is provider-blind; null the caps no selection path honours
+/// for this auth kind so the dashboard reports `null` where no cap governs:
+/// Codex has no 7d_oi window, and Antigravity quota does not feed caps.
+fn clear_inert_caps(auth: AuthMode, snapshot: &mut crate::accounts::AccountSnapshot) {
+    match auth {
+        AuthMode::ChatgptOauth => snapshot.max_utilization_fable = None,
+        AuthMode::AntigravityOauth => {
+            snapshot.max_utilization_5h = None;
+            snapshot.max_utilization_7d = None;
+            snapshot.max_utilization_fable = None;
+        }
+        _ => {}
+    }
+}
+
 async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let state = state.refreshed();
     if authenticate(&state, &headers).is_none() {
@@ -1224,10 +1239,13 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 return internal("failed to read pool state");
             }
         };
-        let snapshots =
+        let mut snapshots =
             state
                 .accounts
                 .snapshot(name, &resolved, None, state.config.server.pool.as_ref());
+        for snapshot in &mut snapshots {
+            clear_inert_caps(provider.auth, snapshot);
+        }
         // Subscription plan (Claude "max"/"max 20x", ChatGPT "team"/"plus") is
         // purely informational display data for the dashboard -- it never
         // touches `AccountSnapshot` or the request-routing path. Resolved
@@ -2198,6 +2216,34 @@ mod tests {
             );
         }
         map
+    }
+
+    #[test]
+    fn inert_caps_are_cleared_per_auth_kind() {
+        let account = crate::config::AccountConfig {
+            name: "a".to_string(),
+            max_utilization: Some(0.5),
+            ..Default::default()
+        };
+        let caps = |auth: AuthMode| {
+            let pool = crate::accounts::AccountPool::new();
+            let mut snapshot = pool
+                .snapshot("p", std::slice::from_ref(&account), None, None)
+                .remove(0);
+            clear_inert_caps(auth, &mut snapshot);
+            (
+                snapshot.max_utilization_5h,
+                snapshot.max_utilization_7d,
+                snapshot.max_utilization_fable,
+            )
+        };
+        assert_eq!(
+            caps(AuthMode::ClaudeOauth),
+            (Some(0.5), Some(0.5), Some(0.5))
+        );
+        assert_eq!(caps(AuthMode::KimiOauth), (Some(0.5), Some(0.5), Some(0.5)));
+        assert_eq!(caps(AuthMode::ChatgptOauth), (Some(0.5), Some(0.5), None));
+        assert_eq!(caps(AuthMode::AntigravityOauth), (None, None, None));
     }
 
     #[test]
