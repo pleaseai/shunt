@@ -65,6 +65,10 @@ export interface PoolAccount {
   capped?: boolean;
   /** The Fable (7d_oi) cap excludes the account from Fable requests only. */
   capped_fable?: boolean;
+  /** Resolved `max_utilization` hard cap per window, as a fraction; null when none governs it. */
+  max_utilization_5h?: number | null;
+  max_utilization_7d?: number | null;
+  max_utilization_fable?: number | null;
   cooldown_secs_remaining?: number | null;
   cooldown_fable_secs_remaining?: number | null;
   utilization_5h?: number | null;

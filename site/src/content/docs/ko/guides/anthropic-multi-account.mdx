@@ -185,7 +185,7 @@ max_utilization_fable = 0.5        # Fable은 이 계정의 Fable 주간 버킷 
 - **복구.** 사용률이 캡 아래로 내려가면 계정은 자동으로 다시 선택 대상이 됩니다. 창 리셋 또는 만료, 더 낮은 관측값, 구성 리로드 시 캡 상향이 그 경로입니다. 캡은 새 라우팅만 막으며 정밀한 예산이 아니고 디스패치된 요청을 위해 사용량을 미리 확보하지도 않으므로, 진행 중이거나 동시에 들어온 요청은 소비하는 만큼 캡을 초과할 수 있습니다.
 - **소진.** 캡 때문에 선택 가능한 계정이 풀에 남지 않으면 shunt는 게이트웨이가 만든 HTTP `429` `rate_limit_error`("all selectable accounts for provider 'X' are at their max_utilization cap for this request")를 반환하며, 가장 이른 재선택 가능 시각을 알면 `retry-after`를 붙입니다. 업스트림 `429`와 마찬가지로 `[[upstreams]]` 페일오버 체인을 진행시키므로, 뒤의 업스트림(종량제일 수 있음)이 요청을 처리하고, 어느 것도 처리하지 못할 때만 클라이언트가 `429`를 받습니다. 단, 이미 Codex/ChatGPT 풀로 커밋된(HTTP `200`이 전송된) 스트리밍 요청은 뒤의 업스트림이 처리하지 못하면 HTTP `429`와 `retry-after` 헤더 없이 스트림 안의 종료 SSE `error` 이벤트를 받습니다. 인바운드 Codex 엔드포인트에서는 같은 오류가 OpenAI 오류 형태로 반환됩니다.
 - **프로바이더.** Claude OAuth 풀(5h, 7d, `7d_oi`)과 [Codex/ChatGPT 풀](/ko/guides/codex-multi-account/)(5시간 및 주간 창; Fable 키는 여기서 무효)에서 유효합니다. Kimi OAuth 풀에서도 Kimi 업스트림이 사용률 헤더를 보고하면 캡이 적용됩니다. 지금까지 보고가 관측된 적이 없어 실제로는 비활성 상태이며, 관측되지 않은 창은 제외하지 않습니다. Antigravity 쿼터는 캡에 반영되지 않습니다.
-- **상태 표시.** 관리자 대시보드는 캡이 걸린 계정을 "Capped"로, Fable 전용 캡이면 "Capped (Fable)"로 표시합니다. `GET /usage`는 사용 가능한 계정이 없고 활성화된(`disabled`가 아닌) 계정 중 일시 정지되지 않은 계정 하나 이상에 캡이 걸려 있으면 풀 상태 `capped`를 보고합니다.
+- **상태 표시.** 관리자 대시보드는 캡이 걸린 계정을 "Capped"로, Fable 전용 캡이면 "Capped (Fable)"로 표시하고, 설정된 각 캡을 계정의 사용량 막대와 풀 표에 나타냅니다. `GET /admin/api/pool`은 계정별로 확정된 `max_utilization_5h`, `max_utilization_7d`, `max_utilization_fable`을 보고합니다(해당 창에 적용되는 캡이 없으면 `null`). `GET /usage`는 사용 가능한 계정이 없고 활성화된(`disabled`가 아닌) 계정 중 일시 정지되지 않은 계정 하나 이상에 캡이 걸려 있으면 풀 상태 `capped`를 보고합니다.
 
 ## Usage-API 재보정
 

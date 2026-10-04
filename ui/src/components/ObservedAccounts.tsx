@@ -90,21 +90,22 @@ function UsageCell({ row, state }: { row: AccountRow; state: string }): ReactEle
       </td>
     );
   }
-  const windows: [string, number | null | undefined, number | null | undefined][] = [
-    ['5h', row.utilization_5h, row.reset_5h],
-    ['Week', row.utilization_7d, row.reset_7d],
-    ['Fable', row.utilization_7d_oi, row.reset_7d_oi],
+  const windows: [string, number | null | undefined, number | null | undefined, number | null | undefined][] = [
+    ['5h', row.utilization_5h, row.reset_5h, row.managed?.max_utilization_5h],
+    ['Week', row.utilization_7d, row.reset_7d, row.managed?.max_utilization_7d],
+    ['Fable', row.utilization_7d_oi, row.reset_7d_oi, row.managed?.max_utilization_fable],
   ];
   const present = windows.filter(([, value]) => value !== null && value !== undefined);
   return (
     <td className="usage-lines">
       {present.length ? (
-        present.map(([label, value, reset]) => (
+        present.map(([label, value, reset, cap]) => (
           <UsageBar
             key={label}
             label={label}
             remaining={1 - (value as number)}
             resetTime={reset ? new Date(reset * 1000).toISOString() : null}
+            cap={cap}
           />
         ))
       ) : (

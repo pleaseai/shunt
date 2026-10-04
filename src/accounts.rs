@@ -481,6 +481,16 @@ pub struct AccountSnapshot {
     pub reset_7d: Option<u64>,
     pub utilization_7d_oi: Option<f64>,
     pub reset_7d_oi: Option<u64>,
+    /// Resolved `max_utilization` hard cap for the 5h window (a fraction,
+    /// 0.0–1.0): account window -> account -> pool window -> pool. `None` when
+    /// no cap governs it. Config, not observation, so it is reported even for
+    /// an account the pool has not seen yet.
+    pub max_utilization_5h: Option<f64>,
+    /// Resolved hard cap for the 7d window; see `max_utilization_5h`.
+    pub max_utilization_7d: Option<f64>,
+    /// Resolved hard cap for the Fable-only (`7d_oi`) window; see
+    /// `max_utilization_5h`.
+    pub max_utilization_fable: Option<f64>,
     pub status: Option<String>,
     /// Grouped model-family quota windows from the Antigravity `retrieveUserQuotaSummary` poll,
     /// when present. Omitted when empty. Unlike the 5h/7d utilization fields
@@ -529,7 +539,10 @@ impl AccountSnapshot {
         needs_relogin: bool,
         paused: bool,
         requests: RequestStats,
+        pool: Option<&PoolConfig>,
     ) -> Self {
+        let (max_utilization_5h, max_utilization_7d, max_utilization_fable) =
+            resolved_caps(account, pool);
         Self {
             name: account.name.clone(),
             has_state: false,
@@ -549,6 +562,9 @@ impl AccountSnapshot {
             reset_7d: None,
             utilization_7d_oi: None,
             reset_7d_oi: None,
+            max_utilization_5h,
+            max_utilization_7d,
+            max_utilization_fable,
             status: None,
             quota_buckets: Vec::new(),
             needs_relogin,
@@ -2330,7 +2346,13 @@ impl AccountPool {
                         // stays `false`, which is still true and which both dashboard
                         // tables already read *after* `needs_relogin`, so the row
                         // renders "needs re-login" rather than "unseen".
-                        return AccountSnapshot::unseen(account, store_condemned, paused, requests);
+                        return AccountSnapshot::unseen(
+                            account,
+                            store_condemned,
+                            paused,
+                            requests,
+                            pool,
+                        );
                     };
                     quota_expired |= expire_stale_quota(&mut health.quota, unix_now);
                     let quota = assess_quota(&health.quota, account, is_fable, pool, unix_now);
@@ -2345,6 +2367,8 @@ impl AccountPool {
                     let cooling = cooldown_secs_remaining.is_some()
                         || (is_fable && cooldown_fable_secs_remaining.is_some());
                     let (capped, capped_fable) = cap_flags(&health.quota, account, pool);
+                    let (max_utilization_5h, max_utilization_7d, max_utilization_fable) =
+                        resolved_caps(account, pool);
                     AccountSnapshot {
                         name: account.name.clone(),
                         has_state: true,
@@ -2370,6 +2394,9 @@ impl AccountPool {
                         reset_7d: health.quota.reset_7d,
                         utilization_7d_oi: health.quota.utilization_7d_oi,
                         reset_7d_oi: health.quota.reset_7d_oi,
+                        max_utilization_5h,
+                        max_utilization_7d,
+                        max_utilization_fable,
                         status: health.quota.status.clone(),
                         quota_buckets: health.quota_buckets.clone(),
                         // The entry's own mark *or* the side table's, because
@@ -3097,6 +3124,19 @@ fn resolved_max_utilization(
         per_window.or(pool.default_max_utilization)
     });
     account_window.or(account.max_utilization).or(pool_default)
+}
+
+/// The resolved hard cap of every window, `(5h, 7d, fable)`, for status
+/// surfaces that report the configured value rather than a verdict.
+fn resolved_caps(
+    account: &AccountConfig,
+    pool: Option<&PoolConfig>,
+) -> (Option<f64>, Option<f64>, Option<f64>) {
+    (
+        resolved_max_utilization(QuotaWindow::FiveHour, account, pool),
+        resolved_max_utilization(QuotaWindow::Weekly, account, pool),
+        resolved_max_utilization(QuotaWindow::Fable, account, pool),
+    )
 }
 
 /// Why hard caps exclude an account (or a whole pool) from selection, for
@@ -9419,6 +9459,61 @@ mod tests {
             (none[2].capped, none[2].capped_fable, none[2].available),
             (false, false, true)
         );
+    }
+
+    #[test]
+    fn snapshot_reports_the_resolved_cap_of_every_window_seen_or_not() {
+        let pool = AccountPool::new();
+        let config = PoolConfig {
+            default_max_utilization: Some(0.9),
+            default_max_utilization_fable: Some(0.4),
+            ..Default::default()
+        };
+        // `window`: the 5h account-window override beats the account-level cap;
+        // 7d and Fable fall back to the account-level cap, which in turn beats
+        // the pool's per-window Fable default.
+        let mut window = account("window");
+        window.max_utilization = Some(0.7);
+        window.max_utilization_5h = Some(0.5);
+        // `plain` sets nothing: every window resolves to the pool defaults.
+        let plain = account("plain");
+        // `unseen` has no traffic at all, yet its caps are config.
+        let mut unseen = account("unseen");
+        unseen.max_utilization_7d = Some(0.25);
+        let accts = vec![window, plain, unseen];
+        for acct in &accts[..2] {
+            set_quota(&pool, "anthropic", acct, |_| {});
+        }
+        {
+            let mut entries = pool.entries.lock().unwrap();
+            for acct in &accts[..2] {
+                entries
+                    .get_mut(&account_key("anthropic", acct))
+                    .unwrap()
+                    .observed = true;
+            }
+        }
+        let caps = |s: &AccountSnapshot| {
+            (
+                s.has_state,
+                s.max_utilization_5h,
+                s.max_utilization_7d,
+                s.max_utilization_fable,
+            )
+        };
+        let snaps = pool.snapshot("anthropic", &accts, None, Some(&config));
+        assert_eq!(caps(&snaps[0]), (true, Some(0.5), Some(0.7), Some(0.7)));
+        assert_eq!(caps(&snaps[1]), (true, Some(0.9), Some(0.9), Some(0.4)));
+        assert_eq!(caps(&snaps[2]), (false, Some(0.9), Some(0.25), Some(0.4)));
+
+        // Without `[server.pool]` only account-level caps remain; absent ones
+        // serialize as null, not as a missing key.
+        let bare = pool.snapshot("anthropic", &accts, None, None);
+        assert_eq!(caps(&bare[0]), (true, Some(0.5), Some(0.7), Some(0.7)));
+        assert_eq!(caps(&bare[1]), (true, None, None, None));
+        assert_eq!(caps(&bare[2]), (false, None, Some(0.25), None));
+        let json = serde_json::to_value(&bare[1]).unwrap();
+        assert!(json["max_utilization_5h"].is_null() && json["max_utilization_fable"].is_null());
     }
 
     #[test]

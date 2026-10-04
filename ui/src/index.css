@@ -168,6 +168,8 @@
   .usage-item + .usage-item { margin-top: 0.62rem; }
   .usage-meta { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.26rem; font-size: 0.78rem; }
   .usage-value { color: var(--text-secondary); white-space: nowrap; }
+  .usage-bar { position: relative; }
+  .usage-cap { position: absolute; top: -0.12rem; bottom: -0.12rem; left: var(--cap); width: 2px; transform: translateX(-50%); border-radius: 1px; background: var(--text); pointer-events: none; }
   .usage-track { display: block; width: 100%; height: 0.42rem; overflow: hidden; border: 0; border-radius: 999px; background: var(--track); appearance: none; }
   .usage-track::-webkit-progress-bar { background: var(--track); border-radius: inherit; }
   .usage-track::-webkit-progress-value { background: linear-gradient(90deg, var(--accent), var(--accent-light)); border-radius: inherit; }
@@ -199,6 +201,7 @@
   }
   @media (forced-colors: active) {
     .usage-track { border: 1px solid CanvasText; }
+    .usage-cap { background: CanvasText; }
     .usage-track::-webkit-progress-value, .usage-track::-moz-progress-bar { background: Highlight; }
   }
 

@@ -35,6 +35,16 @@ export function pctReset(value: number | null | undefined, resetSecs: number | n
   return resetSecs ? `${pct(value)} · ${untilShort(resetSecs)}` : pct(value);
 }
 
+/** [`pctReset`] plus the window's configured hard cap, shown even before the window is observed. */
+export function pctResetCap(
+  value: number | null | undefined,
+  resetSecs: number | null | undefined,
+  cap: number | null | undefined,
+): string {
+  const base = pctReset(value, resetSecs);
+  return cap === null || cap === undefined ? base : `${base} · cap ${pct(cap)}`;
+}
+
 export function when(ms: number | null | undefined): string {
   return ms ? new Date(ms).toLocaleString() : '—';
 }

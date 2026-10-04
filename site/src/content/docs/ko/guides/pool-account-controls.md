@@ -40,7 +40,7 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool/anthropic/accounts/$ACCOUNT_REF" \
 | :-- | :-- | :-- | :-- |
 | 설정 방법 | `shunt.toml`, 리로드 필요 | 관리자 대시보드 또는 `PATCH /admin/api/pool/{provider}/accounts/{account_ref}` | 관측된 사용률이 설정된 캡에 도달 |
 | 끝나는 시점 | 구성이 바뀔 때까지 계속 | 운영자가 계정을 재개할 때 | 사용률이 캡 아래로 내려가면 자동(창 리셋 또는 만료, 더 낮은 관측값, 리로드 시 캡 상향) |
-| 대시보드 표시 | `disabled` | `paused` | "Capped", Fable 전용 캡이면 "Capped (Fable)" |
+| 대시보드 표시 | `disabled` | `paused` | "Capped", Fable 전용 캡이면 "Capped (Fable)"; 설정된 캡 값은 각 사용량 막대와 풀 표에 표시 |
 
 캡이 걸린 계정도 구성되어 있고 로그인된 상태이며, 새 라우팅만 보류됩니다. `GET /usage`는 사용 가능한 계정이 없고 활성화된(`disabled`가 아닌) 계정 중 일시 정지되지 않은 계정 하나 이상에 캡이 걸려 있으면 풀 상태 `capped`를 보고합니다. 캡 때문에 선택할 수 있는 계정이 남지 않으면 요청은 보통 게이트웨이 HTTP `429`를 받습니다(또는 다음 업스트림으로 페일오버됩니다). 예외가 하나 있습니다. 이미 Codex/ChatGPT 풀로 커밋된(HTTP `200`이 전송된) 스트리밍 요청의 도중에 캡 때문에 풀이 비고 뒤의 업스트림도 처리하지 못하면, 클라이언트는 HTTP `429` 대신 스트림 안의 종료 SSE `error` 이벤트를 받습니다. [`[server.pool]`](/ko/reference/configuration/#serverpool-선택)의 하드 캡 설명을 참고하세요.
 
