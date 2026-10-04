@@ -1,0 +1,65 @@
+tests/spend_metering_routing.rs
+  s_9f901e59727f87::t_c4d28631792c92 337-343
+src/stream_metrics/spend_tap.rs
+  s_9f901e59727f87::t_67fe1752d138b5 18
+  s_9f901e59727f87::t_b6c5eaa3de171d 32
+  s_9f901e59727f87::t_4dc90cdea12ef3 41-43,45
+  s_9f901e59727f87::t_1f83bb2583f9e0 44
+tests/spend_metering.rs
+  s_9f901e59727f87::t_ca8aefe9d2d48c 227-233
+src/gateway/spend/tests/effective.rs
+  s_9f901e59727f87::t_70abf3e823cbf7 207-221
+  s_e9d88876b012eb::t_c37560a2109aab 206
+src/gateway/spend/effective.rs
+  s_9f901e59727f87::t_54b12ec97c7bda 338-347
+docs/gateway-spend-limits.md
+  s_9f901e59727f87::t_17b50c2eda912b 145
+src/stream_metrics/spend_tap/json.rs
+  s_9f901e59727f87::t_85528aca093a29 24-26,28-45,47-49,51-66,68-111,113-194
+  s_9f901e59727f87::t_03d77030bd8052 1-23
+  s_9f901e59727f87::t_90678f3249bf98 27,46,50,67
+  s_9f901e59727f87::t_097974b5bd9a67 112
+src/gateway/spend/meter/persist.rs
+  s_9f901e59727f87::t_40fdf921a97641 207-209,211,215
+  s_9f901e59727f87::t_bca1c984ae7dd6 19-22
+  s_9f901e59727f87::t_844e0d7b0e02b0 88-96
+  s_9f901e59727f87::t_bc03faaa924d8a 201-206,210,212-214,216-220,222-228,231-232,235-236,238-240
+  s_9f901e59727f87::t_14a2acbd96ba47 263-265,270-274
+  s_9f901e59727f87::t_2b191f93198680 293
+  s_9f901e59727f87::t_228c7cbbb2cc40 229-230,233-234
+  s_9f901e59727f87::t_07ada16ba8702b 221
+  s_9f901e59727f87::t_0655b06c34dbfd 262,266-269
+src/gateway/spend/meter/persist/tests.rs
+  s_9f901e59727f87::t_cfd489eb7c7353 235-266
+  s_9f901e59727f87::t_71233367de2b82 188-190
+  s_9f901e59727f87::t_d2f7449106247e 202-234,267-273,278-289
+  s_9f901e59727f87::t_3e8e3342b3f583 274-277
+  s_9f901e59727f87::t_10efc333704c29 191-194
+  s_9f901e59727f87::t_229466229aaf05 299
+src/stream_metrics/spend_tap/tests.rs
+  s_9f901e59727f87::t_9aa0c403514b1a 47-51,53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "31fea09bfce1514565704b51bdfe991095d6ef34",
+  "prompts": {},
+  "sessions": {
+    "s_9f901e59727f87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "321677c8-cff9-4c24-9b5d-93c0c797c39d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_e9d88876b012eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cfc5bfb0-6d89-49d9-a04f-ea073cd69fc8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
