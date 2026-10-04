@@ -1,0 +1,26 @@
+shunt.toml.example
+  s_afd8879efb217f::t_65a9819c14e277 101-108
+tests/responses_cache_affinity.rs
+  s_afd8879efb217f::t_65a9819c14e277 115-118
+src/config.rs
+  s_afd8879efb217f::t_65a9819c14e277 235-247,309-312,2022-2033,2068-2071,4341-4353,4798-4801,6920,7106-7205
+  s_afd8879efb217f::t_61431d8458b2ba 7206
+src/config/upstreams.rs
+  s_afd8879efb217f::t_edb832e3777df9 113-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "918ae2c85a8bc5def86493a8e2818f7e93dd8786",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
