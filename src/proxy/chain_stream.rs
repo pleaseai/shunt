@@ -378,9 +378,9 @@ pub(crate) struct ChainStreamWinner {
     /// The model string the winning route was sent: what a captured turn is
     /// priced on. The first route's effective model until a route wins.
     upstream_model: std::sync::Arc<std::sync::Mutex<String>>,
-    /// Whether the winning route injects a gateway credential; the first
-    /// route's until a route wins.
-    injects_credential: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the winning route is metered ([`ServedTarget::meters`]); the
+    /// first route's until a route wins.
+    meters: std::sync::Arc<std::sync::atomic::AtomicBool>,
     refusal: RefusalSlot,
 }
 
@@ -450,9 +450,7 @@ impl ChainStreamWinner {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
-            injects_credential: self
-                .injects_credential
-                .load(std::sync::atomic::Ordering::Relaxed),
+            meters: self.meters.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -546,10 +544,9 @@ pub(super) async fn forward_chain_stream(
     let winner_upstream_slot =
         std::sync::Arc::new(std::sync::Mutex::new(first_target.upstream_model));
     let closure_upstream_slot = winner_upstream_slot.clone();
-    let winner_injects_slot = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-        first_target.injects_credential,
-    ));
-    let closure_injects_slot = winner_injects_slot.clone();
+    let winner_meters_slot =
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(first_target.meters));
+    let closure_meters_slot = winner_meters_slot.clone();
     let refusal_slot = RefusalSlot::default();
     let closure_refusal = refusal_slot.clone();
     let closure_spend = spend.clone();
@@ -586,7 +583,7 @@ pub(super) async fn forward_chain_stream(
             let refusal_slot = closure_refusal.clone();
             let spend = closure_spend.clone();
             let winner_upstream_slot = closure_upstream_slot.clone();
-            let winner_injects_slot = closure_injects_slot.clone();
+            let winner_meters_slot = closure_meters_slot.clone();
             let estimate_cache = estimate_cache.clone();
             async move {
                 let mut body = body;
@@ -809,10 +806,8 @@ pub(super) async fn forward_chain_stream(
                                     if let Some(tap) = &spend {
                                         tap.set_target(&target);
                                     }
-                                    winner_injects_slot.store(
-                                        target.injects_credential,
-                                        std::sync::atomic::Ordering::Relaxed,
-                                    );
+                                    winner_meters_slot
+                                        .store(target.meters, std::sync::atomic::Ordering::Relaxed);
                                     target.upstream_model.clone_into(
                                         &mut winner_upstream_slot
                                             .lock()
@@ -985,7 +980,7 @@ pub(super) async fn forward_chain_stream(
             provider: winner_slot,
             model: winner_model_slot,
             upstream_model: winner_upstream_slot,
-            injects_credential: winner_injects_slot,
+            meters: winner_meters_slot,
             refusal: refusal_slot,
         });
         response

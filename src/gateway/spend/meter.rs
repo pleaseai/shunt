@@ -17,7 +17,10 @@ mod tests;
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
 
 use super::{
@@ -50,7 +53,8 @@ const UNKNOWN_OUTPUT: f64 = 25.0;
 const UNKNOWN_CACHE_READ: f64 = 0.50;
 const UNKNOWN_CACHE_WRITE: f64 = 6.25;
 
-/// Outcome of [`SpendMeter::check`].
+/// The admission verdict in [`Assessment::check`], produced by
+/// [`SpendMeter::assess`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Check {
     Allow,
@@ -98,6 +102,8 @@ pub struct SpendMeter {
     unavailable: Mutex<HashMap<String, Option<u64>>>,
     persist: persist::PersistState,
     warned_models: Mutex<HashSet<String>>,
+    /// Set once [`MAX_WARNED_MODELS`] has been reached and logged.
+    warned_cap_reported: AtomicBool,
 }
 
 impl SpendMeter {
@@ -187,8 +193,9 @@ impl SpendMeter {
         self.assess(limits, principal, now_secs).check
     }
 
-    /// [`Self::check`] together with the binding cap the rate-limit headers
-    /// describe, both from one read of each counter so they cannot disagree.
+    /// Decides whether `principal` may spend, given the stage-1 `limits`,
+    /// together with the binding cap the rate-limit headers describe, both
+    /// from one read of each counter so they cannot disagree.
     ///
     /// When any cap is reached, `check` is `Blocked` on exactly the binding
     /// cap's period and reset. `binding` is `None` only for a principal with
@@ -249,13 +256,21 @@ impl SpendMeter {
     /// True exactly once per model id for the life of the process, for the
     /// first [`MAX_WARNED_MODELS`] distinct ids. Once that many are held, a
     /// further id is neither remembered nor warned about; it is still priced
-    /// at the unknown-model rate.
+    /// at the unknown-model rate; the first such id logs, once per meter, that
+    /// warnings have stopped.
     fn first_sighting(&self, id: &str) -> bool {
         let mut warned = self
             .warned_models
             .lock()
             .expect("spend meter lock poisoned");
         if warned.len() >= MAX_WARNED_MODELS {
+            if !warned.contains(id) && !self.warned_cap_reported.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    limit = MAX_WARNED_MODELS,
+                    "unpriced model warning limit reached; further unpriced model ids are \
+                     metered at the unknown-model rate without a warning"
+                );
+            }
             return false;
         }
         warned.insert(id.to_string())

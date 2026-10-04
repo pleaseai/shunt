@@ -240,7 +240,13 @@ fn warned_models_stop_growing_at_the_cap_and_pricing_is_unchanged() {
         assert!(meter.first_sighting(&format!("filler-{n}")));
     }
     let unknown_rate = meter.cost(&table, "up", "filler-0", "filler-0", &usage());
+    // A known id at the cap is not a new one being dropped.
+    assert!(!meter.first_sighting("filler-1"));
+    assert!(!meter.warned_cap_reported.load(Ordering::Relaxed));
     assert!(!meter.first_sighting("one-too-many"));
+    assert!(meter.warned_cap_reported.load(Ordering::Relaxed));
+    assert!(!meter.first_sighting("two-too-many"));
+    assert!(meter.warned_cap_reported.load(Ordering::Relaxed));
     assert_eq!(meter.warned_models.lock().unwrap().len(), MAX_WARNED_MODELS);
     assert_eq!(
         meter.cost(&table, "up", "past-cap", "past-cap", &usage()),

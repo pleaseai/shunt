@@ -85,14 +85,14 @@ impl SpendTap {
     /// is billed: a committed stream that never selected a winner served no
     /// upstream's output.
     ///
-    /// A target whose `injects_credential` is false (a passthrough route, paid
+    /// A target whose `meters` is false (a passthrough route, paid
     /// with the caller's own credential, or a `noop` one) clears the target
     /// and the call is not billed — decided at the winner, not at admission,
     /// because a request admitted against an injecting envelope can still be
     /// served by a passthrough route.
     pub(crate) fn set_target(&self, target: &ServedTarget) {
         *self.target.lock().unwrap_or_else(PoisonError::into_inner) =
-            target.injects_credential.then(|| target.clone());
+            target.meters.then(|| target.clone());
     }
 
     /// Bills a whole, already-collected JSON reply — a judge answer or a

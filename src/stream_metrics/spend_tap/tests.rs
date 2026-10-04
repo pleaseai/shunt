@@ -40,7 +40,7 @@ fn tap() -> SpendTap {
         provider: "anthropic".to_string(),
         model: "an-alias".to_string(),
         upstream_model: UPSTREAM_MODEL.to_string(),
-        injects_credential: true,
+        meters: true,
     });
     tap
 }

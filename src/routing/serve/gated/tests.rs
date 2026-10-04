@@ -120,7 +120,7 @@ async fn a_held_open_stream_is_cut_at_its_error_frame() {
             provider: "efficient".to_string(),
             model: "weak".to_string(),
             upstream_model: "upstream-weak".to_string(),
-            injects_credential: true,
+            meters: true,
         },
     };
     let gated = GatedBounds {
@@ -202,7 +202,7 @@ async fn the_byte_cap_counts_the_turn_not_the_bytes_after_it() {
                 provider: "efficient".to_string(),
                 model: "weak".to_string(),
                 upstream_model: "upstream-weak".to_string(),
-                injects_credential: true,
+                meters: true,
             },
         };
         let gated = GatedBounds {
@@ -237,7 +237,7 @@ async fn a_stalled_refusal_body_is_cut_at_the_idle_gap() {
             provider: "efficient".to_string(),
             model: "weak".to_string(),
             upstream_model: "upstream-weak".to_string(),
-            injects_credential: true,
+            meters: true,
         },
     };
     let gated = GatedBounds {

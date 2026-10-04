@@ -42,7 +42,7 @@ pub(crate) struct ServedTarget {
     /// The model string the upstream was sent (classifier pin included).
     pub upstream_model: String,
     /// Whether the route is metered at all ([`route_meters`]).
-    pub injects_credential: bool,
+    pub meters: bool,
 }
 
 impl ServedTarget {
@@ -55,19 +55,19 @@ impl ServedTarget {
                 route,
                 body,
             ),
-            injects_credential: route_meters(state, route),
+            meters: route_meters(state, route),
         }
     }
 }
 
 /// The principal a request's spend is attributed to.
 ///
-/// `None` means unmetered: the chain forwards the caller's own upstream
-/// credential, so the caller pays and there is nothing to cap. A
-/// credential-injecting chain with no authenticated identity shares the one
-/// anonymous principal.
-pub(crate) fn principal_for(client: Option<&str>, injects_credential: bool) -> Option<String> {
-    if !injects_credential {
+/// `None` means unmetered: no route in the chain meters spend
+/// ([`route_meters`]) — it forwards the caller's own upstream credential, so
+/// the caller pays, or it is `noop` — and there is nothing to cap. A metered
+/// chain with no authenticated identity shares the one anonymous principal.
+pub(crate) fn principal_for(client: Option<&str>, meters_spend: bool) -> Option<String> {
+    if !meters_spend {
         return None;
     }
     Some(client.map_or_else(|| ANONYMOUS_PRINCIPAL.to_string(), ToOwned::to_owned))
