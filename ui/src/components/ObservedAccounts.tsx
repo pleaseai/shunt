@@ -68,6 +68,22 @@ function emptyUsageText(state: string): string {
   return 'No usage reported yet';
 }
 
+/**
+ * Whether the pool excludes the account at this window's cap: the server's own
+ * verdict (`capped` for 5h/7d, `capped_fable` for Fable), narrowed to the window
+ * by the pool's own utilization. Never the row's folded value, which
+ * `foldObservation` may have replaced with a client observation the pool has not
+ * recorded -- the bar would then read as excluded while selection still uses the
+ * account, or the other way round.
+ */
+function atCap(
+  scope: boolean | undefined,
+  utilization: number | null | undefined,
+  cap: number | null | undefined,
+): boolean {
+  return Boolean(scope) && utilization != null && cap != null && utilization >= cap;
+}
+
 function UsageCell({ row, state }: { row: AccountRow; state: string }): ReactElement {
   // Pool buckets first: for the 5h/7d windows the pool already takes priority
   // over observations (`foldObservation` prefers the client's windows only
@@ -90,22 +106,42 @@ function UsageCell({ row, state }: { row: AccountRow; state: string }): ReactEle
       </td>
     );
   }
-  const windows: [string, number | null | undefined, number | null | undefined, number | null | undefined][] = [
-    ['5h', row.utilization_5h, row.reset_5h, row.managed?.max_utilization_5h],
-    ['Week', row.utilization_7d, row.reset_7d, row.managed?.max_utilization_7d],
-    ['Fable', row.utilization_7d_oi, row.reset_7d_oi, row.managed?.max_utilization_fable],
+  const managed = row.managed;
+  const windows: [string, number | null | undefined, number | null | undefined, number | null | undefined, boolean][] = [
+    [
+      '5h',
+      row.utilization_5h,
+      row.reset_5h,
+      managed?.max_utilization_5h,
+      atCap(managed?.capped, managed?.utilization_5h, managed?.max_utilization_5h),
+    ],
+    [
+      'Week',
+      row.utilization_7d,
+      row.reset_7d,
+      managed?.max_utilization_7d,
+      atCap(managed?.capped, managed?.utilization_7d, managed?.max_utilization_7d),
+    ],
+    [
+      'Fable',
+      row.utilization_7d_oi,
+      row.reset_7d_oi,
+      managed?.max_utilization_fable,
+      atCap(managed?.capped_fable, managed?.utilization_7d_oi, managed?.max_utilization_fable),
+    ],
   ];
   const present = windows.filter(([, value]) => value !== null && value !== undefined);
   return (
     <td className="usage-lines">
       {present.length ? (
-        present.map(([label, value, reset, cap]) => (
+        present.map(([label, value, reset, cap, capped]) => (
           <UsageBar
             key={label}
             label={label}
             remaining={1 - (value as number)}
             resetTime={reset ? new Date(reset * 1000).toISOString() : null}
             cap={cap}
+            atCap={capped}
           />
         ))
       ) : (

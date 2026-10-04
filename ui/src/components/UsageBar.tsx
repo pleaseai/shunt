@@ -20,11 +20,15 @@ import { untilShort } from '../format';
  *
  * `cap` is the account's configured `max_utilization` hard cap for this window
  * as a fraction. It is drawn as a decorative tick over the bar and named in the
- * caption, and a bar at or past it reads as full: the account is excluded from
- * selection there. The tick is positioned through a `--cap` custom property
- * set by React's `style` prop, which the client renderer applies through the
- * CSSOM (`style.setProperty`) rather than as a `style="..."` attribute, so it
- * is allowed under the shell's `style-src 'self'` -- which has no
+ * caption. `atCap` is the caller's verdict that selection excludes the account
+ * at this window, and makes the bar read as full. The bar does not derive it
+ * from `remaining`: the value it displays may be a client observation rather
+ * than the utilization the pool's cap check reads.
+ *
+ * The tick is positioned through a `--cap` custom property set by React's
+ * `style` prop, which the client renderer applies through the CSSOM
+ * (`style.setProperty`) rather than as a `style="..."` attribute, so it is
+ * allowed under the shell's `style-src 'self'` -- which has no
  * `'unsafe-inline'` (`src/admin/ui.rs`). The rule that consumes it lives in
  * `index.css`.
  */
@@ -33,11 +37,13 @@ export function UsageBar({
   remaining,
   resetTime,
   cap,
+  atCap = false,
 }: {
   label: string;
   remaining: number;
   resetTime: string | null;
   cap?: number | null;
+  atCap?: boolean;
 }): ReactElement {
   const used = Math.max(0, Math.min(100, Math.round((1 - remaining) * 1000) / 10));
   const capPct = cap === null || cap === undefined ? null : Math.round(cap * 1000) / 10;
@@ -60,7 +66,7 @@ export function UsageBar({
           aria-valuenow={used}
           max={100}
           value={used}
-          data-level={used >= 100 || (cap != null && remaining <= 1 - cap) ? 'full' : undefined}
+          data-level={used >= 100 || atCap ? 'full' : undefined}
         />
         {capPct === null ? null : (
           <span

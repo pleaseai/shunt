@@ -42,29 +42,69 @@ describe('the configured hard cap is shown beside the usage it limits', () => {
     expect(track).toHaveAttribute('aria-label', '5h usage');
   });
 
-  it('reads a bar at or past its cap as full, since the account is excluded there', async () => {
+  it('reads the bar of the window that reached the cap as full when the pool reports the account capped', async () => {
     await renderDashboard(
       poolWith({
-        utilization_5h: 0.5,
+        capped: true,
+        utilization_5h: 0.3,
         max_utilization_5h: 0.5,
-        utilization_7d: 0.4,
+        utilization_7d: 0.9,
         max_utilization_7d: 0.8,
       }),
     );
-    expect(bar('5h').track).toHaveAttribute('data-level', 'full');
-    expect(bar('Week').track).not.toHaveAttribute('data-level');
+    // `capped` covers 5h and 7d together; only the window at its cap reads full.
+    expect(bar('Week').track).toHaveAttribute('data-level', 'full');
+    expect(bar('5h').track).not.toHaveAttribute('data-level');
+  });
+
+  it('reads the Fable bar as full from capped_fable alone', async () => {
+    await renderDashboard(
+      poolWith({ capped_fable: true, utilization_7d_oi: 0.6, max_utilization_fable: 0.5 }),
+    );
+    expect(bar('Fable').track).toHaveAttribute('data-level', 'full');
+  });
+
+  it('takes the full state from the server verdict, not from the value at the cap', async () => {
+    // At the cap by the numbers, but the pool does not report the account capped.
+    await renderDashboard(poolWith({ utilization_5h: 0.5, max_utilization_5h: 0.5 }));
+    expect(bar('5h').track).not.toHaveAttribute('data-level');
+  });
+
+  it('does not read a client observation past the cap as full while the pool still selects the account', async () => {
+    await renderDashboard({
+      observed: [
+        {
+          provider: 'claude',
+          source: 'claude code',
+          identity: 'ops@example.com',
+          detail: 'Max plan',
+          state: 'available',
+          uuid: 'acct-uuid-1',
+          utilization_5h: 0.6,
+        },
+      ],
+      accounts: [{ name: 'pool-a', kind: 'imported', uuid: 'acct-uuid-1' }],
+      pool: poolWith({ utilization_5h: 0.3, max_utilization_5h: 0.5 }).pool,
+    });
+    const { caption, track } = bar('5h');
+    // The folded row shows the client's newer value...
+    expect(caption).toBe('60% used · cap 50%');
+    // ...but selection reads the pool's 30%, so the account is not excluded.
+    expect(track).not.toHaveAttribute('data-level');
   });
 
   it.each([0.1, 0.2, 0.45])(
-    'reads a bar exactly at a %s cap as full despite float rounding',
+    'reads a capped bar exactly at a %s cap as full despite float rounding',
     async (value) => {
-      await renderDashboard(poolWith({ utilization_5h: value, max_utilization_5h: value }));
+      await renderDashboard(
+        poolWith({ capped: true, utilization_5h: value, max_utilization_5h: value }),
+      );
       expect(bar('5h').track).toHaveAttribute('data-level', 'full');
     },
   );
 
   it('treats a cap of zero as present', async () => {
-    await renderDashboard(poolWith({ utilization_5h: 0, max_utilization_5h: 0 }));
+    await renderDashboard(poolWith({ capped: true, utilization_5h: 0, max_utilization_5h: 0 }));
     const { caption, tick, track } = bar('5h');
     expect(caption).toBe('0% used · cap 0%');
     expect(tick).not.toBeNull();
