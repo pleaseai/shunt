@@ -196,12 +196,13 @@
     .usage-lines { min-width: 0; }
     .account-detail { display: block; }
     .usage-meta { font-size: 0.76rem; }
+    .usage-value { white-space: normal; text-align: right; }
     .status { white-space: normal; }
     .row-actions { white-space: normal; }
   }
   @media (forced-colors: active) {
     .usage-track { border: 1px solid CanvasText; }
-    .usage-cap { background: CanvasText; }
+    .usage-cap { background: CanvasText; forced-color-adjust: none; }
     .usage-track::-webkit-progress-value, .usage-track::-moz-progress-bar { background: Highlight; }
   }
 
