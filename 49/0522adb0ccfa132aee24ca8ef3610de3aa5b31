@@ -1,0 +1,22 @@
+.please/docs/review/rejected-findings.jsonl
+  s_afd8879efb217f::t_ea80d5439cc32d 95
+src/accounts.rs
+  s_afd8879efb217f::t_45e3255133455e 840-845,3103-3106,3139-3152,3161-3162,3167,3175-3179,9313-9335,9410-9431
+  s_afd8879efb217f::t_ee04435e51709c 815-818
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "490522adb0ccfa132aee24ca8ef3610de3aa5b31",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
