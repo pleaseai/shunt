@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.53.0](https://github.com/pleaseai/shunt/compare/v0.52.0...v0.53.0) (2026-10-04)
+
+
+### Features
+
+* **spend:** add [server.spend.pricing] multiplier and override rates ([#472](https://github.com/pleaseai/shunt/issues/472)) ([bc0557b](https://github.com/pleaseai/shunt/commit/bc0557b51326f1ac2fb3c0138208faca6841858a))
+
+
+### Bug Fixes
+
+* **responses:** cut a gated error body that sends no byte within the envelope budget ([#729](https://github.com/pleaseai/shunt/issues/729)) ([ce91e46](https://github.com/pleaseai/shunt/commit/ce91e4628fd3640a21dec30290c987bd47d43c76))
+
 ## [0.52.0](https://github.com/pleaseai/shunt/compare/v0.51.1...v0.52.0) (2026-10-02)
 
 
