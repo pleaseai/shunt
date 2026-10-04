@@ -183,8 +183,8 @@ max_utilization_fable = 0.5        # Fable 用到该账户 Fable 周桶约 50% �
 - **解析顺序**。对每个窗口:账户 `max_utilization_X` → 账户 `max_utilization` → `default_max_utilization_X` → `default_max_utilization` → 无上限。上限不受 `hard_threshold` 钳制。账户上限在没有 `[server.pool]` 时同样生效;通过存储扫描得到的账户(没有 `[[providers.anthropic.accounts]]` 条目)只获得池默认值。
 - **剔除,而非重新排序**。在某个起作用的窗口里已观测到的使用率达到或超过其上限的账户会被移出选择。5h 与 7d 上限作用于每个请求;Fable 上限只作用于 Fable 模型请求,且只有在该账户的 `7d_oi` 使用率已被观测到之后才起作用。没有观测到使用率的窗口从不剔除账户。
 - **恢复**。使用率降到上限以下后,账户会自动重新可选:途径是窗口重置或过期、更低的观测值,或配置重载时调高上限。上限只阻止新的路由,并不是精确的预算,因此进行中或并发的请求可能略有超出。
-- **耗尽**。当上限使池中没有可选账户时,shunt 返回网关自身生成的 HTTP `429` `rate_limit_error`("all selectable accounts for provider 'X' are at their max_utilization cap for this request"),在已知最早可用时间时附带 `retry-after`。与上游 `429` 一样,它会推进 `[[upstreams]]` 故障转移链,因此后面的上游(可能是按量付费)会处理该请求;只有都无法处理时客户端才会看到这个 `429`。在入站 Codex 端点上,同一错误以 OpenAI 错误形态返回。
-- **提供商**。对 Claude OAuth 池(5h、7d、`7d_oi`)和 [Codex/ChatGPT 池](/zh-cn/guides/codex-multi-account/)(5 小时与周窗口;Fable 的键在那里不起作用)有效。对不报告使用率的 Kimi 和 Antigravity 不起作用。
+- **耗尽**。当上限使池中没有可选账户时,shunt 返回网关自身生成的 HTTP `429` `rate_limit_error`("all selectable accounts for provider 'X' are at their max_utilization cap for this request"),在已知最早可用时间时附带 `retry-after`。与上游 `429` 一样,它会推进 `[[upstreams]]` 故障转移链,因此后面的上游(可能是按量付费)会处理该请求;只有都无法处理时客户端才会看到这个 `429`。但对于已提交到 Codex/ChatGPT 池(已发送 HTTP `200`)的流式请求,若后面的上游都无法处理,客户端收到的是流内的终止 SSE `error` 事件,而不是 HTTP `429`,也没有 `retry-after` 头。在入站 Codex 端点上,同一错误以 OpenAI 错误形态返回。
+- **提供商**。对 Claude OAuth 池(5h、7d、`7d_oi`)和 [Codex/ChatGPT 池](/zh-cn/guides/codex-multi-account/)(5 小时与周窗口;Fable 的键在那里不起作用)有效。Kimi OAuth 池在 Kimi 上游报告使用率头时同样适用上限;目前尚未观测到其报告,因此实际上保持不起作用,未观测到的窗口从不剔除账户。Antigravity 的配额不计入上限。
 - **状态显示**。管理仪表板把达到上限的账户显示为 "Capped",仅 Fable 上限则显示 "Capped (Fable)"。当没有可用账户且至少有一个账户达到上限时,`GET /usage` 报告池状态 `capped`。
 
 ## Usage-API 对账
