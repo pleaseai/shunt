@@ -144,6 +144,9 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
 - [x] (2026-10-04 19:52 KST) T001 Add max_utilization keys to account and pool config — 918ae2c8
   Evidence: `cargo test --all-features config::` → 415 passed, 0 failed; `example_config_files_still_load` passed
   Note: added `#[allow(clippy::large_enum_variant)]` on `AccountSelection` (src/config/upstreams.rs) — the inline `AccountConfig` variant grew past clippy's limit; parsed once at boot
+- [x] (2026-10-04 KST) T002 Exclude capped accounts from pool selection
+  Evidence: `cargo test --all-features --lib accounts::` -> 218 passed, 0 failed (new AE1/AE3-AE6, sticky, reset re-entry, pool-level cap tests)
+  Note: `cap_exclusion()` / `CapExclusion { eligible_at }` in src/accounts.rs are the reusable verdict for T003/T005 (eligible_at = max reset of capping windows, None if any capping window has no known reset); a pool-level sibling query is left to T003
 
 ## Decision Log
 
