@@ -1,0 +1,51 @@
+tests/spend_enforcement.rs
+  s_9f901e59727f87::t_261400f0303d65 260-286
+src/proxy/failover.rs
+  s_9f901e59727f87::t_54efbc0119537a 924-929
+  s_9f901e59727f87::t_7ae3588010204a 937,976
+tests/spend_persistence.rs
+  s_9f901e59727f87::t_75453b8b49f098 334-336
+src/gateway/spend/tests/effective.rs
+  s_9f901e59727f87::t_bfff1cc7fbb78d 206-234
+  s_d0db94faa47e43::t_933e8b90df7e03 205
+src/gateway/spend/meter/persist.rs
+  s_9f901e59727f87::t_106908f266de7b 249-252,254-255,257-258
+  s_9f901e59727f87::t_2cf4a3eef131d2 216-225
+src/gateway/spend/meter/persist/tests.rs
+  s_9f901e59727f87::t_ff0ebd5467aa0d 320
+  s_9f901e59727f87::t_cdc8d5c79c502d 304-319,321-332
+  s_9f901e59727f87::t_ad4e05c2ad6ff2 303
+src/stream_metrics/spend_tap/tests.rs
+  s_9f901e59727f87::t_92b06e24f7d117 416-417,423
+docs/gateway-spend-limits.md
+  s_9f901e59727f87::t_b77e3bbae2b157 89-91
+  s_9f901e59727f87::t_6c6300b5c0486a 194
+src/gateway/spend/effective.rs
+  s_9f901e59727f87::t_a3fbb61beed318 186,188-190
+  s_9f901e59727f87::t_2db4d952d5cf16 201-209
+  s_9f901e59727f87::t_adf8616a2062c8 179-180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d024dd597669b244a589655b2df82befdc782c00",
+  "prompts": {},
+  "sessions": {
+    "s_9f901e59727f87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "321677c8-cff9-4c24-9b5d-93c0c797c39d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_d0db94faa47e43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a78bced4-09a4-4916-b2e0-2142a4d837d2",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
