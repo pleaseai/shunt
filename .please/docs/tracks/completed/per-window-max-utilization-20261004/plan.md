@@ -163,6 +163,7 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
   Evidence: `cd ui && npm run test` -> 97 passed (new capped/capped-fable cases in coalescing and pool-health); `npx tsc --noEmit` -> exit 0; `npm run build` -> built
   Deferred: `Skill("please:test-browser")` on the admin pool page — needs a running shunt with `[server.admin]` and a capped account; not run here
   Note: also added row notes for both states in ObservedAccounts.tsx; no per-state CSS (cooling siblings have none); the UI has no locale tables
+- [x] (2026-10-04 23:34 KST) Review-stage commits (SHA: `490522ad`, `9115dcaa`, `2b3b03ff`, `c7835074`, `6c7dc30c`, `f6e8de04`)
 
 ## Decision Log
 
@@ -193,3 +194,32 @@ The ensemble review of PR #738 (gpt, ocr, cubic; review commits 490522ad, 9115dc
 - **Cap re-check after selection.** `select_order` and the adapters' `cap_exhaustion` take the entries lock separately (src/adapters/anthropic/mod.rs and src/adapters/responses/{pool,inbound}.rs). If a cap clears in the microseconds between them, the request gets the generic exhaustion error instead of the cap 429. Both errors advance `[[upstreams]]` failover, so only the message and `retry-after` differ. Fix if it matters: return the cap verdict from `select_order_inner` alongside the order. Tracked in #739.
 - **Per-alias caps on `/usage`.** `pool_status` (src/usage.rs) and the admin snapshot read every alias row, each with its own `max_utilization*`, while selection uses only the `collapse_representatives` representative. Aliases with different caps can make `/usage` disagree with selection. This follows the pre-existing per-alias status convention (`representative_positions` covers only the window aggregates) and needs an unusual config (same identity, different caps).
 - **Coverage gap.** greptile never ran: the Homebrew node binary fails to load `libada.3.dylib` (ada-url 4.0.0 installed); `brew reinstall node ada-url` should restore it. ocr excludes `.md`/`.mdx` by configuration, so docs were reviewed by gpt and cubic only.
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+
+Per-account, per-window hard utilization caps for pool accounts. Accounts take `max_utilization`, `max_utilization_5h`, `max_utilization_7d`, and `max_utilization_fable`; `[server.pool]` takes the `default_max_utilization*` equivalents. An account at or over its cap is excluded at selection time. The 5h and 7d caps apply to every request, and the Fable (`7d_oi`) cap applies to Fable requests only.
+
+A pool that caps empty returns a gateway 429 `rate_limit_error` with `retry-after`. The 429 advances the `[[upstreams]]` failover chain, and it applies to Claude OAuth, Kimi, Codex/ChatGPT, and the inbound Codex endpoint, which re-shapes it to the OpenAI error format. "Capped" appears on the admin dashboard, `GET /usage`, and `/api/oauth/usage`. The docs are updated in English and ko/ja/zh-cn. PR #738.
+
+### What Went Well
+
+- Filtering at the `rotation` step of `select_order_inner` kept the sticky fast path and re-probe correct for free.
+- Making the error a 429 with `failure: UpstreamStatus(429)` reused the existing failover advance, so no new chain logic was needed.
+- The ensemble review caught real defects the plan missed. Each fix got a mutation-checked test:
+  - `retry-after` ignored observation-expiry deadlines.
+  - Paused accounts counted as capped.
+  - Aliases contributed deadlines that selection never uses.
+  - Kimi lacked the cap exit.
+
+### What Could Improve
+
+- Every review-round defect was the same class: `cap_exhaustion` re-deriving selection rules (paused, representatives) that `select_order_inner` already applies. Producing the cap verdict where selection computes it (#739) would have avoided three review rounds.
+- Doc claims about provider applicability ("inert on Kimi") drifted as soon as the code changed. Grep for each doc claim whenever a provider path changes.
+- The review environment was missing one engine for the whole run: greptile, because of a node/ada-url dylib mismatch. Fix the toolchain before the next review, rather than accepting `needs_human_read` on every round.
+
+### Tech Debt Created
+
+- TD-001: the cap verdict is re-checked after selection under a second lock. This causes a microsecond race and duplicated selectability rules. Tracked in #739.
+- TD-002: `/usage` and the admin snapshot evaluate caps per alias row, while selection uses one representative per identity. They can disagree only with aliases that have different caps.
