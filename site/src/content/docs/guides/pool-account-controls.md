@@ -32,6 +32,19 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool/anthropic/accounts/$ACCOUNT_REF" \
 
 Set `"paused": false` to resume. See [`PATCH /admin/api/pool/{provider}/accounts/{account_ref}`](/reference/endpoints/) for the full endpoint reference.
 
+## Capped is not paused or disabled
+
+A hard utilization cap (`max_utilization*`, see [Anthropic Multi-Account](/guides/anthropic-multi-account/#hard-caps-max_utilization)) also excludes an account from selection, but it is automatic and conditional:
+
+| | `disabled` (config) | `paused` (runtime) | Capped (`max_utilization*`) |
+| :-- | :-- | :-- | :-- |
+| Set by | `shunt.toml`, reloaded | Admin dashboard or `PATCH /admin/api/pool/{provider}/accounts/{account_ref}` | Observed utilization reaching a configured cap |
+| Ends | Never, until the config changes | When an operator resumes the account | Automatically, once utilization falls below the cap (window reset or expiry, a lower observation, or a raised cap on reload) |
+| Dashboard shows | `disabled` | `paused` | "Capped", or "Capped (Fable)" for a Fable-only cap |
+
+A capped account is still configured and signed in; only new routing is withheld. `GET /usage` reports pool status `capped` when no account is available and at least one is capped.
+
+
 ## Ranking by soonest reset
 
 `[server.pool] sort_by_reset` (default `false`) changes how the *available* tier is ordered: instead of largest projected burn-rate headroom, accounts sort by their earliest known quota reset (ascending — the account that recovers soonest is tried first; an account with no reset signal sorts last). The idea is to drain the account that will replenish earliest, keeping accounts with later resets in reserve as buffers.

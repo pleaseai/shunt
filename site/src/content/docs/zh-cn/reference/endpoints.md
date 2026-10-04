@@ -123,6 +123,8 @@ spend-limit 路由仅在启动时配置了 [`[server.spend]`](/zh-cn/reference/c
 
 `/usage` 路由仅在配置 [`[server.usage]`](/zh-cn/reference/configuration/#serverusage可选) 时存在,且同样要求 [`[server.auth]`](/zh-cn/guides/shared-gateway/)。它使用与 `GET /v1/messages` 相同的客户端 token 进行认证,返回共享账户池按窗口的剩余余量(报告该窗口的未禁用账户的 `mean(1 - utilization)`,即整个池的总容量中尚未使用的比例)、这些账户报告的最早重置时间,以及 `ok`/`degraded`/`exhausted` 状态。它不会暴露账户身份、数量、优先级、`disabled`、阈值或账户级数值。只有在没有任何未禁用账户报告某个窗口时,该窗口才是 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充已观测的 5 小时和共享每周窗口。在 WebSocket 传输上,流内的 `codex.rate_limits` 事件会在每一轮对话(包括复用连接)填充同样的窗口。Codex 没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。`pool` 是所有参与池化的提供方的总体聚合;`providers` 以配置的提供方名称为键,为每个参与池化的提供方给出同样经过净化的聚合,使路由到某一提供方的客户端可以读取该提供方自身的余量和状态,而不是整个池的平均值。认证模式不参与池化的提供方会被省略。完整的响应形态见[英文端点参考](/reference/endpoints/)。 Claude Code 客户端无需 `curl` 即可读取:本仓库插件市场中的 [`shunt` mod](https://github.com/pleaseai/shunt/tree/main/plugins/shunt) 会用这个端点回答 `/shunt:usage`,打印每个窗口的剩余余量和重置时间。它需要函数钩子(`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`),目前仍是早期访问。
 
+池状态 `capped` 表示没有可用账户,且至少有一个账户被 `max_utilization*` 硬上限剔除(参见 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选));它不同于 `exhausted`。
+
 即使启用了 [`[server.auth]`](/zh-cn/guides/shared-gateway/),`GET /` 和 `GET /health` 也保持开放(健康检查工具通常无法附带 token),并且不暴露任何敏感信息 —— 只有状态、版本以及已经公开的端点列表。 配置了 [`[[server.auth.jwt]]`](/zh-cn/reference/configuration/) 条目时,`Authorization: Bearer` 中经过验证的外部 JWT 可以像客户端 token 一样认证同一批受控路由。没有任何条目能验证的 token 返回 `401`;没有任何条目验证通过、且与 token 的 issuer 匹配的条目中存在既无缓存 key set 又拉取失败的条目时,返回 `503`。
 
 ## 网关协议
