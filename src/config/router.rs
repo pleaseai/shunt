@@ -247,6 +247,31 @@ impl RouterConfig {
         ) || self.stage_classifier().is_some()
     }
 
+    /// Whether a turn this router serves can land on some upstream — what
+    /// pricing reachability (`Config::pricing_model_is_requestable`) asks of
+    /// a router-backed id.
+    ///
+    /// Exhaustive on purpose, like the match in `routing::resolve_chain`: a new
+    /// router type fails to compile here until its author decides whether it
+    /// calls an upstream, instead of silently counting as reachable everywhere.
+    pub(crate) fn can_reach_any_upstream(&self) -> bool {
+        match self {
+            // Synthesizes its answer and calls no upstream, so no row on any
+            // upstream ever prices it.
+            Self::Noop {} => false,
+            // Each resolves its chosen target through the whole chain again,
+            // so it can land on any upstream. Claiming reachability is the
+            // safe answer: a warning here would be a false one.
+            Self::StageRouter(_)
+            | Self::Auto(_)
+            | Self::Random(_)
+            | Self::PrefillRouter(_)
+            | Self::LlmClassifier(_)
+            | Self::Composite(_)
+            | Self::Advisor(_) => true,
+        }
+    }
+
     /// Where a driven router sends a turn it has not decided yet — the first
     /// pass of [`crate::routing::resolve_chain`], a body-less surface, and the
     /// answer when the judge produces no usable verdict.

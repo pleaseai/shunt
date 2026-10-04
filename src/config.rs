@@ -4118,14 +4118,7 @@ impl Config {
                             .any(|route| route.provider == row.upstream)
                     })
                 }) || match (&entry.router, &entry.upstream_model) {
-                    // A `noop` router synthesizes its answer and calls no
-                    // upstream, so no row on any upstream ever prices it.
-                    (Some(RouterConfig::Noop {}), _) => false,
-                    // Every other router resolves its chosen target through the
-                    // whole chain again, so it can land on any upstream.
-                    // Claiming reachability is the safe answer: a warning here
-                    // would be a false one.
-                    (Some(_), _) => true,
+                    (Some(router), _) => router.can_reach_any_upstream(),
                     // An `upstream_model` map routes to the providers it names
                     // and nowhere else.
                     (None, Some(upstreams)) if !upstreams.is_empty() => {
