@@ -441,7 +441,15 @@ fn json_usage(kept: Option<&[u8]>, bytes: u64, truncated: bool) -> RequestUsage 
         .and_then(|holder| holder.usage);
     let mut usage = RequestUsage::default();
     match parsed {
-        Some(fields) => fields.apply_to(&mut usage),
+        Some(fields) => {
+            fields.apply_to(&mut usage);
+            // A usage block without an output count gets the same floor a
+            // stream with no final count does.
+            if fields.output_tokens.is_none() {
+                usage.tokens.output_tokens =
+                    floor_tokens(kept.and_then(content_chars).unwrap_or(bytes));
+            }
+        }
         None => usage.tokens.output_tokens = floor_tokens(bytes),
     }
     if truncated {

@@ -358,6 +358,37 @@ async fn a_truncated_json_message_bills_the_delivered_text_floor() {
 }
 
 #[tokio::test]
+async fn a_json_usage_without_an_output_count_bills_the_content_floor() {
+    const PARTIAL: &[u8] = br#"{"type":"message","content":[{"type":"text","text":"abcdefghijklmnopqrst"}],"usage":{"input_tokens":10}}"#;
+    let tap = tap();
+    let body = JsonSpendBody::new(json_body(PARTIAL), tap.clone(), StatusCode::OK);
+    to_bytes(Body::new(body), usize::MAX).await.unwrap();
+    assert_eq!(
+        spent(&tap),
+        priced(Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Usage::default()
+        }),
+        "reported input is kept; the missing output floors from 20 content chars"
+    );
+
+    const EMPTY: &[u8] =
+        br#"{"type":"message","content":[{"type":"text","text":"abcdefgh"}],"usage":{}}"#;
+    let tap = self::tap();
+    let body = JsonSpendBody::new(json_body(EMPTY), tap.clone(), StatusCode::OK);
+    to_bytes(Body::new(body), usize::MAX).await.unwrap();
+    assert_eq!(
+        spent(&tap),
+        priced(Usage {
+            output_tokens: 2,
+            ..Usage::default()
+        }),
+        "an empty usage block is not free"
+    );
+}
+
+#[tokio::test]
 async fn an_error_json_body_is_not_billed() {
     let tap = tap();
     let body = JsonSpendBody::new(json_body(MESSAGE), tap.clone(), StatusCode::BAD_REQUEST);
