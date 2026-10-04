@@ -12,6 +12,7 @@ use http_body::Body as _;
 use serde_json::json;
 
 use super::{JsonSpendBody, SpendTap, StreamSpend};
+use crate::proxy::spend_gate::ServedTarget;
 use crate::{
     config::RateLimitsConfig,
     gateway::{
@@ -35,7 +36,12 @@ fn tap() -> SpendTap {
         principal: Arc::from(PRINCIPAL),
         target: Arc::default(),
     };
-    tap.set_target("anthropic", "an-alias", UPSTREAM_MODEL, true);
+    tap.set_target(&ServedTarget {
+        provider: "anthropic".to_string(),
+        model: "an-alias".to_string(),
+        upstream_model: UPSTREAM_MODEL.to_string(),
+        injects_credential: true,
+    });
     tap
 }
 

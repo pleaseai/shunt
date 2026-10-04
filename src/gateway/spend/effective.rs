@@ -4,8 +4,6 @@
 //! shunt has no identity store, so a row's `actor` is derived from the
 //! principal string alone (see [`actor`]).
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::{
     extract::{RawQuery, State},
     http::{HeaderMap, StatusCode},
@@ -17,7 +15,7 @@ use url::form_urlencoded;
 
 use super::{
     api::{authenticate, error, request_id, success},
-    meter::{effective_limit, ANONYMOUS_PRINCIPAL, FEMTO_USD_PER_CENT, PERIODS},
+    meter::{effective_limit, now_secs, ANONYMOUS_PRINCIPAL, FEMTO_USD_PER_CENT, PERIODS},
     store::{Period, Scope, SpendLimit},
 };
 use crate::{config::AdminAccess, server::AppState};
@@ -61,6 +59,7 @@ struct Params {
     limit: usize,
     periods: Vec<Period>,
     user_ids: Option<Vec<String>>,
+    /// The `q` filter, lowercased once at parse time.
     q: Option<String>,
     spend_desc: bool,
     page: Option<Cursor>,
@@ -73,8 +72,6 @@ struct Cursor {
     p: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     c: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    s: Option<bool>,
 }
 
 fn bad_request(message: impl Into<String>, request_id: String) -> Response {
@@ -102,9 +99,7 @@ pub async fn effective(
     };
     let store = &state.gateway_stores.spend;
     let limits = store.list();
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
+    let now = now_secs();
     let meter = store.meter();
 
     let (principals, next_page) = match &params.user_ids {
@@ -221,37 +216,35 @@ fn format_cents(femto: u64) -> String {
         .to_string()
 }
 
+/// `q` is already lowercased (see [`Params::q`]).
 fn matches_query(principal: &str, q: Option<&str>) -> bool {
     // The derived name and email are the principal itself, so one haystack.
-    q.is_none_or(|q| principal.to_lowercase().contains(&q.to_lowercase()))
+    q.is_none_or(|q| principal.to_lowercase().contains(q))
 }
 
 /// Orders `candidates`, applies the cursor and takes one page. Returns the
 /// page's principals and the token for the next one.
 fn select_page(
-    mut candidates: Vec<String>,
+    candidates: Vec<String>,
     params: &Params,
     spent: impl Fn(&str) -> u64,
 ) -> (Vec<String>, Option<String>) {
     // Each entry carries its spend so the cursor and the order share one read.
-    let mut entries: Vec<(String, u64)> = if params.spend_desc {
-        candidates
-            .drain(..)
-            .map(|principal| {
-                let value = spent(&principal);
-                (principal, value)
-            })
-            .collect()
-    } else {
-        candidates
-            .drain(..)
-            .map(|principal| (principal, 0))
-            .collect()
-    };
+    // Candidates arrive ascending, which is already the default order.
+    let mut entries: Vec<(String, u64)> = candidates
+        .into_iter()
+        .map(|principal| {
+            let value = if params.spend_desc {
+                spent(&principal)
+            } else {
+                0
+            };
+            (principal, value)
+        })
+        .collect();
     if params.spend_desc {
         entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     }
-    // Candidates arrive ascending, which is already the default order.
     if let Some(cursor) = &params.page {
         entries.retain(|(principal, value)| match cursor.c {
             Some(after) => {
@@ -267,7 +260,6 @@ fn select_page(
             encode(&Cursor {
                 p: principal.clone(),
                 c: params.spend_desc.then_some(*value),
-                s: params.spend_desc.then_some(true),
             })
         })
     } else {
@@ -289,12 +281,9 @@ fn encode(cursor: &Cursor) -> String {
 fn decode(token: &str, spend_desc: bool) -> Option<Cursor> {
     let bytes = URL_SAFE_NO_PAD.decode(token).ok()?;
     let cursor: Cursor = serde_json::from_slice(&bytes).ok()?;
-    let kind_matches = if spend_desc {
-        cursor.s == Some(true) && cursor.c.is_some()
-    } else {
-        cursor.s.is_none() && cursor.c.is_none()
-    };
-    kind_matches.then_some(cursor)
+    // A `spend_desc` cursor carries the spend it stopped at; a name-order one
+    // does not.
+    (cursor.c.is_some() == spend_desc).then_some(cursor)
 }
 
 /// Validates in the reference gateway's order, reporting the first failure.
@@ -362,6 +351,7 @@ fn parse_params(raw: &str) -> Result<Params, String> {
     {
         return Err("q: too long".into());
     }
+    let q = q.map(|q| q.to_lowercase());
 
     let spend_desc = match sort.as_deref() {
         None => false,

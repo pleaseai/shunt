@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 
-use super::meter::{Assessment, Check, SpendMeter};
+use super::meter::{Assessment, SpendMeter};
 
 /// Largest supported amount in USD cents. The next enforcement stage uses
 /// unsigned 64-bit arithmetic, and this bound keeps the wire value at 19 digits.
@@ -145,17 +145,9 @@ impl SpendStore {
         &self.meter
     }
 
-    /// Checks `principal` against the stored caps at `now_secs` (Unix seconds).
-    pub fn check(&self, principal: &str, now_secs: u64) -> Check {
-        let state = self
-            .state
-            .lock()
-            .expect("gateway spend-limit lock poisoned");
-        self.meter.check(&state.limits, principal, now_secs)
-    }
-
-    /// [`Self::check`] plus the binding cap, from one snapshot (see
-    /// [`SpendMeter::assess`]).
+    /// Checks `principal` against the stored caps at `now_secs` (Unix
+    /// seconds), returning the verdict plus the binding cap from one snapshot
+    /// (see [`SpendMeter::assess`]).
     pub fn assess(&self, principal: &str, now_secs: u64) -> Assessment {
         let state = self
             .state

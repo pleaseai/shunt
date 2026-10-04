@@ -80,6 +80,7 @@ async fn forward(
     if let Some(classifier_model) =
         auto_mode_classifier::classifier_upstream_model(provider, body.json())
     {
+        auto_mode_classifier::log_pin(classifier_model);
         route.upstream_model = classifier_model.to_string();
     }
     let route = route;
@@ -1451,6 +1452,7 @@ pub(crate) async fn chain_attempt(
     let pinned;
     let route = match auto_mode_classifier::classifier_upstream_model(provider, body.json()) {
         Some(classifier_model) => {
+            auto_mode_classifier::log_pin(classifier_model);
             pinned = Route {
                 upstream_model: classifier_model.to_string(),
                 ..route.clone()

@@ -27,6 +27,13 @@ use super::{
 pub use binding::{Binding, Threshold};
 pub use window::{months_back_start, reset_label, window, Window};
 
+/// The current time in Unix seconds (0 if the clock is before the epoch).
+pub(crate) fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
 /// Reserved principal for requests with no client identity whose admission
 /// envelope injects a credential.
 pub const ANONYMOUS_PRINCIPAL: &str = "shunt:anonymous";
@@ -72,15 +79,17 @@ pub struct RequestUsage {
     pub web_search_requests: u64,
 }
 
-type CounterKey = (String, Period, u64);
+/// Counters by principal, then by `(period, window start)`: a lookup borrows
+/// the principal as `&str`, and one lock read covers every period.
+type Counters = HashMap<String, HashMap<(Period, u64), u64>>;
 
 #[derive(Default)]
 pub struct SpendMeter {
-    counters: Mutex<HashMap<CounterKey, u64>>,
-    unavailable: Mutex<HashSet<String>>,
-    /// Instant (Unix seconds) after which a flagged principal is trusted again;
-    /// absent means the flag stays until [`SpendMeter::clear_unavailable`].
-    unavailable_until: Mutex<HashMap<String, u64>>,
+    counters: Mutex<Counters>,
+    /// Flagged principals. The value is the instant (Unix seconds) after which
+    /// the principal is trusted again; `None` stays flagged until
+    /// [`SpendMeter::clear_unavailable`].
+    unavailable: Mutex<HashMap<String, Option<u64>>>,
     persist: persist::PersistState,
     warned_models: Mutex<HashSet<String>>,
 }
@@ -90,13 +99,16 @@ impl SpendMeter {
     /// windows for `now_secs`, under one lock acquisition.
     pub fn record(&self, principal: &str, now_secs: u64, cost: u64) {
         let mut counters = self.counters.lock().expect("spend meter lock poisoned");
+        if !counters.contains_key(principal) {
+            counters.insert(principal.to_string(), HashMap::new());
+        }
+        let windows = counters
+            .get_mut(principal)
+            .expect("the principal's counters were just ensured");
         for period in PERIODS {
-            let key = (
-                principal.to_string(),
-                period,
-                window(period, now_secs).start,
-            );
-            let slot = counters.entry(key).or_insert(0);
+            let slot = windows
+                .entry((period, window(period, now_secs).start))
+                .or_insert(0);
             *slot = slot.saturating_add(cost);
         }
         self.persist.mark_changed();
@@ -104,28 +116,20 @@ impl SpendMeter {
 
     /// Period-to-date spend of `principal` in femto-USD.
     pub fn spent(&self, principal: &str, period: Period, now_secs: u64) -> u64 {
-        let key = (
-            principal.to_string(),
-            period,
-            window(period, now_secs).start,
-        );
-        self.counters
-            .lock()
-            .expect("spend meter lock poisoned")
-            .get(&key)
-            .copied()
-            .unwrap_or(0)
+        self.spent_in(principal, &[(period, window(period, now_secs).start)])[0]
+    }
+
+    /// The spend in each of `windows` (`(period, start)`), read under one lock.
+    fn spent_in<const N: usize>(&self, principal: &str, windows: &[(Period, u64); N]) -> [u64; N] {
+        let counters = self.counters.lock().expect("spend meter lock poisoned");
+        let held = counters.get(principal);
+        windows.map(|key| held.and_then(|held| held.get(&key)).copied().unwrap_or(0))
     }
 
     /// Every principal with a counter in any retained window, ascending.
     pub fn principals(&self) -> Vec<String> {
         let counters = self.counters.lock().expect("spend meter lock poisoned");
-        let mut principals: Vec<String> = counters
-            .keys()
-            .map(|(principal, _, _)| principal.clone())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        let mut principals: Vec<String> = counters.keys().cloned().collect();
         principals.sort();
         principals
     }
@@ -135,20 +139,17 @@ impl SpendMeter {
         self.unavailable
             .lock()
             .expect("spend meter lock poisoned")
-            .insert(principal.to_string());
+            .entry(principal.to_string())
+            .or_insert(None);
     }
 
     /// [`Self::mark_unavailable`] that lifts itself once `until` (Unix
     /// seconds) has passed, i.e. once every window the unreadable record could
     /// have covered has elapsed. A later, longer mark wins.
     pub fn mark_unavailable_until(&self, principal: &str, until: u64) {
-        self.mark_unavailable(principal);
-        let mut map = self
-            .unavailable_until
-            .lock()
-            .expect("spend meter lock poisoned");
-        let slot = map.entry(principal.to_string()).or_insert(until);
-        *slot = (*slot).max(until);
+        let mut flagged = self.unavailable.lock().expect("spend meter lock poisoned");
+        let slot = flagged.entry(principal.to_string()).or_insert(None);
+        *slot = Some(slot.map_or(until, |current| current.max(until)));
     }
 
     /// Clears the flag, e.g. once the poisoned windows have elapsed.
@@ -157,33 +158,21 @@ impl SpendMeter {
             .lock()
             .expect("spend meter lock poisoned")
             .remove(principal);
-        self.unavailable_until
-            .lock()
-            .expect("spend meter lock poisoned")
-            .remove(principal);
     }
 
     /// True while `principal` is flagged; a time-boxed flag whose deadline has
     /// passed at `now_secs` is cleared on the way.
     fn is_unavailable(&self, principal: &str, now_secs: u64) -> bool {
-        let flagged = self
-            .unavailable
-            .lock()
-            .expect("spend meter lock poisoned")
-            .contains(principal);
-        if !flagged {
-            return false;
+        let mut flagged = self.unavailable.lock().expect("spend meter lock poisoned");
+        match flagged.get(principal) {
+            None => false,
+            Some(None) => true,
+            Some(Some(until)) if now_secs < *until => true,
+            Some(Some(_)) => {
+                flagged.remove(principal);
+                false
+            }
         }
-        let expired = self
-            .unavailable_until
-            .lock()
-            .expect("spend meter lock poisoned")
-            .get(principal)
-            .is_some_and(|until| now_secs >= *until);
-        if expired {
-            self.clear_unavailable(principal);
-        }
-        !expired
     }
 
     /// Decides whether `principal` may spend, given the stage-1 `limits`.
@@ -199,15 +188,19 @@ impl SpendMeter {
     /// no cap in any period; it is still computed for an unavailable
     /// principal, where only its presence is meaningful.
     pub fn assess(&self, limits: &[SpendLimit], principal: &str, now_secs: u64) -> Assessment {
-        let binding = binding::fold(PERIODS.into_iter().filter_map(|period| {
-            let cap = effective_cap(limits, principal, period)?;
-            Some(Binding {
-                period,
-                spent: u128::from(self.spent(principal, period, now_secs)),
-                cap,
-                reset_at: window(period, now_secs).end,
-            })
-        }));
+        let windows = PERIODS.map(|period| (period, window(period, now_secs)));
+        let spent = self.spent_in(principal, &windows.map(|(period, w)| (period, w.start)));
+        let binding = binding::fold(windows.into_iter().zip(spent).filter_map(
+            |((period, window), spent)| {
+                let cap = effective_cap(limits, principal, period)?;
+                Some(Binding {
+                    period,
+                    spent: u128::from(spent),
+                    cap,
+                    reset_at: window.end,
+                })
+            },
+        ));
         let check = if self.is_unavailable(principal, now_secs) {
             Check::Unavailable
         } else {

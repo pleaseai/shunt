@@ -26,16 +26,21 @@
 use std::{
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex, PoisonError},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::http::StatusCode;
 use serde::Deserialize;
 
 use super::UPSTREAM_TRUNCATED_MARKER;
-use crate::gateway::{
-    spend::{meter::RequestUsage, pricing::PriceTable},
-    store::GatewayStores,
+use crate::{
+    gateway::{
+        spend::{
+            meter::{now_secs, RequestUsage},
+            pricing::PriceTable,
+        },
+        store::GatewayStores,
+    },
+    proxy::spend_gate::ServedTarget,
 };
 
 mod json;
@@ -47,25 +52,16 @@ pub(in crate::stream_metrics) use json::JsonSpendBody;
 /// own count is missing — the reference gateway's estimate.
 const CHARS_PER_TOKEN: u64 = 4;
 
-/// What the pricing table keys on: the upstream that actually served the
-/// turn, the client-facing model, and the model string sent to that upstream.
-#[derive(Clone, Debug)]
-struct Target {
-    provider: String,
-    client_model: String,
-    upstream_model: String,
-}
-
 /// The served-response spend hook for one request.
 ///
-/// Cheap to clone (three `Arc`s); the clones share one [`Target`] slot, so a
+/// Cheap to clone (three `Arc`s); the clones share one [`ServedTarget`] slot, so a
 /// committed stream can name its winner after the observer was built.
 #[derive(Clone)]
 pub(crate) struct SpendTap {
     stores: Arc<GatewayStores>,
     prices: Arc<PriceTable>,
     principal: Arc<str>,
-    target: Arc<Mutex<Option<Target>>>,
+    target: Arc<Mutex<Option<ServedTarget>>>,
 }
 
 impl SpendTap {
@@ -89,25 +85,14 @@ impl SpendTap {
     /// is billed: a committed stream that never selected a winner served no
     /// upstream's output.
     ///
-    /// `injects_credential` is whether that serving route injects a gateway
-    /// credential (`!Config::route_is_passthrough`). A passthrough route is
-    /// paid with the caller's own credential, so it clears the target and the
-    /// call is not billed — decided at the winner, not at admission, because a
-    /// request admitted against an injecting envelope can still be served by
-    /// a passthrough route.
-    pub(crate) fn set_target(
-        &self,
-        provider: &str,
-        client_model: &str,
-        upstream_model: &str,
-        injects_credential: bool,
-    ) {
+    /// A target whose `injects_credential` is false (a passthrough route, paid
+    /// with the caller's own credential, or a `noop` one) clears the target
+    /// and the call is not billed — decided at the winner, not at admission,
+    /// because a request admitted against an injecting envelope can still be
+    /// served by a passthrough route.
+    pub(crate) fn set_target(&self, target: &ServedTarget) {
         *self.target.lock().unwrap_or_else(PoisonError::into_inner) =
-            injects_credential.then(|| Target {
-                provider: provider.to_string(),
-                client_model: client_model.to_string(),
-                upstream_model: upstream_model.to_string(),
-            });
+            target.injects_credential.then(|| target.clone());
     }
 
     /// Bills a whole, already-collected JSON reply — a judge answer or a
@@ -147,15 +132,13 @@ impl SpendTap {
         else {
             return;
         };
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
+        let now = now_secs();
         let metered = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let meter = self.stores.spend.meter();
             let cost = meter.cost(
                 &self.prices,
                 &target.provider,
-                &target.client_model,
+                &target.model,
                 &target.upstream_model,
                 usage,
             );

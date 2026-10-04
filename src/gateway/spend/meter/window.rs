@@ -6,7 +6,7 @@
 
 use super::super::store::Period;
 
-const DAY: u64 = 86_400;
+pub(super) const DAY: u64 = 86_400;
 
 /// One metering window: `[start, end)` in Unix seconds, UTC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

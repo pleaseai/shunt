@@ -27,7 +27,7 @@ use super::{
     dispatch, headers_for_route, is_passthrough_route, provider_origin, stamp_gateway_headers,
     InboundContext, RouterStamp,
 };
-use crate::proxy::ForwardError;
+use crate::proxy::{spend_gate::ServedTarget, ForwardError};
 use crate::{
     adapters::{AdapterError, AdapterFailure},
     request::RequestBody,
@@ -98,14 +98,9 @@ pub(crate) struct ChainRequest<'a> {
 pub(crate) struct ChainSuccess {
     pub status: StatusCode,
     pub response: axum::response::Response,
-    /// The upstream that answered, for the observers `forward` applies.
-    pub provider: String,
-    pub model: String,
-    /// The model string that upstream was sent — what its usage is priced on.
-    pub upstream_model: String,
-    /// Whether that route injects a gateway credential. A passthrough route is
-    /// paid with the caller's own credential and is never metered.
-    pub injects_credential: bool,
+    /// The upstream that answered, for the observers `forward` applies, and
+    /// what its usage is priced on.
+    pub target: ServedTarget,
 }
 
 /// Attempt each route in order until one answers with a status the chain does
@@ -155,13 +150,14 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
             primary_origin.as_deref(),
         );
         let provider = route.provider.clone();
-        let model = route.model.clone();
-        let upstream_model = crate::adapters::anthropic::effective_upstream_model(
-            &state.config,
+        let target = ServedTarget::of(
+            &state,
             &route,
             body.as_ref().expect("request body is present").json(),
         );
-        let injects_credential = !is_passthrough_route(&state, &route);
+        // The header names the model the route was configured to send; the
+        // classifier-pinned one is carried in `target` for pricing only.
+        let stamped_model = route.upstream_model.clone();
         let attempt_started_at = Instant::now();
         // Move the buffered body into the final attempt instead of cloning it. Within
         // this failover loop, the common single-upstream chain transfers the body
@@ -204,7 +200,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
             crate::metrics::record_proxied_request_as(
                 caller,
                 &provider,
-                &model,
+                &target.model,
                 status,
                 attempt_started_at.elapsed().as_secs_f64() * 1000.0,
             );
@@ -216,7 +212,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                     &mut response,
                     &provider,
                     requested_model,
-                    &upstream_model,
+                    &stamped_model,
                     router_stamp,
                 );
                 if !is_advance_status(status) {
@@ -224,15 +220,12 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                     return Ok(ChainSuccess {
                         status,
                         response,
-                        provider,
-                        model,
-                        upstream_model,
-                        injects_credential,
+                        target,
                     });
                 }
                 tracing::warn!(
                     provider = %provider,
-                    model = %model,
+                    model = %target.model,
                     status = status.as_u16(),
                     "upstream response triggered failover advance"
                 );
@@ -240,10 +233,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                     &mut remembered,
                     status,
                     FinalResponse::Relayed(response),
-                    provider.clone(),
-                    model,
-                    upstream_model,
-                    injects_credential,
+                    target,
                 );
             }
             Err(error) => {
@@ -256,26 +246,23 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                     &mut response,
                     &provider,
                     requested_model,
-                    &upstream_model,
+                    &stamped_model,
                     router_stamp,
                 );
                 match failure {
                     Some(AdapterFailure::UpstreamStatus(raw_status))
                         if is_advance_status(raw_status) =>
                     {
-                        log_error_advance(&provider, &model, raw_status, &message);
+                        log_error_advance(&provider, &target.model, raw_status, &message);
                         remember_failure(
                             &mut remembered,
                             raw_status,
                             FinalResponse::MappedError { message, response },
-                            provider.clone(),
-                            model,
-                            upstream_model,
-                            injects_credential,
+                            target,
                         );
                     }
                     Some(AdapterFailure::BeforeHeaders) => {
-                        log_before_headers_advance(&provider, &model, &message);
+                        log_before_headers_advance(&provider, &target.model, &message);
                     }
                     _ => {
                         finish(&provider, response.status());
@@ -295,18 +282,15 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
         return match failure.response {
             FinalResponse::Relayed(response) => {
                 let status = response.status();
-                finish(&failure.provider, status);
+                finish(&failure.target.provider, status);
                 Ok(ChainSuccess {
                     status,
                     response,
-                    provider: failure.provider,
-                    model: failure.model,
-                    upstream_model: failure.upstream_model,
-                    injects_credential: failure.injects_credential,
+                    target: failure.target,
                 })
             }
             FinalResponse::MappedError { message, response } => {
-                finish(&failure.provider, response.status());
+                finish(&failure.target.provider, response.status());
                 Err(ForwardError::new(message, response))
             }
         };
@@ -378,20 +362,14 @@ enum FinalResponse {
 struct RememberedFailure {
     raw_status: StatusCode,
     response: FinalResponse,
-    provider: String,
-    model: String,
-    upstream_model: String,
-    injects_credential: bool,
+    target: ServedTarget,
 }
 
 fn remember_failure(
     remembered: &mut Option<RememberedFailure>,
     raw_status: StatusCode,
     response: FinalResponse,
-    provider: String,
-    model: String,
-    upstream_model: String,
-    injects_credential: bool,
+    target: ServedTarget,
 ) {
     if remembered
         .as_ref()
@@ -402,10 +380,7 @@ fn remember_failure(
     *remembered = Some(RememberedFailure {
         raw_status,
         response,
-        provider,
-        model,
-        upstream_model,
-        injects_credential,
+        target,
     });
 }
 

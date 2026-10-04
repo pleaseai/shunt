@@ -1,12 +1,10 @@
 //! `/v1/messages` spend-limit admission (`[server.spend]`).
 //!
 //! The check is an in-memory lookup against the stage-1 caps and the meter's
-//! counters ([`SpendStore::check`](crate::gateway::spend::SpendStore::check)):
+//! counters ([`SpendStore::assess`](crate::gateway::spend::SpendStore::assess)):
 //! no I/O, and no clone of the limit tables. It runs before the first
 //! upstream-capable step of a request, so a refused principal reaches no
 //! upstream, router judge and classifier calls included.
-
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     http::{header::RETRY_AFTER, HeaderName, HeaderValue, StatusCode},
@@ -17,13 +15,50 @@ use super::{spend_headers, spend_headers::Plan, ForwardError};
 use crate::{
     error::ShuntError,
     gateway::spend::{
-        meter::{reset_label, Check, ANONYMOUS_PRINCIPAL},
+        meter::{now_secs, reset_label, Check, ANONYMOUS_PRINCIPAL},
         store::Period,
     },
+    routing::{AdapterKind, Route},
     server::AppState,
 };
 
 const SHOULD_RETRY: HeaderName = HeaderName::from_static("x-should-retry");
+
+/// Whether a route's turns are metered: it reaches an upstream (not `noop`)
+/// and injects a gateway credential (not a passthrough route, whose caller
+/// pays). The one definition shared by admission and by [`ServedTarget`].
+pub(crate) fn route_meters(state: &AppState, route: &Route) -> bool {
+    route.adapter != AdapterKind::Noop && !state.config.route_is_passthrough(route)
+}
+
+/// What the pricing table keys on for the route that served a turn: the
+/// upstream, the client-facing model, and the model string sent upstream. The
+/// only place the classifier-pinned model and the "route meters spend"
+/// predicate are applied.
+#[derive(Clone, Debug)]
+pub(crate) struct ServedTarget {
+    pub provider: String,
+    pub model: String,
+    /// The model string the upstream was sent (classifier pin included).
+    pub upstream_model: String,
+    /// Whether the route is metered at all ([`route_meters`]).
+    pub injects_credential: bool,
+}
+
+impl ServedTarget {
+    pub(crate) fn of(state: &AppState, route: &Route, body: &serde_json::Value) -> Self {
+        Self {
+            provider: route.provider.clone(),
+            model: route.model.clone(),
+            upstream_model: crate::adapters::anthropic::effective_upstream_model(
+                &state.config,
+                route,
+                body,
+            ),
+            injects_credential: route_meters(state, route),
+        }
+    }
+}
 
 /// The principal a request's spend is attributed to.
 ///
@@ -53,9 +88,7 @@ pub(crate) fn enforce(
     if count_tokens {
         return Ok(Plan::Unchanged);
     }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
+    let now = now_secs();
     let assessment = state.gateway_stores.spend.assess(principal, now);
     match (assessment.check, assessment.binding) {
         (Check::Allow, None) => Ok(Plan::Unchanged),
@@ -70,7 +103,7 @@ pub(crate) fn enforce(
             let retry_after = reset_at.saturating_sub(now).max(1);
             // `Blocked` is derived from the binding cap, so it is always set.
             let headers = binding
-                .map(|binding| spend_headers::exceeded(&binding, period_name(period)))
+                .map(|binding| spend_headers::exceeded(&binding))
                 .unwrap_or_default();
             Err(refusal(message, Some(retry_after), headers))
         }
@@ -121,7 +154,7 @@ fn with_blocked_message(base: String, blocked_message: Option<&str>) -> String {
     }
 }
 
-fn period_name(period: Period) -> &'static str {
+pub(super) fn period_name(period: Period) -> &'static str {
     match period {
         Period::Daily => "daily",
         Period::Weekly => "weekly",
@@ -148,10 +181,7 @@ fn refusal(
     for (name, value) in rate_limit {
         headers.insert(name, value);
     }
-    Box::new(ForwardError {
-        message,
-        response: Box::new(response),
-    })
+    Box::new(ForwardError::new(message, Box::new(response)))
 }
 
 #[cfg(test)]

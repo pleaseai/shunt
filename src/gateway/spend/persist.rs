@@ -208,7 +208,7 @@ where
     Ok((typed, opaque))
 }
 
-pub(crate) fn interleave_records<T: Serialize>(
+fn interleave_records<T: Serialize>(
     typed: &[T],
     opaque: &[OpaqueRecord],
 ) -> io::Result<Vec<serde_json::Value>> {

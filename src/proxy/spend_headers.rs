@@ -17,7 +17,7 @@
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 
-use crate::gateway::spend::meter::Binding;
+use crate::gateway::spend::meter::{Binding, Threshold};
 
 const PREFIX: &str = "anthropic-ratelimit-";
 const STATUS: HeaderName = HeaderName::from_static("anthropic-ratelimit-unified-status");
@@ -85,7 +85,7 @@ pub(crate) fn allowed(binding: &Binding) -> Vec<(HeaderName, HeaderValue)> {
     } else {
         "allowed"
     };
-    let mut headers = common(binding, status);
+    let mut headers = common(binding, status, threshold);
     headers.push((REPRESENTATIVE_CLAIM, HeaderValue::from_static("overage")));
     headers.push((OVERAGE_STATUS, HeaderValue::from_static(status)));
     headers
@@ -94,9 +94,12 @@ pub(crate) fn allowed(binding: &Binding) -> Vec<(HeaderName, HeaderValue)> {
 /// The set the over-cap refusal carries. No `representative-claim` or
 /// `overage-status`: with those the client composes its own line and drops
 /// the refusal's `error.message`.
-pub(crate) fn exceeded(binding: &Binding, period: &'static str) -> Vec<(HeaderName, HeaderValue)> {
-    let mut headers = common(binding, "rejected");
-    headers.push((OVERAGE_PERIOD, HeaderValue::from_static(period)));
+pub(crate) fn exceeded(binding: &Binding) -> Vec<(HeaderName, HeaderValue)> {
+    let mut headers = common(binding, "rejected", binding.threshold());
+    headers.push((
+        OVERAGE_PERIOD,
+        HeaderValue::from_static(super::spend_gate::period_name(binding.period)),
+    ));
     headers.push((
         DISABLED_REASON,
         HeaderValue::from_static("org_spend_cap_reached"),
@@ -109,7 +112,11 @@ pub(crate) fn fetch_error() -> (HeaderName, HeaderValue) {
     (DISABLED_REASON, HeaderValue::from_static("fetch_error"))
 }
 
-fn common(binding: &Binding, status: &'static str) -> Vec<(HeaderName, HeaderValue)> {
+fn common(
+    binding: &Binding,
+    status: &'static str,
+    threshold: Option<Threshold>,
+) -> Vec<(HeaderName, HeaderValue)> {
     let mut headers = vec![
         (STATUS, HeaderValue::from_static(status)),
         (RESET, HeaderValue::from(binding.reset_at)),
@@ -119,7 +126,7 @@ fn common(binding: &Binding, status: &'static str) -> Vec<(HeaderName, HeaderVal
             number(hundredths(binding.utilization_hundredths())),
         ),
     ];
-    if let Some(threshold) = binding.threshold() {
+    if let Some(threshold) = threshold {
         headers.push((
             SURPASSED_THRESHOLD,
             number(hundredths(u128::from(threshold))),
@@ -229,7 +236,7 @@ mod tests {
     #[test]
     fn the_exceeded_set_names_the_period_and_omits_the_claim() {
         assert_eq!(
-            rendered(&exceeded(&binding(120, 100), "weekly")),
+            rendered(&exceeded(&binding(120, 100))),
             vec![
                 pair("anthropic-ratelimit-unified-status", "rejected"),
                 pair("anthropic-ratelimit-unified-reset", "1791590400"),

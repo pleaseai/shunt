@@ -373,8 +373,6 @@ struct StreamBill {
     tap: Option<SpendTap>,
     status: StatusCode,
     retained: Vec<u8>,
-    /// The first route's target, used until a committed stream names a winner.
-    fallback: (String, String, String, bool),
     winner: Option<crate::proxy::chain_stream::ChainStreamWinner>,
 }
 
@@ -383,23 +381,10 @@ impl StreamBill {
         let Some(tap) = self.tap.take() else {
             return;
         };
-        // A committed chain stream names its winner only as the body is read.
-        match &self.winner {
-            Some(winner) => {
-                let (provider, model) = winner.get();
-                tap.set_target(
-                    &provider,
-                    &model,
-                    &winner.upstream_model(),
-                    winner.injects_credential(),
-                );
-            }
-            None => tap.set_target(
-                &self.fallback.0,
-                &self.fallback.1,
-                &self.fallback.2,
-                self.fallback.3,
-            ),
+        // A committed chain stream names its winner only as the body is read;
+        // otherwise the tap already points at the route that answered.
+        if let Some(winner) = &self.winner {
+            tap.set_target(&winner.served());
         }
         tap.bill_sse(self.status, &self.retained);
     }
@@ -427,16 +412,15 @@ async fn retain_stream(
         .extensions
         .get::<crate::proxy::chain_stream::ChainStreamWinner>()
         .cloned();
+    // Point the tap at the route that answered up front: nothing records
+    // before the bill settles, and a committed stream's winner overrides it.
+    if let Some(tap) = spend {
+        tap.set_target(&success.target);
+    }
     let mut bill = StreamBill {
         tap: spend.cloned(),
         status: success.status,
         retained: Vec::new(),
-        fallback: (
-            success.provider.clone(),
-            success.model.clone(),
-            success.upstream_model.clone(),
-            success.injects_credential,
-        ),
         winner: winner.clone(),
     };
     // `bound_stream` takes unwrapped chunks on purpose (its closed bound set
@@ -475,6 +459,11 @@ async fn retain_stream(
                 let end = scan.terminal_len();
                 let turn = end.map_or(chunk.len(), |end| end - bill.retained.len());
                 let over = bill.retained.len().saturating_add(turn) > gated.max_bytes;
+                // A cut capture is never replayed, so without a bill to charge
+                // the crossing chunk is not worth copying.
+                if over && bill.tap.is_none() {
+                    break Some(BoundExceeded::MaxBytes);
+                }
                 // The crossing chunk was received and charged upstream, so it
                 // reaches the bill too; a cut capture is never replayed, so
                 // holding it changes no client-visible byte.
@@ -528,7 +517,10 @@ async fn retain_stream(
     }
     // A committed chain stream names its winner only as the body is read; the
     // ordered loop knew it when it returned.
-    let (provider, model) = winner.map_or((success.provider, success.model), |winner| winner.get());
+    let (provider, model) = winner
+        .map_or((success.target.provider, success.target.model), |winner| {
+            winner.get()
+        });
     GatedCapture::Retained(RetainedTurn {
         status: success.status,
         headers: parts.headers,
@@ -561,12 +553,7 @@ async fn retain_message(
         Err(reason) => return GatedCapture::Cut(reason),
     };
     if let Some(tap) = spend {
-        tap.set_target(
-            &success.provider,
-            &success.model,
-            &success.upstream_model,
-            success.injects_credential,
-        );
+        tap.set_target(&success.target);
         tap.bill_json(success.status, &retained);
     }
     if !is_single_message(&retained) {
@@ -577,8 +564,8 @@ async fn retain_message(
         headers: parts.headers,
         body: Bytes::from(retained),
         streaming: false,
-        provider: success.provider,
-        model: success.model,
+        provider: success.target.provider,
+        model: success.target.model,
         synthesized: false,
     })
 }

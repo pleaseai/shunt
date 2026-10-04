@@ -23,7 +23,7 @@ use axum::http::{header::CONTENT_LENGTH, HeaderMap, StatusCode, Uri};
 use serde_json::Value;
 
 use super::{observe_response, stamp_router_headers, InboundContext, OwnedRouterStamp, ServedBy};
-use crate::proxy::ForwardError;
+use crate::proxy::{spend_gate::ServedTarget, ForwardError};
 use crate::request::RequestBody;
 use crate::routing::{
     self,
@@ -251,16 +251,6 @@ pub(crate) async fn committed_stream(
         return None;
     }
     let first = routes.first()?;
-    let (provider, model, upstream_model) = (
-        first.provider.clone(),
-        first.model.clone(),
-        crate::adapters::anthropic::effective_upstream_model(
-            &request.state.config,
-            first,
-            request.body.json(),
-        ),
-    );
-    let injects_credential = !request.state.config.route_is_passthrough(first);
     let outcome = crate::proxy::chain_stream::forward_chain_stream(
         crate::proxy::chain_stream::ChainStreamRequest {
             state: request.state.clone(),
@@ -279,18 +269,23 @@ pub(crate) async fn committed_stream(
         },
     )
     .await;
-    Some(
-        outcome.map(|(status, response)| super::chain::ChainSuccess {
+    Some(outcome.map(|(status, response)| {
+        // The first route's target, as `forward_chain_stream` seeded it:
+        // the committed stream's real winner is on its
+        // `ChainStreamWinner` extension once drained.
+        let target = response
+            .extensions()
+            .get::<crate::proxy::chain_stream::ChainStreamWinner>()
+            .map_or_else(
+                || ServedTarget::of(request.state, first, request.body.json()),
+                |winner| winner.served(),
+            );
+        super::chain::ChainSuccess {
             status,
             response,
-            provider,
-            model,
-            // The first route's, like `provider`: the committed stream's real
-            // winner is on its `ChainStreamWinner` extension once drained.
-            upstream_model,
-            injects_credential,
-        }),
-    )
+            target,
+        }
+    }))
 }
 
 /// Append `messages` to the request's `messages` array. `false` — nothing

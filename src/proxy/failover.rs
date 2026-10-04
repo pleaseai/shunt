@@ -547,19 +547,14 @@ async fn forward_admitted(
     };
     let success = chain::run_chain(chain).await?;
     if let Some(tap) = &spend {
-        tap.set_target(
-            &success.provider,
-            &success.model,
-            &success.upstream_model,
-            success.injects_credential,
-        );
+        tap.set_target(&success.target);
     }
     Ok(observe_response(
         success.status,
         success.response,
         ServedBy {
-            provider: success.provider,
-            model: success.model,
+            provider: success.target.provider,
+            model: success.target.model,
             spend,
         },
         started_at,
@@ -926,7 +921,7 @@ pub(crate) async fn check_inbound_auth(
     // a chain made only of them is a free turn that nothing should meter.
     let meters_spend = routes
         .iter()
-        .any(|route| route.adapter != AdapterKind::Noop && !is_passthrough_route(state, route));
+        .any(|route| spend_gate::route_meters(state, route));
     if !injects_credential || (state.inbound_auth.is_none() && state.gateway_auth.is_none()) {
         return Ok((
             forwarded,

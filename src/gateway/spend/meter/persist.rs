@@ -25,17 +25,14 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
 
-use super::{months_back_start, window, SpendMeter, PERIODS};
+use super::{months_back_start, now_secs, window, window::DAY, Counters, SpendMeter, PERIODS};
 use crate::{
-    gateway::spend::{
-        persist::{interleave_records, parse_records},
-        store::{OpaqueRecord, Period},
-    },
+    gateway::spend::{persist::parse_records, store::Period},
     server::AppState,
 };
 
@@ -43,7 +40,9 @@ use crate::{
 mod tests;
 
 const STATE_VERSION: u32 = 1;
-const DAY: u64 = 86_400;
+/// Longer than any window (a month is at most 31 days): a held record whose
+/// start is this far behind `now` has certainly had its window elapse.
+const LONGEST_WINDOW: u64 = 32 * DAY;
 /// How often the background task checks for changed counters. Pure debounce:
 /// an idle interval writes nothing.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(10);
@@ -95,7 +94,7 @@ const CARRIED_UNTIL: &str = "carried_until";
 /// its own start cannot date it (persisted inside the record as
 /// [`CARRIED_UNTIL`]).
 struct HeldRecord {
-    record: OpaqueRecord,
+    value: serde_json::Value,
     expires_at: Option<u64>,
 }
 
@@ -117,7 +116,9 @@ pub fn counters_path(state_path: &Path) -> PathBuf {
 
 struct Loaded {
     typed: Vec<CounterRecord>,
-    opaque: Vec<OpaqueRecord>,
+    /// Records this build could not type, in file order; written back after
+    /// every typed one.
+    opaque: Vec<serde_json::Value>,
 }
 
 /// Reads the counters file. `Ok(None)` is an absent file; an unreadable
@@ -143,21 +144,16 @@ fn load(path: &Path, now_secs: u64) -> io::Result<Option<Loaded>> {
             ),
         ));
     }
-    let (parsed, mut opaque) =
-        parse_records::<CounterRecord>(wire.counters, path, "spend counter")?;
+    let (parsed, opaque) = parse_records::<CounterRecord>(wire.counters, path, "spend counter")?;
+    let mut opaque: Vec<serde_json::Value> =
+        opaque.into_iter().map(|record| record.value).collect();
     let mut typed = Vec::with_capacity(parsed.len());
     for record in parsed {
         if is_sane(&record, now_secs) {
             typed.push(record);
         } else {
-            opaque.push(OpaqueRecord {
-                typed_before: usize::MAX,
-                value: serde_json::to_value(&record).map_err(io::Error::other)?,
-            });
+            opaque.push(serde_json::to_value(&record).map_err(io::Error::other)?);
         }
-    }
-    for record in &mut opaque {
-        record.typed_before = usize::MAX;
     }
     Ok(Some(Loaded { typed, opaque }))
 }
@@ -206,9 +202,8 @@ fn usable_start(value: &serde_json::Value, now_secs: u64) -> Option<u64> {
 /// field, so it expires at once (dropped at the first flush after load).
 /// The flag is whether the record gained a `carried_until` it did not have, so
 /// the file is out of date and the next flush must write it.
-fn hold(mut record: OpaqueRecord, now_secs: u64) -> (HeldRecord, bool) {
-    let carried = record
-        .value
+fn hold(mut value: serde_json::Value, now_secs: u64) -> (HeldRecord, bool) {
+    let carried = value
         .get(CARRIED_UNTIL)
         .and_then(serde_json::Value::as_u64)
         // A deadline no real clock could reach is hand-edited: treat it as absent.
@@ -216,24 +211,24 @@ fn hold(mut record: OpaqueRecord, now_secs: u64) -> (HeldRecord, bool) {
     // A stamped deadline wins over re-reading the start: a start that was
     // beyond the skew when the record was stamped may be usable by now, and
     // must not turn the deadline into the start's own far-off window end.
-    if carried.is_none() && usable_start(&record.value, now_secs).is_some() {
+    if carried.is_none() && usable_start(&value, now_secs).is_some() {
         let held = HeldRecord {
-            record,
+            value,
             expires_at: None,
         };
         return (held, false);
     }
-    let deadline = carried.unwrap_or_else(|| lift_after(&record.value, now_secs));
-    let expires_at = match record.value.as_object_mut() {
+    let deadline = carried.unwrap_or_else(|| lift_after(&value, now_secs));
+    let expires_at = match value.as_object_mut() {
         Some(object) => {
             object.insert(CARRIED_UNTIL.into(), deadline.into());
             deadline
         }
         None => 0,
     };
-    let stamped = carried.is_none() && record.value.is_object();
+    let stamped = carried.is_none() && value.is_object();
     let held = HeldRecord {
-        record,
+        value,
         expires_at: Some(expires_at),
     };
     (held, stamped)
@@ -254,8 +249,21 @@ fn opaque_expired(held: &HeldRecord, cutoff: u64, now_secs: u64) -> bool {
     if let Some(deadline) = held.expires_at {
         return now_secs >= deadline;
     }
-    usable_start(&held.record.value, now_secs)
-        .is_some_and(|start| start < cutoff && start.saturating_add(32 * DAY) <= now_secs)
+    usable_start(&held.value, now_secs)
+        .is_some_and(|start| start < cutoff && start.saturating_add(LONGEST_WINDOW) <= now_secs)
+}
+
+/// Drops every counter window past the retention horizon (and any principal
+/// left with none). Returns whether anything was removed.
+fn prune_counters(counters: &mut Counters, cutoff: u64, now_secs: u64) -> bool {
+    let mut pruned = false;
+    counters.retain(|_, windows| {
+        let before = windows.len();
+        windows.retain(|(period, start), _| !expired_window(*period, *start, cutoff, now_secs));
+        pruned |= windows.len() != before;
+        !windows.is_empty()
+    });
+    pruned
 }
 
 impl SpendMeter {
@@ -267,24 +275,31 @@ impl SpendMeter {
             let mut counters = self.counters.lock().expect("spend meter lock poisoned");
             for record in loaded.typed {
                 let slot = counters
-                    .entry((record.principal, record.period, record.start))
+                    .entry(record.principal)
+                    .or_default()
+                    .entry((record.period, record.start))
                     .or_insert(0);
                 *slot = slot.saturating_add(record.femto);
             }
         }
-        let (held, stamped): (Vec<HeldRecord>, Vec<bool>) = loaded
+        let mut stamped = false;
+        let held: Vec<HeldRecord> = loaded
             .opaque
             .into_iter()
-            .map(|record| hold(record, now_secs))
-            .unzip();
-        if stamped.contains(&true) {
+            .map(|value| {
+                let (held, gained) = hold(value, now_secs);
+                stamped |= gained;
+                held
+            })
+            .collect();
+        if stamped {
             self.persist.mark_changed();
         }
         for held in &held {
             let until = held
                 .expires_at
-                .unwrap_or_else(|| lift_after(&held.record.value, now_secs));
-            match held.record.value.get("principal").and_then(|p| p.as_str()) {
+                .unwrap_or_else(|| lift_after(&held.value, now_secs));
+            match held.value.get("principal").and_then(|p| p.as_str()) {
                 Some(principal) if until > now_secs => {
                     tracing::warn!(
                         principal,
@@ -324,11 +339,11 @@ impl SpendMeter {
     /// lifetime.
     pub fn prune_to(&self, retention_months: u64, now_secs: u64) -> bool {
         let cutoff = months_back_start(now_secs, retention_months);
-        let mut counters = self.counters.lock().expect("spend meter lock poisoned");
-        let before = counters.len();
-        counters.retain(|(_, period, start), _| !expired_window(*period, *start, cutoff, now_secs));
-        let mut pruned = counters.len() != before;
-        drop(counters);
+        let mut pruned = prune_counters(
+            &mut self.counters.lock().expect("spend meter lock poisoned"),
+            cutoff,
+            now_secs,
+        );
         let mut opaque = self
             .persist
             .opaque
@@ -346,48 +361,45 @@ impl SpendMeter {
     /// counters lock is held only to copy.
     pub fn flush_to(&self, path: &Path, retention_months: u64, now_secs: u64) -> io::Result<bool> {
         let generation = self.persist.generation.load(Ordering::Acquire);
-        let cutoff = months_back_start(now_secs, retention_months);
-        let mut pruned = false;
+        let pruned = self.prune_to(retention_months, now_secs);
+        if !pruned && generation == self.persist.flushed.load(Ordering::Acquire) {
+            return Ok(false);
+        }
         let mut typed: Vec<CounterRecord> = {
-            let mut counters = self.counters.lock().expect("spend meter lock poisoned");
-            let before = counters.len();
-            // A window still open is never pruned, whatever the retention says.
-            counters
-                .retain(|(_, period, start), _| !expired_window(*period, *start, cutoff, now_secs));
-            pruned |= counters.len() != before;
+            let counters = self.counters.lock().expect("spend meter lock poisoned");
             counters
                 .iter()
-                .map(|((principal, period, start), femto)| CounterRecord {
-                    principal: principal.clone(),
-                    period: *period,
-                    start: *start,
-                    femto: *femto,
+                .flat_map(|(principal, windows)| {
+                    windows
+                        .iter()
+                        .map(|((period, start), femto)| CounterRecord {
+                            principal: principal.clone(),
+                            period: *period,
+                            start: *start,
+                            femto: *femto,
+                        })
                 })
                 .collect()
         };
         typed.sort_by(|a, b| {
             (&a.principal, a.start, a.period as u8).cmp(&(&b.principal, b.start, b.period as u8))
         });
-        let opaque = {
-            let mut opaque = self
-                .persist
+        // Typed records first, then the carried-through ones in file order.
+        let mut records = Vec::with_capacity(typed.len());
+        for record in &typed {
+            records.push(serde_json::to_value(record).map_err(io::Error::other)?);
+        }
+        records.extend(
+            self.persist
                 .opaque
                 .lock()
-                .expect("spend meter lock poisoned");
-            let before = opaque.len();
-            opaque.retain(|held| !opaque_expired(held, cutoff, now_secs));
-            pruned |= opaque.len() != before;
-            opaque
+                .expect("spend meter lock poisoned")
                 .iter()
-                .map(|held| held.record.clone())
-                .collect::<Vec<_>>()
-        };
-        if !pruned && generation == self.persist.flushed.load(Ordering::Acquire) {
-            return Ok(false);
-        }
+                .map(|held| held.value.clone()),
+        );
         let envelope = EnvelopeRef {
             version: STATE_VERSION,
-            counters: interleave_records(&typed, &opaque)?,
+            counters: records,
         };
         let json = serde_json::to_vec_pretty(&envelope).map_err(io::Error::other)?;
         if let Err(error) = crate::atomic_file::write_private_atomic(path, &json) {
@@ -400,12 +412,6 @@ impl SpendMeter {
         self.persist.flushed.fetch_max(generation, Ordering::AcqRel);
         Ok(true)
     }
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 fn path_of(state: &AppState) -> Option<PathBuf> {
@@ -448,9 +454,8 @@ pub async fn flush(state: &AppState) {
     let stores = state.gateway_stores.clone();
     let Some(path) = path_of(state) else {
         // Memory-only: prune, write nothing.
-        let pruner = stores.clone();
         if let Err(error) =
-            tokio::task::spawn_blocking(move || pruner.spend.meter().prune_to(months, now_secs()))
+            tokio::task::spawn_blocking(move || stores.spend.meter().prune_to(months, now_secs()))
                 .await
         {
             tracing::warn!(%error, "spend counter pruner task panicked");

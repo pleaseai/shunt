@@ -32,11 +32,10 @@ pub(in crate::stream_metrics) struct JsonSpendBody {
 
 struct JsonSpend {
     tap: SpendTap,
-    status: StatusCode,
-    kept: Vec<u8>,
+    /// The body so far; `None` once it outgrew `bound`.
+    kept: Option<Vec<u8>>,
     bytes: u64,
     bound: usize,
-    overflowed: bool,
     /// The adapter synthesized this message from an upstream that ended
     /// early, so its reported output count is not the real one.
     truncated: bool,
@@ -48,15 +47,15 @@ impl JsonSpendBody {
     }
 
     pub(super) fn with_bound(inner: Body, tap: SpendTap, status: StatusCode, bound: usize) -> Self {
+        // Only a `2xx` reply is ever billed, so any other status is not even
+        // copied.
         Self {
             inner,
-            spend: Some(JsonSpend {
+            spend: status.is_success().then(|| JsonSpend {
                 tap,
-                status,
-                kept: Vec::new(),
+                kept: Some(Vec::new()),
                 bytes: 0,
                 bound,
-                overflowed: false,
                 truncated: false,
             }),
         }
@@ -81,14 +80,13 @@ impl JsonSpendBody {
 impl JsonSpend {
     fn observe(&mut self, chunk: &[u8]) {
         self.bytes = self.bytes.saturating_add(chunk.len() as u64);
-        if self.overflowed {
+        let Some(kept) = self.kept.as_mut() else {
             return;
-        }
-        if self.kept.len().saturating_add(chunk.len()) > self.bound {
-            self.overflowed = true;
-            self.kept = Vec::new();
+        };
+        if kept.len().saturating_add(chunk.len()) > self.bound {
+            self.kept = None;
         } else {
-            self.kept.extend_from_slice(chunk);
+            kept.extend_from_slice(chunk);
         }
     }
 
@@ -96,12 +94,11 @@ impl JsonSpend {
     /// polling it (a sized body may be dropped after its last frame without a
     /// final `Ready(None)`); a cut one does not parse and bills the floor.
     fn settle(self) {
-        if !self.status.is_success() {
-            return;
-        }
-        let kept = (!self.overflowed).then_some(self.kept.as_slice());
-        self.tap
-            .record(&json_usage(kept, self.bytes, self.truncated));
+        self.tap.record(&json_usage(
+            self.kept.as_deref(),
+            self.bytes,
+            self.truncated,
+        ));
     }
 }
 
@@ -113,6 +110,14 @@ pub(super) fn json_usage(kept: Option<&[u8]>, bytes: u64, truncated: bool) -> Re
     let parsed = kept
         .and_then(|kept| serde_json::from_slice::<UsageHolder>(kept).ok())
         .and_then(|holder| holder.usage);
+    // The delivered-content floor, parsed at most once: a usage block without
+    // an output count and a truncated message both want it.
+    let wants_content_floor = truncated
+        || parsed
+            .as_ref()
+            .is_some_and(|fields| fields.output_tokens.is_none());
+    let content_floor =
+        wants_content_floor.then(|| floor_tokens(kept.and_then(content_chars).unwrap_or(bytes)));
     let mut usage = RequestUsage::default();
     match parsed {
         Some(fields) => {
@@ -120,14 +125,12 @@ pub(super) fn json_usage(kept: Option<&[u8]>, bytes: u64, truncated: bool) -> Re
             // A usage block without an output count gets the same floor a
             // stream with no final count does.
             if fields.output_tokens.is_none() {
-                usage.tokens.output_tokens =
-                    floor_tokens(kept.and_then(content_chars).unwrap_or(bytes));
+                usage.tokens.output_tokens = content_floor.unwrap_or_default();
             }
         }
         None => usage.tokens.output_tokens = floor_tokens(bytes),
     }
-    if truncated {
-        let floor = floor_tokens(kept.and_then(content_chars).unwrap_or(bytes));
+    if let Some(floor) = content_floor.filter(|_| truncated) {
         usage.tokens.output_tokens = usage.tokens.output_tokens.max(floor);
     }
     usage
