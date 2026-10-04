@@ -78,7 +78,7 @@ A cooldown-based design was rejected during brainstorming. It would make a cap c
   Validation: requirements-doc examples AE1 and AE3–AE6 hold at `select_order` (a capped account is absent from the order for exactly the models its capped windows govern, and it returns once the window resets); a capped sticky account is not returned via the fast path.
   Method: `cargo test --all-features accounts::` (new unit tests beside `threshold_resolution_prefers_most_specific_and_caps_at_hard` and `account_reenters_selection_after_reset_passes`)
   STOP: if excluding at `rotation` breaks the reprobe reservation (a probe candidate chosen before the filter), stop and report instead of moving the filter into the bucket stage.
-- [ ] T003 Return a cap-exhaustion 429 from the Claude OAuth pool (depends on T002, file: src/adapters/anthropic/mod.rs)
+- [x] T003 Return a cap-exhaustion 429 from the Claude OAuth pool (depends on T002, file: src/adapters/anthropic/mod.rs)
   Validation: when every non-disabled account is capped for the request, `/v1/messages` returns 429 with an Anthropic `rate_limit_error` body naming the cap, plus `retry-after` when the earliest eligibility time is known; with a second `[[upstreams]]` entry, the same request is served by that upstream; a pool exhausted only by pause or upstream failures keeps its current response; the `exhausted` rotation metric gains a distinct `capped` reason.
   Method: `cargo test --all-features --test multi_account --test failover`
 - [ ] T004 Return the cap-exhaustion 429 from Codex pool paths (depends on T003, file: src/adapters/responses/pool.rs)
