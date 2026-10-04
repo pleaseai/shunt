@@ -123,7 +123,8 @@ fn routing_aware_window(
 }
 
 /// [`routing_aware_window`] with the cap flag that governs the bar's scope
-/// (`capped` for the shared windows, `capped_fable` for the Fable bar).
+/// (`capped` for the shared windows, `any_cap()` for the Fable bar, since a
+/// shared-window cap also keeps Fable traffic off the account).
 fn routing_aware_window_for(
     snapshots: &[AccountSnapshot],
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,

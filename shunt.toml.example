@@ -105,7 +105,7 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # default_max_utilization = 0.95
 # default_max_utilization_5h = 0.9
 # default_max_utilization_7d = 0.95
-# default_max_utilization_fable = 0.9
+# default_max_utilization_fable = 0.9 # Fable-only 7d_oi bucket; governs Fable requests only
 # burn_rate_avoidance = false    # avoid projected exhaustion before reset
 # usage_refresh_seconds = 300    # (disabled by default; 0 disables) poll usage
 #                                    APIs for refreshable Claude, Codex, and

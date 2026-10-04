@@ -188,6 +188,61 @@ fn fable_limit_uses_fable_scoped_availability_not_the_model_none_set() {
     assert_eq!(regressed["limits"][0]["percent"], json!(95.0));
 }
 
+/// The Fable bar's capped fallback keys on `any_cap()`: with no account
+/// `available`, a preferred account that only Fable traffic is capped on
+/// (`capped_fable`) is skipped in favor of the uncapped, merely cooling backup.
+#[test]
+fn fable_limit_fallback_skips_an_account_with_a_fable_only_cap() {
+    let mut preferred = oi_snapshot("preferred", 1, false, 0.95, 111);
+    preferred.capped_fable = true;
+    let backup = oi_snapshot("backup", 100, false, 0.05, 222);
+
+    let fable = [preferred, backup];
+    let body = serde_json::to_value(to_wire(&fable, &fable)).unwrap();
+    assert_eq!(body["limits"][0]["percent"], json!(5.0));
+    assert_eq!(
+        body["limits"][0]["resets_at"],
+        json!("1970-01-01T00:03:42Z")
+    );
+}
+
+/// A shared-window cap (`capped`, not `capped_fable`) also keeps Fable traffic
+/// off the account, so the Fable bar's fallback skips it too; this is what
+/// `any_cap()` adds over `capped_fable` alone.
+#[test]
+fn fable_limit_fallback_skips_an_account_with_a_shared_window_cap() {
+    let mut preferred = oi_snapshot("preferred", 1, false, 0.95, 111);
+    preferred.capped = true;
+    let backup = oi_snapshot("backup", 100, false, 0.05, 222);
+
+    let fable = [preferred, backup];
+    let body = serde_json::to_value(to_wire(&fable, &fable)).unwrap();
+    assert_eq!(body["limits"][0]["percent"], json!(5.0));
+    assert_eq!(
+        body["limits"][0]["resets_at"],
+        json!("1970-01-01T00:03:42Z")
+    );
+}
+
+/// When every candidate is capped (by either kind of cap) there is nothing
+/// uncapped to prefer, so the Fable bar falls back to all candidates and the
+/// most-preferred tier's (lowest `priority` value) worst case governs.
+#[test]
+fn fable_limit_falls_back_to_all_candidates_when_every_account_is_capped() {
+    let mut preferred = oi_snapshot("preferred", 1, false, 0.95, 111);
+    preferred.capped_fable = true;
+    let mut backup = oi_snapshot("backup", 100, false, 0.05, 222);
+    backup.capped = true;
+
+    let fable = [preferred, backup];
+    let body = serde_json::to_value(to_wire(&fable, &fable)).unwrap();
+    assert_eq!(body["limits"][0]["percent"], json!(95.0));
+    assert_eq!(
+        body["limits"][0]["resets_at"],
+        json!("1970-01-01T00:01:51Z")
+    );
+}
+
 /// Config with `[server.auth]` bound to a unique env var and one explicit
 /// `ClaudeOauth` account on the built-in `anthropic` provider, so the
 /// snapshot path does not touch the account store.

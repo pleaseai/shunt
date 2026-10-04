@@ -125,7 +125,7 @@ Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude
 - 默认切换阈值是 `0.98`。当 5 小时或共享 `7d` status 为 `rejected` 时,该账户对所有模型都被视为接近配额。当 `7d_oi` status 为 `rejected` 时,该账户对 Fable 请求被视为接近配额。当共享 5 小时使用率达到阈值,或适用的每周使用率达到阈值时,同样视为接近配额。status 的拒绝判定不取决于对应使用率头部是否存在。计算使用率阈值和余量时,Fable 模型在 `7d_oi` 使用率存在时使用它,否则使用共享 `7d`。聚合 status 仅在没有记录任何按窗口 status 时作为兼容回退使用。阈值可以按账户(上文的 `threshold*` 字段)或池级(见[调优选择](#调优选择serverpool))调低。
 - 5 小时桶适用于所有模型。Fable 模型 id 在 `7d_oi` 周桶使用率存在时使用它,否则回退到共享 `7d`。其他所有模型家族使用共享 `7d`;由于目前没有 Sonnet 专属头部,Sonnet 也使用 `7d`。
 - 接近配额、处于冷却中或被禁用的粘性账户会被主动轮换掉。shunt 优先选择低于阈值的可用账户,先按 `priority`(数值低者优先)排序,再按起决定作用的周桶最早重置的顺序排列,先花掉"不用即失"的配额。周重置未知的账户排在最前。随后是可用但接近配额的账户,再后是按最快恢复排序的冷却中账户。配置了 `[server.pool]` 时,燃烧率余量会取代周重置这一次级排序依据(见下文)。
-- 本地配额和冷却状态不会让尝试顺序变空:即使所有账户都接近配额或在冷却中,每个非 `disabled` 账户仍留在尝试顺序里。唯一的例外是硬上限(`max_utilization*`,见[硬上限](#硬上限max_utilization)),它会在使用率达到或超过上限期间剔除账户。
+- 本地配额和冷却状态不会让尝试顺序变空:即使所有账户都接近配额或在冷却中,每个非 `disabled` 且未暂停的账户仍留在尝试顺序里。唯一的例外是硬上限(`max_utilization*`,见[硬上限](#硬上限max_utilization)),它会在使用率达到或超过上限期间剔除账户。
 - 使用率在自身观测时间上限和该窗口的重置之间较早者到达时过期。只有观测时间上限已过而该窗口的重置仍在未来时,shunt 只清除该窗口的使用率及其时间戳,并保留该未来重置作为独立元数据。按窗口 status 在自身观测时间上限和观测该 status 时捕获的重置边界之间较早者到达时过期;status 清除时也会清除其捕获边界。后续使用量更新和 reset-only 更新不会移动已捕获的 status 边界。该窗口的重置经过后会清除该窗口的使用率和重置;捕获的 status 边界也经过后才清除 status。带时间戳的聚合 status 有自己的寿命,不会因无关窗口过期而清除;只有 legacy unstamped aggregate 遵循窗口过期。非 Fable 的成功响应只清除账户级冷却,保留 Fable 专属冷却;Fable 的成功响应会同时清除两种冷却。
 
 池的选择、冷却和配额状态在进程存活期间跨配置热重载保留。如果主动轮换无法避开上游限制,被动故障转移仍然生效。
@@ -182,10 +182,10 @@ max_utilization_fable = 0.5        # Fable 用到该账户 Fable 周桶约 50% �
 - **键**。按账户:`max_utilization`、`max_utilization_5h`、`max_utilization_7d`、`max_utilization_fable`。在 `[server.pool]` 中:`default_max_utilization`、`default_max_utilization_5h`、`default_max_utilization_7d`、`default_max_utilization_fable`。取值必须在 `[0.0, 1.0]` 内,其他取值会使启动和 `shunt check` 失败。
 - **解析顺序**。对每个窗口:账户 `max_utilization_X` → 账户 `max_utilization` → `default_max_utilization_X` → `default_max_utilization` → 无上限。上限不受 `hard_threshold` 钳制。账户上限在没有 `[server.pool]` 时同样生效;通过存储扫描得到的账户(没有 `[[providers.anthropic.accounts]]` 条目)只获得池默认值。
 - **剔除,而非重新排序**。在某个起作用的窗口里已观测到的使用率达到或超过其上限的账户会被移出选择。5h 与 7d 上限作用于每个请求;Fable 上限只作用于 Fable 模型请求,且只有在该账户的 `7d_oi` 使用率已被观测到之后才起作用。没有观测到使用率的窗口从不剔除账户。
-- **恢复**。使用率降到上限以下后,账户会自动重新可选:途径是窗口重置或过期、更低的观测值,或配置重载时调高上限。上限只阻止新的路由,并不是精确的预算,因此进行中或并发的请求可能略有超出。
+- **恢复**。使用率降到上限以下后,账户会自动重新可选:途径是窗口重置或过期、更低的观测值,或配置重载时调高上限。上限只阻止新的路由,并不是精确的预算,也不会为已分派的请求预留用量,因此进行中或并发的请求可能超出上限,超出量取决于它们实际消耗的量。
 - **耗尽**。当上限使池中没有可选账户时,shunt 返回网关自身生成的 HTTP `429` `rate_limit_error`("all selectable accounts for provider 'X' are at their max_utilization cap for this request"),在已知最早可用时间时附带 `retry-after`。与上游 `429` 一样,它会推进 `[[upstreams]]` 故障转移链,因此后面的上游(可能是按量付费)会处理该请求;只有都无法处理时客户端才会看到这个 `429`。但对于已提交到 Codex/ChatGPT 池(已发送 HTTP `200`)的流式请求,若后面的上游都无法处理,客户端收到的是流内的终止 SSE `error` 事件,而不是 HTTP `429`,也没有 `retry-after` 头。在入站 Codex 端点上,同一错误以 OpenAI 错误形态返回。
 - **提供商**。对 Claude OAuth 池(5h、7d、`7d_oi`)和 [Codex/ChatGPT 池](/zh-cn/guides/codex-multi-account/)(5 小时与周窗口;Fable 的键在那里不起作用)有效。Kimi OAuth 池在 Kimi 上游报告使用率头时同样适用上限;目前尚未观测到其报告,因此实际上保持不起作用,未观测到的窗口从不剔除账户。Antigravity 的配额不计入上限。
-- **状态显示**。管理仪表板把达到上限的账户显示为 "Capped",仅 Fable 上限则显示 "Capped (Fable)"。当没有可用账户且至少有一个账户达到上限时,`GET /usage` 报告池状态 `capped`。
+- **状态显示**。管理仪表板把达到上限的账户显示为 "Capped",仅 Fable 上限则显示 "Capped (Fable)"。当没有可用账户且至少有一个已启用(非 `disabled`)且未暂停的账户达到上限时,`GET /usage` 报告池状态 `capped`。
 
 ## Usage-API 对账
 

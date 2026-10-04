@@ -29,7 +29,7 @@ The requirements doc's R1–R17 and AE1–AE6 are the contract. In short:
 - **Keys.** Accounts get `max_utilization{,_5h,_7d,_fable}`, and `[server.pool]` gets `default_max_utilization{,_5h,_7d,_fable}`. Each resolves like the soft thresholds but ends in "no cap". Values must be in `[0.0, 1.0]`.
 - **Exclusion.** An account is excluded when observed utilization ≥ cap in a governing window. 5h and 7d caps govern every request. The `7d_oi` cap governs Fable requests only, once observed. An unobserved window never excludes.
 - **Exhaustion.** An empty order with at least one capped account gives a 429 that advances failover.
-- **Scope.** This takes effect on Claude OAuth and Codex/ChatGPT pools. Kimi and Antigravity have no `utilization_*` data, so caps are inert there.
+- **Scope.** This takes effect on Claude OAuth and Codex/ChatGPT pools. Kimi OAuth pools share the same selection, so caps apply there whenever the Kimi upstream reports utilization (none observed so far) and the Kimi path returns the same cap-exhaustion 429 (added in review, `2b3b03ff`). Antigravity quota does not feed caps.
 - **Status.** Status surfaces show the capped state distinctly.
 
 ### Constraints
@@ -52,7 +52,7 @@ Out of scope per the spec:
 Considered and not built:
 - **Cross-validating a cap against the soft threshold or `hard_threshold`.** A cap below the soft threshold is a legitimate configuration: the soft threshold simply never fires. Revisit if operators report confusion.
 - **Per-account caps for store-scanned accounts.** These accounts are built with `..Default::default()` (`src/auth/shared.rs:291`), so they get pool defaults only. Soft thresholds behave the same way today.
-- **Cap-specific errors on the Kimi and Antigravity paths.** Caps cannot trigger there (no `utilization_*`), so their empty-order paths stay unchanged.
+- **A cap-specific error on the Antigravity path.** Antigravity quota does not feed caps, so its empty-order path stays unchanged. (Kimi was originally listed here too; review showed Kimi pools can observe utilization, so the Kimi path got the cap exit in `2b3b03ff`.)
 - **A capped state field on the `/api/oauth/usage` wire.** That wire mirrors Anthropic's `fetchUtilization` shape and has no state slot. R17 is met there by computing the bars consistently (T005).
 
 ### STOP Conditions
@@ -120,10 +120,10 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
 
 ### Automated Tests
 
-- [ ] `cargo fmt --all --check`
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] `cargo test --all-features --workspace` (build `ui/dist` first)
-- [ ] `cd ui && bun run test`
+- [x] `cargo fmt --all --check`
+- [x] `cargo clippy --all-targets --all-features -- -D warnings`
+- [x] `cargo test --all-features --workspace` (build `ui/dist` first) — CI `fmt · clippy · test` green at `3023ebef`. Locally 3715 passed; the 3 failures in `tests/responses_chain_stream.rs` (`refused_port_is_deterministically_refused` and the two `a_body_error_*` relay tests) failed the same way on a `main` control build, so they are environmental
+- [x] `cd ui && bun run test` — 97 passed
 
 ### Observable Outcomes
 
@@ -137,7 +137,12 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
 
 ### Acceptance Criteria Check
 
-- [ ] AE1–AE6 from the requirements doc each map to a passing test in T002–T004.
+- [x] AE1–AE6 from the requirements doc each map to a passing test in T002–T004:
+  - AE1, AE3: `fable_cap_excludes_for_fable_only_and_needs_observation`
+  - AE2: `a_capped_claude_pool_advances_to_the_next_upstream` (tests/failover.rs), `capped_pool_returns_a_gateway_429_naming_the_cap_with_retry_after` (tests/multi_account.rs)
+  - AE4: `five_hour_cap_excludes_for_every_model_and_returns_after_reset`
+  - AE5: `soft_threshold_deprioritizes_below_the_hard_cap`
+  - AE6: `fable_cap_does_not_affect_codex_accounts`
 
 ## Progress
 
@@ -215,7 +220,7 @@ A pool that caps empty returns a gateway 429 `rate_limit_error` with `retry-afte
 
 ### What Could Improve
 
-- Every review-round defect was the same class: `cap_exhaustion` re-deriving selection rules (paused, representatives) that `select_order_inner` already applies. Producing the cap verdict where selection computes it (#739) would have avoided three review rounds.
+- Two of the review-round defects, paused accounts counted as capped and aliases contributing deadlines, were the same class: `cap_exhaustion` re-deriving selection rules that `select_order_inner` already applies. Producing the cap verdict where selection computes it (#739) would have prevented those two. The `retry-after` deadline and the missing Kimi exit were separate defects that #739 would not have caught.
 - Doc claims about provider applicability ("inert on Kimi") drifted as soon as the code changed. Grep for each doc claim whenever a provider path changes.
 - The review environment was missing one engine for the whole run: greptile, because of a node/ada-url dylib mismatch. Fix the toolchain before the next review, rather than accepting `needs_human_read` on every round.
 

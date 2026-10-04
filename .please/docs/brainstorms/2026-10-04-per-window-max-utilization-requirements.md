@@ -46,7 +46,7 @@ The existing per-window knobs (`threshold_*`, `default_threshold_*`, `hard_thres
 - R7. 5h and 7d caps govern every request. The Fable cap governs Fable-model requests only, and only once the account's `7d_oi` utilization has been observed.
 - R8. A window with no observed utilization never causes exclusion.
 - R9. An excluded account becomes eligible again with no operator action once its utilization falls below the cap, whether through a window reset, a lower observation, or a raised cap.
-- R10. The cap stops new routing; it is not a precise budget. In-flight requests are not cancelled, and concurrent requests may push utilization slightly past the cap.
+- R10. The cap stops new routing; it is not a precise budget. In-flight requests are not cancelled, and concurrent requests may push utilization past the cap by whatever they consume: nothing reserves usage for requests already dispatched, so the overshoot is bounded only by the concurrent load, not by a small margin.
 - R11. Accounts that are not excluded keep today's ordering. Priority, soft thresholds, burn-rate avoidance, `sort_by_reset`, and cooldowns all apply unchanged.
 
 **Pool exhaustion**
@@ -117,7 +117,7 @@ The existing per-window knobs (`threshold_*`, `default_threshold_*`, `hard_thres
 
 - Fable usage probably also counts toward the shared `7d` window, given Claude Code's "Current week (all models)" label. This is unverified. If it holds, a Fable cap bounds Fable's drain on Opus's weekly budget only indirectly.
 - R9 assumes observed utilization for a window stops counting once that window's reset time passes. This was not verified. Planning must confirm it or add expiry.
-- An upstream `rejected` window status already marks an account near-quota even without a utilization value (`src/accounts.rs:3028`). Caps act on utilization only. Rejection keeps its current handling.
+- An upstream `rejected` window status already marks an account near-quota even without a utilization value (`assess_quota` in `src/accounts.rs`). Caps act on utilization only. Rejection keeps its current handling.
 
 ---
 
@@ -135,14 +135,14 @@ The existing per-window knobs (`threshold_*`, `default_threshold_*`, `hard_thres
 
 ## Sources / Research
 
-- `src/accounts.rs:2963` — `resolved_threshold`, the precedence chain R3 mirrors.
-- `src/accounts.rs:3009` — `assess_quota`: governing windows, Fable `7d_oi` selection, and rejection handling.
-- `src/accounts.rs:1065` — ordering buckets (`available_under` → `near_soft` → `over_hard` → `cooled`). Nothing is excluded for quota today.
-- `src/accounts.rs:888` — rotation filters only `disabled` and runtime pause. Pause is memory-only.
-- `src/config.rs:217`, `src/config.rs:1975` — `PoolConfig` and `AccountConfig` threshold fields the new keys sit beside.
-- `src/proxy/failover/chain.rs:332` — `is_advance_status`: a 429 advances to the next upstream.
-- `src/adapters/anthropic/mod.rs:172` — the dedicated all-disabled pool error, prior art for R12.
+- `src/accounts.rs` → `resolved_threshold`, the precedence chain R3 mirrors.
+- `src/accounts.rs` → `assess_quota`: governing windows, Fable `7d_oi` selection, and rejection handling.
+- `src/accounts.rs` → `select_order_inner`, ordering buckets (`available_under` → `near_soft` → `over_hard` → `cooled`). Nothing is excluded for quota today.
+- `src/accounts.rs` → `select_order_inner`, rotation step: it filters only `disabled` and runtime pause. Pause is memory-only.
+- `src/config.rs` → `PoolConfig` and `AccountConfig`: threshold fields the new keys sit beside.
+- `src/proxy/failover/chain.rs` → `is_advance_status`: a 429 advances to the next upstream.
+- `src/adapters/anthropic/mod.rs` → `forward_claude_oauth`, the dedicated all-disabled pool error, prior art for R12.
 - `src/adapters/responses/pool.rs` — Codex/ChatGPT pools share selection and have no Fable window.
-- `ui/src/accounts.ts:85` — the existing `cooling` / `cooling-fable` split that R17's capped state parallels.
+- `ui/src/accounts.ts` → `managedState`, the existing `cooling` / `cooling-fable` split that R17's capped state parallels.
 - PR #329 (Fable `7d_oi` split) — making availability model-scoped silently desynced the dashboard and the usage synthesizer. R17 exists to prevent a repeat.
 - `site/src/content/docs/reference/configuration.md:400` — the `[server.pool]` reference the new keys extend. Its locale copies must move with it.

@@ -230,8 +230,8 @@ describe('folding managed accounts and local observations into one row', () => {
     expect(status).not.toHaveTextContent('Cooling');
   });
 
-  /** The Fable cap stays below the account-wide states. */
-  it('ranks a fable cap below near quota and above the fable cooldown', async () => {
+  /** The Fable cap is reported above the Fable cooldown. */
+  it('reports a fable cap above the fable cooldown', async () => {
     await renderDashboard({
       accounts: [],
       pool: poolWith('claude_oauth', 'anthropic', {

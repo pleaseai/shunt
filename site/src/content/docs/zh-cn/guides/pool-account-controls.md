@@ -42,7 +42,7 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool/anthropic/accounts/$ACCOUNT_REF" \
 | 何时结束 | 直到配置改变为止 | 运维人员恢复该账户时 | 使用率降到上限以下时自动结束(窗口重置或过期、更低的观测值,或重载时调高上限) |
 | 仪表盘显示 | `disabled` | `paused` | "Capped",仅 Fable 上限则为 "Capped (Fable)" |
 
-达到上限的账户仍然已配置且保持登录,只是暂不接收新的路由。当没有可用账户且至少有一个账户达到上限时,`GET /usage` 报告池状态 `capped`。
+达到上限的账户仍然已配置且保持登录,只是暂不接收新的路由。当没有可用账户且至少有一个已启用(非 `disabled`)且未暂停的账户达到上限时,`GET /usage` 报告池状态 `capped`。当上限导致没有可选账户时,请求通常会收到网关的 HTTP `429`(或故障转移到下一个上游)。有一个例外:对于已提交到 Codex/ChatGPT 池(已发送 HTTP `200`)的流式请求,若在请求进行中因上限导致池变空,且后面的上游也无法处理,客户端收到的是流内的终止 SSE `error` 事件,而不是 HTTP `429`。参见 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选) 中的硬上限说明。
 
 
 ## 按最快重置排序
