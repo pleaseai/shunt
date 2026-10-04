@@ -14,6 +14,8 @@ use crate::{error::ShuntError, model::responses::anthropic_error_type, server::A
 pub(crate) mod chain_stream;
 pub(crate) mod failover;
 pub(crate) mod safeguards;
+pub(crate) mod spend_gate;
+pub(crate) mod spend_headers;
 
 pub async fn post(
     State(state): State<AppState>,

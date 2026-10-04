@@ -1,0 +1,13 @@
+{
+  "track_id": "spend-enforcement-20261003",
+  "type": "feature",
+  "status": "in_progress",
+  "created_at": "2026-10-03T13:08:25Z",
+  "updated_at": "2026-10-03T20:10:26Z",
+  "issue": "#728",
+  "pr": "https://github.com/pleaseai/shunt/pull/732",
+  "project": "2",
+  "project_item_id": "PVTI_lADODf_st84BRosizg-T7XU",
+  "code_branch": "amondnet/spend-enforcement",
+  "code_pr": "https://github.com/pleaseai/shunt/pull/732"
+}

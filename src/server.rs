@@ -64,6 +64,9 @@ pub struct AppState {
     /// [`AppState::prefill_routers`]: a reload rebuilds them, and with them
     /// the session state libsy keeps inside each algorithm.
     pub(crate) driven_routers: Arc<crate::routing::driven::DrivenRouters>,
+    /// The spend meter's rate table for this request's config snapshot, read
+    /// off `current` like [`AppState::config`] so a reload re-prices.
+    pub(crate) spend_prices: Arc<crate::gateway::spend::pricing::PriceTable>,
     /// Process-lifetime JWKS cache for `[[server.auth.jwt]]` issuers. Kept here
     /// rather than on `inbound_auth` so a reload that re-resolves the entries
     /// does not throw away keys it would immediately refetch — and so a
@@ -131,6 +134,7 @@ impl AppState {
             gateway_auth: current.gateway_auth.clone(),
             prefill_routers: current.prefill_routers.clone(),
             driven_routers: current.driven_routers.clone(),
+            spend_prices: current.spend_prices.clone(),
             http_client,
             accounts,
             status,

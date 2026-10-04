@@ -164,7 +164,7 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
     }))
 }
 
-fn parse_records<T>(
+pub(crate) fn parse_records<T>(
     values: Vec<serde_json::Value>,
     path: &Path,
     kind: &str,
@@ -208,7 +208,7 @@ where
     Ok((typed, opaque))
 }
 
-fn interleave_records<T: Serialize>(
+pub(crate) fn interleave_records<T: Serialize>(
     typed: &[T],
     opaque: &[OpaqueRecord],
 ) -> io::Result<Vec<serde_json::Value>> {

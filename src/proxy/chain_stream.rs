@@ -364,6 +364,9 @@ pub(super) struct ChainStreamRequest {
     /// when that turn is replayed, and the winner it needs travels on the
     /// response as a [`ChainStreamWinner`] extension instead.
     pub(super) observe_stream: bool,
+    /// The served-response spend hook, pointed at the winner when one is
+    /// selected. Used only when `observe_stream` is set.
+    pub(super) spend: Option<stream_metrics::SpendTap>,
 }
 
 /// Which upstream won an unobserved committed stream, filled in as the stream
@@ -372,6 +375,12 @@ pub(super) struct ChainStreamRequest {
 pub(crate) struct ChainStreamWinner {
     provider: std::sync::Arc<std::sync::Mutex<String>>,
     model: std::sync::Arc<std::sync::Mutex<String>>,
+    /// The model string the winning route was sent, set only when a route
+    /// wins the stream: what a captured turn is priced on.
+    upstream_model: std::sync::Arc<std::sync::Mutex<String>>,
+    /// Whether the winning route injects a gateway credential; the first
+    /// route's until a route wins.
+    injects_credential: std::sync::Arc<std::sync::atomic::AtomicBool>,
     refusal: RefusalSlot,
 }
 
@@ -429,6 +438,21 @@ impl ChainStreamWinner {
         (read(&self.provider), read(&self.model))
     }
 
+    /// The winning route's upstream model as of now; the first route's until
+    /// a route wins.
+    pub(crate) fn upstream_model(&self) -> String {
+        self.upstream_model
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Whether the winning route injects a gateway credential, as of now.
+    pub(crate) fn injects_credential(&self) -> bool {
+        self.injects_credential
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The chain's refusal when no route produced a stream, as of now.
     ///
     /// Set when the chain ran out or an attempt failed terminally before its
@@ -459,6 +483,7 @@ pub(super) async fn forward_chain_stream(
         started_at,
         router_stamp,
         observe_stream,
+        spend,
     } = request;
     // Read before the body moves into the chain: the committed stream's
     // `message_delta` carries the auto-mode classifier's answer, which only a
@@ -514,8 +539,16 @@ pub(super) async fn forward_chain_stream(
     let closure_slot = winner_slot.clone();
     let winner_model_slot = std::sync::Arc::new(std::sync::Mutex::new(first_model.clone()));
     let closure_model_slot = winner_model_slot.clone();
+    let winner_upstream_slot =
+        std::sync::Arc::new(std::sync::Mutex::new(first_route.upstream_model.clone()));
+    let closure_upstream_slot = winner_upstream_slot.clone();
+    let winner_injects_slot = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+        !state.config.route_is_passthrough(first_route),
+    ));
+    let closure_injects_slot = winner_injects_slot.clone();
     let refusal_slot = RefusalSlot::default();
     let closure_refusal = refusal_slot.clone();
+    let closure_spend = spend.clone();
     // One chain, one token estimate: the first opted-in attempt starts the
     // bounded blocking encode and later opted-in attempts reuse the same
     // compute (see `ChainEstimate`) instead of re-tokenizing the identical
@@ -547,6 +580,9 @@ pub(super) async fn forward_chain_stream(
             let winner_slot = closure_slot.clone();
             let winner_model_slot = closure_model_slot.clone();
             let refusal_slot = closure_refusal.clone();
+            let spend = closure_spend.clone();
+            let winner_upstream_slot = closure_upstream_slot.clone();
+            let winner_injects_slot = closure_injects_slot.clone();
             let estimate_cache = estimate_cache.clone();
             async move {
                 let mut body = body;
@@ -735,6 +771,12 @@ pub(super) async fn forward_chain_stream(
                             };
                             let provider = route.provider.clone();
                             let model = route.model.clone();
+                            let upstream_model =
+                                crate::adapters::anthropic::effective_upstream_model(
+                                    &state.config,
+                                    &route,
+                                    attempt_body.json(),
+                                );
                             let outcome = match route.adapter {
                                 AdapterKind::Responses => {
                                     crate::adapters::responses::chain_attempt(
@@ -760,6 +802,22 @@ pub(super) async fn forward_chain_stream(
                             };
                             match outcome {
                                 Attempt::Winner { headers_at, relay } => {
+                                    // Priced on the winner, not the routed
+                                    // primary: its usage is what the relay
+                                    // carries.
+                                    // A passthrough winner is paid with the
+                                    // caller's own credential: not billed.
+                                    let injects = !state.config.route_is_passthrough(&route);
+                                    if let Some(tap) = &spend {
+                                        tap.set_target(&provider, &model, &upstream_model, injects);
+                                    }
+                                    winner_injects_slot
+                                        .store(injects, std::sync::atomic::Ordering::Relaxed);
+                                    upstream_model.clone_into(
+                                        &mut winner_upstream_slot
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                                    );
                                     let (start, frames) = resolve_winner(
                                         &provider,
                                         &model,
@@ -913,18 +971,21 @@ pub(super) async fn forward_chain_stream(
         crate::proxy::safeguards::synthesize(response, &requested_safeguards, max_request_bytes)
             .await;
     let mut response = if observe_stream {
-        stream_metrics::observe_response_with_slot(
+        stream_metrics::observe_served(
             response,
             Protocol::Anthropic,
             winner_slot,
             winner_model_slot,
             started_at,
+            spend,
         )
     } else {
         let mut response = response;
         response.extensions_mut().insert(ChainStreamWinner {
             provider: winner_slot,
             model: winner_model_slot,
+            upstream_model: winner_upstream_slot,
+            injects_credential: winner_injects_slot,
             refusal: refusal_slot,
         });
         response

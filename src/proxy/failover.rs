@@ -20,7 +20,8 @@ use crate::{
 };
 
 use super::{
-    count_tokens_unsupported, is_count_tokens, normalize_request_body, safeguards, ForwardError,
+    count_tokens_unsupported, is_count_tokens, normalize_request_body, safeguards, spend_gate,
+    spend_headers, ForwardError,
 };
 
 pub(crate) mod chain;
@@ -37,6 +38,31 @@ pub(super) async fn forward(
     headers: &HeaderMap,
     body: Body,
     started_at: Instant,
+) -> Result<(StatusCode, axum::response::Response), ForwardError> {
+    // Set at spend admission, and applied here at the one exit every response
+    // path returns through — the ordered chain, the committed stream, the
+    // gated replay, and every failure — so no path can carry an upstream's
+    // rate-limit values to a capped principal (`spend_headers`).
+    let mut rate_limit = spend_headers::Plan::Unchanged;
+    match forward_admitted(state, uri, headers, body, started_at, &mut rate_limit).await {
+        Ok((status, mut response)) => {
+            rate_limit.apply(response.status(), response.headers_mut());
+            Ok((status, response))
+        }
+        Err(mut error) => {
+            rate_limit.apply(error.response.status(), error.response.headers_mut());
+            Err(error)
+        }
+    }
+}
+
+async fn forward_admitted(
+    state: AppState,
+    uri: &Uri,
+    headers: &HeaderMap,
+    body: Body,
+    started_at: Instant,
+    rate_limit: &mut spend_headers::Plan,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     let max_request_bytes = state.config.server.limits.max_request_bytes;
     if crate::http_tuning::content_length_exceeds(headers, max_request_bytes) {
@@ -228,6 +254,11 @@ pub(super) async fn forward(
         .await
         .map_err(|error| *error)?;
     enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)
+        .map_err(|error| *error)?;
+    // Spend admission. After both gates above (a caller who is refused for
+    // auth or policy never learns their spend state) and before anything that
+    // can reach an upstream, the router judge included.
+    *rate_limit = spend_gate::enforce(&state, inbound.spend_principal(), is_count_tokens(uri))
         .map_err(|error| *error)?;
     // The request is admitted, so the tier it was routed at may be recorded —
     // and, for a driven entry, a judge may now be consulted. Both gates above
@@ -471,6 +502,10 @@ pub(super) async fn forward(
         .await;
     }
 
+    // The served-response spend hook: `None` when nothing is metered. Built
+    // after the `count_tokens` return above, which is never metered.
+    let spend = crate::stream_metrics::SpendTap::for_request(&state, inbound.spend_principal());
+
     // Kept in `forward` rather than moved into `chain`: the committed streaming
     // chain races its attempts and returns its own response, so it is a
     // different dispatch shape, not a mode of the ordered loop. An internal
@@ -490,6 +525,7 @@ pub(super) async fn forward(
                 started_at,
                 router_stamp: owned_router_stamp,
                 observe_stream: true,
+                spend,
             },
         )
         .await;
@@ -510,11 +546,22 @@ pub(super) async fn forward(
         response_bounds: crate::adapters::ResponseBounds::default(),
     };
     let success = chain::run_chain(chain).await?;
+    if let Some(tap) = &spend {
+        tap.set_target(
+            &success.provider,
+            &success.model,
+            &success.upstream_model,
+            success.injects_credential,
+        );
+    }
     Ok(observe_response(
         success.status,
         success.response,
-        success.provider,
-        success.model,
+        ServedBy {
+            provider: success.provider,
+            model: success.model,
+            spend,
+        },
         started_at,
         &requested_safeguards,
         max_request_bytes,
@@ -739,11 +786,19 @@ async fn dispatch(
     }
 }
 
+/// The upstream a response is attributed to, and the spend hook that bills it.
+pub(super) struct ServedBy {
+    pub(super) provider: String,
+    pub(super) model: String,
+    /// Already pointed at the serving upstream; `None` leaves the response
+    /// unmetered here.
+    pub(super) spend: Option<crate::stream_metrics::SpendTap>,
+}
+
 async fn observe_response(
     status: StatusCode,
     response: axum::response::Response,
-    provider: String,
-    model: String,
+    served: ServedBy,
     started_at: Instant,
     requested_safeguards: &[String],
     max_body_bytes: usize,
@@ -752,12 +807,13 @@ async fn observe_response(
     // the synthesis only adds a field to `message_delta`, leaving the frames the
     // observer samples (`stop_reason`, usage, error events) exactly as relayed.
     let response = safeguards::synthesize(response, requested_safeguards, max_body_bytes).await;
-    let response = crate::stream_metrics::observe_response(
+    let response = crate::stream_metrics::observe_served(
         response,
         crate::stream_metrics::Protocol::Anthropic,
-        provider,
-        model,
+        std::sync::Arc::new(std::sync::Mutex::new(served.provider)),
+        std::sync::Arc::new(std::sync::Mutex::new(served.model)),
         started_at,
+        served.spend,
     );
     (status, response)
 }
@@ -799,9 +855,19 @@ pub(crate) struct InboundContext {
     gateway_claims: Option<crate::gateway::jwt::Claims>,
     client: Option<String>,
     static_client: bool,
+    /// Who this request's spend is attributed to; `None` is unmetered. Resolved
+    /// once in [`check_inbound_auth`] (see [`spend_gate::principal_for`]) so
+    /// that admission and every metering sink read the same value.
+    spend_principal: Option<String>,
 }
 
 impl InboundContext {
+    /// The spend principal, or `None` for a request that is neither enforced
+    /// nor metered (an all-passthrough chain).
+    pub(crate) fn spend_principal(&self) -> Option<&str> {
+        self.spend_principal.as_deref()
+    }
+
     /// The context a gateway-internal call rides on: no gateway claims, no
     /// client, not a static client.
     ///
@@ -818,6 +884,7 @@ impl InboundContext {
             gateway_claims: None,
             client: None,
             static_client: false,
+            spend_principal: None,
         }
     }
 }
@@ -861,6 +928,7 @@ pub(crate) async fn check_inbound_auth(
                 gateway_claims,
                 client: None,
                 static_client: false,
+                spend_principal: spend_gate::principal_for(None, injects_credential),
             },
         ));
     }
@@ -899,6 +967,7 @@ pub(crate) async fn check_inbound_auth(
             forwarded,
             InboundContext {
                 gateway_claims,
+                spend_principal: spend_gate::principal_for(Some(&client), injects_credential),
                 client: Some(client),
                 static_client,
             },

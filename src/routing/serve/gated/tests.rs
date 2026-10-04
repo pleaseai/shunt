@@ -116,16 +116,20 @@ async fn a_held_open_stream_is_cut_at_its_error_frame() {
         response: axum::response::Response::new(axum::body::Body::from_stream(frames)),
         provider: "efficient".to_string(),
         model: "weak".to_string(),
+        upstream_model: "upstream-weak".to_string(),
+        injects_credential: true,
     };
     let gated = GatedBounds {
         max_bytes: 1 << 20,
         idle: Duration::from_secs(30),
         max_duration: Duration::from_secs(30),
     };
-    let capture =
-        tokio::time::timeout(Duration::from_secs(5), retain_stream(success, gated, false))
-            .await
-            .expect("the capture ends at the error frame, not at a bound");
+    let capture = tokio::time::timeout(
+        Duration::from_secs(5),
+        retain_stream(success, gated, false, None),
+    )
+    .await
+    .expect("the capture ends at the error frame, not at a bound");
     assert!(matches!(capture, GatedCapture::Cut(CutReason::Nonterminal)));
 }
 
@@ -192,13 +196,15 @@ async fn the_byte_cap_counts_the_turn_not_the_bytes_after_it() {
             response: axum::response::Response::new(body),
             provider: "efficient".to_string(),
             model: "weak".to_string(),
+            upstream_model: "upstream-weak".to_string(),
+            injects_credential: true,
         };
         let gated = GatedBounds {
             max_bytes,
             idle: Duration::from_secs(5),
             max_duration: Duration::from_secs(5),
         };
-        retain_stream(success, gated, false)
+        retain_stream(success, gated, false, None)
     };
     match capture(turn.len()).await {
         GatedCapture::Retained(retained) => assert_eq!(retained.body, turn.as_bytes()),
@@ -223,6 +229,8 @@ async fn a_stalled_refusal_body_is_cut_at_the_idle_gap() {
         response: axum::response::Response::new(axum::body::Body::from_stream(body)),
         provider: "efficient".to_string(),
         model: "weak".to_string(),
+        upstream_model: "upstream-weak".to_string(),
+        injects_credential: true,
     };
     let gated = GatedBounds {
         max_bytes: 1 << 20,

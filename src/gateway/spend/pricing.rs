@@ -152,6 +152,12 @@ impl PriceTable {
         Some(rates.scaled(self.multiplier_ppb))
     }
 
+    /// `rates` scaled by this table's multiplier, for callers that price a
+    /// model [`resolve`](Self::resolve) cannot (the meter's unknown-model rate).
+    pub fn apply_multiplier(&self, rates: &Rates) -> Rates {
+        rates.scaled(self.multiplier_ppb)
+    }
+
     /// The cost of one server-side web search, in femto-USD. Priced per request
     /// rather than per token, so only the multiplier applies.
     pub fn web_search_cost_femto_usd(&self) -> u64 {

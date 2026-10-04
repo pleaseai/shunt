@@ -22,7 +22,7 @@ use std::time::Instant;
 use axum::http::{header::CONTENT_LENGTH, HeaderMap, StatusCode, Uri};
 use serde_json::Value;
 
-use super::{observe_response, stamp_router_headers, InboundContext, OwnedRouterStamp};
+use super::{observe_response, stamp_router_headers, InboundContext, OwnedRouterStamp, ServedBy};
 use crate::proxy::ForwardError;
 use crate::request::RequestBody;
 use crate::routing::{
@@ -196,8 +196,14 @@ pub(super) async fn finish(
             Ok(observe_response(
                 turn.status,
                 response,
-                turn.provider,
-                turn.model,
+                ServedBy {
+                    provider: turn.provider,
+                    model: turn.model,
+                    // Unmetered here: a gated turn is billed at its capture
+                    // (issue #728, T004), which also covers a captured turn
+                    // that is discarded rather than replayed.
+                    spend: None,
+                },
                 started_at,
                 requested_safeguards,
                 max_body_bytes,
@@ -245,7 +251,16 @@ pub(crate) async fn committed_stream(
         return None;
     }
     let first = routes.first()?;
-    let (provider, model) = (first.provider.clone(), first.model.clone());
+    let (provider, model, upstream_model) = (
+        first.provider.clone(),
+        first.model.clone(),
+        crate::adapters::anthropic::effective_upstream_model(
+            &request.state.config,
+            first,
+            request.body.json(),
+        ),
+    );
+    let injects_credential = !request.state.config.route_is_passthrough(first);
     let outcome = crate::proxy::chain_stream::forward_chain_stream(
         crate::proxy::chain_stream::ChainStreamRequest {
             state: request.state.clone(),
@@ -260,6 +275,7 @@ pub(crate) async fn committed_stream(
             // Stamped when the verdict is known, as on every gated turn.
             router_stamp: None,
             observe_stream: false,
+            spend: None,
         },
     )
     .await;
@@ -269,6 +285,10 @@ pub(crate) async fn committed_stream(
             response,
             provider,
             model,
+            // The first route's, like `provider`: the committed stream's real
+            // winner is on its `ChainStreamWinner` extension once drained.
+            upstream_model,
+            injects_credential,
         }),
     )
 }

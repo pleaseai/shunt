@@ -101,6 +101,11 @@ pub(crate) struct ChainSuccess {
     /// The upstream that answered, for the observers `forward` applies.
     pub provider: String,
     pub model: String,
+    /// The model string that upstream was sent — what its usage is priced on.
+    pub upstream_model: String,
+    /// Whether that route injects a gateway credential. A passthrough route is
+    /// paid with the caller's own credential and is never metered.
+    pub injects_credential: bool,
 }
 
 /// Attempt each route in order until one answers with a status the chain does
@@ -151,7 +156,12 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
         );
         let provider = route.provider.clone();
         let model = route.model.clone();
-        let upstream_model = route.upstream_model.clone();
+        let upstream_model = crate::adapters::anthropic::effective_upstream_model(
+            &state.config,
+            &route,
+            body.as_ref().expect("request body is present").json(),
+        );
+        let injects_credential = !is_passthrough_route(&state, &route);
         let attempt_started_at = Instant::now();
         // Move the buffered body into the final attempt instead of cloning it. Within
         // this failover loop, the common single-upstream chain transfers the body
@@ -216,6 +226,8 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                         response,
                         provider,
                         model,
+                        upstream_model,
+                        injects_credential,
                     });
                 }
                 tracing::warn!(
@@ -230,6 +242,8 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                     FinalResponse::Relayed(response),
                     provider.clone(),
                     model,
+                    upstream_model,
+                    injects_credential,
                 );
             }
             Err(error) => {
@@ -256,6 +270,8 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                             FinalResponse::MappedError { message, response },
                             provider.clone(),
                             model,
+                            upstream_model,
+                            injects_credential,
                         );
                     }
                     Some(AdapterFailure::BeforeHeaders) => {
@@ -285,6 +301,8 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                     response,
                     provider: failure.provider,
                     model: failure.model,
+                    upstream_model: failure.upstream_model,
+                    injects_credential: failure.injects_credential,
                 })
             }
             FinalResponse::MappedError { message, response } => {
@@ -362,6 +380,8 @@ struct RememberedFailure {
     response: FinalResponse,
     provider: String,
     model: String,
+    upstream_model: String,
+    injects_credential: bool,
 }
 
 fn remember_failure(
@@ -370,6 +390,8 @@ fn remember_failure(
     response: FinalResponse,
     provider: String,
     model: String,
+    upstream_model: String,
+    injects_credential: bool,
 ) {
     if remembered
         .as_ref()
@@ -382,6 +404,8 @@ fn remember_failure(
         response,
         provider,
         model,
+        upstream_model,
+        injects_credential,
     });
 }
 

@@ -61,6 +61,10 @@ pub struct RuntimeState {
     /// rather than replaying a verdict made against a table that is no longer
     /// configured.
     pub driven_routers: Arc<crate::routing::driven::DrivenRouters>,
+    /// The spend meter's rate table, built once from `[server.spend.pricing]`
+    /// so a served response is priced without rebuilding it per request, and
+    /// rebuilt by a reload so pricing edits apply to the next request.
+    pub spend_prices: Arc<crate::gateway::spend::pricing::PriceTable>,
 }
 
 /// Shared handle to the live [`RuntimeState`]. Cloning is cheap (an `Arc`); a
@@ -86,6 +90,13 @@ impl RuntimeState {
         // the last good config running rather than swapping in an entry that
         // cannot answer.
         let driven_routers = Arc::new(crate::routing::driven::DrivenRouters::build(&config)?);
+        let spend_prices = Arc::new(crate::gateway::spend::pricing::PriceTable::from_config(
+            config
+                .server
+                .spend
+                .as_ref()
+                .and_then(|spend| spend.pricing.as_ref()),
+        ));
         Ok(Self {
             config: Arc::new(config),
             inbound_auth,
@@ -93,6 +104,7 @@ impl RuntimeState {
             gateway_auth,
             prefill_routers,
             driven_routers,
+            spend_prices,
         })
     }
 }

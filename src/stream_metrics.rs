@@ -4,7 +4,11 @@
 //! chunk as soon as it is polled, and incrementally inspects complete SSE frames.
 //! Parsing is capped at 256 KiB per event; oversized events are ignored until
 //! their boundary while forwarding continues unchanged. Token accounting is
-//! intentionally streaming-only in this first version.
+//! intentionally streaming-only in this first version; spend metering
+//! ([`spend_tap`]) also reads a served non-streamed body, through a bounded
+//! tee that forwards it unchanged.
+
+mod spend_tap;
 
 use std::{
     pin::Pin,
@@ -18,6 +22,8 @@ use axum::{
 };
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
+
+pub(crate) use spend_tap::SpendTap;
 
 const MAX_EVENT_BYTES: usize = 256 * 1024;
 
@@ -211,6 +217,9 @@ struct ObserverState {
     /// frame, recorded alongside the `shunt.ttft` histogram.
     ttft_ms: Option<u64>,
     tokens: TokenUsage,
+    /// The served-response spend hook, billed once in `finish`. `None` for a
+    /// response nothing meters here.
+    spend: Option<spend_tap::StreamSpend>,
     finished: bool,
 }
 
@@ -244,6 +253,7 @@ impl ObserverState {
             last_event_len: 0,
             ttft_ms: None,
             tokens: TokenUsage::default(),
+            spend: None,
             finished: false,
         }
     }
@@ -291,6 +301,9 @@ impl ObserverState {
     fn parse_complete_frames(&mut self) {
         while let Some((boundary, delimiter_len)) = find_boundary(&self.buffer) {
             let end = boundary + delimiter_len;
+            if let Some(spend) = self.spend.as_mut() {
+                spend.observe_frame(&self.buffer[..boundary]);
+            }
             let (observation, event) = observe_frame(self.protocol, &self.buffer[..boundary]);
             // Copied out before anything else touches `self`: `event` borrows
             // the buffer this loop is about to drain.
@@ -418,6 +431,9 @@ impl ObserverState {
             return;
         }
         self.finished = true;
+        if let Some(spend) = self.spend.take() {
+            spend.settle(self.status);
+        }
         let outcome = self.outcome(end.natural());
         crate::metrics::record_stream_outcome(
             &self.provider.lock().expect("provider slot"),
@@ -698,8 +714,32 @@ pub fn observe_response_with_slot(
     model: std::sync::Arc<std::sync::Mutex<String>>,
     started_at: Instant,
 ) -> Response<Body> {
+    observe_served(response, protocol, provider, model, started_at, None)
+}
+
+/// [`observe_response_with_slot`] plus the served-response spend hook. With a
+/// tap, an SSE body is billed from the frames the observer reads, and any
+/// other body passes through a bounded tee that bills its `usage` at the end;
+/// either way the bytes the client receives are untouched. `spend: None` is
+/// how a caller that meters the turn itself (a gated capture) switches the
+/// hook off.
+pub(crate) fn observe_served(
+    response: Response<Body>,
+    protocol: Protocol,
+    provider: std::sync::Arc<std::sync::Mutex<String>>,
+    model: std::sync::Arc<std::sync::Mutex<String>>,
+    started_at: Instant,
+    spend: Option<SpendTap>,
+) -> Response<Body> {
     if !is_sse(&response) {
-        return response;
+        let Some(tap) = spend else {
+            return response;
+        };
+        let status = response.status();
+        let truncated = response.extensions().get::<UpstreamTruncated>().is_some();
+        let (parts, body) = response.into_parts();
+        let body = Body::new(spend_tap::JsonSpendBody::new(body, tap, status).truncated(truncated));
+        return Response::from_parts(parts, body);
     }
     let status = response.status();
     // Captured here, synchronously inside the caller's `.instrument(span)`
@@ -709,9 +749,11 @@ pub fn observe_response_with_slot(
     // no longer find it. See `crate::observability`'s module docs.
     let span = tracing::Span::current();
     let (parts, body) = response.into_parts();
+    let mut state = ObserverState::new(protocol, status, provider, model, started_at, span);
+    state.spend = spend.map(spend_tap::StreamSpend::new);
     let observed = ObservedStream {
         upstream: body.into_data_stream().boxed(),
-        state: ObserverState::new(protocol, status, provider, model, started_at, span),
+        state,
     };
     Response::from_parts(parts, Body::from_stream(observed))
 }
