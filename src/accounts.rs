@@ -765,8 +765,6 @@ impl AccountPool {
     /// disagree with it. Callers read it only when the order is empty: `None`
     /// means no selectable representative is capped, `Some(eligible_at: None)`
     /// means capped with no known eligibility time.
-    // Used by adapter exits (T002).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn select_order_with_cap(
         &self,
         provider: &str,
@@ -786,6 +784,7 @@ impl AccountPool {
     /// commits it immediately before sending upstream. Dropping it cancels the
     /// pending token, so admission and credential-resolution failures remain
     /// immediately eligible for a later request.
+    #[cfg(test)]
     pub(crate) fn select_order_deferred(
         self: &Arc<Self>,
         provider: &str,
@@ -803,8 +802,6 @@ impl AccountPool {
     /// hard-cap verdict from the same pass that built the order. Callers read
     /// the verdict only when the order is empty; `None` means no selectable
     /// representative is capped.
-    // Used by adapter exits (T002).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn select_order_deferred_with_cap(
         self: &Arc<Self>,
         provider: &str,
@@ -834,6 +831,7 @@ impl AccountPool {
     /// only removes re-probing as its new trigger while the deeper fix remains
     /// deferred. The provider-labelled re-probe metric therefore counts only
     /// inbound probes for providers with WebSocket enabled.
+    #[cfg(test)]
     pub(crate) fn select_order_without_reprobe(
         &self,
         provider: &str,
@@ -850,8 +848,6 @@ impl AccountPool {
     /// plus the hard-cap verdict from the same pass that built the order.
     /// Callers read the verdict only when the order is empty; `None` means no
     /// selectable representative is capped.
-    // Used by adapter exits (T002).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn select_order_without_reprobe_with_cap(
         &self,
         provider: &str,
@@ -882,8 +878,8 @@ impl AccountPool {
     /// pass produced, so the rules live only in
     /// [`select_order_inner`](Self::select_order_inner). `None` means no
     /// selectable representative is capped; `Some(None)` means capped with no
-    /// known eligibility time. Becomes `#[cfg(test)]` once adapters stop
-    /// calling it (T002).
+    /// known eligibility time.
+    #[cfg(test)]
     pub(crate) fn cap_exhaustion(
         &self,
         provider: &str,

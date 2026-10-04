@@ -36,6 +36,7 @@ use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
 use crate::proxy::chain_stream::LazyEnvelope;
 
+#[cfg(test)]
 fn select_pool_order(
     state: &AppState,
     provider: &str,
@@ -49,6 +50,27 @@ fn select_pool_order(
         "non-WebSocket selection uses deferred reservation"
     );
     state.accounts.select_order_without_reprobe(
+        provider,
+        accounts,
+        session_id,
+        Some(upstream_model),
+        state.config.server.pool.as_ref(),
+    )
+}
+
+fn select_pool_order_with_cap(
+    state: &AppState,
+    provider: &str,
+    accounts: &[AccountConfig],
+    session_id: Option<&str>,
+    upstream_model: &str,
+    ws_enabled: bool,
+) -> (Vec<usize>, Option<accounts::CapExhaustion>) {
+    debug_assert!(
+        ws_enabled,
+        "non-WebSocket selection uses deferred reservation"
+    );
+    state.accounts.select_order_without_reprobe_with_cap(
         provider,
         accounts,
         session_id,
@@ -105,6 +127,9 @@ pub(super) struct PoolStreamContext {
     pub(super) upstream_body: std::sync::Arc<Value>,
     pub(super) accounts_config: std::sync::Arc<Vec<AccountConfig>>,
     pub(super) order: Vec<usize>,
+    /// The hard-cap verdict from the selection that produced `order`; read only
+    /// when that order is empty.
+    pub(super) cap: Option<accounts::CapExhaustion>,
     pub(super) reprobe: Option<ReprobeReservation>,
     pub(super) ramp_initial: Option<u32>,
     /// Whether this pool stream owns the request's `record_proxied_request`
@@ -320,7 +345,7 @@ pub(super) fn pool_or_single_events(
                         )
                     } else {
                         let accounts_config = std::sync::Arc::new(accounts);
-                        let (order, reprobe) = state.accounts.select_order_deferred(
+                        let (order, reprobe, cap) = state.accounts.select_order_deferred_with_cap(
                             &route.provider,
                             &accounts_config,
                             session_id.as_deref(),
@@ -338,6 +363,7 @@ pub(super) fn pool_or_single_events(
                             upstream_body,
                             accounts_config,
                             order,
+                            cap,
                             reprobe,
                             ramp_initial,
                             record_metrics: true,
@@ -379,6 +405,7 @@ pub(super) fn pool_events_stream(
         upstream_body,
         accounts_config,
         order,
+        cap,
         reprobe,
         ramp_initial,
         record_metrics,
@@ -510,7 +537,7 @@ pub(super) fn pool_events_stream(
                                 // upstream is a pause, an outage, or a cap; only
                                 // a cap gets its own advance-worthy 429.
                                 let capped = if candidates == 0 && last_response.is_none() {
-                                    crate::adapters::cap_exhausted(&state, &route, &accounts_config)
+                                    crate::adapters::cap_exhausted(&route, cap)
                                 } else {
                                     None
                                 };
@@ -998,7 +1025,7 @@ pub(super) async fn forward_chatgpt_oauth(
         // loop-based paths do.
         let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
         let route_for_start = route.clone();
-        let (order, reprobe) = state.accounts.select_order_deferred(
+        let (order, reprobe, cap) = state.accounts.select_order_deferred_with_cap(
             &route.provider,
             &accounts_config,
             session_id.as_deref(),
@@ -1016,6 +1043,7 @@ pub(super) async fn forward_chatgpt_oauth(
             upstream_body: upstream_body.clone(),
             accounts_config: std::sync::Arc::new(accounts_config),
             order,
+            cap,
             reprobe,
             ramp_initial: state.config.storm_ramp_initial(),
             record_metrics: true,
@@ -1030,20 +1058,18 @@ pub(super) async fn forward_chatgpt_oauth(
             ),
         ));
     }
-    let (order, mut reprobe_reservation) = if ws_enabled {
-        (
-            select_pool_order(
-                &state,
-                &route.provider,
-                &accounts_config,
-                session_id.as_deref(),
-                &route.upstream_model,
-                true,
-            ),
-            None,
-        )
+    let (order, mut reprobe_reservation, cap) = if ws_enabled {
+        let (order, cap) = select_pool_order_with_cap(
+            &state,
+            &route.provider,
+            &accounts_config,
+            session_id.as_deref(),
+            &route.upstream_model,
+            true,
+        );
+        (order, None, cap)
     } else {
-        state.accounts.select_order_deferred(
+        state.accounts.select_order_deferred_with_cap(
             &route.provider,
             &accounts_config,
             session_id.as_deref(),
@@ -1381,7 +1407,7 @@ pub(super) async fn forward_chatgpt_oauth(
     }
 
     if candidates == 0 {
-        if let Some(error) = crate::adapters::cap_exhausted(&state, &route, &accounts_config) {
+        if let Some(error) = crate::adapters::cap_exhausted(&route, cap) {
             return Err(error);
         }
     }
@@ -3940,6 +3966,7 @@ mod tests {
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             accounts_config: std::sync::Arc::new(accounts),
             order,
+            cap: None,
             reprobe,
             ramp_initial: state.config.storm_ramp_initial(),
             record_metrics: false,

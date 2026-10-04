@@ -57,7 +57,7 @@ Rejected: keep `cap_exhaustion` and take both locks in one critical section. Tha
 
 ## Tasks
 
-- [ ] T001 Return the cap verdict from the selection pass (file: src/accounts.rs)
+- [x] T001 Return the cap verdict from the selection pass (file: src/accounts.rs)
   Validation: The `_with_cap` selection returns `Some(CapExhaustion)` with the earliest `eligible_at` exactly when an unpaused, non-disabled representative is capped for that request. Once returned, the value is unaffected by later quota changes. `cap_exhaustion` is test-only and all existing `accounts::` cap tests pass unchanged.
   Method: `cargo test --all-features --lib accounts::`, plus a new unit test that clears the capping quota after selection returns and asserts the returned verdict still matches the empty order.
 - [ ] T002 Switch the five adapter exits to the returned verdict (file: src/adapters/mod.rs) (depends on T001)
@@ -89,6 +89,9 @@ Rejected: keep `cap_exhaustion` and take both locks in one critical section. Tha
 
 - [x] (2026-10-05 KST) T001 Return the cap verdict from the selection pass
   Evidence: `cargo test --all-features --lib accounts::` -> 223 passed, 0 failed (includes new select_order_with_cap_verdict_is_a_value_from_the_selection_pass)
+- [x] (2026-10-05 KST) T002 Switch the five adapter exits to the returned verdict
+  Evidence: `cargo test --all-features --test multi_account --test failover --test codex_multi_account --test inbound_codex_endpoint --test kimi_multi_account --test codex_websocket_fallback` -> 34/20/34/33/10/16 passed, 0 failed; `cargo test --all-features --lib` -> 3033 passed; `git grep cap_exhaustion -- src` -> only cfg(test) use
+  Note: test PoolStreamContext literal got `cap: None` (pure field addition); responses/mod.rs:636 also builds a PoolStreamContext in production and now threads the verdict.
 
 ## Decision Log
 
