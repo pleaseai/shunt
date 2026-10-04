@@ -1,0 +1,30 @@
+.please/docs/tracks/active/select-order-cap-verdict-20261005/spec.md
+  s_afd8879efb217f::t_769a71eabf623a 1-33,35-63
+  s_afd8879efb217f::t_2061761d2c5f0a 34
+.please/docs/tracks/active/select-order-cap-verdict-20261005/metadata.json
+  s_afd8879efb217f::t_ca7e149bd485ad 4,6-7,9
+  s_afd8879efb217f::t_aeb41bcbbbdfdd 10-11
+  s_afd8879efb217f::t_769a71eabf623a 1-3,5,8,12
+.please/docs/tracks/active/select-order-cap-verdict-20261005/stakeholder-comm.md
+  s_afd8879efb217f::t_46173cbcca9063 1-10
+.please/docs/tracks.jsonl
+  s_afd8879efb217f::t_487f21fdddcf5e 2
+.please/docs/tracks/active/select-order-cap-verdict-20261005/plan.md
+  s_afd8879efb217f::t_cb76106d8e359e 1-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b7ec543492e2c97a2251dfc920d00815123be828",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
