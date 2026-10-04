@@ -185,3 +185,11 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
 - `--all-features` builds need `PYO3_PYTHON=/usr/local/bin/python3` in this worktree.
 - `tests/responses_chain_stream.rs` failures (`refused_port_is_deterministically_refused`, and intermittently the two `a_body_error_*` tests) reproduce on pristine main `3bde0a86` (control worktree, separate target dir, 3 runs: 2–3 failures each). They are environmental on this machine, not caused by this track.
 - `into_openai_error_shape` (src/error.rs) dropped all response headers, so `retry-after` never reached clients of the inbound Codex endpoint for any re-shaped error; T004 now carries `retry-after` over.
+
+### Known Issues (review, 2026-10-04)
+
+The ensemble review of PR #738 (gpt, ocr, cubic; review commits 490522ad, 9115dcaa, 2b3b03ff, c7835074) left these validated-but-unproven minor findings unfixed by decision:
+
+- **Cap re-check after selection.** `select_order` and the adapters' `cap_exhaustion` take the entries lock separately (src/adapters/anthropic/mod.rs and src/adapters/responses/{pool,inbound}.rs). If a cap clears in the microseconds between them, the request gets the generic exhaustion error instead of the cap 429. Both errors advance `[[upstreams]]` failover, so only the message and `retry-after` differ. Fix if it matters: return the cap verdict from `select_order_inner` alongside the order.
+- **Per-alias caps on `/usage`.** `pool_status` (src/usage.rs) and the admin snapshot read every alias row, each with its own `max_utilization*`, while selection uses only the `collapse_representatives` representative. Aliases with different caps can make `/usage` disagree with selection. This follows the pre-existing per-alias status convention (`representative_positions` covers only the window aggregates) and needs an unusual config (same identity, different caps).
+- **Coverage gap.** greptile never ran: the Homebrew node binary fails to load `libada.3.dylib` (ada-url 4.0.0 installed); `brew reinstall node ada-url` should restore it. ocr excludes `.md`/`.mdx` by configuration, so docs were reviewed by gpt and cubic only.
