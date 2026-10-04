@@ -81,12 +81,13 @@ describe('the configured hard cap is shown beside the usage it limits', () => {
 
   it('shows each cap in the pool table, including for a window with no utilization yet', async () => {
     await renderDashboard(
-      poolWith({ utilization_5h: 0.3, max_utilization_5h: 0.5, max_utilization_fable: 0.25 }),
+      poolWith({ utilization_5h: 0.3, max_utilization_5h: 0.5, max_utilization_fable: 0.875 }),
     );
     const cells = rowOf(tbody('pool').getByText('pool-a')).querySelectorAll('td');
     // Provider, Account, Plan, State, 5h, 7d, Fable.
     expect(cells[4]?.textContent).toBe('30% · cap 50%');
     expect(cells[5]?.textContent).toBe('—');
-    expect(cells[6]?.textContent).toBe('— · cap 25%');
+    // To 0.1%, as the usage bar shows it, not rounded to a whole percent.
+    expect(cells[6]?.textContent).toBe('— · cap 87.5%');
   });
 });

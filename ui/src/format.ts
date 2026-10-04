@@ -42,7 +42,8 @@ export function pctResetCap(
   cap: number | null | undefined,
 ): string {
   const base = pctReset(value, resetSecs);
-  return cap === null || cap === undefined ? base : `${base} · cap ${pct(cap)}`;
+  // One decimal, matching `UsageBar`'s caption, so a cap reads the same in both tables.
+  return cap === null || cap === undefined ? base : `${base} · cap ${Math.round(cap * 1000) / 10}%`;
 }
 
 export function when(ms: number | null | undefined): string {
