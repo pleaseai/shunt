@@ -81,7 +81,7 @@ A cooldown-based design was rejected during brainstorming. It would make a cap c
 - [x] T003 Return a cap-exhaustion 429 from the Claude OAuth pool (depends on T002, file: src/adapters/anthropic/mod.rs)
   Validation: when every non-disabled account is capped for the request, `/v1/messages` returns 429 with an Anthropic `rate_limit_error` body naming the cap, plus `retry-after` when the earliest eligibility time is known; with a second `[[upstreams]]` entry, the same request is served by that upstream; a pool exhausted only by pause or upstream failures keeps its current response; the `exhausted` rotation metric gains a distinct `capped` reason.
   Method: `cargo test --all-features --test multi_account --test failover`
-- [ ] T004 Return the cap-exhaustion 429 from Codex pool paths (depends on T003, file: src/adapters/responses/pool.rs)
+- [x] T004 Return the cap-exhaustion 429 from Codex pool paths (depends on T003, file: src/adapters/responses/pool.rs)
   Validation: an all-capped ChatGPT pool yields a 429 with `retry-after` on the outbound Responses paths (HTTP, committed-stream, and WebSocket-enabled ordering) and advances the failover chain; the inbound Codex endpoint returns the same 429 in the OpenAI error shape.
   Method: `cargo test --all-features --test codex_multi_account --test inbound_codex_endpoint --test codex_websocket_fallback`
 - [ ] T005 Report capped state on snapshot and usage surfaces (depends on T002, file: src/accounts.rs)
@@ -90,7 +90,7 @@ A cooldown-based design was rejected during brainstorming. It would make a cap c
 - [ ] T006 [P] Show capped and Fable-capped states on the admin dashboard (depends on T005, file: ui/src/accounts.ts)
   Validation: a capped account row reads "Capped" and a Fable-only capped row reads "Capped (Fable)" in both the accounts table and the pool health panel; a stale observation error does not mask either state.
   Method: `cd ui && bun run test` (extend `coalescing.test.tsx` and `pool-health.test.tsx`) plus `Skill("please:test-browser")` on the admin pool page
-- [ ] T007 [P] Document max_utilization caps across reference, guides, and milestone docs (depends on T003, file: site/src/content/docs/reference/configuration.md)
+- [x] T007 [P] Document max_utilization caps across reference, guides, and milestone docs (depends on T003, file: site/src/content/docs/reference/configuration.md)
   Validation: the `[server.pool]` and account tables list all eight keys with the resolution order and the "excluded, not reordered" semantics; the multi-account and pool-account-controls guides and the `/usage` endpoint reference describe the capped state; ko/ja/zh-cn copies of every edited page carry the same content; `docs/m8-anthropic-multi-account.md` is updated; `site` builds.
   Method: `cd site && bun run build` and a grep across the four locale trees for `max_utilization`
 
