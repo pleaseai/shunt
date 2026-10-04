@@ -792,10 +792,10 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // its chance to record spend; on `TimedOut` the per-connection tasks outlive
     // the dropped server future, so spend from responses still open at the
     // deadline bills into memory only after this flush and is not persisted.
-    // Persist the counters once more, bounded by the same deadline, so a
-    // restart enforces against what was spent before it. Bounded by a small
-    // fixed budget, not a second `shutdown_timeout`, so a timed-out drain
-    // cannot double the documented worst case (docs/bounded-shutdown.md).
+    // Persist the counters once more so a restart enforces against what was
+    // spent before it, bounded by the fixed `FINAL_SPEND_FLUSH_BOUND` so a
+    // timed-out drain cannot double the documented worst case
+    // (docs/bounded-shutdown.md).
     shunt::gateway::spend::meter::persist::flush_final(&state, FINAL_SPEND_FLUSH_BOUND).await;
     Ok(())
 }

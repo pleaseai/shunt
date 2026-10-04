@@ -258,13 +258,12 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
         let gated = GatedBounds {
             max_bytes: bounds.gated_max_bytes,
             idle: bounds.gated_idle,
-            // What is left of the outer bound, less a margin: the read's own
-            // duration exit must fire before the outer timeout drops this
-            // future, so a turn cut by duration is settled on the way out.
+            // What is left of the outer bound. An outer timeout that drops
+            // this future still settles the turn (the bill settles on drop)
+            // and maps to a duration cut.
             max_duration: bounds
                 .gated_max_duration
-                .saturating_sub(started_at.elapsed())
-                .saturating_sub(std::time::Duration::from_millis(5)),
+                .saturating_sub(started_at.elapsed()),
         };
         let success = match outcome {
             Ok(success) => success,

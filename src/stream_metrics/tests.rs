@@ -17,8 +17,8 @@ use tracing_subscriber::{
 };
 
 use super::{
-    error_chain, observe_response, ObserverState, Outcome, Protocol, MAX_EVENT_BYTES,
-    MAX_LAST_EVENT_BYTES,
+    error_chain, find_boundary, observe_response, ObserverState, Outcome, Protocol,
+    MAX_EVENT_BYTES, MAX_LAST_EVENT_BYTES,
 };
 
 fn state(protocol: Protocol) -> ObserverState {
@@ -1090,4 +1090,18 @@ fn stream_failure_labels_match_outcome_labels() {
             assert_eq!(outcome.as_str(), kind.as_str());
         }
     }
+}
+
+#[test]
+fn find_boundary_picks_the_earliest_delimiter_of_either_kind() {
+    assert_eq!(find_boundary(b"a\n\nb"), Some((1, 2)));
+    assert_eq!(find_boundary(b"a\r\n\r\nb"), Some((1, 4)));
+    // CRLF starting before the LF pair.
+    assert_eq!(find_boundary(b"a\r\n\r\nb\n\n"), Some((1, 4)));
+    // LF pair before a CRLF boundary.
+    assert_eq!(find_boundary(b"a\n\nb\r\n\r\n"), Some((1, 2)));
+    // A CRLF boundary whose bytes overlap the LF pair's neighbourhood.
+    assert_eq!(find_boundary(b"\r\n\r\n\n\n"), Some((0, 4)));
+    assert_eq!(find_boundary(b"a\r\nb\nc"), None);
+    assert_eq!(find_boundary(b""), None);
 }

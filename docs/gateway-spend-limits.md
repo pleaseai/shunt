@@ -115,7 +115,7 @@ The meter records a charge for each billed response, on the daily, weekly and mo
 - **Unreadable non-streamed bodies.** A non-streamed body larger than 4 MiB, cut, or without a readable `usage` is billed a byte floor of one output token per 4 bytes. A readable `usage` that omits `output_tokens` keeps its other counts, and its output is billed at one token per 4 characters of the message's generated content, the same floor as an aborted stream.
 - **Side calls.** Router judge, classifier and escalation calls, and gated turns, are metered exactly once against the requesting principal. A gated streamed capture that `gated_max_duration_ms` or `gated_max_bytes` cuts is billed for what it received (including the chunk that crossed the byte cap). An Anthropic request pinned to the provider's `classifier_model` is priced on that model; a translated reply marked truncated bills at least the delivered-text floor.
 
-Known unmetered cases: a router judge reply that is truncated, times out, or exceeds its size bound, and a non-streamed gated capture that was cut.
+Known unmetered cases: a router judge reply that is truncated, times out, or exceeds its size bound, a non-streamed gated capture that was cut, and a non-streamed `2xx` body dropped before its first byte was polled (the client disconnected after the upstream answered).
 
 Limit: counters are u64 femto-USD and saturate at about $18,446.74 per principal per window, so a cap of 1,844,675 cents or more can never be reached (a follow-up issue tracks widening).
 
@@ -127,7 +127,7 @@ For a principal with a cap in any period, shunt strips every upstream `anthropic
 | :-- | :-- |
 | `anthropic-ratelimit-unified-status` | `allowed`, `allowed_warning` (above 75%) or, on the refusal, `rejected` |
 | `anthropic-ratelimit-unified-reset`, `...-overage-reset` | Unix seconds of the binding cap's reset |
-| `anthropic-ratelimit-unified-overage-utilization` | Utilization of the binding cap, 0 to 1 |
+| `anthropic-ratelimit-unified-overage-utilization` | Utilization of the binding cap, rounded to two decimals and capped at 0.99 while below the cap; can exceed 1 once the cap is exceeded |
 | `anthropic-ratelimit-unified-overage-surpassed-threshold` | `0.75`, `0.95` or `1`, only once the utilization is strictly above that threshold |
 | `anthropic-ratelimit-unified-representative-claim`, `...-overage-status` | `overage` and the status again; 2xx only |
 | `anthropic-ratelimit-unified-overage-period` | Refusal only: the exceeded period |

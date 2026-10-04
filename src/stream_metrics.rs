@@ -782,7 +782,11 @@ fn find_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
         .windows(2)
         .position(|window| window == b"\n\n")
         .map(|index| (index, 2));
-    let crlf = bytes
+    // A CRLF boundary that starts at or before the LF index ends within four
+    // bytes of it, so a later one can never win; bounding the search keeps a
+    // long LF-only stream linear.
+    let searched = lf.map_or(bytes, |(index, _)| &bytes[..(index + 4).min(bytes.len())]);
+    let crlf = searched
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .map(|index| (index, 4));

@@ -238,7 +238,8 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
         != next_spend.and_then(|spend| spend.state_path())
     {
         tracing::warn!(
-            "[server.spend].state_path changed but requires a restart; spend-limit persistence is fixed at boot"        );
+            "[server.spend].state_path changed but requires a restart; spend-limit persistence is fixed at boot"
+        );
     }
     // Like `[server.admin]`, whether the inbound Responses routes are registered
     // is decided once at boot from the initial config. A hot edit that only

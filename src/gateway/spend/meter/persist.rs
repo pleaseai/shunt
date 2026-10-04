@@ -485,8 +485,8 @@ pub fn spawn_flusher(state: AppState) {
     });
 }
 
-/// Last flush after the server stopped accepting, bounded by `bound`
-/// (`[server] shutdown_timeout_seconds`).
+/// Last flush after the server stopped accepting, bounded by the
+/// caller-supplied `bound` (the server passes a fixed 5 s).
 pub async fn flush_final(state: &AppState, bound: Duration) {
     if tokio::time::timeout(bound, flush(state)).await.is_err() {
         tracing::warn!(

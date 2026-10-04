@@ -375,8 +375,8 @@ pub(super) struct ChainStreamRequest {
 pub(crate) struct ChainStreamWinner {
     provider: std::sync::Arc<std::sync::Mutex<String>>,
     model: std::sync::Arc<std::sync::Mutex<String>>,
-    /// The model string the winning route was sent, set only when a route
-    /// wins the stream: what a captured turn is priced on.
+    /// The model string the winning route was sent: what a captured turn is
+    /// priced on. The first route's effective model until a route wins.
     upstream_model: std::sync::Arc<std::sync::Mutex<String>>,
     /// Whether the winning route injects a gateway credential; the first
     /// route's until a route wins.
@@ -495,6 +495,11 @@ pub(super) async fn forward_chain_stream(
         .expect("route chains are non-empty after resolution");
     let first_provider = first_route.provider.clone();
     let first_model = first_route.model.clone();
+    let first_upstream_model = crate::adapters::anthropic::effective_upstream_model(
+        &state.config,
+        first_route,
+        body.json(),
+    );
     // Captured synchronously inside the caller's `.instrument(span)` future,
     // so the eventual in-stream outcome records land on the request's own
     // span rather than whatever span is current while the body is polled.
@@ -539,8 +544,7 @@ pub(super) async fn forward_chain_stream(
     let closure_slot = winner_slot.clone();
     let winner_model_slot = std::sync::Arc::new(std::sync::Mutex::new(first_model.clone()));
     let closure_model_slot = winner_model_slot.clone();
-    let winner_upstream_slot =
-        std::sync::Arc::new(std::sync::Mutex::new(first_route.upstream_model.clone()));
+    let winner_upstream_slot = std::sync::Arc::new(std::sync::Mutex::new(first_upstream_model));
     let closure_upstream_slot = winner_upstream_slot.clone();
     let winner_injects_slot = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
         !state.config.route_is_passthrough(first_route),
