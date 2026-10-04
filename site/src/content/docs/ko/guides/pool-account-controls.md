@@ -32,6 +32,19 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool/anthropic/accounts/$ACCOUNT_REF" \
 
 재개하려면 `"paused": false`로 설정하세요. 전체 엔드포인트 참조는 [`PATCH /admin/api/pool/{provider}/accounts/{account_ref}`](/ko/reference/endpoints/)를 참고하세요.
 
+## 캡이 걸린 상태는 일시 정지나 비활성화와 다릅니다
+
+하드 사용률 캡(`max_utilization*`, [Anthropic 다중 계정](/ko/guides/anthropic-multi-account/#하드-캡-max_utilization) 참고)도 계정을 선택에서 제외하지만, 자동이며 조건부입니다.
+
+| | `disabled` (설정) | `paused` (런타임) | 캡 걸림 (`max_utilization*`) |
+| :-- | :-- | :-- | :-- |
+| 설정 방법 | `shunt.toml`, 리로드 필요 | 관리자 대시보드 또는 `PATCH /admin/api/pool/{provider}/accounts/{account_ref}` | 관측된 사용률이 설정된 캡에 도달 |
+| 끝나는 시점 | 구성이 바뀔 때까지 계속 | 운영자가 계정을 재개할 때 | 사용률이 캡 아래로 내려가면 자동(창 리셋 또는 만료, 더 낮은 관측값, 리로드 시 캡 상향) |
+| 대시보드 표시 | `disabled` | `paused` | "Capped", Fable 전용 캡이면 "Capped (Fable)" |
+
+캡이 걸린 계정도 구성되어 있고 로그인된 상태이며, 새 라우팅만 보류됩니다. `GET /usage`는 사용 가능한 계정이 없고 캡이 걸린 계정이 하나 이상이면 풀 상태 `capped`를 보고합니다.
+
+
 ## 가장 빨리 리셋되는 순서로 정렬하기
 
 `[server.pool] sort_by_reset`(기본값 `false`)은 *available* 계층의 정렬 방식을 바꿉니다: 가장 큰 예상 번-레이트 헤드룸 대신, 계정을 알려진 쿼터 리셋 시각이 가장 이른 순서(오름차순 — 가장 먼저 회복되는 계정을 먼저 시도하고, 리셋 신호가 없는 계정은 맨 뒤로 정렬)로 정렬합니다. 아이디어는 가장 먼저 보충될 계정을 먼저 소진시켜, 리셋이 늦은 계정은 예비로 남겨두는 것입니다.

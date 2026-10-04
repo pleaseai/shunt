@@ -95,6 +95,8 @@ A successful refresh can return a replacement refresh token and invalidate the p
 | `uuid` | no | Selected account's Anthropic UUID for rewriting an existing `metadata.user_id.account_uuid`, and the stable identity used to coalesce aliases in the pool. A name-only entry (resolved by a store scan) is filled in automatically from the store's `shuntAccountUuid` before selection runs; a `credentials`- or `token_env`-configured entry's identity is its `uuid` when set, else its `name`, and it coalesces with another alias whenever that identity equals the other alias's explicit `uuid` or name-fallback identity — set a matching nonblank `uuid` on both entries for a clear, intentional coalesce (shunt also warns on an accidental cross `uuid`/`name` collision). |
 | `threshold` | no | Per-account soft quota threshold in `[0.0, 1.0]` for every window without a per-window value. A low value marks a backup account that rotates out early. |
 | `threshold_5h` / `threshold_7d` / `threshold_fable` | no | Per-window soft thresholds; each beats `threshold` for its window. |
+| `max_utilization` | no | Per-account hard cap in `[0.0, 1.0]` for every window without a per-window value. An account at or above it in a governing window is excluded from selection (see [Hard caps](#hard-caps-max_utilization)). Works without `[server.pool]`. |
+| `max_utilization_5h` / `max_utilization_7d` / `max_utilization_fable` | no | Per-window hard caps; each beats `max_utilization` for its window. The Fable cap governs Fable-model requests only. |
 | `priority` | no | Selection priority when the sticky account is unhealthy; lower is preferred, default `100`. |
 | `disabled` | no | `true` removes the account from selection entirely while keeping it in config and on the admin dashboard. |
 
@@ -123,7 +125,7 @@ Deleting a store-managed account through the admin web surface clears that ident
 - The default switch threshold is `0.98`. An account is near quota when its 5-hour status is `rejected`, shared `7d` status is `rejected`, a Fable request has `7d_oi` status `rejected`, shared 5-hour utilization reaches its threshold, or the governing weekly utilization reaches its threshold. Status rejection is evaluated independently of whether the matching utilization header is present. For utilization thresholds and headroom, Fable models use `7d_oi` when that utilization is present and shared `7d` otherwise. The aggregate status is a compatibility fallback only when no per-window status has been recorded. Thresholds can be lowered per account (`threshold*` fields above) or pool-wide (see [Tuning selection](#tuning-selection-serverpool)).
 - The 5-hour bucket applies to every model. Fable model ids use the `7d_oi` weekly bucket when its utilization is present, with shared `7d` as fallback. Every other model family uses shared `7d`; Sonnet also uses `7d` because there is no Sonnet-specific header today.
 - A near-quota, cooled, or disabled sticky account rotates off proactively. shunt prefers available under-threshold accounts ordered by `priority` (lower first), then by the soonest-resetting governing weekly bucket, spending use-or-lose quota first. Accounts with unknown weekly reset sort first. Available near-quota accounts follow, then cooled accounts ordered by soonest recovery. With `[server.pool]` configured, burn-rate headroom replaces the weekly-reset tiebreak (see below).
-- shunt never fails closed because of local quota state: every non-`disabled` account remains in the attempt order, even if all are near quota or cooled.
+- Local quota and cooldown state never empties the attempt order: every non-`disabled` account remains in it, even if all are near quota or cooled. The one exception is a hard cap (`max_utilization*`, see [Hard caps](#hard-caps-max_utilization)), which excludes an account while its utilization is at or above the cap.
 - Utilization expires at the earlier of its own observation-time cap or that window's reset. If only the observation cap has passed while that window's reset is still in the future, shunt clears that window's utilization and its timestamp but preserves that future reset as standalone metadata. Per-window status expires at the earlier of its own observation-time cap or the reset boundary captured when that status was observed; clearing status also clears its captured boundary. Later usage and reset-only updates cannot move a captured status boundary. A passed reset for that window clears that window's utilization and reset, and clears status when its captured boundary has also passed. A stamped aggregate status has its own lifetime and survives an unrelated window expiry; only the legacy unstamped aggregate follows window expiry. A non-Fable success clears the account-wide cooldown but leaves a Fable-only cooldown intact; a Fable success clears both cooldowns.
 
 The pool's selection, cooldown, and quota state survives config hot reloads for the life of the process. Reactive failover remains active if proactive rotation cannot avoid the upstream limit.
@@ -162,6 +164,28 @@ disabled = true              # kept configured, never selected
 - **All-near guard.** When every account is past a soft threshold (or predicted to exhaust), the pool does not empty: near accounts serve ordered by best headroom, while accounts at or above `hard_threshold` still sort last, followed only by cooling accounts.
 - **Scope.** The quota knobs act on both pool families: this pool from its `anthropic-ratelimit-unified-*` headers, and [Codex pools](/guides/codex-multi-account/) from their reported `x-codex-*` 5h/7d windows (issue #195). Codex has no Fable-scoped `7d_oi` window, so `default_threshold_fable` is inert there; `priority` and `disabled` apply everywhere.
 - The admin pool endpoint (`GET /admin/api/pool`) reports each account's `priority`, `disabled` flag, and — when `[server.pool]` is configured — its current headroom projection in seconds; the dashboard's state column marks disabled accounts.
+
+## Hard caps (`max_utilization`)
+
+Soft thresholds only reorder accounts. A hard cap removes an account from selection for as long as its utilization is at or above the cap.
+
+```toml
+[server.pool]
+default_max_utilization = 0.95     # every window, unless overridden
+default_max_utilization_5h = 0.9   # per-window default
+
+[[providers.anthropic.accounts]]
+name = "primary"
+max_utilization_fable = 0.5        # Fable stops at ~50% of this account's Fable weekly bucket; Opus keeps using it
+```
+
+- **Keys.** Per account: `max_utilization`, `max_utilization_5h`, `max_utilization_7d`, `max_utilization_fable`. In `[server.pool]`: `default_max_utilization`, `default_max_utilization_5h`, `default_max_utilization_7d`, `default_max_utilization_fable`. Values must be in `[0.0, 1.0]`; anything else fails startup and `shunt check`.
+- **Resolution.** For each window: account `max_utilization_X` → account `max_utilization` → `default_max_utilization_X` → `default_max_utilization` → no cap. Caps are not clamped to `hard_threshold`. Account caps work without `[server.pool]`; store-scanned accounts (no `[[providers.anthropic.accounts]]` entry) get the pool defaults only.
+- **Excluded, not reordered.** An account whose observed utilization in a governing window is at or above its cap is excluded from selection. The 5h and 7d caps govern every request; the Fable cap governs Fable-model requests only, and only once the account's `7d_oi` utilization has been observed. A window with no observed utilization never excludes.
+- **Recovery.** The account becomes eligible again automatically once its utilization falls below the cap: through window reset or expiry, a lower observation, or a raised cap on config reload. A cap stops new routing; it is not a precise budget, so in-flight or concurrent requests can overshoot slightly.
+- **Exhaustion.** When caps leave a pool with no selectable account, shunt returns a gateway-owned HTTP `429` `rate_limit_error` ("all accounts for provider 'X' are at their max_utilization cap for this request"), with `retry-after` when the earliest eligibility is known. Like an upstream `429`, it advances the `[[upstreams]]` failover chain, so a later upstream (possibly pay-per-use) serves the request; only when none does does the client see the `429`. On the inbound Codex endpoint the same error comes back in the OpenAI error shape.
+- **Providers.** Effective on Claude OAuth pools (5h, 7d, `7d_oi`) and [Codex/ChatGPT pools](/guides/codex-multi-account/) (5-hour and weekly windows; the Fable keys are inert there). Inert on Kimi and Antigravity, which report no utilization.
+- **Status.** The admin dashboard shows a capped account as "Capped", or "Capped (Fable)" for a Fable-only cap. `GET /usage` reports pool status `capped` when no account is available and at least one is capped.
 
 ## Usage-API reconciliation
 

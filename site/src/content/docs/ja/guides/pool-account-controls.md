@@ -32,6 +32,19 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool/anthropic/accounts/$ACCOUNT_REF" \
 
 再開するには `"paused": false` を設定します。エンドポイントの完全なリファレンスは [`PATCH /admin/api/pool/{provider}/accounts/{account_ref}`](/ja/reference/endpoints/) を参照してください。
 
+## キャップ到達は一時停止や無効化とは異なる
+
+ハード使用率キャップ（`max_utilization*`、[Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/#ハードキャップmax_utilization)を参照）もアカウントを選択から除外しますが、自動かつ条件付きです。
+
+| | `disabled`(設定) | `paused`(ランタイム) | キャップ到達（`max_utilization*`） |
+| :-- | :-- | :-- | :-- |
+| 設定方法 | `shunt.toml`、リロードが必要 | 管理ダッシュボードまたは `PATCH /admin/api/pool/{provider}/accounts/{account_ref}` | 観測された使用率が設定したキャップに達する |
+| 終わるとき | 設定が変わるまで続く | 運用者がアカウントを再開したとき | 使用率がキャップを下回ると自動（ウィンドウのリセットまたは失効、より低い観測値、リロード時のキャップ引き上げ） |
+| ダッシュボードの表示 | `disabled` | `paused` | 「Capped」、Fable のみのキャップなら「Capped (Fable)」 |
+
+キャップに達したアカウントも設定済みでサインインしたままで、新しいルーティングが見送られるだけです。`GET /usage` は、利用可能なアカウントがなくキャップに達したアカウントが 1 つ以上ある場合にプール状態 `capped` を報告します。
+
+
 ## リセットが最も早い順に並べ替える
 
 `[server.pool] sort_by_reset`(デフォルト `false`)は *available* 階層の並べ替え方法を変更します。予測されるバーンレートのヘッドルームが最大のものではなく、既知のクォータリセットが最も早いアカウントから順に並べます(昇順 — 最も早く回復するアカウントが最初に試され、リセットの兆候がないアカウントは最後に並びます)。狙いは、最も早く補充されるアカウントから消費し、リセットが遅いアカウントは予備として残しておくことです。
