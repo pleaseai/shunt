@@ -87,7 +87,7 @@ A cooldown-based design was rejected during brainstorming. It would make a cap c
 - [x] T005 Report capped state on snapshot and usage surfaces (depends on T002, file: src/accounts.rs)
   Validation: the admin pool JSON marks a capped account with a shared-cap and a Fable-cap flag and `available: false`; `GET /usage` reports an account-free `capped` pool status when no account is available and at least one is capped; `/api/oauth/usage` Fable and weekly bars still compute from the routing-aware set, with the fallback comment and behavior consistent with capped accounts no longer being routed.
   Method: `cargo test --all-features usage:: oauth_usage:: --test admin_surface`
-- [ ] T006 [P] Show capped and Fable-capped states on the admin dashboard (depends on T005, file: ui/src/accounts.ts)
+- [x] T006 [P] Show capped and Fable-capped states on the admin dashboard (depends on T005, file: ui/src/accounts.ts)
   Validation: a capped account row reads "Capped" and a Fable-only capped row reads "Capped (Fable)" in both the accounts table and the pool health panel; a stale observation error does not mask either state.
   Method: `cd ui && bun run test` (extend `coalescing.test.tsx` and `pool-health.test.tsx`) plus `Skill("please:test-browser")` on the admin pool page
 - [x] T007 [P] Document max_utilization caps across reference, guides, and milestone docs (depends on T003, file: site/src/content/docs/reference/configuration.md)
