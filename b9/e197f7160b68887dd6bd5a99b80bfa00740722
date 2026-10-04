@@ -1,0 +1,65 @@
+src/adapters/anthropic/mod.rs
+  s_9f901e59727f87::t_4fcbbb29404252 31-45
+src/proxy/chain_stream.rs
+  s_9f901e59727f87::t_4fcbbb29404252 774-779,812,816
+src/stream_metrics.rs
+  s_9f901e59727f87::t_0c93c2ea7d2f6c 739,741
+src/stream_metrics/spend_tap.rs
+  s_9f901e59727f87::t_c8a59f6df420a1 386,391-397
+  s_9f901e59727f87::t_20b35b1361e551 366-368
+  s_9f901e59727f87::t_e8b947c10ff9f6 429-430
+  s_9f901e59727f87::t_3770f48c1c20dc 398,436-438,447-450,454-475
+  s_9f901e59727f87::t_cf3da9d3077e90 125
+  s_9f901e59727f87::t_87dbb39f4dd78b 399
+  s_9f901e59727f87::t_12e09455217f57 476-477
+src/routing/serve/gated.rs
+  s_9f901e59727f87::t_69ba34bf20eb35 370-414,427-442,477-478,481,489-491
+  s_9f901e59727f87::t_50b094a7d1cbac 211,261-267
+src/gateway/spend/meter/persist.rs
+  s_9f901e59727f87::t_4e755d8ed44244 151-152,154
+src/proxy/failover/chain.rs
+  s_9f901e59727f87::t_4fcbbb29404252 159-163
+docs/admin-ui-delivery.md
+  s_9f901e59727f87::t_17f696a3a303b6 67,307,394,396-401
+  s_9f901e59727f87::t_388869a33ee532 78-79
+tests/spend_metering_routing.rs
+  s_9f901e59727f87::t_d0e0e5e6bd7aae 554-616,622-624,630-640
+  s_9f901e59727f87::t_f2f5764760480a 626,628
+  s_9f901e59727f87::t_7dd3fc37c0a823 617-621
+  s_9f901e59727f87::t_d321bb8ac4e331 625,627,629
+docs/gateway-spend-limits.md
+  s_9f901e59727f87::t_e1fc597437a698 116
+tests/spend_persistence.rs
+  s_9f901e59727f87::t_693d4cbfc2ab1c 371-386,397-398
+  s_9f901e59727f87::t_4e755d8ed44244 387-396
+  s_9f901e59727f87::t_11c49fb758b9da 370
+src/gateway/spend/meter/window.rs
+  s_9f901e59727f87::t_39f1767b54f721 31
+tests/spend_metering.rs
+  s_9f901e59727f87::t_c9ca3702917b50 61,120-125,137-139,178,355-409
+  s_9f901e59727f87::t_a0d28b92d8e10a 410
+src/stream_metrics/spend_tap/tests.rs
+  s_9f901e59727f87::t_780e88f3e9534b 332-359
+  s_9f901e59727f87::t_a472e310868719 331
+src/proxy/failover/gated.rs
+  s_9f901e59727f87::t_4fcbbb29404252 257-261
+.please/docs/review/rejected-findings.jsonl
+  s_9f901e59727f87::t_2d6b418afed386 96
+  s_9f901e59727f87::t_34199907d69a24 95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b9e197f7160b68887dd6bd5a99b80bfa00740722",
+  "prompts": {},
+  "sessions": {
+    "s_9f901e59727f87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "321677c8-cff9-4c24-9b5d-93c0c797c39d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
