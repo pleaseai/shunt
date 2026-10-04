@@ -1,0 +1,19 @@
+ui/src/index.css
+  s_5bd3170eaadf99::t_5c18ca72e8ab6a 199,205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "da7b0947521485fd57d372bfe558ccc3fab9ec6f",
+  "prompts": {},
+  "sessions": {
+    "s_5bd3170eaadf99": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "67007cc3-381d-4f2c-b264-eb2a245ef64b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
