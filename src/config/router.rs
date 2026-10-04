@@ -265,10 +265,14 @@ impl RouterConfig {
             // Synthesizes its answer and calls no upstream, so no row on any
             // upstream ever prices it.
             Self::Noop {} => Vec::new(),
+            // Only positive-weight arms: both the weighted draw and its
+            // first-target fallback walk `enabled()`, so a target parked at
+            // weight `0` is never served. A random router has no judge.
+            Self::Random(random) => random.enabled().map(|(_, target)| target).collect(),
             // A stage or auto tier is one of the two targets, the picker's
             // default included, and a stage classifier's verdict only picks
-            // between them. `random` and `prefill_router` choose from
-            // `targets`, falling back to its first entry.
+            // between them. `prefill_router` chooses from `targets`, falling
+            // back to its first entry.
             //
             // The driven types hand libsy only ids these accessors enumerate
             // (`routing::driven::build`): every verdict, fail-open default, and
@@ -277,7 +281,6 @@ impl RouterConfig {
             // trigger included.
             Self::StageRouter(_)
             | Self::Auto(_)
-            | Self::Random(_)
             | Self::PrefillRouter(_)
             | Self::LlmClassifier(_)
             | Self::Composite(_)

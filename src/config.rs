@@ -8164,6 +8164,27 @@ cache_write = 4.125
                     });
                     model
                 },
+                // A random split never serves a zero-weight arm, so the
+                // parked `eu-target` arm does not reach `bedrock-eu`.
+                ModelConfig {
+                    router: Some(super::RouterConfig::Random(super::RandomRouterConfig {
+                        targets: vec!["unrouted-target".to_string(), "eu-target".to_string()],
+                        weights: Some(vec![1.0, 0.0]),
+                        seed: None,
+                        affinity: super::RandomAffinity::Session,
+                    })),
+                    ..model_config("split-model", None)
+                },
+                // Its mirror: the live arm is the one that reaches `bedrock-eu`.
+                ModelConfig {
+                    router: Some(super::RouterConfig::Random(super::RandomRouterConfig {
+                        targets: vec!["unrouted-target".to_string(), "eu-target".to_string()],
+                        weights: Some(vec![0.0, 1.0]),
+                        seed: None,
+                        affinity: super::RandomAffinity::Session,
+                    })),
+                    ..model_config("live-split-model", None)
+                },
                 // A `noop` router answers without any upstream call.
                 ModelConfig {
                     router: Some(super::RouterConfig::Noop {}),
@@ -8295,6 +8316,8 @@ policy = { type = "target_selector", selector = "/target" }
             ("bedrock-eu", "judged-router-model"),
             // An overlay's judge counts for the same reason.
             ("bedrock-eu", "judged-overlay-model"),
+            // A random split reaches what its positive-weight arms reach.
+            ("bedrock-eu", "live-split-model"),
             ("bedrock-eu", "overlay-model"),
             ("codex", "legacy-alias"),
             ("codex", "vendor-sonnet"),
@@ -8351,6 +8374,8 @@ policy = { type = "target_selector", selector = "/target" }
             ("codex", "eu-router-model"),
             ("codex", "judged-router-model"),
             ("codex", "judged-overlay-model"),
+            // Only a zero-weight arm resolves to `bedrock-eu`.
+            ("bedrock-eu", "split-model"),
             // A `noop` router calls no upstream, so nothing ever prices it.
             ("bedrock-eu", "noop-model"),
             ("codex", "noop-model"),
