@@ -139,7 +139,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | `group_limit_mode` | `min` | `min` または `max`。将来のグループ上限解決用 |
 | `state_path` | `~/.shunt/gateway-spend.json` | 上限と監査レコードを保存するバージョン付き JSON。`""` はメモリのみ。メーターのカウンターは兄弟ファイル `<stem>.counters.json`（デフォルト `~/.shunt/gateway-spend.counters.json`）に保存され、10 秒ごとと終了時に flush されます |
 
-管理認証情報は設定された `[server.admin] header` または `x-api-key` で送信します。`read_keys` の認証情報は `GET` のみ使用できます。状態ファイルは変更のたびに非公開の一時ファイルを使ってアトミックに置換されます。ホームディレクトリを解決できない場合、デフォルトはメモリのみです。テーブルの追加・削除と状態パスはどちらも起動時に固定され、設定のリロードでは適用されず警告が記録されます。
+管理認証情報は設定された `[server.admin] header` または `x-api-key` で送信します。`read_keys` の認証情報は `GET` のみ使用できます。状態ファイルは変更のたびに非公開の一時ファイルを使ってアトミックに置換されます。ホームディレクトリを解決できない場合、デフォルトはメモリのみです。上限の適用と支出の計測は現在の設定を読むため、リロードでテーブルを削除すると即座に停止し、追加すると即座に開始します。spend-limit Admin API のルートと永続化は起動時に固定されます。テーブルを追加・削除してもルートは登録も削除もされず、状態パスを変えてもストアは移動しません。再起動までは、どちらの場合もリロード時に警告が記録されます。
 
 ### `[server.spend.pricing]`（オプション）
 
@@ -182,7 +182,7 @@ rate は upstream ごとに、最も具体的なものから順に一致しま�
 
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
-| `fail_closed_on_error` | `false` | プリンシパルのメーターを信頼できないとき（復元に失敗したカウンターレコード。そのウィンドウが終わるまで）: `false` はリクエストを転送して警告を記録、`true` は `429` `spend limit unavailable` で拒否 |
+| `fail_closed_on_error` | `false` | プリンシパルのメーターを信頼できないとき（復元に失敗したカウンターレコード。そのウィンドウが終わるまで）: `false` はリクエストを転送して警告を記録、`true` は上限のあるプリンシパルを `429` `spend limit unavailable` で拒否（上限のないプリンシパルは転送） |
 
 上限適用は `POST /v1/messages` に対して行われます（`count_tokens` は対象外）。プリンシパルは静的な `[server.auth]` トークン名、検証済み JWT のメール、または gateway ログインのメールで、`user` 上限の `user_id` とそのまま照合されます。認証情報を注入するが ID を持たないリクエストは `shunt:anonymous` を共有し、passthrough ルートのみのチェーンは適用も計測もされません。UTC の期間（日、月曜開始の週、月）ごとの上限は、そのプリンシパルの `user` 行、なければ `organization` 行（共有プールではなくユーザーごとのデフォルト）、それもなければ無制限です。`amount: null` の `user` 行は明示的な無制限です。チェックは予約を伴わない事前チェックなので、処理中のリクエストは上限を超えることがあります。上限に達したプリンシパルには `retry-after` と `x-should-retry: false` 付きの `429 billing_error`（`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`）が返り、上限のあるプリンシパルのレスポンスにはアップストリームのヘッダーの代わりにそのプリンシパル自身の `anthropic-ratelimit-unified-*` ヘッダーが付きます。受信 Codex エンドポイント（`[server.codex_endpoint]`）は、まだ適用も計測もされません（[#733](https://github.com/pleaseai/shunt/issues/733)）。`/audit`、監査・アイデンティティの保持スイープ、group scope は未実装です。詳細な動作は [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)（英語）を参照してください。
 

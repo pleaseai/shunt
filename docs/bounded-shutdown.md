@@ -41,6 +41,9 @@ an uninterruptible process would matter.
 The two budgets cover different work classes and are deliberately not the same
 number. A configured `shutdown_timeout_seconds = 30` means "up to 30 seconds of
 draining, then up to 5 seconds for blocking work" — 35 seconds, not a silent 60.
+When `[server.spend]` persists counters, the final counter flush runs between
+the two, bounded by its own fixed 5 seconds (`FINAL_SPEND_FLUSH_BOUND` in
+`src/main.rs`), so that worst case is 40 seconds (30 + 5 + 5), not 30 + 30 + 5.
 That figure bounds the drain plus Tokio teardown, not process exit: the Sentry
 and telemetry guards are dropped after `run` returns and flush on their own
 exporter timeouts, so termination can take slightly longer.

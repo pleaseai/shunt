@@ -16,7 +16,7 @@ use crate::{
     config::RateLimitsConfig,
     gateway::{
         spend::{
-            meter::RequestUsage,
+            meter::{window, RequestUsage},
             pricing::{PriceTable, Usage},
             store::Period,
         },
@@ -44,13 +44,15 @@ fn spent(tap: &SpendTap) -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    // The charge was recorded earlier than this read; if a day boundary fell
-    // between them it sits in the previous window. It lives in exactly one, so
-    // the larger reading is the charge.
+    // Charges were recorded earlier than this read. If a day boundary fell
+    // between them they are split over two windows, so sum; in one, count once.
     let meter = tap.stores.spend.meter();
-    meter
-        .spent(PRINCIPAL, Period::Daily, now)
-        .max(meter.spent(PRINCIPAL, Period::Daily, now - 120))
+    let current = meter.spent(PRINCIPAL, Period::Daily, now);
+    if window(Period::Daily, now).start == window(Period::Daily, now - 120).start {
+        current
+    } else {
+        current + meter.spent(PRINCIPAL, Period::Daily, now - 120)
+    }
 }
 
 /// The list price of `tokens` on the upstream model, computed through the

@@ -27,7 +27,7 @@ use shunt::{
         PricingConfig, PricingOverride, RouterConfig, SpendConfig, UpstreamAuth,
     },
     gateway::spend::{
-        meter::PERIODS,
+        meter::{window, PERIODS},
         pricing::{Rates, Usage},
     },
     server::{self, AppState},
@@ -334,12 +334,16 @@ fn spent(gateway: &Gateway) -> [u64; 3] {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    // A charge lives in exactly one window per period; across a day, week or
-    // month boundary since it was recorded it sits in the earlier one.
+    // Each charge lives in exactly one window per period. If a day, week or
+    // month boundary fell since the charges were recorded they are split over
+    // the two windows, so sum them; in one window, count it once.
     PERIODS.map(|period| {
-        meter
-            .spent(PRINCIPAL, period, now)
-            .max(meter.spent(PRINCIPAL, period, now - 120))
+        let current = meter.spent(PRINCIPAL, period, now);
+        if window(period, now).start == window(period, now - 120).start {
+            current
+        } else {
+            current + meter.spent(PRINCIPAL, period, now - 120)
+        }
     })
 }
 

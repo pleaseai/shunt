@@ -232,14 +232,13 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
     let next_spend = next.server.spend.as_ref();
     if previous_spend.is_some() != next_spend.is_some() {
         tracing::warn!(
-            "[server.spend] was enabled or disabled but requires a restart to register or drop spend-limit routes"
+            "[server.spend] was enabled or disabled; enforcement and metering follow the live config at once, but registering or dropping the spend-limit Admin API routes and counter persistence requires a restart"
         );
     } else if previous_spend.and_then(|spend| spend.state_path())
         != next_spend.and_then(|spend| spend.state_path())
     {
         tracing::warn!(
-            "[server.spend].state_path changed but requires a restart; spend-limit persistence is fixed at boot"
-        );
+            "[server.spend].state_path changed but requires a restart; spend-limit persistence is fixed at boot"        );
     }
     // Like `[server.admin]`, whether the inbound Responses routes are registered
     // is decided once at boot from the initial config. A hot edit that only

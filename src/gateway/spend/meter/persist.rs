@@ -217,7 +217,9 @@ fn hold(mut record: OpaqueRecord, now_secs: u64) -> (HeldRecord, bool) {
     let carried = record
         .value
         .get(CARRIED_UNTIL)
-        .and_then(serde_json::Value::as_u64);
+        .and_then(serde_json::Value::as_u64)
+        // A deadline no real clock could reach is hand-edited: treat it as absent.
+        .filter(|until| *until <= now_secs.saturating_add(MAX_FUTURE_SKEW));
     let deadline = carried.unwrap_or_else(|| lift_after(&record.value, now_secs));
     let expires_at = match record.value.as_object_mut() {
         Some(object) => {
@@ -232,6 +234,12 @@ fn hold(mut record: OpaqueRecord, now_secs: u64) -> (HeldRecord, bool) {
         expires_at: Some(expires_at),
     };
     (held, stamped)
+}
+
+/// True for a counter window past the retention horizon and already over; a
+/// window still open is never pruned, whatever the retention says.
+fn expired_window(period: Period, start: u64, cutoff: u64, now_secs: u64) -> bool {
+    start < cutoff && window(period, start).end <= now_secs
 }
 
 /// True for a carried-through record old enough to drop at the next flush. A
@@ -304,6 +312,29 @@ impl SpendMeter {
         Ok(())
     }
 
+    /// The in-memory half of [`flush_to`](Self::flush_to): prunes windows (and
+    /// carried records) past the retention horizon without writing a file.
+    /// Returns whether anything was removed. This is what a memory-only meter
+    /// runs on every tick, so its counters do not grow for the process
+    /// lifetime.
+    pub fn prune_to(&self, retention_months: u64, now_secs: u64) -> bool {
+        let cutoff = months_back_start(now_secs, retention_months);
+        let mut counters = self.counters.lock().expect("spend meter lock poisoned");
+        let before = counters.len();
+        counters.retain(|(_, period, start), _| !expired_window(*period, *start, cutoff, now_secs));
+        let mut pruned = counters.len() != before;
+        drop(counters);
+        let mut opaque = self
+            .persist
+            .opaque
+            .lock()
+            .expect("spend meter lock poisoned");
+        let before = opaque.len();
+        opaque.retain(|held| !opaque_expired(held, cutoff, now_secs));
+        pruned |= opaque.len() != before;
+        pruned
+    }
+
     /// Prunes windows that ended before the retention horizon on every call,
     /// then writes the counters to `path` if they changed since the last write
     /// or the prune removed anything. Returns whether a file was written. The
@@ -316,9 +347,8 @@ impl SpendMeter {
             let mut counters = self.counters.lock().expect("spend meter lock poisoned");
             let before = counters.len();
             // A window still open is never pruned, whatever the retention says.
-            counters.retain(|(_, period, start), _| {
-                !(*start < cutoff && window(*period, *start).end <= now_secs)
-            });
+            counters
+                .retain(|(_, period, start), _| !expired_window(*period, *start, cutoff, now_secs));
             pruned |= counters.len() != before;
             counters
                 .iter()
@@ -405,14 +435,23 @@ pub async fn restore(state: &AppState) -> io::Result<()> {
         })?
 }
 
-/// Writes changed counters off the async workers. Failure is logged and
-/// retried on the next tick; it never reaches a request.
+/// Writes changed counters off the async workers (or, memory-only, just
+/// prunes them). Failure is logged and retried on the next tick; it never
+/// reaches a request.
 pub async fn flush(state: &AppState) {
-    let Some(path) = path_of(state) else {
-        return;
-    };
     let months = retention_months(state);
     let stores = state.gateway_stores.clone();
+    let Some(path) = path_of(state) else {
+        // Memory-only: prune, write nothing.
+        let pruner = stores.clone();
+        if let Err(error) =
+            tokio::task::spawn_blocking(move || pruner.spend.meter().prune_to(months, now_secs()))
+                .await
+        {
+            tracing::warn!(%error, "spend counter pruner task panicked");
+        }
+        return;
+    };
     let _gate = stores.spend.meter().persist.gate.lock().await;
     let writer = stores.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -426,15 +465,15 @@ pub async fn flush(state: &AppState) {
     }
 }
 
-/// Spawns the debounced background flush loop. A no-op when memory-only.
+/// Spawns the debounced background flush loop. Memory-only, the same tick
+/// prunes and writes no file.
 pub fn spawn_flusher(state: AppState) {
-    if path_of(&state).is_none() {
-        return;
+    if path_of(&state).is_some() {
+        tracing::info!(
+            interval_secs = FLUSH_INTERVAL.as_secs(),
+            "spend counter persistence enabled"
+        );
     }
-    tracing::info!(
-        interval_secs = FLUSH_INTERVAL.as_secs(),
-        "spend counter persistence enabled"
-    );
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

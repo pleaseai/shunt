@@ -139,7 +139,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | `group_limit_mode` | `min` | 향후 그룹 제한 결정 모드. `min` 또는 `max` |
 | `state_path` | `~/.shunt/gateway-spend.json` | 제한과 감사 레코드를 저장하는 버전이 있는 JSON. `""`은 메모리 전용. meter 카운터는 형제 파일 `<stem>.counters.json`(기본값 `~/.shunt/gateway-spend.counters.json`)에 저장되며 10초마다와 종료 시 flush됨 |
 
-관리자 자격 증명은 구성된 `[server.admin] header` 또는 `x-api-key`로 보냅니다. `read_keys` 자격 증명은 `GET`만 사용할 수 있습니다. 상태 파일은 변경할 때마다 비공개 임시 파일로 원자적으로 교체됩니다. 홈 디렉터리를 확인할 수 없으면 기본값은 메모리 전용입니다. 테이블의 추가·제거와 상태 경로는 모두 부팅 시 고정되며, 구성 리로드는 적용 대신 경고를 기록합니다.
+관리자 자격 증명은 구성된 `[server.admin] header` 또는 `x-api-key`로 보냅니다. `read_keys` 자격 증명은 `GET`만 사용할 수 있습니다. 상태 파일은 변경할 때마다 비공개 임시 파일로 원자적으로 교체됩니다. 홈 디렉터리를 확인할 수 없으면 기본값은 메모리 전용입니다. 제한 적용과 지출 계측은 현재 구성을 읽으므로, 리로드로 테이블을 제거하면 즉시 멈추고 추가하면 즉시 시작됩니다. spend-limit Admin API 라우트와 영속화는 부팅 시 고정됩니다. 테이블을 추가하거나 제거해도 라우트가 등록되거나 빠지지 않고, 상태 경로를 바꿔도 저장소가 옮겨지지 않으며, 재시작 전까지 리로드는 두 경우 모두 경고를 기록합니다.
 
 ### `[server.spend.pricing]` (선택)
 
@@ -182,7 +182,7 @@ rate는 upstream 단위로 가장 구체적인 것부터 매칭됩니다. upstre
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
-| `fail_closed_on_error` | `false` | 주체의 meter를 신뢰할 수 없을 때(복원에 실패한 카운터 레코드, 해당 window가 끝날 때까지): `false`는 요청을 전달하고 경고를 기록, `true`는 `429` `spend limit unavailable`로 거부 |
+| `fail_closed_on_error` | `false` | 주체의 meter를 신뢰할 수 없을 때(복원에 실패한 카운터 레코드, 해당 window가 끝날 때까지): `false`는 요청을 전달하고 경고를 기록, `true`는 cap이 있는 주체에 대해 `429` `spend limit unavailable`로 거부(cap이 없는 주체는 전달) |
 
 제한은 `POST /v1/messages`에 적용됩니다(`count_tokens`는 제외). 주체(principal)는 정적 `[server.auth]` 토큰 이름, 검증된 JWT 이메일, 또는 gateway 로그인 이메일이며 `user` 한도의 `user_id`와 그대로 일치시킵니다. 자격 증명을 주입하지만 신원이 없는 요청은 `shunt:anonymous`를 공유하고, passthrough 라우트만으로 이루어진 체인은 제한도 계측도 하지 않습니다. UTC 기간(일, 월요일 시작 주, 월)별 상한은 해당 주체의 `user` 행, 없으면 `organization` 행(공유 풀이 아니라 사용자별 기본값), 그것도 없으면 무제한입니다. `amount: null`인 `user` 행은 명시적 무제한입니다. 검사는 예약 없는 사전 검사이므로 진행 중인 요청은 상한을 넘을 수 있습니다. 상한에 도달한 주체는 `retry-after`와 `x-should-retry: false`가 붙은 `429 billing_error`(`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`)를 받고, 상한이 있는 주체의 응답에는 업스트림 헤더 대신 해당 주체 자신의 `anthropic-ratelimit-unified-*` 헤더가 붙습니다. 인바운드 Codex 엔드포인트(`[server.codex_endpoint]`)는 아직 제한도 계측도 하지 않습니다([#733](https://github.com/pleaseai/shunt/issues/733)). `/audit`, 감사·아이덴티티 보존 sweep, group scope는 아직 구현하지 않았습니다. 전체 동작은 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(영문)를 참고하세요.
 

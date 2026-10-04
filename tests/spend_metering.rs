@@ -30,7 +30,7 @@ use shunt::{
         PricingConfig, PricingOverride, ProviderKind, SpendConfig, UpstreamAuth,
     },
     gateway::spend::{
-        meter::{ANONYMOUS_PRINCIPAL, PERIODS},
+        meter::{window, ANONYMOUS_PRINCIPAL, PERIODS},
         pricing::{Rates, Usage, WEB_SEARCH_LIST_PRICE_FEMTO_USD},
     },
     server::{self, AppState},
@@ -224,12 +224,16 @@ async fn env() -> common::EnvVars {
 fn spent(gateway: &Gateway, principal: &str) -> [u64; 3] {
     let meter = gateway.state.gateway_stores.spend.meter();
     let now = now();
-    // A charge lives in exactly one window per period; across a day, week or
-    // month boundary since it was recorded it sits in the earlier one.
+    // Each charge lives in exactly one window per period. If a day, week or
+    // month boundary fell since the charges were recorded they are split over
+    // the two windows, so sum them; in one window, count it once.
     PERIODS.map(|period| {
-        meter
-            .spent(principal, period, now)
-            .max(meter.spent(principal, period, now - 120))
+        let current = meter.spent(principal, period, now);
+        if window(period, now).start == window(period, now - 120).start {
+            current
+        } else {
+            current + meter.spent(principal, period, now - 120)
+        }
     })
 }
 

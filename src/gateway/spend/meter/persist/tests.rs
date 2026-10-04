@@ -161,6 +161,22 @@ fn an_idle_flush_prunes_a_restored_expired_window() {
 }
 
 #[test]
+fn a_memory_only_prune_drops_expired_windows_and_writes_no_file() {
+    let path = temp_path("memory-only");
+    let meter = SpendMeter::default();
+    let old = WED - 600 * DAY;
+    meter.record("alice", old, 1);
+    meter.record("alice", WED, 4);
+
+    assert!(meter.prune_to(13, WED));
+
+    assert_eq!(meter.spent("alice", Period::Monthly, old), 0);
+    assert_eq!(meter.spent("alice", Period::Monthly, WED), 4);
+    assert!(!meter.prune_to(13, WED), "nothing left to prune");
+    assert!(!path.exists(), "pruning never creates a file");
+}
+
+#[test]
 fn lowering_retention_prunes_on_the_next_flush_without_new_charges() {
     let path = temp_path("retention-lowered");
     let meter = SpendMeter::default();
@@ -261,6 +277,22 @@ fn a_record_that_already_carries_its_deadline_does_not_dirty_the_restored_state(
     write(&path, &json!({"version": 1, "counters": [bad]}));
     let meter = restored(&path, WED);
     assert!(!meter.flush_to(&path, 13, WED).unwrap());
+}
+
+#[test]
+fn an_implausible_carried_until_is_replaced_by_the_computed_deadline() {
+    let path = temp_path("carried-until-huge");
+    let bad = json!({"principal": "mallory", "period": "daily", "femto": 1,
+                     "carried_until": u64::MAX});
+    write(&path, &json!({"version": 1, "counters": [bad]}));
+    let meter = restored(&path, WED);
+    let end = window(Period::Daily, WED).end;
+    assert_eq!(meter.check(&[], "mallory", end - 1), Check::Unavailable);
+    assert_eq!(meter.check(&[], "mallory", end), Check::Allow);
+
+    assert!(meter.flush_to(&path, 13, end - 1).unwrap());
+    let written = read(&path)["counters"][0].clone();
+    assert_eq!(written["carried_until"], end);
 }
 
 #[test]

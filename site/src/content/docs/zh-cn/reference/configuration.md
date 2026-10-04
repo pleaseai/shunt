@@ -139,7 +139,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | `group_limit_mode` | `min` | `min` 或 `max`;用于后续的组限制解析 |
 | `state_path` | `~/.shunt/gateway-spend.json` | 保存限制与审计记录的带版本 JSON 文件;`""` 表示仅内存。计量器的计数保存在同级文件 `<stem>.counters.json`(默认 `~/.shunt/gateway-spend.counters.json`),每 10 秒及关闭时刷写 |
 
-请通过配置的 `[server.admin] header` 或 `x-api-key` 发送管理员凭据;`read_keys` 凭据只能使用 `GET`。每次修改都会通过私有临时文件原子替换状态文件。无法解析 home 目录时,默认仅使用内存。该表的增删与状态路径都在启动时固定,配置重载只会记录警告而不会应用。
+请通过配置的 `[server.admin] header` 或 `x-api-key` 发送管理员凭据;`read_keys` 凭据只能使用 `GET`。每次修改都会通过私有临时文件原子替换状态文件。无法解析 home 目录时,默认仅使用内存。限额执行与支出计量读取的是当前配置,因此重载时删除该表会立即停止它们,添加该表会立即启动它们。spend-limit Admin API 路由与持久化在启动时固定:增删该表不会注册或移除路由,修改状态路径也不会迁移存储;在重启之前,两种情况下重载都只会记录警告。
 
 ### `[server.spend.pricing]`(可选)
 
@@ -182,7 +182,7 @@ cache_write = 4.125
 
 | 键 | 默认 | 含义 |
 | :-- | :-- | :-- |
-| `fail_closed_on_error` | `false` | 当某个主体的计量器不可信时(有计数记录恢复失败,直到其窗口结束):`false` 转发请求并记录警告;`true` 以 `429` `spend limit unavailable` 拒绝 |
+| `fail_closed_on_error` | `false` | 当某个主体的计量器不可信时(有计数记录恢复失败,直到其窗口结束):`false` 转发请求并记录警告;`true` 对设有上限的主体以 `429` `spend limit unavailable` 拒绝(无上限的主体照常转发) |
 
 限制实施作用于 `POST /v1/messages`(不含 `count_tokens`)。主体(principal)是静态 `[server.auth]` 令牌名、已验证的 JWT 邮箱或 gateway 登录邮箱,并与 `user` 限制的 `user_id` 逐字匹配;注入凭据但没有身份的请求共用 `shunt:anonymous`,仅由 passthrough 路由组成的链既不实施也不计量。每个 UTC 周期(日、周一起始的周、月)的上限依次取该主体的 `user` 行、`organization` 行(按人的默认值,而非共享池),都没有则不限。`amount: null` 的 `user` 行表示显式不限。检查是不做预留的事前检查,因此处理中的请求可能超出上限。达到上限的主体会收到带 `retry-after` 与 `x-should-retry: false` 的 `429 billing_error`(`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`),有上限的主体的响应中,上游的头部会被该主体自己的 `anthropic-ratelimit-unified-*` 头部取代。入站 Codex 端点(`[server.codex_endpoint]`)目前既不实施也不计量([#733](https://github.com/pleaseai/shunt/issues/733))。`/audit`、审计与身份保留清理以及 group scope 尚未实现。完整行为见 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(英文)。
 

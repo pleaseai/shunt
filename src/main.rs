@@ -556,6 +556,11 @@ fn prompt_claude_mode() -> anyhow::Result<LoginMode> {
 /// blocking work" — not a silent 60s.
 const BLOCKING_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Budget for the last spend-counter flush once the drain has ended. A small
+/// fixed constant like [`BLOCKING_SHUTDOWN_GRACE`], so it adds a known 5s to
+/// the worst case instead of a second `shutdown_timeout_seconds`.
+const FINAL_SPEND_FLUSH_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Drives `future` to completion on `runtime`, then bounds runtime teardown
 /// instead of letting the runtime drop.
 ///
@@ -788,8 +793,10 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // the dropped server future, so spend from responses still open at the
     // deadline bills into memory only after this flush and is not persisted.
     // Persist the counters once more, bounded by the same deadline, so a
-    // restart enforces against what was spent before it.
-    shunt::gateway::spend::meter::persist::flush_final(&state, shutdown_timeout).await;
+    // restart enforces against what was spent before it. Bounded by a small
+    // fixed budget, not a second `shutdown_timeout`, so a timed-out drain
+    // cannot double the documented worst case (docs/bounded-shutdown.md).
+    shunt::gateway::spend::meter::persist::flush_final(&state, FINAL_SPEND_FLUSH_BOUND).await;
     Ok(())
 }
 

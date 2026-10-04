@@ -74,7 +74,10 @@ pub(crate) fn enforce(
                 .unwrap_or_default();
             Err(refusal(message, Some(retry_after), headers))
         }
-        (Check::Unavailable, _) if spend.enforcement.fail_closed_on_error => {
+        // Fail-closed refuses only a principal with a cap to enforce; with no
+        // cap in any period (`binding` is `None`) there is nothing to protect,
+        // so it falls through to the forward arm below.
+        (Check::Unavailable, Some(_)) if spend.enforcement.fail_closed_on_error => {
             tracing::warn!(
                 principal,
                 "spend state unavailable; refusing (fail_closed_on_error)"

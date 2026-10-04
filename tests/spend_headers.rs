@@ -302,7 +302,20 @@ async fn set_cap(gateway: &Gateway, user: &str, period: &str, cents: u64) {
     assert_eq!(response.status(), StatusCode::OK, "cap must be created");
 }
 
+/// Waits out a UTC day edge that is under 5s away. The weekly and monthly
+/// edges coincide with a daily one, so this covers all three periods: a seed
+/// recorded now and a request served moments later then share their windows.
+fn clear_of_window_edge() {
+    let remaining = window(Period::Daily, now()).end.saturating_sub(now());
+    if remaining < 5 {
+        std::thread::sleep(
+            std::time::Duration::from_secs(remaining) + std::time::Duration::from_millis(50),
+        );
+    }
+}
+
 fn seed(gateway: &Gateway, principal: &str, cents: u64) {
+    clear_of_window_edge();
     gateway.state.gateway_stores.spend.meter().record(
         principal,
         now(),

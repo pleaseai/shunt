@@ -204,7 +204,20 @@ fn org() -> Value {
     json!({"type": "organization"})
 }
 
+/// Waits out a UTC day edge that is under 5s away. The weekly and monthly
+/// edges coincide with a daily one, so this covers all three periods: a seed
+/// recorded now and a request served moments later then share their windows.
+fn clear_of_window_edge() {
+    let remaining = window(Period::Daily, now()).end.saturating_sub(now());
+    if remaining < 5 {
+        std::thread::sleep(
+            std::time::Duration::from_secs(remaining) + std::time::Duration::from_millis(50),
+        );
+    }
+}
+
 fn seed(gateway: &Gateway, principal: &str, cents: u64) {
+    clear_of_window_edge();
     gateway.state.gateway_stores.spend.meter().record(
         principal,
         now(),
@@ -449,6 +462,7 @@ async fn fail_closed_refusal_carries_the_blocked_message() {
     let _env = env().await;
     let upstream = upstream("/v1/messages", 0).await;
     let gateway = start(config(&upstream.uri(), true, spend(Some(BLOCKED), true))).await;
+    set_cap(&gateway, org(), "daily", 100).await;
     gateway
         .state
         .gateway_stores
@@ -463,6 +477,24 @@ async fn fail_closed_refusal_carries_the_blocked_message() {
         refusal_message(response).await,
         format!("spend limit unavailable \u{2014} {BLOCKED}")
     );
+}
+
+#[tokio::test]
+async fn fail_closed_forwards_an_uncapped_principal_whose_meter_is_unavailable() {
+    let _env = env().await;
+    let upstream = upstream("/v1/messages", 1).await;
+    let gateway = start(config(&upstream.uri(), true, spend(None, true))).await;
+    gateway
+        .state
+        .gateway_stores
+        .spend
+        .meter()
+        .mark_unavailable("alice");
+
+    let response = messages(&gateway, "mapped-model", Some("tok-a")).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
 }
 
 /// The refusal precedes the router judge, so an over-cap caller spends no judge
