@@ -1,0 +1,38 @@
+src/config/router.rs
+  s_ce69ea718ceeae::t_1e0d2914f2ec5d 250-258,261-263,267-277,284
+src/config.rs
+  s_ce69ea718ceeae::t_e29b0427e67a10 4124-4130
+  s_ce69ea718ceeae::t_4ecef156070791 8189-8199,8203-8208,8296-8297,8353
+  s_ce69ea718ceeae::t_857507fb07efcc 8200-8202
+  s_ce69ea718ceeae::t_ed1dc5e6871cd8 8149-8150,8152-8166,8291-8295,8348-8352
+  s_ce69ea718ceeae::t_17cbd6e85104f9 4111-4114,4116-4118
+  s_ce69ea718ceeae::t_f8823d0b60845f 4063-4065
+  s_ce69ea718ceeae::t_ea20e75bca746b 5049-5050,8374-8376
+  s_ce69ea718ceeae::t_0819aae9e61fd8 4066,5047-5048
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_ce69ea718ceeae::t_6ef3601b7ef357 175
+site/src/content/docs/ja/reference/configuration.md
+  s_ce69ea718ceeae::t_6ef3601b7ef357 175
+site/src/content/docs/ko/reference/configuration.md
+  s_ce69ea718ceeae::t_6ef3601b7ef357 175
+site/src/content/docs/reference/configuration.md
+  s_ce69ea718ceeae::t_6ef3601b7ef357 236
+docs/gateway-spend-limits.md
+  s_ce69ea718ceeae::t_6ef3601b7ef357 44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f48e2c1cb7b0c18b020611a0da62657c1d47041a",
+  "prompts": {},
+  "sessions": {
+    "s_ce69ea718ceeae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf3847db-e201-4d79-9b6a-befd4591b630",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
