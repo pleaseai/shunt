@@ -111,7 +111,7 @@ When `blocked_message` is set it follows after an em dash (`... UTC) — Request
 The meter records a charge for each billed response, on the daily, weekly and monthly counters of the principal at once.
 
 - **Coverage.** Streamed and non-streamed responses, translated adapters, and committed streams. The charge is priced on the **upstream** model that served the turn, through the pricing table above. Server-side web search is added per request.
-- **Per route.** Metering is decided per serving route: a call served by a passthrough route is not metered, even inside a chain that also holds an injecting route. Enforcement is decided per request.
+- **Per route.** Metering is decided per serving route: a call served by a passthrough route or by a `type = "noop"` route is not metered, even inside a chain that also holds an injecting route. Enforcement is decided per request.
 - **Only 2xx is billed.** An error response is not generated output.
 - **Aborted streams.** The streamed `usage` is read from the upstream's cumulative counts. When the final output count never arrives (a client disconnect, an upstream cut, or an adapter-synthesized end after a cut), output is billed at a floor of one token per 4 characters of text delivered to the client, rounded up. Input is billed from the `message_start` value; for translated Responses routes that is the local prompt estimate under the default `count_tokens = "tiktoken"`, and 0 for providers set to `count_tokens = "estimate"`.
 - **Unreadable non-streamed bodies.** A non-streamed body larger than 4 MiB, cut, or without a readable `usage` is billed a byte floor of one output token per 4 bytes. A readable `usage` that omits `output_tokens` keeps its other counts, and its output is billed at one token per 4 characters of the message's generated content, the same floor as an aborted stream.
@@ -130,7 +130,7 @@ For a principal with a cap in any period, shunt strips every upstream `anthropic
 | `anthropic-ratelimit-unified-status` | `allowed`, `allowed_warning` (above 75%) or, on the refusal, `rejected` |
 | `anthropic-ratelimit-unified-reset`, `...-overage-reset` | Unix seconds of the binding cap's reset |
 | `anthropic-ratelimit-unified-overage-utilization` | Utilization of the binding cap, rounded to two decimals and capped at 0.99 while below the cap; can exceed 1 once the cap is exceeded |
-| `anthropic-ratelimit-unified-overage-surpassed-threshold` | `0.75`, `0.95` or `1`, only once the utilization is strictly above that threshold |
+| `anthropic-ratelimit-unified-overage-surpassed-threshold` | `0.75` once the utilization is strictly above 75%, `0.95` once it is strictly above 95%, and `1` once spend reaches the cap; absent at or below 75% |
 | `anthropic-ratelimit-unified-representative-claim`, `...-overage-status` | `overage` and the status again; 2xx only |
 | `anthropic-ratelimit-unified-overage-period` | Refusal only: the exceeded period |
 | `anthropic-ratelimit-unified-overage-disabled-reason` | `org_spend_cap_reached` on the over-cap refusal, `fetch_error` on the fail-closed refusal |

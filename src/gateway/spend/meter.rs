@@ -79,6 +79,12 @@ pub struct RequestUsage {
     pub web_search_requests: u64,
 }
 
+/// How many distinct unpriced model ids [`SpendMeter`] remembers having warned
+/// about. Model ids come from requests, so the set is capped rather than
+/// allowed to grow with every id a client sends; ids past the cap are metered
+/// silently.
+const MAX_WARNED_MODELS: usize = 256;
+
 /// Counters by principal, then by `(period, window start)`: a lookup borrows
 /// the principal as `&str`, and one lock read covers every period.
 type Counters = HashMap<String, HashMap<(Period, u64), u64>>;
@@ -176,6 +182,7 @@ impl SpendMeter {
     }
 
     /// Decides whether `principal` may spend, given the stage-1 `limits`.
+    #[cfg(test)]
     pub fn check(&self, limits: &[SpendLimit], principal: &str, now_secs: u64) -> Check {
         self.assess(limits, principal, now_secs).check
     }
@@ -239,12 +246,19 @@ impl SpendMeter {
         )
     }
 
-    /// True exactly once per model id for the life of the process.
+    /// True exactly once per model id for the life of the process, for the
+    /// first [`MAX_WARNED_MODELS`] distinct ids. Once that many are held, a
+    /// further id is neither remembered nor warned about; it is still priced
+    /// at the unknown-model rate.
     fn first_sighting(&self, id: &str) -> bool {
-        self.warned_models
+        let mut warned = self
+            .warned_models
             .lock()
-            .expect("spend meter lock poisoned")
-            .insert(id.to_string())
+            .expect("spend meter lock poisoned");
+        if warned.len() >= MAX_WARNED_MODELS {
+            return false;
+        }
+        warned.insert(id.to_string())
     }
 
     fn warn_unknown_model(&self, provider: &str, client_model: &str, upstream_model: &str) {

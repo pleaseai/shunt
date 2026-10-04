@@ -233,6 +233,24 @@ fn unknown_model_warns_once_per_id() {
 }
 
 #[test]
+fn warned_models_stop_growing_at_the_cap_and_pricing_is_unchanged() {
+    let meter = SpendMeter::default();
+    let table = PriceTable::from_config(None);
+    for n in 0..MAX_WARNED_MODELS {
+        assert!(meter.first_sighting(&format!("filler-{n}")));
+    }
+    let unknown_rate = meter.cost(&table, "up", "filler-0", "filler-0", &usage());
+    assert!(!meter.first_sighting("one-too-many"));
+    assert_eq!(meter.warned_models.lock().unwrap().len(), MAX_WARNED_MODELS);
+    assert_eq!(
+        meter.cost(&table, "up", "past-cap", "past-cap", &usage()),
+        unknown_rate
+    );
+    assert_eq!(unknown_rate, 36 * FEMTO_PER_USD + FEMTO_PER_USD * 3 / 4);
+    assert_eq!(meter.warned_models.lock().unwrap().len(), MAX_WARNED_MODELS);
+}
+
+#[test]
 fn reset_label_names_the_utc_midnight_of_the_given_day() {
     assert_eq!(reset_label(0), "1970-01-01 00:00 UTC");
     // 2026-10-04 12:34:56 UTC, mid-day: the label is still that date's midnight.

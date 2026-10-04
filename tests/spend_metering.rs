@@ -398,6 +398,12 @@ async fn a_classifier_request_is_billed_on_the_classifier_model_it_was_sent_to()
     let gateway = start(config_with(&anth.uri(), &resp.uri(), true, true)).await;
     let response = classifier_request(&gateway, true).await;
     assert_eq!(response.status(), StatusCode::OK);
+    // The header names the route's own upstream model, as on main; only the
+    // bill follows the classifier pin.
+    assert_eq!(
+        response.headers()["x-gateway-upstream-model"],
+        "upstream-billed"
+    );
     response.bytes().await.unwrap();
     assert_eq!(spent(&gateway, PRINCIPAL), [expected(CLASSIFIER); 3]);
 
@@ -414,6 +420,10 @@ async fn a_classifier_request_is_billed_on_the_classifier_model_it_was_sent_to()
     let gateway = start(config_with(&anth.uri(), &resp.uri(), true, true)).await;
     let response = classifier_request(&gateway, false).await;
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["x-gateway-upstream-model"],
+        "upstream-billed"
+    );
     response.bytes().await.unwrap();
     assert_eq!(spent(&gateway, PRINCIPAL), [expected(CLASSIFIER); 3]);
 }
