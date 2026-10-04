@@ -341,6 +341,65 @@ async fn every_advance_status_reaches_the_next_upstream() {
 }
 
 #[tokio::test]
+async fn a_capped_claude_pool_advances_to_the_next_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_FAILOVER_CAPPED", "fake-oauth-failover-capped");
+    let claude = MockServer::start().await;
+    // Served once, reporting 5h utilization above the account's cap.
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("anthropic-ratelimit-unified-5h-utilization", "0.9")
+                .set_body_string("from-claude"),
+        )
+        .expect(1)
+        .mount(&claude)
+        .await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("from-fallback"))
+        .expect(1)
+        .mount(&fallback)
+        .await;
+    let capped = shunt::config::AccountConfig {
+        name: "capped".to_string(),
+        token_env: Some("SHUNT_TEST_FAILOVER_CAPPED".to_string()),
+        uuid: Some("uuid-capped".to_string()),
+        max_utilization_5h: Some(0.5),
+        ..Default::default()
+    };
+    let config = chain_config(
+        vec![
+            upstream(
+                "claude",
+                claude.uri(),
+                ProviderKind::Anthropic,
+                UpstreamAuth::Map(AuthMap::ClaudeOauth {
+                    account: None,
+                    accounts: Some(vec![shunt::config::AccountSelection::Inline(capped)]),
+                }),
+            ),
+            passthrough("fallback", fallback.uri()),
+        ],
+        &[("claude", "model-a"), ("fallback", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let first = post(&gateway).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(first.text().await.unwrap(), "from-claude");
+
+    let second = post(&gateway).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(second.text().await.unwrap(), "from-fallback");
+    claude.verify().await;
+    fallback.verify().await;
+}
+
+#[tokio::test]
 async fn connect_failure_advances_but_400_returns_immediately() {
     if !can_bind_loopback() {
         return;

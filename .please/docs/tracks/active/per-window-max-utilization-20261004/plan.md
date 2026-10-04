@@ -147,6 +147,9 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
 - [x] (2026-10-04 KST) T002 Exclude capped accounts from pool selection
   Evidence: `cargo test --all-features --lib accounts::` -> 218 passed, 0 failed (new AE1/AE3-AE6, sticky, reset re-entry, pool-level cap tests)
   Note: `cap_exclusion()` / `CapExclusion { eligible_at }` in src/accounts.rs are the reusable verdict for T003/T005 (eligible_at = max reset of capping windows, None if any capping window has no known reset); a pool-level sibling query is left to T003
+- [x] (2026-10-04 KST) T003 Return a cap-exhaustion 429 from the Claude OAuth pool
+  Evidence: `cargo test --all-features --test multi_account --test failover` -> 34 + 19 passed, 0 failed; `cargo test --all-features --lib accounts::` -> 219 passed
+  Note: `AccountPool::cap_exhaustion` (src/accounts.rs) and `adapters::cap_exhausted_error` (src/adapters/mod.rs) are the reusable pieces for T004; the `capped` reason is a new `record_pool_rotation` argument, so src/metrics.rs needed no change
 
 ## Decision Log
 

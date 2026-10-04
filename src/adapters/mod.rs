@@ -60,6 +60,46 @@ pub struct AdapterError {
     pub failure: Option<AdapterFailure>,
 }
 
+/// The gateway-owned error for a pool whose every selectable account is held
+/// out by a `max_utilization` cap. It is a 429 in the Anthropic error shape
+/// carrying `failure: UpstreamStatus(429)`, so the `[[upstreams]]` chain
+/// advances past it like an upstream rate limit (a `None` failure would stop the
+/// chain). `retry-after` is the whole seconds until the earliest eligibility,
+/// when known.
+pub(crate) fn cap_exhausted_error(
+    provider: &str,
+    exhaustion: crate::accounts::CapExhaustion,
+) -> AdapterError {
+    let message = format!(
+        "all accounts for provider '{provider}' are at their max_utilization cap for this request"
+    );
+    let mut response = crate::error::ShuntError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limit_error",
+        message.clone(),
+    )
+    .into_response();
+    if let Some(eligible_at) = exhaustion.eligible_at {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let seconds = eligible_at.saturating_sub(now).max(1);
+        if let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string()) {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
+    }
+    AdapterError {
+        message,
+        response: Box::new(response),
+        failure: Some(AdapterFailure::UpstreamStatus(
+            StatusCode::TOO_MANY_REQUESTS,
+        )),
+    }
+}
+
 /// The byte cap a bounded call's upstream reply crossed.
 ///
 /// Carries no partial body — the point of the cap is that the bytes past it are

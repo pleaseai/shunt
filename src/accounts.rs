@@ -797,6 +797,50 @@ impl AccountPool {
             .and_then(|health| health.last_probe_at)
     }
 
+    /// Whether a hard `max_utilization` cap excluded at least one non-disabled
+    /// account for this request, and the earliest known time one becomes
+    /// eligible again. Callers ask only after [`select_order`] came back empty,
+    /// to tell a cap-driven exhaustion from a pause or outage. `None` means no
+    /// account is capped; `Some(None)` means capped with no known reset.
+    pub(crate) fn cap_exhaustion(
+        &self,
+        provider: &str,
+        accounts: &[AccountConfig],
+        model: Option<&str>,
+        pool: Option<&PoolConfig>,
+    ) -> Option<CapExhaustion> {
+        let unix_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let is_fable = is_fable_model(model);
+        let mut entries = self.entries.lock().expect("account health lock poisoned");
+        let mut any = false;
+        let mut earliest: Option<u64> = None;
+        let mut expired = false;
+        for account in accounts.iter().filter(|account| !account.disabled) {
+            let Some(health) = entries.get_mut(&account_key(provider, account)) else {
+                continue;
+            };
+            expired |= expire_stale_quota(&mut health.quota, unix_now);
+            if let Some(exclusion) = cap_exclusion(&health.quota, account, is_fable, pool) {
+                any = true;
+                earliest = match (earliest, exclusion.eligible_at) {
+                    (current, None) => current,
+                    (None, known) => known,
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                };
+            }
+        }
+        drop(entries);
+        if expired {
+            self.mark_dirty();
+        }
+        any.then_some(CapExhaustion {
+            eligible_at: earliest,
+        })
+    }
+
     fn select_order_inner(
         &self,
         provider: &str,
@@ -3020,10 +3064,16 @@ fn resolved_max_utilization(
     account_window.or(account.max_utilization).or(pool_default)
 }
 
+/// A pool-wide summary of hard-cap exclusions for one request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CapExhaustion {
+    /// Unix seconds of the earliest known eligibility among capped accounts.
+    pub(crate) eligible_at: Option<u64>,
+}
+
 /// Why an account is excluded from selection by a hard cap, for callers that
 /// report cap exhaustion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // `eligible_at` is read by the cap-exhaustion error (T003/T005)
 pub(crate) struct CapExclusion {
     /// Unix seconds at which every capping window has reset: the max reset
     /// across them, or `None` when any capping window has no known reset.
@@ -9162,6 +9212,38 @@ mod tests {
                 .len(),
             4
         );
+    }
+
+    #[test]
+    fn cap_exhaustion_reports_earliest_eligibility_and_ignores_uncapped_pools() {
+        let pool = AccountPool::new();
+        let mut accts = vec![account("a"), account("b"), account("c")];
+        let now = unix_now();
+        // Nothing capped (and one account merely paused): no exhaustion.
+        accts[2].max_utilization_5h = Some(0.5);
+        assert_eq!(pool.cap_exhaustion("anthropic", &accts, OPUS, None), None);
+        set_quota(&pool, "anthropic", &accts[0], |q| {
+            q.utilization_5h = Some(0.9);
+            q.reset_5h = Some(now + 7_200);
+        });
+        // Unconfigured cap on account a: still not capped.
+        assert_eq!(pool.cap_exhaustion("anthropic", &accts, OPUS, None), None);
+        accts[0].max_utilization_5h = Some(0.5);
+        accts[1].max_utilization_5h = Some(0.5);
+        set_quota(&pool, "anthropic", &accts[1], |q| {
+            q.utilization_5h = Some(0.9);
+            q.reset_5h = Some(now + 1_800);
+        });
+        assert_eq!(
+            pool.cap_exhaustion("anthropic", &accts, OPUS, None),
+            Some(CapExhaustion {
+                eligible_at: Some(now + 1_800)
+            })
+        );
+        // A disabled capped account does not count.
+        accts[0].disabled = true;
+        accts[1].disabled = true;
+        assert_eq!(pool.cap_exhaustion("anthropic", &accts, OPUS, None), None);
     }
 
     #[test]
