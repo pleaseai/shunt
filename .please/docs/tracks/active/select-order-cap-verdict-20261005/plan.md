@@ -87,6 +87,13 @@ Rejected: keep `cap_exhaustion` and take both locks in one critical section. Tha
 
 ## Progress
 
+- [x] (2026-10-05 KST) T001 Return the cap verdict from the selection pass
+  Evidence: `cargo test --all-features --lib accounts::` -> 223 passed, 0 failed (includes new select_order_with_cap_verdict_is_a_value_from_the_selection_pass)
+
 ## Decision Log
+
+- Decision: `cap_exhaustion` stays non-test as a shim over `select_order_inner(..).2`
+  Rationale: `adapters::cap_exhausted` (src/adapters/mod.rs:103) still calls it, so `#[cfg(test)]` broke the non-test build; T002 makes it `#[cfg(test)]` once the last production caller is gone. Until then each call also advances the round-robin counter.
+  Date/Author: 2026-10-05 / luna-implementer
 
 ## Surprises & Discoveries
