@@ -1,0 +1,48 @@
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_9f901e59727f87::t_ac2c4348f61ae7 187
+src/gateway/spend/meter/tests.rs
+  s_9f901e59727f87::t_376910305ba21a 236-252
+  s_d11ceb05a7eaa6::t_beb65da66c9218 235
+docs/gateway-spend-limits.md
+  s_9f901e59727f87::t_2c67478d344dea 133
+  s_9f901e59727f87::t_b5bdaa379b92c2 114
+site/src/content/docs/ko/reference/configuration.md
+  s_9f901e59727f87::t_ac2c4348f61ae7 187
+src/gateway/spend/meter.rs
+  s_9f901e59727f87::t_da359e881a0aa6 82-87
+  s_9f901e59727f87::t_9f90c8a1875055 249-252,258-261
+  s_9f901e59727f87::t_43e3fdee39e751 185
+  s_9f901e59727f87::t_66737bed09e148 254-255,257
+site/src/content/docs/reference/configuration.md
+  s_9f901e59727f87::t_ac2c4348f61ae7 248
+site/src/content/docs/ja/reference/configuration.md
+  s_9f901e59727f87::t_ac2c4348f61ae7 187
+tests/spend_metering.rs
+  s_9f901e59727f87::t_2dd2123e2bbd29 401-402,405,425
+  s_9f901e59727f87::t_6b767cdcf04f77 403-404,406
+  s_9f901e59727f87::t_25917a552249e4 423-424,426
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4b13fc2af2e9b1c1482f620acc99b11d7aa1a002",
+  "prompts": {},
+  "sessions": {
+    "s_9f901e59727f87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "321677c8-cff9-4c24-9b5d-93c0c797c39d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_d11ceb05a7eaa6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f3aa2d5-53ff-484e-aaef-3a905644ff1c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
