@@ -71,7 +71,7 @@ A cooldown-based design was rejected during brainstorming. It would make a cap c
 
 ## Tasks
 
-- [ ] T001 Add max_utilization keys to account and pool config (file: src/config.rs)
+- [x] T001 Add max_utilization keys to account and pool config (file: src/config.rs)
   Validation: TOML with all eight keys parses and round-trips; a value outside `[0.0, 1.0]` or NaN fails `Config::validate` naming the offending key; a config with none of the keys loads unchanged; `shunt.toml.example` documents the pool defaults in comments and still parses.
   Method: `cargo test --all-features config::` plus the example-file load test
 - [ ] T002 Exclude capped accounts from pool selection (depends on T001, file: src/accounts.rs)
@@ -139,6 +139,12 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
 
 - [ ] AE1–AE6 from the requirements doc each map to a passing test in T002–T004.
 
+## Progress
+
+- [x] (2026-10-04 19:52 KST) T001 Add max_utilization keys to account and pool config — 918ae2c8
+  Evidence: `cargo test --all-features config::` → 415 passed, 0 failed; `example_config_files_still_load` passed
+  Note: added `#[allow(clippy::large_enum_variant)]` on `AccountSelection` (src/config/upstreams.rs) — the inline `AccountConfig` variant grew past clippy's limit; parsed once at boot
+
 ## Decision Log
 
 - Decision: Exclude at the `rotation` filter rather than in the ordering buckets.
@@ -153,3 +159,8 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
 - Decision: The architecture pass was done inline instead of by a separate architect agent.
   Rationale: The exploration report pinned the constraints (sticky fast path, reprobe assertion, Fable window swap, failover contract), and the brainstorm already settled the strategy, so no competing approach was open.
   Date/Author: 2026-10-04 / Claude
+
+## Surprises & Discoveries
+
+- `tests/codex_multi_account.rs::pool_http_dispatch_seeds_message_start_input_token_estimate` fails under `--all-features` (3/3 solo). It is a known feature-gated/load-dependent failure on main, not attributable to this track.
+- `--all-features` builds need `PYO3_PYTHON=/usr/local/bin/python3` in this worktree.
