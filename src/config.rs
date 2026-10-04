@@ -232,6 +232,19 @@ pub struct PoolConfig {
     pub default_threshold_7d: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_threshold_fable: Option<f64>,
+    /// Hard utilization cap common to all windows: an account at or above it
+    /// is EXCLUDED from selection for requests the window governs (unlike the
+    /// soft `default_threshold*`, which only reorders). Resolution: account
+    /// window key -> account `max_utilization` -> `default_max_utilization_<X>`
+    /// -> `default_max_utilization` -> no cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization_5h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization_7d: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization_fable: Option<f64>,
     /// Avoid an account projected to exhaust a soft threshold before reset.
     #[serde(default)]
     pub burn_rate_avoidance: bool,
@@ -293,6 +306,10 @@ impl Default for PoolConfig {
             default_threshold_5h: None,
             default_threshold_7d: None,
             default_threshold_fable: None,
+            default_max_utilization: None,
+            default_max_utilization_5h: None,
+            default_max_utilization_7d: None,
+            default_max_utilization_fable: None,
             burn_rate_avoidance: false,
             sort_by_reset: false,
             usage_refresh_seconds: None,
@@ -2002,6 +2019,18 @@ pub struct AccountConfig {
     pub threshold_7d: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold_fable: Option<f64>,
+    /// Hard utilization cap for every window: the account is EXCLUDED from
+    /// selection for requests that window governs once at or above it (unlike
+    /// the soft `threshold*`, which only reorders). Overrides the pool's
+    /// `default_max_utilization*`; the per-window keys beat this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization_5h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization_7d: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization_fable: Option<f64>,
     /// Selection priority among available accounts: lower is preferred.
     /// Applies to Claude, Codex, and Kimi pools alike.
     #[serde(default = "default_account_priority")]
@@ -2036,6 +2065,10 @@ impl Default for AccountConfig {
             threshold_5h: None,
             threshold_7d: None,
             threshold_fable: None,
+            max_utilization: None,
+            max_utilization_5h: None,
+            max_utilization_7d: None,
+            max_utilization_fable: None,
             priority: default_account_priority(),
             disabled: false,
             store_entry: false,
@@ -4305,6 +4338,19 @@ impl Config {
                 ("default_threshold_5h", pool.default_threshold_5h),
                 ("default_threshold_7d", pool.default_threshold_7d),
                 ("default_threshold_fable", pool.default_threshold_fable),
+                ("default_max_utilization", pool.default_max_utilization),
+                (
+                    "default_max_utilization_5h",
+                    pool.default_max_utilization_5h,
+                ),
+                (
+                    "default_max_utilization_7d",
+                    pool.default_max_utilization_7d,
+                ),
+                (
+                    "default_max_utilization_fable",
+                    pool.default_max_utilization_fable,
+                ),
             ] {
                 if let Some(value) = value {
                     if !(0.0..=1.0).contains(&value) {
@@ -4749,6 +4795,10 @@ impl Config {
                     ("threshold_5h", account.threshold_5h),
                     ("threshold_7d", account.threshold_7d),
                     ("threshold_fable", account.threshold_fable),
+                    ("max_utilization", account.max_utilization),
+                    ("max_utilization_5h", account.max_utilization_5h),
+                    ("max_utilization_7d", account.max_utilization_7d),
+                    ("max_utilization_fable", account.max_utilization_fable),
                 ] {
                     if let Some(value) = value {
                         if !(0.0..=1.0).contains(&value) {
@@ -6867,6 +6917,7 @@ mod tests {
                 .extract()
                 .unwrap();
         assert_eq!(bare.threshold, None);
+        assert_eq!(bare.max_utilization, None);
         assert_eq!(bare.priority, 100, "serde default");
         assert!(!bare.disabled);
     }
@@ -7050,6 +7101,107 @@ confidence_threshold = 0.6
             };
             assert_eq!(pool.storm_ramp_initial(), expected, "{configured:?}");
         }
+    }
+
+    #[test]
+    fn max_utilization_keys_parse_and_round_trip() {
+        let pool: PoolConfig = figment::Figment::from(figment::providers::Toml::string(
+            "default_max_utilization = 0.9\ndefault_max_utilization_5h = 0.8\n\
+             default_max_utilization_7d = 0.7\ndefault_max_utilization_fable = 0.6",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(pool.default_max_utilization, Some(0.9));
+        assert_eq!(pool.default_max_utilization_5h, Some(0.8));
+        assert_eq!(pool.default_max_utilization_7d, Some(0.7));
+        assert_eq!(pool.default_max_utilization_fable, Some(0.6));
+        let again: PoolConfig = figment::Figment::from(figment::providers::Toml::string(
+            &toml::to_string(&pool).unwrap(),
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(again.default_max_utilization_fable, Some(0.6));
+
+        let account: AccountConfig = figment::Figment::from(figment::providers::Toml::string(
+            "name = \"a\"\nmax_utilization = 0.9\nmax_utilization_5h = 0.8\n\
+             max_utilization_7d = 0.7\nmax_utilization_fable = 0.6",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(account.max_utilization, Some(0.9));
+        assert_eq!(account.max_utilization_5h, Some(0.8));
+        assert_eq!(account.max_utilization_7d, Some(0.7));
+        assert_eq!(account.max_utilization_fable, Some(0.6));
+        let again: AccountConfig = figment::Figment::from(figment::providers::Toml::string(
+            &toml::to_string(&account).unwrap(),
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(again.max_utilization_5h, Some(0.8));
+
+        let serialized = toml::to_string(&PoolConfig::default()).unwrap();
+        assert!(!serialized.contains("max_utilization"), "{serialized}");
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_max_utilization() {
+        for key in [
+            "default_max_utilization",
+            "default_max_utilization_5h",
+            "default_max_utilization_7d",
+            "default_max_utilization_fable",
+        ] {
+            for bad in [1.5, -0.1, f64::NAN] {
+                let mut pool = PoolConfig::default();
+                match key {
+                    "default_max_utilization" => pool.default_max_utilization = Some(bad),
+                    "default_max_utilization_5h" => pool.default_max_utilization_5h = Some(bad),
+                    "default_max_utilization_7d" => pool.default_max_utilization_7d = Some(bad),
+                    _ => pool.default_max_utilization_fable = Some(bad),
+                }
+                let mut config = Config::default();
+                config.server.pool = Some(pool);
+                assert!(matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::InvalidPoolThreshold { key: found, .. } if found == key
+                ));
+            }
+        }
+        let mut config = Config::default();
+        config.server.pool = Some(PoolConfig {
+            default_max_utilization: Some(1.0),
+            default_max_utilization_5h: Some(0.0),
+            ..Default::default()
+        });
+        config.validate().unwrap();
+
+        for key in [
+            "max_utilization",
+            "max_utilization_5h",
+            "max_utilization_7d",
+            "max_utilization_fable",
+        ] {
+            for bad in [1.01, -0.5, f64::NAN] {
+                let mut config = claude_oauth_config();
+                let mut backup = account("backup");
+                match key {
+                    "max_utilization" => backup.max_utilization = Some(bad),
+                    "max_utilization_5h" => backup.max_utilization_5h = Some(bad),
+                    "max_utilization_7d" => backup.max_utilization_7d = Some(bad),
+                    _ => backup.max_utilization_fable = Some(bad),
+                }
+                config.providers.get_mut("anthropic").unwrap().accounts = vec![backup];
+                assert!(matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::InvalidAccountThreshold { key: found, .. } if found == key
+                ));
+            }
+        }
+        let mut config = claude_oauth_config();
+        let mut backup = account("backup");
+        backup.max_utilization = Some(0.9);
+        config.providers.get_mut("anthropic").unwrap().accounts = vec![backup];
+        config.validate().unwrap();
     }
 
     #[test]

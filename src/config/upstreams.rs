@@ -110,6 +110,10 @@ pub enum AuthMap {
     },
 }
 
+// Parsed once at boot and absorbed into `ProviderConfig::accounts`, so the
+// inline variant's size (grown by the `max_utilization*` caps) costs nothing
+// on any hot path; boxing it would only churn every constructor and match.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum AccountSelection {

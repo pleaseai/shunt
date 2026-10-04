@@ -98,6 +98,14 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # default_threshold_5h = 0.95    # per-window overrides
 # default_threshold_7d = 0.9
 # default_threshold_fable = 0.85 # Fable-only 7d_oi bucket
+# Hard caps (unlike the soft thresholds, which only reorder): an account at or
+# above the cap is EXCLUDED from selection for requests that window governs.
+# Resolves: account max_utilization_<X> -> account max_utilization ->
+# default_max_utilization_<X> -> default_max_utilization -> no cap.
+# default_max_utilization = 0.95
+# default_max_utilization_5h = 0.9
+# default_max_utilization_7d = 0.95
+# default_max_utilization_fable = 0.9
 # burn_rate_avoidance = false    # avoid projected exhaustion before reset
 # usage_refresh_seconds = 300    # (disabled by default; 0 disables) poll usage
 #                                    APIs for refreshable Claude, Codex, and
