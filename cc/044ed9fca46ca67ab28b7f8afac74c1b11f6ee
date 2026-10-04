@@ -1,0 +1,25 @@
+.please/docs/tracks/active/per-window-max-utilization-20261004/plan.md
+  s_afd8879efb217f::t_d83c23d095c132 1-155
+.please/docs/brainstorms/2026-10-04-per-window-max-utilization-requirements.md
+  s_afd8879efb217f::t_778e397970d919 1-148
+.please/docs/tracks/active/per-window-max-utilization-20261004/metadata.json
+  s_afd8879efb217f::t_83c4d49296e063 1-11
+.please/docs/tracks.jsonl
+  s_afd8879efb217f::t_83c4d49296e063 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cc044ed9fca46ca67ab28b7f8afac74c1b11f6ee",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
