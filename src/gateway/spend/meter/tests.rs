@@ -55,7 +55,7 @@ fn windows_roll_at_utc_boundaries() {
 fn monthly_window_handles_year_end_and_leap_february() {
     // 2026-12-31 23:59:59 -> resets 2027-01-01 00:00 (1_798_761_600).
     assert_eq!(window(Period::Monthly, 1_798_761_599).end, 1_798_761_600);
-    // 2028-02-15 (leap year): resets 2028-03-01 00:00 UTC = 1_835_481_600.
+    // 2028-02-16 (leap year): resets 2028-03-01 00:00 UTC = 1_835_481_600.
     assert_eq!(window(Period::Monthly, 1_834_272_000).end, 1_835_481_600);
 }
 

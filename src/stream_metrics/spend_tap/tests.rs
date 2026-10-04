@@ -116,9 +116,10 @@ fn a_reported_final_count_is_billed_as_reported() {
 
 #[test]
 fn a_cut_stream_bills_its_delivered_text_at_four_chars_a_token() {
-    // 9 + 5 chars = 14, so 4 tokens rounding up — above message_start's 1.
-    let spend = stream_spend(&[start(100, 1), text("123456789"), text("héllo")]);
-    assert_eq!(spend.billable().tokens.output_tokens, 4);
+    // 8 chars (9 bytes, because of the two-byte `é`) = 2 tokens; counting bytes
+    // would bill 3. Above message_start's 1 either way.
+    let spend = stream_spend(&[start(100, 1), text("1234567é")]);
+    assert_eq!(spend.billable().tokens.output_tokens, 2);
     assert_eq!(spend.billable().tokens.input_tokens, 100);
 }
 
@@ -399,6 +400,30 @@ async fn an_error_json_body_is_not_billed() {
     let body = JsonSpendBody::new(json_body(MESSAGE), tap.clone(), StatusCode::BAD_REQUEST);
     to_bytes(Body::new(body), usize::MAX).await.unwrap();
     assert_eq!(spent(&tap), 0);
+}
+
+/// A large CRLF-delimited capture is billed from its frames, not just its
+/// head: the boundary scan stops at each frame instead of walking the rest of
+/// the capture (no timing assertion; a quadratic scan would just never end).
+#[test]
+fn a_large_crlf_capture_bills_every_frame() {
+    let tap = tap();
+    let mut capture = format!("{}\r\n\r\n", start(40, 1));
+    for _ in 0..20_000 {
+        capture.push_str(&text("ab"));
+        capture.push_str("\r\n\r\n");
+    }
+    capture.push_str(&delta(7));
+    capture.push_str("\r\n\r\n");
+    tap.bill_sse(StatusCode::OK, capture.as_bytes());
+    assert_eq!(
+        spent(&tap),
+        priced(Usage {
+            input_tokens: 40,
+            output_tokens: 7,
+            ..Usage::default()
+        })
+    );
 }
 
 /// A gated capture billed after the fact: whole frames only, the partial

@@ -336,6 +336,7 @@ async fn counter_flushes_leave_the_caps_file_byte_unchanged() {
     assert_eq!(std::fs::read(&state_path).unwrap(), caps_before);
     let counters: Value = serde_json::from_slice(&std::fs::read(&counters_path).unwrap()).unwrap();
     assert_eq!(counters["version"], 1);
+    clear_of_window_edge();
     let daily = window(Period::Daily, now()).start;
     assert!(counters["counters"]
         .as_array()
@@ -354,6 +355,7 @@ async fn an_unreadable_counter_record_fails_only_its_principal_after_restart() {
     let _env = env().await;
     let dir = temp_dir("malformed");
     let state_path = dir.join("gateway-spend.json");
+    clear_of_window_edge();
     let daily = window(Period::Daily, now()).start;
     std::fs::write(
         dir.join("gateway-spend.counters.json"),
@@ -425,8 +427,13 @@ async fn an_unreadable_counters_envelope_aborts_the_restore() {
 async fn empty_state_path_keeps_counters_in_memory() {
     let _env = env().await;
     let dir = temp_dir("memory-only");
+    // Where a regression that resolved the empty path against the CWD would
+    // write the counters file.
+    let stray = std::path::Path::new("gateway-spend.counters.json");
+    assert!(!stray.exists(), "a stray counters file in the CWD");
     let upstream = upstream("/v1/messages", 0).await;
     let gateway = boot(&upstream, std::path::Path::new(""), false).await;
+    assert_eq!(gateway.state.gateway_stores.spend.state_path(), None);
     seed(&gateway, "alice", 5);
 
     persist::flush(&gateway.state).await;
@@ -442,10 +449,11 @@ async fn empty_state_path_keeps_counters_in_memory() {
         5 * FEMTO_USD_PER_CENT as u64
     );
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    assert!(!stray.exists(), "memory-only wrote a counters file");
 }
 
 #[tokio::test]
-async fn the_final_flush_persists_what_the_periodic_tick_has_not() {
+async fn the_final_flush_persists_counters_no_flush_has_written_yet() {
     let _env = env().await;
     let dir = temp_dir("final");
     let state_path = dir.join("gateway-spend.json");
@@ -457,4 +465,14 @@ async fn the_final_flush_persists_what_the_periodic_tick_has_not() {
 
     let counters = dir.join("gateway-spend.counters.json");
     assert!(counters.exists(), "final flush wrote the counters file");
+    let written: Value = serde_json::from_slice(&std::fs::read(&counters).unwrap()).unwrap();
+    assert!(written["counters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|record| {
+            record["principal"] == "alice"
+                && record["period"] == "daily"
+                && record["femto"] == 9 * FEMTO_USD_PER_CENT as u64
+        }));
 }

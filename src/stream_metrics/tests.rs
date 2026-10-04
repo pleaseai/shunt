@@ -1105,3 +1105,48 @@ fn find_boundary_picks_the_earliest_delimiter_of_either_kind() {
     assert_eq!(find_boundary(b"a\r\nb\nc"), None);
     assert_eq!(find_boundary(b""), None);
 }
+
+/// The original two-search implementation, kept as the oracle.
+fn find_boundary_reference(bytes: &[u8]) -> Option<(usize, usize)> {
+    let lf = bytes
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|index| (index, 2));
+    let crlf = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| (index, 4));
+    match (lf, crlf) {
+        (Some(left), Some(right)) => Some(if left.0 <= right.0 { left } else { right }),
+        (Some(boundary), None) | (None, Some(boundary)) => Some(boundary),
+        (None, None) => None,
+    }
+}
+
+#[test]
+fn find_boundary_handles_partial_and_mixed_crlf_boundaries() {
+    // An incomplete CRLF boundary at the end is no boundary yet.
+    assert_eq!(find_boundary(b"a\r\n\r"), None);
+    assert_eq!(find_boundary(b"a\r\n"), None);
+    assert_eq!(find_boundary(b"\r\n\r\n"), Some((0, 4)));
+    assert_eq!(find_boundary(b"\n\r\n\r\n"), Some((1, 4)));
+    assert_eq!(find_boundary(b"\r\n\n"), Some((1, 2)));
+    assert_eq!(find_boundary(b"\r\n\r\n\r\n\r\n"), Some((0, 4)));
+}
+
+#[test]
+fn find_boundary_matches_the_reference_on_every_short_input() {
+    let alphabet = *b"\r\na";
+    for length in 0..=8_u32 {
+        for code in 0..3_usize.pow(length) {
+            let bytes: Vec<u8> = (0..length)
+                .map(|digit| alphabet[(code / 3_usize.pow(digit)) % 3])
+                .collect();
+            assert_eq!(
+                find_boundary(&bytes),
+                find_boundary_reference(&bytes),
+                "{bytes:?}"
+            );
+        }
+    }
+}

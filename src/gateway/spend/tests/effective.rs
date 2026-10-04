@@ -3,7 +3,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
-use crate::{config::InboundAuthConfig, server::AppState};
+use crate::{
+    config::InboundAuthConfig,
+    gateway::spend::{meter::window, store::Period},
+    server::AppState,
+};
 
 const CENT: u64 = 10_000_000_000_000;
 const PATH: &str = "/v1/organizations/spend_limits/effective";
@@ -47,7 +51,20 @@ fn names(body: &Value) -> Vec<String> {
     seen
 }
 
+/// Waits out a UTC day edge under 5s away (weekly and monthly edges coincide
+/// with a daily one), so a charge recorded now and a request served moments
+/// later share their windows.
+fn clear_of_window_edge() {
+    let remaining = window(Period::Daily, now()).end.saturating_sub(now());
+    if remaining < 5 {
+        std::thread::sleep(
+            std::time::Duration::from_secs(remaining) + std::time::Duration::from_millis(50),
+        );
+    }
+}
+
 fn record(state: &AppState, principal: &str, femto: u64) {
+    clear_of_window_edge();
     state
         .gateway_stores
         .spend

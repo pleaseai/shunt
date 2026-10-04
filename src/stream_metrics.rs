@@ -778,23 +778,22 @@ pub(crate) fn content_type_is_event_stream(value: &axum::http::HeaderValue) -> b
 }
 
 fn find_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
-    let lf = bytes
-        .windows(2)
-        .position(|window| window == b"\n\n")
-        .map(|index| (index, 2));
-    // A CRLF boundary that starts at or before the LF index ends within four
-    // bytes of it, so a later one can never win; bounding the search keeps a
-    // long LF-only stream linear.
-    let searched = lf.map_or(bytes, |(index, _)| &bytes[..(index + 4).min(bytes.len())]);
-    let crlf = searched
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|index| (index, 4));
-    match (lf, crlf) {
-        (Some(left), Some(right)) => Some(if left.0 <= right.0 { left } else { right }),
-        (Some(boundary), None) | (None, Some(boundary)) => Some(boundary),
-        (None, None) => None,
+    // One forward pass over the `\n` bytes: the first one that completes either
+    // delimiter is the earliest boundary (`\n\n` starts at it, `\r\n\r\n` one
+    // byte before it, and the two cannot both complete at the same `\n`), so
+    // the scan stops at the boundary and never walks the rest of the buffer.
+    let mut from = 0;
+    while let Some(offset) = bytes[from..].iter().position(|&byte| byte == b'\n') {
+        let at = from + offset;
+        if bytes.get(at + 1) == Some(&b'\n') {
+            return Some((at, 2));
+        }
+        if at >= 1 && bytes[at - 1] == b'\r' && bytes.get(at + 1..at + 3) == Some(b"\r\n") {
+            return Some((at - 1, 4));
+        }
+        from = at + 1;
     }
+    None
 }
 
 /// Parse a complete frame's `event:` and `data:` field values under the SSE

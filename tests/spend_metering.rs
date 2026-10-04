@@ -524,9 +524,9 @@ async fn a_committed_stream_is_billed_on_the_winner_not_the_failed_primary() {
 }
 
 #[tokio::test]
-async fn a_stream_cut_before_its_final_usage_bills_a_floor_from_delivered_text() {
+async fn a_stream_ending_without_its_final_usage_bills_a_floor_from_delivered_text() {
     let _env = env().await;
-    // message_start and 15 chars of text, then the upstream hangs up.
+    // message_start and 15 chars of text, then the stream ends without a message_delta.
     let cut = sse(&[
         (
             "message_start",

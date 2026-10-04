@@ -150,7 +150,7 @@ fn an_idle_flush_prunes_a_restored_expired_window() {
     let meter = restored(&path, WED);
     assert!(starts_in(&path).contains(&old));
 
-    // 13 months on, the old window is past retention; no record() since boot.
+    // 100 days on, the 13-month horizon has moved past the old window; no record() since boot.
     assert!(meter.flush_to(&path, 13, WED + 100 * DAY).unwrap());
 
     assert!(!starts_in(&path).contains(&old));
@@ -211,6 +211,11 @@ fn a_startless_opaque_record_flags_then_expires_at_its_lift_deadline() {
     assert!(meter.flush_to(&path, 13, end).unwrap());
 
     assert!(!read(&path)["counters"].as_array().unwrap().contains(&bad));
+    assert!(!read(&path)["counters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|record| record["principal"] == "mallory"));
     assert_eq!(meter.check(&[], "mallory", end), Check::Allow);
     assert!(restored(&path, end).check(&[], "mallory", end) == Check::Allow);
 }
@@ -332,6 +337,11 @@ fn a_far_future_opaque_record_flags_then_expires_at_its_lift_deadline() {
     assert!(meter.flush_to(&path, 13, end).unwrap());
 
     assert!(!read(&path)["counters"].as_array().unwrap().contains(&bad));
+    assert!(!read(&path)["counters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|record| record["principal"] == "erin"));
     assert_eq!(meter.check(&[], "erin", end), Check::Allow);
 }
 
