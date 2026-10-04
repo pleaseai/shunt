@@ -254,7 +254,11 @@ pub(crate) async fn committed_stream(
     let (provider, model, upstream_model) = (
         first.provider.clone(),
         first.model.clone(),
-        first.upstream_model.clone(),
+        crate::adapters::anthropic::effective_upstream_model(
+            &request.state.config,
+            first,
+            request.body.json(),
+        ),
     );
     let injects_credential = !request.state.config.route_is_passthrough(first);
     let outcome = crate::proxy::chain_stream::forward_chain_stream(

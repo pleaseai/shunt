@@ -156,7 +156,11 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
         );
         let provider = route.provider.clone();
         let model = route.model.clone();
-        let upstream_model = route.upstream_model.clone();
+        let upstream_model = crate::adapters::anthropic::effective_upstream_model(
+            &state.config,
+            &route,
+            body.as_ref().expect("request body is present").json(),
+        );
         let injects_credential = !is_passthrough_route(&state, &route);
         let attempt_started_at = Instant::now();
         // Move the buffered body into the final attempt instead of cloning it. Within

@@ -28,7 +28,7 @@ pub fn window(period: Period, now_secs: u64) -> Window {
         Period::Weekly => {
             // Day 0 (1970-01-01) was a Thursday, so Monday sits 3 days later.
             let since_monday = (days + 3) % 7;
-            let monday = days - since_monday;
+            let monday = days.saturating_sub(since_monday);
             Window {
                 start: monday * DAY,
                 end: (monday + 7) * DAY,

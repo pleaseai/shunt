@@ -368,6 +368,35 @@ async fn an_unreadable_counter_record_fails_only_its_principal_after_restart() {
 }
 
 #[tokio::test]
+async fn a_weekly_record_before_the_first_epoch_monday_is_isolated_not_fatal() {
+    let _env = env().await;
+    let dir = temp_dir("weekly-epoch");
+    let state_path = dir.join("gateway-spend.json");
+    std::fs::write(
+        dir.join("gateway-spend.counters.json"),
+        json!({"version": 1, "counters": [
+            {"principal": "alice", "period": "weekly", "start": 0, "femto": 1},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let upstream = upstream("/v1/messages", 0).await;
+    let gateway = start(config(&upstream.uri(), true, spend(&state_path, false))).await;
+
+    assert!(persist::restore(&gateway.state).await.is_ok());
+    assert_eq!(
+        gateway
+            .state
+            .gateway_stores
+            .spend
+            .meter()
+            .spent("alice", Period::Weekly, 0),
+        0,
+        "the malformed record is carried opaquely, not counted"
+    );
+}
+
+#[tokio::test]
 async fn an_unreadable_counters_envelope_aborts_the_restore() {
     let _env = env().await;
     let dir = temp_dir("envelope");

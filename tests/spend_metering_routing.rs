@@ -551,3 +551,90 @@ async fn a_gated_turn_captured_from_a_passthrough_tier_is_not_billed() {
     assert_eq!(spent(&gateway), [JUDGE.cost(); 3]);
     upstream.verify().await;
 }
+
+/// An Anthropic upstream that commits SSE headers, sends a prompt-usage frame
+/// and 20 chars of text, then keeps the connection alive with pings forever:
+/// the turn never reaches its final usage, so `gated_max_duration_ms` is what
+/// ends it.
+async fn endless_weak_stream() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buffer = [0u8; 16384];
+        let _ = socket.read(&mut buffer).await;
+        let chunk = |payload: &str| format!("{:x}\r\n{payload}\r\n", payload.len());
+        let start = json!({"type": "message_start", "message": {
+            "id": "msg_weak", "type": "message", "role": "assistant",
+            "model": WEAK.model, "content": [],
+            "usage": {"input_tokens": WEAK.input, "output_tokens": 1}}});
+        let delta = json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": "0123456789abcdefghij"}});
+        let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                    transfer-encoding: chunked\r\n\r\n";
+        let mut out = head.to_string();
+        out += &chunk(&format!("event: message_start\ndata: {start}\n\n"));
+        out += &chunk(&format!("event: content_block_delta\ndata: {delta}\n\n"));
+        if socket.write_all(out.as_bytes()).await.is_err() {
+            return;
+        }
+        let ping = chunk("event: ping\ndata: {\"type\":\"ping\"}\n\n");
+        while socket.write_all(ping.as_bytes()).await.is_ok() {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// A streamed weak capture that the outer `gated_max_duration_ms` cancels
+/// mid-read is still billed, once, for what it received: the prompt usage and
+/// the delivered-text floor (20 chars = 5 tokens).
+#[tokio::test]
+async fn a_streamed_capture_cut_by_the_duration_bound_is_billed_once() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let upstream = MockServer::start().await;
+    JUDGE
+        .mock(
+            verdict(json!({"escalate": false, "reason": "progressing"})),
+            0,
+        )
+        .mount(&upstream)
+        .await;
+    STRONG
+        .mock(STRONG.sse_reply("STRONG-ANSWER"), 1)
+        .mount(&upstream)
+        .await;
+    let router = ESCALATION_ROUTER.replace(
+        "[escalation]",
+        "gated_idle_ms = 5000\ngated_max_duration_ms = 600\n\n[escalation]",
+    );
+    let mut config = config(&upstream, &router);
+    let weak_url = endless_weak_stream().await;
+    config
+        .providers
+        .get_mut(WEAK.upstream)
+        .expect("the weak provider exists")
+        .base_url = weak_url;
+    let gateway = start(config).await;
+
+    let response = turn(&gateway, true).await;
+    let status = response.status();
+    let heads = format!("{:?}", response.headers());
+    let text = response.text().await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{heads} {text}");
+    assert!(text.contains("STRONG-ANSWER"), "{text}");
+
+    let (input, output, cache_read, cache_write) = WEAK.rates;
+    let weak_partial = Rates::from_usd_per_million(input, output, cache_read, cache_write)
+        .cost_femto_usd(&Usage {
+            input_tokens: WEAK.input,
+            output_tokens: 5,
+            ..Usage::default()
+        });
+    assert_eq!(spent(&gateway), [weak_partial + STRONG.cost(); 3]);
+    upstream.verify().await;
+}

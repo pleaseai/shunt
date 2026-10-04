@@ -736,8 +736,9 @@ pub(crate) fn observe_served(
             return response;
         };
         let status = response.status();
+        let truncated = response.extensions().get::<UpstreamTruncated>().is_some();
         let (parts, body) = response.into_parts();
-        let body = Body::new(spend_tap::JsonSpendBody::new(body, tap, status));
+        let body = Body::new(spend_tap::JsonSpendBody::new(body, tap, status).truncated(truncated));
         return Response::from_parts(parts, body);
     }
     let status = response.status();

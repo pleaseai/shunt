@@ -113,7 +113,7 @@ The meter records a charge for each billed response, on the daily, weekly and mo
 - **Only 2xx is billed.** An error response is not generated output.
 - **Aborted streams.** The streamed `usage` is read from the upstream's cumulative counts. When the final output count never arrives (a client disconnect, an upstream cut, or an adapter-synthesized end after a cut), output is billed at a floor of one token per 4 characters of text delivered to the client, rounded up.
 - **Unreadable non-streamed bodies.** A non-streamed body larger than 4 MiB, cut, or without a readable `usage` is billed a byte floor of one output token per 4 bytes.
-- **Side calls.** Router judge, classifier and escalation calls, and gated turns, are metered exactly once against the requesting principal.
+- **Side calls.** Router judge, classifier and escalation calls, and gated turns, are metered exactly once against the requesting principal. A gated streamed capture that `gated_max_duration_ms` cuts is billed for what it received. An Anthropic request pinned to the provider's `classifier_model` is priced on that model; a translated reply marked truncated bills at least the delivered-text floor.
 
 Known unmetered cases: a router judge reply that is truncated, times out, or exceeds its size bound, and a non-streamed gated capture that was cut.
 

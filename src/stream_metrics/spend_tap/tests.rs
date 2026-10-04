@@ -329,6 +329,35 @@ async fn an_unreadable_or_cut_json_body_bills_a_floor_not_zero() {
 }
 
 #[tokio::test]
+async fn a_truncated_json_message_bills_the_delivered_text_floor() {
+    const CUT: &[u8] = br#"{"type":"message","content":[{"type":"text","text":"abcdefghijklmnopqrst"}],"usage":{"input_tokens":10,"output_tokens":0}}"#;
+    let tap = tap();
+    let body = JsonSpendBody::new(json_body(CUT), tap.clone(), StatusCode::OK).truncated(true);
+    to_bytes(Body::new(body), usize::MAX).await.unwrap();
+    assert_eq!(
+        spent(&tap),
+        priced(Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Usage::default()
+        }),
+        "20 delivered chars floor to 5 output tokens"
+    );
+
+    let tap = self::tap();
+    let body = JsonSpendBody::new(json_body(CUT), tap.clone(), StatusCode::OK);
+    to_bytes(Body::new(body), usize::MAX).await.unwrap();
+    assert_eq!(
+        spent(&tap),
+        priced(Usage {
+            input_tokens: 10,
+            ..Usage::default()
+        }),
+        "an unmarked message bills its parsed usage unchanged"
+    );
+}
+
+#[tokio::test]
 async fn an_error_json_body_is_not_billed() {
     let tap = tap();
     let body = JsonSpendBody::new(json_body(MESSAGE), tap.clone(), StatusCode::BAD_REQUEST);

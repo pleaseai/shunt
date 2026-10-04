@@ -122,7 +122,7 @@ impl SpendTap {
     /// byte floor when that is unreadable. Only a `2xx` reply is billed.
     pub(crate) fn bill_json(&self, status: StatusCode, body: &[u8]) {
         if status.is_success() {
-            self.record(&json_usage(Some(body), body.len() as u64));
+            self.record(&json_usage(Some(body), body.len() as u64, false));
         }
     }
 
@@ -363,6 +363,9 @@ struct JsonSpend {
     bytes: u64,
     bound: usize,
     overflowed: bool,
+    /// The adapter synthesized this message from an upstream that ended
+    /// early, so its reported output count is not the real one.
+    truncated: bool,
 }
 
 impl JsonSpendBody {
@@ -380,8 +383,18 @@ impl JsonSpendBody {
                 bytes: 0,
                 bound,
                 overflowed: false,
+                truncated: false,
             }),
         }
+    }
+
+    /// Marks the reply as synthesized after an upstream cut, so its output is
+    /// billed at no less than the delivered-content floor.
+    pub(super) fn truncated(mut self, truncated: bool) -> Self {
+        if let Some(spend) = self.spend.as_mut() {
+            spend.truncated = truncated;
+        }
+        self
     }
 
     fn settle(&mut self) {
@@ -413,14 +426,16 @@ impl JsonSpend {
             return;
         }
         let kept = (!self.overflowed).then_some(self.kept.as_slice());
-        self.tap.record(&json_usage(kept, self.bytes));
+        self.tap
+            .record(&json_usage(kept, self.bytes, self.truncated));
     }
 }
 
 /// A whole JSON message's billable usage: its `usage` block when `kept`
 /// holds a body that parses with one, otherwise `ceil(bytes / 4)` output
-/// tokens.
-fn json_usage(kept: Option<&[u8]>, bytes: u64) -> RequestUsage {
+/// tokens. A `truncated` message additionally raises the output to the floor
+/// of its delivered content, since its output count was synthesized.
+fn json_usage(kept: Option<&[u8]>, bytes: u64, truncated: bool) -> RequestUsage {
     let parsed = kept
         .and_then(|kept| serde_json::from_slice::<UsageHolder>(kept).ok())
         .and_then(|holder| holder.usage);
@@ -429,7 +444,35 @@ fn json_usage(kept: Option<&[u8]>, bytes: u64) -> RequestUsage {
         Some(fields) => fields.apply_to(&mut usage),
         None => usage.tokens.output_tokens = floor_tokens(bytes),
     }
+    if truncated {
+        let floor = floor_tokens(kept.and_then(content_chars).unwrap_or(bytes));
+        usage.tokens.output_tokens = usage.tokens.output_tokens.max(floor);
+    }
     usage
+}
+
+/// Characters of generated content (text, thinking, tool input) in a whole
+/// Anthropic message, or `None` when the body has no readable `content`.
+fn content_chars(kept: &[u8]) -> Option<u64> {
+    let value = serde_json::from_slice::<serde_json::Value>(kept).ok()?;
+    let blocks = value.get("content")?.as_array()?;
+    Some(
+        blocks
+            .iter()
+            .map(|block| {
+                let text = |key: &str| {
+                    block
+                        .get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .map_or(0, |text| text.chars().count() as u64)
+                };
+                let input = block
+                    .get("input")
+                    .map_or(0, |input| input.to_string().chars().count() as u64);
+                text("text") + text("thinking") + input
+            })
+            .sum(),
+    )
 }
 
 impl http_body::Body for JsonSpendBody {

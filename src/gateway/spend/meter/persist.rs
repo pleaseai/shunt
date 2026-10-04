@@ -148,7 +148,10 @@ fn load(path: &Path, now_secs: u64) -> io::Result<Option<Loaded>> {
 /// A typed record is trusted only if its start is the first instant of a real
 /// window of its period and is not from the future.
 fn is_sane(record: &CounterRecord, now_secs: u64) -> bool {
+    // The first Unix-epoch Monday is day 4; an earlier weekly start is no window.
+    let before_first_monday = record.period == Period::Weekly && record.start < 4 * DAY;
     record.start <= now_secs.saturating_add(MAX_FUTURE_SKEW)
+        && !before_first_monday
         && window(record.period, record.start).start == record.start
 }
 

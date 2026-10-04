@@ -771,6 +771,12 @@ pub(super) async fn forward_chain_stream(
                             };
                             let provider = route.provider.clone();
                             let model = route.model.clone();
+                            let upstream_model =
+                                crate::adapters::anthropic::effective_upstream_model(
+                                    &state.config,
+                                    &route,
+                                    attempt_body.json(),
+                                );
                             let outcome = match route.adapter {
                                 AdapterKind::Responses => {
                                     crate::adapters::responses::chain_attempt(
@@ -803,16 +809,11 @@ pub(super) async fn forward_chain_stream(
                                     // caller's own credential: not billed.
                                     let injects = !state.config.route_is_passthrough(&route);
                                     if let Some(tap) = &spend {
-                                        tap.set_target(
-                                            &provider,
-                                            &model,
-                                            &route.upstream_model,
-                                            injects,
-                                        );
+                                        tap.set_target(&provider, &model, &upstream_model, injects);
                                     }
                                     winner_injects_slot
                                         .store(injects, std::sync::atomic::Ordering::Relaxed);
-                                    route.upstream_model.clone_into(
+                                    upstream_model.clone_into(
                                         &mut winner_upstream_slot
                                             .lock()
                                             .unwrap_or_else(std::sync::PoisonError::into_inner),

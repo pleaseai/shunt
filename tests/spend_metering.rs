@@ -58,6 +58,7 @@ type Row = (&'static str, &'static str, f64, f64, f64, f64);
 const BILLED: Row = ("anth", "upstream-billed", 3.0, 15.0, 0.3, 3.75);
 const TRANSLATED: Row = ("resp", "upstream-translated", 1.0, 2.0, 0.1, 1.25);
 const CHAIN_WINNER: Row = ("anth", "upstream-chain-anth", 7.0, 11.0, 0.7, 9.0);
+const CLASSIFIER: Row = ("anth", "upstream-classifier", 2.0, 4.0, 0.2, 2.5);
 const DECOYS: [Row; 4] = [
     ("anth", "billed-alias", 100.0, 100.0, 100.0, 100.0),
     ("resp", "translated-alias", 100.0, 100.0, 100.0, 100.0),
@@ -116,6 +117,12 @@ fn injecting(name: &str, base_url: String, kind: ProviderKind) -> shunt::config:
 /// `resp`, and a passthrough Anthropic upstream `own` sharing `anth`'s URL.
 /// `chain-alias` maps both injecting upstreams, `resp` first.
 fn config(anth: &str, resp: &str, metered: bool) -> Config {
+    config_with(anth, resp, metered, false)
+}
+
+/// [`config`], optionally pinning `anth`'s auto-mode classifier requests to
+/// `upstream-classifier` (which has its own override row).
+fn config_with(anth: &str, resp: &str, metered: bool, classifier: bool) -> Config {
     let mut config = Config::default();
     config.providers.clear();
     config.upstreams = vec![
@@ -127,6 +134,9 @@ fn config(anth: &str, resp: &str, metered: bool) -> Config {
             UpstreamAuth::Shorthand(AuthMode::Passthrough),
         ),
     ];
+    if classifier {
+        config.upstreams[1].classifier_model = Some("upstream-classifier".to_string());
+    }
     config.server.default_provider = "own".to_string();
     config.models = vec![
         alias("billed-alias", "anth", "upstream-billed"),
@@ -165,7 +175,7 @@ fn config(anth: &str, resp: &str, metered: bool) -> Config {
         oidc: None,
     });
     if metered {
-        let overrides = [BILLED, TRANSLATED, CHAIN_WINNER]
+        let overrides = [BILLED, TRANSLATED, CHAIN_WINNER, CLASSIFIER]
             .into_iter()
             .chain(DECOYS)
             .map(row)
@@ -340,6 +350,62 @@ async fn a_completed_stream_bills_its_usage_on_the_upstream_model_in_every_perio
         "the decoy row must price differently for this test to mean anything"
     );
     assert_eq!(spent(&gateway, PRINCIPAL), [expected; 3]);
+}
+
+/// A request carrying the auto-mode classifier's system prompt.
+async fn classifier_request(gateway: &Gateway, stream: bool) -> reqwest::Response {
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("anthropic-version", "2023-06-01")
+        .header("x-shunt-token", TOKEN)
+        .body(
+            json!({"model": "billed-alias", "max_tokens": 16, "stream": stream,
+                   "system": [{"type": "text",
+                               "text": "You are a security monitor for autonomous AI coding agents."}],
+                   "messages": [{"role": "user", "content": "hi"}]})
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_classifier_request_is_billed_on_the_classifier_model_it_was_sent_to() {
+    let _env = env().await;
+    let expected = |rates_row: Row| {
+        rates(rates_row).cost_femto_usd(&completed_usage()) + 2 * WEB_SEARCH_LIST_PRICE_FEMTO_USD
+    };
+    assert_ne!(expected(CLASSIFIER), expected(BILLED), "rows must differ");
+
+    // Streamed: the committed chain stream's winner is priced on the pin.
+    let anth = anthropic_upstream(sse_reply(completed_stream("upstream-classifier"))).await;
+    let resp = unused_upstream().await;
+    let gateway = start(config_with(&anth.uri(), &resp.uri(), true, true)).await;
+    let response = classifier_request(&gateway, true).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await.unwrap();
+    assert_eq!(spent(&gateway, PRINCIPAL), [expected(CLASSIFIER); 3]);
+
+    // Non-streamed: the same pin prices the buffered reply.
+    let reply = json!({"id": "msg_1", "type": "message", "model": "upstream-classifier",
+        "content": [{"type": "text", "text": "Hello"}],
+        "usage": {"input_tokens": 1000, "output_tokens": 500,
+                  "cache_read_input_tokens": 200, "cache_creation_input_tokens": 300,
+                  "server_tool_use": {"web_search_requests": 2}}})
+    .to_string();
+    let anth =
+        anthropic_upstream(ResponseTemplate::new(200).set_body_raw(reply, "application/json"))
+            .await;
+    let gateway = start(config_with(&anth.uri(), &resp.uri(), true, true)).await;
+    let response = classifier_request(&gateway, false).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await.unwrap();
+    assert_eq!(spent(&gateway, PRINCIPAL), [expected(CLASSIFIER); 3]);
 }
 
 #[tokio::test]
