@@ -1,0 +1,23 @@
+.please/docs/tracks/active/per-window-max-utilization-20261004/plan.md
+  s_afd8879efb217f::t_e82c09eacfd8a4 147-149
+src/accounts.rs
+  s_afd8879efb217f::t_b11897f9313e2f 865,875-876,894,2998-3069,8980,8997,9022,9036,9045,9048,9063,9070,9087-9088,9108,9124,9140,9149,9155,9165,9179,9189,9198
+  s_afd8879efb217f::t_362ae260610917 877
+  s_afd8879efb217f::t_e8c1817395c833 3070,8969-8979,8981-8996,8998-9021,9023-9035,9037-9044,9046-9047,9049-9062,9064-9069,9071-9086,9089-9107,9109-9123,9125-9139,9141-9148,9150-9154,9156-9164,9166-9178,9180-9188,9190-9197,9199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "793d218766e4604118a6691eeac07d78a2c7e3ef",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
