@@ -1,0 +1,66 @@
+site/src/content/docs/ko/guides/pool-account-controls.md
+  s_afd8879efb217f::t_65e84aa2cf0a7c 35-47
+site/src/content/docs/zh-cn/guides/pool-account-controls.md
+  s_afd8879efb217f::t_bbd930ad9b9590 35-47
+site/src/content/docs/ja/guides/pool-account-controls.md
+  s_afd8879efb217f::t_bbd930ad9b9590 35-47
+site/src/content/docs/guides/codex-multi-account.mdx
+  s_afd8879efb217f::t_65e84aa2cf0a7c 116
+site/src/content/docs/reference/endpoints.md
+  s_afd8879efb217f::t_65e84aa2cf0a7c 198-199
+site/src/content/docs/ja/reference/configuration.md
+  s_afd8879efb217f::t_bbd930ad9b9590 307-310,320
+  s_afd8879efb217f::t_626c1823c5329f 321
+site/src/content/docs/zh-cn/guides/codex-multi-account.mdx
+  s_afd8879efb217f::t_bbd930ad9b9590 116
+site/src/content/docs/ja/reference/endpoints.md
+  s_afd8879efb217f::t_bbd930ad9b9590 133-134
+site/src/content/docs/ko/reference/configuration.md
+  s_afd8879efb217f::t_65e84aa2cf0a7c 306-309,319
+  s_afd8879efb217f::t_d7275e3177369d 320
+site/src/content/docs/guides/pool-account-controls.md
+  s_afd8879efb217f::t_65e84aa2cf0a7c 35-47
+site/src/content/docs/guides/anthropic-multi-account.mdx
+  s_afd8879efb217f::t_65e84aa2cf0a7c 98-99,128,168-188
+  s_afd8879efb217f::t_30ed7b9ea837c3 189
+site/src/content/docs/ko/guides/anthropic-multi-account.mdx
+  s_afd8879efb217f::t_65e84aa2cf0a7c 98-99,128,168-188
+  s_afd8879efb217f::t_b0face89677754 189
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.mdx
+  s_afd8879efb217f::t_bbd930ad9b9590 98-99,128,168-188
+  s_afd8879efb217f::t_7b08bed8f8fe8a 189
+site/src/content/docs/ja/guides/codex-multi-account.mdx
+  s_afd8879efb217f::t_bbd930ad9b9590 116
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_afd8879efb217f::t_bbd930ad9b9590 307-310,320
+  s_afd8879efb217f::t_42158afe5e1499 321
+site/src/content/docs/ko/reference/endpoints.md
+  s_afd8879efb217f::t_bbd930ad9b9590 131-132
+site/src/content/docs/ko/guides/codex-multi-account.mdx
+  s_afd8879efb217f::t_65e84aa2cf0a7c 116
+site/src/content/docs/reference/configuration.md
+  s_afd8879efb217f::t_65e84aa2cf0a7c 410-413,423-424,621-622,628
+site/src/content/docs/ja/guides/anthropic-multi-account.mdx
+  s_afd8879efb217f::t_bbd930ad9b9590 98-99,128,168-188
+  s_afd8879efb217f::t_99f91e8770d914 189
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_afd8879efb217f::t_bbd930ad9b9590 126-127
+docs/m8-anthropic-multi-account.md
+  s_afd8879efb217f::t_fb0465db574378 70-71,94-95,133-135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0014c116b30e157d5b974673db666023acd4bba8",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
