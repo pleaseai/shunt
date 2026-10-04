@@ -84,7 +84,7 @@ A cooldown-based design was rejected during brainstorming. It would make a cap c
 - [x] T004 Return the cap-exhaustion 429 from Codex pool paths (depends on T003, file: src/adapters/responses/pool.rs)
   Validation: an all-capped ChatGPT pool yields a 429 with `retry-after` on the outbound Responses paths (HTTP, committed-stream, and WebSocket-enabled ordering) and advances the failover chain; the inbound Codex endpoint returns the same 429 in the OpenAI error shape.
   Method: `cargo test --all-features --test codex_multi_account --test inbound_codex_endpoint --test codex_websocket_fallback`
-- [ ] T005 Report capped state on snapshot and usage surfaces (depends on T002, file: src/accounts.rs)
+- [x] T005 Report capped state on snapshot and usage surfaces (depends on T002, file: src/accounts.rs)
   Validation: the admin pool JSON marks a capped account with a shared-cap and a Fable-cap flag and `available: false`; `GET /usage` reports an account-free `capped` pool status when no account is available and at least one is capped; `/api/oauth/usage` Fable and weekly bars still compute from the routing-aware set, with the fallback comment and behavior consistent with capped accounts no longer being routed.
   Method: `cargo test --all-features usage:: oauth_usage:: --test admin_surface`
 - [ ] T006 [P] Show capped and Fable-capped states on the admin dashboard (depends on T005, file: ui/src/accounts.ts)
@@ -179,3 +179,5 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
 
 - `tests/codex_multi_account.rs::pool_http_dispatch_seeds_message_start_input_token_estimate` fails under `--all-features` (3/3 solo). It is a known feature-gated/load-dependent failure on main, not attributable to this track.
 - `--all-features` builds need `PYO3_PYTHON=/usr/local/bin/python3` in this worktree.
+- `tests/responses_chain_stream.rs` failures (`refused_port_is_deterministically_refused`, and intermittently the two `a_body_error_*` tests) reproduce on pristine main `3bde0a86` (control worktree, separate target dir, 3 runs: 2–3 failures each). They are environmental on this machine, not caused by this track.
+- `into_openai_error_shape` (src/error.rs) dropped all response headers, so `retry-after` never reached clients of the inbound Codex endpoint for any re-shaped error; T004 now carries `retry-after` over.
