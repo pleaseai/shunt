@@ -400,6 +400,89 @@ async fn a_capped_claude_pool_advances_to_the_next_upstream() {
 }
 
 #[tokio::test]
+async fn a_capped_codex_pool_advances_to_the_next_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let payload = json!({
+        "exp": 4_102_444_800_u64,
+        "https://api.openai.com/auth": {"chatgpt_account_id": "acct-failover-capped"}
+    });
+    let token = format!(
+        "x.{}.y",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            serde_json::to_vec(&payload).unwrap()
+        )
+    );
+    vars.set("SHUNT_TEST_FAILOVER_CODEX_CAPPED", &token);
+    let reset_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 16_200;
+    let codex = MockServer::start().await;
+    let sse = "event: response.created\n\
+         data: {\"response\":{\"id\":\"resp_1\",\"usage\":{\"output_tokens\":0}}}\n\n\
+         event: response.output_item.added\ndata: {\"item\":{\"type\":\"message\"}}\n\n\
+         event: response.output_text.delta\ndata: {\"delta\":\"from-codex\"}\n\n\
+         event: response.output_text.done\ndata: {}\n\n\
+         event: response.completed\n\
+         data: {\"response\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":4}}}\n\n\
+         data: [DONE]\n\n";
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-codex-primary-window-minutes", "300")
+                .insert_header("x-codex-primary-used-percent", "99")
+                .insert_header("x-codex-primary-reset-at", reset_at.to_string().as_str())
+                .set_body_string(sse),
+        )
+        .expect(1)
+        .mount(&codex)
+        .await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("from-fallback"))
+        .expect(1)
+        .mount(&fallback)
+        .await;
+    let capped = shunt::config::AccountConfig {
+        name: "capped".to_string(),
+        token_env: Some("SHUNT_TEST_FAILOVER_CODEX_CAPPED".to_string()),
+        max_utilization_5h: Some(0.5),
+        ..Default::default()
+    };
+    let config = chain_config(
+        vec![
+            upstream(
+                "codex",
+                codex.uri(),
+                ProviderKind::Responses,
+                UpstreamAuth::Map(AuthMap::ChatgptOauth {
+                    account: None,
+                    accounts: Some(vec![shunt::config::AccountSelection::Inline(capped)]),
+                }),
+            ),
+            passthrough("fallback", fallback.uri()),
+        ],
+        &[("codex", "gpt-5.6-sol"), ("fallback", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let first = post(&gateway).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert!(first.text().await.unwrap().contains("from-codex"));
+
+    let second = post(&gateway).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(second.text().await.unwrap(), "from-fallback");
+    codex.verify().await;
+    fallback.verify().await;
+}
+
+#[tokio::test]
 async fn connect_failure_advances_but_400_returns_immediately() {
     if !can_bind_loopback() {
         return;

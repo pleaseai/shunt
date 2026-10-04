@@ -937,6 +937,69 @@ async fn websocket_rate_limits_event_records_account_quota() {
     let _ = std::fs::remove_file(auth_path);
 }
 
+/// With the websocket transport on, the ordered pool path selects without
+/// re-probing; a capped sole account still yields the cap 429 with `retry-after`.
+#[tokio::test]
+async fn websocket_enabled_capped_pool_returns_a_cap_429() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let _accounts_dir = pin_empty_accounts_dir(&mut vars);
+    let token = fake_jwt_for_account(4_000_000_000, "acct_ws_capped");
+    vars.set("SHUNT_WS_CAPPED_TOKEN", &token);
+    let reset_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 16_200;
+    // HTTP-only upstream: the websocket handshake fails and the turn falls back
+    // to HTTP, whose response headers report the 5h window at 99% used.
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-codex-primary-window-minutes", "300")
+                .insert_header("x-codex-primary-used-percent", "99")
+                .insert_header("x-codex-primary-reset-at", reset_at.to_string().as_str())
+                .set_body_string(RESPONSES_SSE),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let mut config = pooled_codex_ws_config(upstream.uri(), ["SHUNT_WS_CAPPED_TOKEN", "UNSET"]);
+    let codex = config.providers.get_mut("codex").unwrap();
+    codex.accounts.truncate(1);
+    codex.accounts[0].max_utilization_5h = Some(0.5);
+    let gateway = start_gateway_with(config).await;
+
+    let body = r#"{"model":"codex-fallback-model","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}"#;
+    let (status, _) = post_messages(&gateway.base_url, &[], body).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry_after: u64 = response
+        .headers()
+        .get("retry-after")
+        .expect("retry-after")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((16_000..=16_200).contains(&retry_after), "{retry_after}");
+    let json: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(json["error"]["type"], "rate_limit_error");
+    upstream.verify().await;
+}
+
 /// A websocket that drops *after* a first event has streamed must NOT restart the
 /// turn (that would duplicate the tokens already sent). The tokens streamed so far
 /// reach the client, the drop surfaces as a clean Anthropic `error` event, and no

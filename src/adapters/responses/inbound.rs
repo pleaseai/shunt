@@ -299,6 +299,11 @@ async fn forward_codex_passthrough(
         }
     }
 
+    if candidates == 0 && last_response.is_none() {
+        if let Some(error) = super::pool::cap_exhausted(&state, &route, &accounts_config) {
+            return Err(error);
+        }
+    }
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     match last_response {
         // Passthrough: relay the last upstream response verbatim (status + body),

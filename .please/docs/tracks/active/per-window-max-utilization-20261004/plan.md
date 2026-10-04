@@ -150,6 +150,9 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
 - [x] (2026-10-04 KST) T003 Return a cap-exhaustion 429 from the Claude OAuth pool
   Evidence: `cargo test --all-features --test multi_account --test failover` -> 34 + 19 passed, 0 failed; `cargo test --all-features --lib accounts::` -> 219 passed
   Note: `AccountPool::cap_exhaustion` (src/accounts.rs) and `adapters::cap_exhausted_error` (src/adapters/mod.rs) are the reusable pieces for T004; the `capped` reason is a new `record_pool_rotation` argument, so src/metrics.rs needed no change
+- [x] (2026-10-04 KST) T004 Return the cap-exhaustion 429 from Codex pool paths
+  Evidence: `cargo test --all-features --test codex_multi_account --test inbound_codex_endpoint --test codex_websocket_fallback` -> 34 + 16 + 33 passed, 0 failed; `--test failover` -> 20 passed
+  Note: `into_openai_error_shape` (src/error.rs) dropped every header, so `retry-after` did not survive the inbound Codex re-shape; it now carries `retry-after` over. The stream path (`pool_events_stream`) covers `pool_or_single_events` and the translated chain arm in responses/mod.rs
 
 ## Decision Log
 

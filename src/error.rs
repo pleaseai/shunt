@@ -248,6 +248,12 @@ struct OpenAiErrorDetail {
 /// behavior) is unchanged.
 pub async fn into_openai_error_shape(response: Response) -> Response {
     let status = response.status();
+    // The body is rebuilt, so carry the one header that tells the client when to
+    // retry (the cap-exhaustion 429 sets it); the rest are framing for the old body.
+    let retry_after = response
+        .headers()
+        .get(axum::http::header::RETRY_AFTER)
+        .cloned();
     // Gateway-owned error bodies are tiny JSON envelopes; cap the read at 64 KiB
     // as defense-in-depth. The bound is never hit in practice, and an oversized
     // body degrades to the empty-message fallback below rather than an OOM.
@@ -278,7 +284,7 @@ pub async fn into_openai_error_shape(response: Response) -> Response {
                 .unwrap_or_default();
             ("api_error".to_string(), message)
         });
-    (
+    let mut shaped = (
         status,
         Json(OpenAiErrorBody {
             error: OpenAiErrorDetail {
@@ -288,7 +294,13 @@ pub async fn into_openai_error_shape(response: Response) -> Response {
             },
         }),
     )
-        .into_response()
+        .into_response();
+    if let Some(retry_after) = retry_after {
+        shaped
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, retry_after);
+    }
+    shaped
 }
 
 #[cfg(test)]
