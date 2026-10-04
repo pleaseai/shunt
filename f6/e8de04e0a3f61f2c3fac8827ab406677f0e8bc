@@ -1,0 +1,38 @@
+src/adapters/mod.rs
+  s_afd8879efb217f::t_53b321476d7cac 69
+  s_afd8879efb217f::t_e38524f501cc32 79-83,94-110
+  s_afd8879efb217f::t_43bc84d0af0496 111-112
+src/accounts.rs
+  s_afd8879efb217f::t_1d5dc24944b46c 913-915,932-933,938,945-951,968
+  s_afd8879efb217f::t_319f55f4862193 916-917
+  s_afd8879efb217f::t_53b321476d7cac 516-520
+  s_afd8879efb217f::t_c430d4cb963da8 831,856,3102-3103,3106-3110,3114-3133,3145-3148,3159,3177,3186,3188-3189,3198,9439,9449,9458,9469
+src/usage.rs
+  s_afd8879efb217f::t_53b321476d7cac 281
+src/adapters/responses/pool.rs
+  s_afd8879efb217f::t_53b321476d7cac 513,517-521,530-547,568,1383-1384
+src/oauth_usage.rs
+  s_afd8879efb217f::t_53b321476d7cac 200
+.please/docs/tracks/active/per-window-max-utilization-20261004/plan.md
+  s_afd8879efb217f::t_111f52c80bc61b 193
+src/adapters/anthropic/mod.rs
+  s_afd8879efb217f::t_53b321476d7cac 688,691-692,930-932
+src/adapters/responses/inbound.rs
+  s_afd8879efb217f::t_53b321476d7cac 302-303
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f6e8de04e0a3f61f2c3fac8827ab406677f0e8bc",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
