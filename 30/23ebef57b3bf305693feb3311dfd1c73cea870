@@ -1,0 +1,25 @@
+.please/docs/tracks/completed/per-window-max-utilization-20261004/metadata.json
+  s_afd8879efb217f::t_5d7995000cba24 1-13
+.please/docs/tracks/tech-debt-tracker.md
+  s_afd8879efb217f::t_56384073deb04f 9-10
+.please/docs/tracks.jsonl
+  s_afd8879efb217f::t_6eb210bf0640d0 1
+.please/docs/tracks/completed/per-window-max-utilization-20261004/plan.md
+  s_afd8879efb217f::t_030ed2ff9e76f7 166,197-225
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3023ebef57b3bf305693feb3311dfd1c73cea870",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
