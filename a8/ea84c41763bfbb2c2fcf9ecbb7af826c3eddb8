@@ -1,0 +1,26 @@
+src/adapters/gemini/mod.rs
+  s_afd8879efb217f::t_7d91a7f42c6289 210,463-467
+  s_afd8879efb217f::t_72571808716dbc 468-469
+.please/docs/tracks/active/select-order-cap-verdict-20261005/plan.md
+  s_afd8879efb217f::t_b231faf94ae8c2 63
+  s_afd8879efb217f::t_97fd3b8ecb8a34 95-97
+tests/antigravity_multi_account.rs
+  s_afd8879efb217f::t_7d91a7f42c6289 546-570,575-644
+  s_afd8879efb217f::t_a0926b4ed06d25 571-574
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a8ea84c41763bfbb2c2fcf9ecbb7af826c3eddb8",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
