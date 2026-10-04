@@ -23,6 +23,8 @@ fn snapshot(
         has_state: true,
         available,
         near_quota: false,
+        capped: false,
+        capped_fable: false,
         cooldown_secs_remaining: None,
         cooldown_fable_secs_remaining: None,
         priority,
@@ -115,6 +117,27 @@ fn falls_back_to_full_set_when_no_account_is_available() {
     // lowest-priority value present in that fallback set) governs.
     assert_eq!(used, 0.99);
     assert_eq!(resets_at, Some(111));
+}
+
+/// A capped account is never routed to, so with nothing `available` the
+/// fallback skips it in favor of an uncapped (merely cooling) account, and only
+/// uses the capped ones when nothing else remains.
+#[test]
+fn fallback_skips_capped_accounts_unless_every_account_is_capped() {
+    let mut capped = snapshot("capped", 1, false, Some(0.99), Some(111));
+    capped.capped = true;
+    let cooling = snapshot("cooling", 100, false, Some(0.10), Some(222));
+    let (used, resets_at) = routing_aware_window(
+        &[capped.clone(), cooling],
+        |s| s.utilization_5h,
+        |s| s.reset_5h,
+    )
+    .unwrap();
+    assert_eq!((used, resets_at), (0.10, Some(222)));
+
+    let (used, resets_at) =
+        routing_aware_window(&[capped], |s| s.utilization_5h, |s| s.reset_5h).unwrap();
+    assert_eq!((used, resets_at), (0.99, Some(111)));
 }
 
 /// A seen account snapshot reporting only the `7d_oi` (Fable) window.

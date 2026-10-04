@@ -263,20 +263,27 @@ fn representative_positions(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<Hash
 }
 
 /// Coarse pool health derived purely from availability booleans (no numbers):
-/// `exhausted` when every selectable account is unavailable, `degraded` when any
-/// is near quota, else `ok`. Disabled accounts never count as selectable.
+/// `capped` when no selectable account is available and at least one is held
+/// out by a `max_utilization` cap, `exhausted` when every selectable account is
+/// unavailable otherwise, `degraded` when any is near quota, else `ok`.
+/// Disabled accounts never count as selectable. The value names no account or
+/// cap setting.
 fn pool_status<'a>(snapshots: impl Iterator<Item = &'a AccountSnapshot>) -> &'static str {
     let mut any_selectable = false;
     let mut any_available = false;
     let mut any_near_quota = false;
+    let mut any_capped = false;
 
     for snapshot in snapshots.filter(|snapshot| !snapshot.disabled) {
         any_selectable = true;
         any_available |= snapshot.available;
         any_near_quota |= snapshot.near_quota;
+        any_capped |= snapshot.capped || snapshot.capped_fable;
     }
 
-    if !any_selectable || !any_available {
+    if any_selectable && !any_available && any_capped {
+        "capped"
+    } else if !any_selectable || !any_available {
         "exhausted"
     } else if any_near_quota {
         "degraded"

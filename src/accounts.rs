@@ -445,9 +445,20 @@ pub struct AccountSnapshot {
     /// Whether the pool has recorded at least one upstream response for this
     /// account. When `false`, the quota/cooldown fields are all absent.
     pub has_state: bool,
-    /// Derived: not disabled or paused for this provider, not cooling down, and not near quota.
+    /// Derived: not disabled or paused for this provider, not cooling down, not
+    /// near quota, and not excluded by a `max_utilization` cap that governs the
+    /// snapshot's model scope (the shared cap always; the Fable cap only for a
+    /// Fable `model`).
     pub available: bool,
     pub near_quota: bool,
+    /// A shared-window (5h or 7d) `max_utilization` cap excludes the account
+    /// from selection for every model.
+    pub capped: bool,
+    /// The Fable-only (`7d_oi`) cap excludes the account from Fable requests.
+    /// Evaluated as for a Fable request whatever the snapshot's `model`, so the
+    /// admin view (`model = None`) still sees it; only `available` is
+    /// model-scoped.
+    pub capped_fable: bool,
     /// Seconds until the account-wide cooldown expires, when active.
     pub cooldown_secs_remaining: Option<u64>,
     /// Seconds until the Fable-only cooldown expires, when active.
@@ -519,6 +530,8 @@ impl AccountSnapshot {
             has_state: false,
             available: !account.disabled && !paused,
             near_quota: false,
+            capped: false,
+            capped_fable: false,
             cooldown_secs_remaining: None,
             cooldown_fable_secs_remaining: None,
             priority: account.priority,
@@ -2314,14 +2327,19 @@ impl AccountPool {
                         .map(|remaining| remaining.as_secs());
                     let cooling = cooldown_secs_remaining.is_some()
                         || (is_fable && cooldown_fable_secs_remaining.is_some());
+                    let (capped, capped_fable) = cap_flags(&health.quota, account, pool);
                     AccountSnapshot {
                         name: account.name.clone(),
                         has_state: true,
                         available: !account.disabled
                             && !health.paused_providers.contains(provider)
                             && !cooling
-                            && !quota.near,
+                            && !quota.near
+                            && !capped
+                            && !(is_fable && capped_fable),
                         near_quota: quota.near,
+                        capped,
+                        capped_fable,
                         cooldown_secs_remaining,
                         cooldown_fable_secs_remaining,
                         priority: account.priority,
@@ -3078,6 +3096,25 @@ pub(crate) struct CapExclusion {
     /// Unix seconds at which every capping window has reset: the max reset
     /// across them, or `None` when any capping window has no known reset.
     pub(crate) eligible_at: Option<u64>,
+}
+
+/// Which hard caps exclude an account, split by scope: `(shared, fable)` where
+/// `shared` is a 5h/7d cap (every request) and `fable` the `7d_oi` cap (Fable
+/// requests only). Unlike [`cap_exclusion`], the Fable verdict is independent of
+/// the request, for status surfaces that report both.
+fn cap_flags(
+    quota: &QuotaState,
+    account: &AccountConfig,
+    pool: Option<&PoolConfig>,
+) -> (bool, bool) {
+    let over = |window, utilization: Option<f64>| {
+        utilization
+            .zip(resolved_max_utilization(window, account, pool))
+            .is_some_and(|(utilization, cap)| utilization >= cap)
+    };
+    let shared = over(QuotaWindow::FiveHour, quota.utilization_5h)
+        || over(QuotaWindow::Weekly, quota.utilization_7d);
+    (shared, over(QuotaWindow::Fable, quota.utilization_7d_oi))
 }
 
 /// Hard-cap verdict for one account. 5h and 7d are checked for every request
@@ -9244,6 +9281,53 @@ mod tests {
         accts[0].disabled = true;
         accts[1].disabled = true;
         assert_eq!(pool.cap_exhaustion("anthropic", &accts, OPUS, None), None);
+    }
+
+    #[test]
+    fn snapshot_reports_cap_flags_and_scopes_availability_by_model() {
+        let pool = AccountPool::new();
+        let mut accts = vec![account("a"), account("b"), account("unseen")];
+        accts[0].max_utilization_fable = Some(0.5);
+        accts[1].max_utilization_5h = Some(0.5);
+        accts[2].max_utilization = Some(0.0);
+        let reset = unix_now() + 3_600;
+        set_quota(&pool, "anthropic", &accts[0], |q| {
+            q.utilization_7d_oi = Some(0.6);
+            q.reset_7d_oi = Some(reset);
+        });
+        set_quota(&pool, "anthropic", &accts[1], |q| {
+            q.utilization_5h = Some(0.6);
+            q.reset_5h = Some(reset);
+        });
+        {
+            let mut entries = pool.entries.lock().unwrap();
+            for acct in &accts[..2] {
+                entries
+                    .get_mut(&account_key("anthropic", acct))
+                    .unwrap()
+                    .observed = true;
+            }
+        }
+        // model = None: the Fable flag is still reported, but only the shared
+        // cap removes availability.
+        let none = pool.snapshot("anthropic", &accts, None, None);
+        assert_eq!(
+            (none[0].capped, none[0].capped_fable, none[0].available),
+            (false, true, true)
+        );
+        assert_eq!(
+            (none[1].capped, none[1].capped_fable, none[1].available),
+            (true, false, false)
+        );
+        // Fable model: the Fable cap now removes availability too.
+        let fable = pool.snapshot("anthropic", &accts, FABLE, None);
+        assert_eq!((fable[0].capped_fable, fable[0].available), (true, false));
+        assert!(!fable[1].available);
+        // Unseen accounts are never capped.
+        assert_eq!(
+            (none[2].capped, none[2].capped_fable, none[2].available),
+            (false, false, true)
+        );
     }
 
     #[test]
