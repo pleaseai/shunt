@@ -475,10 +475,14 @@ async fn retain_stream(
                 // waited for.
                 let end = scan.terminal_len();
                 let turn = end.map_or(chunk.len(), |end| end - bill.retained.len());
-                if bill.retained.len().saturating_add(turn) > gated.max_bytes {
+                let over = bill.retained.len().saturating_add(turn) > gated.max_bytes;
+                // The crossing chunk was received and charged upstream, so it
+                // reaches the bill too; a cut capture is never replayed, so
+                // holding it changes no client-visible byte.
+                bill.retained.extend_from_slice(&chunk[..turn]);
+                if over {
                     break Some(BoundExceeded::MaxBytes);
                 }
-                bill.retained.extend_from_slice(&chunk[..turn]);
                 if end.is_some() {
                     break None;
                 }

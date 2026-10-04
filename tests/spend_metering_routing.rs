@@ -638,3 +638,52 @@ async fn a_streamed_capture_cut_by_the_duration_bound_is_billed_once() {
     assert_eq!(spent(&gateway), [weak_partial + STRONG.cost(); 3]);
     upstream.verify().await;
 }
+
+/// The chunk that crosses `gated_max_bytes` was received and charged upstream,
+/// so the capture it cuts is still billed for it, once. The cap is smaller than
+/// the first frame, so `message_start` is all the capture saw.
+#[tokio::test]
+async fn a_streamed_capture_cut_by_the_byte_cap_is_billed_once() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let upstream = MockServer::start().await;
+    JUDGE
+        .mock(
+            verdict(json!({"escalate": false, "reason": "progressing"})),
+            0,
+        )
+        .mount(&upstream)
+        .await;
+    STRONG
+        .mock(STRONG.sse_reply("STRONG-ANSWER"), 1)
+        .mount(&upstream)
+        .await;
+    let router = ESCALATION_ROUTER.replace("[escalation]", "gated_max_bytes = 100\n\n[escalation]");
+    let mut config = config(&upstream, &router);
+    let weak_url = endless_weak_stream().await;
+    config
+        .providers
+        .get_mut(WEAK.upstream)
+        .expect("the weak provider exists")
+        .base_url = weak_url;
+    let gateway = start(config).await;
+
+    let response = turn(&gateway, true).await;
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(text.contains("STRONG-ANSWER"), "{text}");
+
+    // `message_start` is the crossing chunk: input and output as it declared.
+    let (input, output, cache_read, cache_write) = WEAK.rates;
+    let weak_partial = Rates::from_usd_per_million(input, output, cache_read, cache_write)
+        .cost_femto_usd(&Usage {
+            input_tokens: WEAK.input,
+            output_tokens: 1,
+            ..Usage::default()
+        });
+    assert_eq!(spent(&gateway), [weak_partial + STRONG.cost(); 3]);
+    upstream.verify().await;
+}

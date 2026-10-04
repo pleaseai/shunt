@@ -126,6 +126,90 @@ fn flush_prunes_windows_older_than_the_retention_horizon() {
     assert_eq!(meter.spent("alice", Period::Monthly, old), 0);
 }
 
+fn starts_in(path: &Path) -> Vec<u64> {
+    read(path)["counters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|record| record["start"].as_u64())
+        .collect()
+}
+
+#[test]
+fn an_idle_flush_prunes_a_restored_expired_window() {
+    let path = temp_path("idle-prune");
+    let old = window(Period::Daily, WED - 400 * DAY).start;
+    let recent = window(Period::Daily, WED).start;
+    write(
+        &path,
+        &json!({"version": 1, "counters": [
+            {"principal": "alice", "period": "daily", "start": old, "femto": 1},
+            {"principal": "alice", "period": "daily", "start": recent, "femto": 2},
+        ]}),
+    );
+    let meter = restored(&path, WED);
+    assert!(starts_in(&path).contains(&old));
+
+    // 13 months on, the old window is past retention; no record() since boot.
+    assert!(meter.flush_to(&path, 13, WED + 100 * DAY).unwrap());
+
+    assert!(!starts_in(&path).contains(&old));
+    assert!(starts_in(&path).contains(&recent));
+    assert_eq!(meter.spent("alice", Period::Daily, old), 0);
+    // Nothing left to prune: back to the no-write path.
+    assert!(!meter.flush_to(&path, 13, WED + 100 * DAY).unwrap());
+}
+
+#[test]
+fn lowering_retention_prunes_on_the_next_flush_without_new_charges() {
+    let path = temp_path("retention-lowered");
+    let meter = SpendMeter::default();
+    let old = WED - 100 * DAY;
+    meter.record("alice", old, 1);
+    meter.record("alice", WED, 2);
+    assert!(meter.flush_to(&path, 13, WED).unwrap());
+    assert!(starts_in(&path).contains(&window(Period::Daily, old).start));
+
+    assert!(meter.flush_to(&path, 1, WED).unwrap());
+
+    assert!(!starts_in(&path).contains(&window(Period::Daily, old).start));
+    assert!(starts_in(&path).contains(&window(Period::Daily, WED).start));
+}
+
+#[test]
+fn a_startless_opaque_record_flags_then_expires_at_its_lift_deadline() {
+    let path = temp_path("startless");
+    let bad = json!({"principal": "mallory", "period": "daily", "femto": 1});
+    write(&path, &json!({"version": 1, "counters": [bad]}));
+    let meter = restored(&path, WED);
+    let end = window(Period::Daily, WED).end;
+    assert_eq!(meter.check(&[], "mallory", WED), Check::Unavailable);
+
+    assert!(!meter.flush_to(&path, 13, end - 1).unwrap());
+    assert!(read(&path)["counters"].as_array().unwrap().contains(&bad));
+    assert!(meter.flush_to(&path, 13, end).unwrap());
+
+    assert!(!read(&path)["counters"].as_array().unwrap().contains(&bad));
+    assert_eq!(meter.check(&[], "mallory", end), Check::Allow);
+    assert!(restored(&path, end).check(&[], "mallory", end) == Check::Allow);
+}
+
+#[test]
+fn a_far_future_opaque_record_flags_then_expires_at_its_lift_deadline() {
+    let path = temp_path("far-future");
+    let bad = json!({"principal": "erin", "period": "monthly", "start": u64::MAX, "femto": 1});
+    write(&path, &json!({"version": 1, "counters": [bad]}));
+    let meter = restored(&path, WED);
+    let end = window(Period::Monthly, WED).end;
+    assert_eq!(meter.check(&[], "erin", WED), Check::Unavailable);
+
+    assert!(!meter.flush_to(&path, 13, end - 1).unwrap());
+    assert!(meter.flush_to(&path, 13, end).unwrap());
+
+    assert!(!read(&path)["counters"].as_array().unwrap().contains(&bad));
+    assert_eq!(meter.check(&[], "erin", end), Check::Allow);
+}
+
 #[test]
 fn pruning_never_drops_a_window_that_is_still_open() {
     let path = temp_path("open");

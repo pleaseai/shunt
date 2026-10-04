@@ -77,9 +77,16 @@ pub struct PersistState {
     /// The generation the last successful write covered.
     flushed: AtomicU64,
     /// Records this build could not type, preserved verbatim on rewrite.
-    opaque: std::sync::Mutex<Vec<OpaqueRecord>>,
+    opaque: std::sync::Mutex<Vec<HeldRecord>>,
     /// Serializes the periodic and the final flush.
     gate: tokio::sync::Mutex<()>,
+}
+
+/// A carried-through record plus the in-memory deadline after which it is
+/// dropped when its own start cannot date it (never persisted).
+struct HeldRecord {
+    record: OpaqueRecord,
+    expires_at: Option<u64>,
 }
 
 impl PersistState {
@@ -159,11 +166,7 @@ fn is_sane(record: &CounterRecord, now_secs: u64) -> bool {
 /// A readable start bounds it by the longest window containing that start;
 /// otherwise the longest windows containing `now_secs`.
 fn lift_after(value: &serde_json::Value, now_secs: u64) -> u64 {
-    let anchor = value
-        .get("start")
-        .and_then(serde_json::Value::as_u64)
-        .filter(|start| *start <= now_secs.saturating_add(MAX_FUTURE_SKEW))
-        .unwrap_or(now_secs);
+    let anchor = usable_start(value, now_secs).unwrap_or(now_secs);
     let periods = value
         .get("period")
         .and_then(|period| serde_json::from_value::<Period>(period.clone()).ok());
@@ -177,12 +180,23 @@ fn lift_after(value: &serde_json::Value, now_secs: u64) -> u64 {
     }
 }
 
-/// True for a carried-through record old enough to drop at the next flush.
-fn opaque_expired(value: &serde_json::Value, cutoff: u64, now_secs: u64) -> bool {
+/// The readable, not-from-the-future start of an unreadable record, if any.
+fn usable_start(value: &serde_json::Value, now_secs: u64) -> Option<u64> {
     value
         .get("start")
         .and_then(serde_json::Value::as_u64)
-        .is_some_and(|start| start < cutoff && start.saturating_add(32 * DAY) <= now_secs)
+        .filter(|start| *start <= now_secs.saturating_add(MAX_FUTURE_SKEW))
+}
+
+/// True for a carried-through record old enough to drop at the next flush. A
+/// record with a usable start follows the retention cutoff; one without (no
+/// start, unparseable, or beyond the skew bound) expires at its load-time
+/// lift deadline so it cannot flag its principal on every restart forever.
+fn opaque_expired(held: &HeldRecord, cutoff: u64, now_secs: u64) -> bool {
+    match usable_start(&held.record.value, now_secs) {
+        Some(start) => start < cutoff && start.saturating_add(32 * DAY) <= now_secs,
+        None => held.expires_at.is_some_and(|deadline| now_secs >= deadline),
+    }
 }
 
 impl SpendMeter {
@@ -220,7 +234,12 @@ impl SpendMeter {
             .opaque
             .lock()
             .expect("spend meter lock poisoned")
-            .extend(loaded.opaque);
+            .extend(loaded.opaque.into_iter().map(|record| {
+                let expires_at = usable_start(&record.value, now_secs)
+                    .is_none()
+                    .then(|| lift_after(&record.value, now_secs));
+                HeldRecord { record, expires_at }
+            }));
     }
 
     /// Loads `path` into this meter (see [`load`]). Public for the restart test
@@ -234,21 +253,22 @@ impl SpendMeter {
         Ok(())
     }
 
-    /// Writes the counters to `path` if they changed since the last write,
-    /// dropping windows that ended before the retention horizon. Returns
-    /// whether a file was written. The counters lock is held only to copy.
+    /// Prunes windows that ended before the retention horizon on every call,
+    /// then writes the counters to `path` if they changed since the last write
+    /// or the prune removed anything. Returns whether a file was written. The
+    /// counters lock is held only to copy.
     pub fn flush_to(&self, path: &Path, retention_months: u64, now_secs: u64) -> io::Result<bool> {
         let generation = self.persist.generation.load(Ordering::Acquire);
-        if generation == self.persist.flushed.load(Ordering::Acquire) {
-            return Ok(false);
-        }
         let cutoff = months_back_start(now_secs, retention_months);
+        let mut pruned = false;
         let mut typed: Vec<CounterRecord> = {
             let mut counters = self.counters.lock().expect("spend meter lock poisoned");
+            let before = counters.len();
             // A window still open is never pruned, whatever the retention says.
             counters.retain(|(_, period, start), _| {
                 !(*start < cutoff && window(*period, *start).end <= now_secs)
             });
+            pruned |= counters.len() != before;
             counters
                 .iter()
                 .map(|((principal, period, start), femto)| CounterRecord {
@@ -268,15 +288,29 @@ impl SpendMeter {
                 .opaque
                 .lock()
                 .expect("spend meter lock poisoned");
-            opaque.retain(|record| !opaque_expired(&record.value, cutoff, now_secs));
-            opaque.clone()
+            let before = opaque.len();
+            opaque.retain(|held| !opaque_expired(held, cutoff, now_secs));
+            pruned |= opaque.len() != before;
+            opaque
+                .iter()
+                .map(|held| held.record.clone())
+                .collect::<Vec<_>>()
         };
+        if !pruned && generation == self.persist.flushed.load(Ordering::Acquire) {
+            return Ok(false);
+        }
         let envelope = EnvelopeRef {
             version: STATE_VERSION,
             counters: interleave_records(&typed, &opaque)?,
         };
         let json = serde_json::to_vec_pretty(&envelope).map_err(io::Error::other)?;
-        crate::atomic_file::write_private_atomic(path, &json)?;
+        if let Err(error) = crate::atomic_file::write_private_atomic(path, &json) {
+            // The prune already left memory; make the retry rewrite the file.
+            if pruned {
+                self.persist.mark_changed();
+            }
+            return Err(error);
+        }
         self.persist.flushed.fetch_max(generation, Ordering::AcqRel);
         Ok(true)
     }

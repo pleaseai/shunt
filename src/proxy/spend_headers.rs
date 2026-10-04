@@ -11,7 +11,9 @@
 //! The headers are computed once, at admission, from the same snapshot the
 //! pre-check decided on (as the reference does), and written onto the
 //! response at `failover::forward`'s single exit — which every response path
-//! of an admitted request returns through.
+//! of an admitted request returns through. That scope is admitted
+//! `/v1/messages` requests only: `/v1/messages/count_tokens` is never assessed,
+//! so its upstream `anthropic-ratelimit-*` headers pass through unchanged.
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 

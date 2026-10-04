@@ -783,9 +783,12 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
             );
         }
     }
-    // The listener is closed and in-flight turns have had their chance to
-    // record spend; persist the counters once more, bounded by the same
-    // deadline, so a restart enforces against what was spent before it.
+    // The listener is closed. After a clean drain every in-flight turn has had
+    // its chance to record spend; on `TimedOut` the per-connection tasks outlive
+    // the dropped server future, so spend from responses still open at the
+    // deadline bills into memory only after this flush and is not persisted.
+    // Persist the counters once more, bounded by the same deadline, so a
+    // restart enforces against what was spent before it.
     shunt::gateway::spend::meter::persist::flush_final(&state, shutdown_timeout).await;
     Ok(())
 }

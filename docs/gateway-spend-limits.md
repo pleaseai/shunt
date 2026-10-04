@@ -111,15 +111,17 @@ The meter records a charge for each billed response, on the daily, weekly and mo
 - **Coverage.** Streamed and non-streamed responses, translated adapters, and committed streams. The charge is priced on the **upstream** model that served the turn, through the pricing table above. Server-side web search is added per request.
 - **Per route.** Metering is decided per serving route: a call served by a passthrough route is not metered, even inside a chain that also holds an injecting route. Enforcement is decided per request.
 - **Only 2xx is billed.** An error response is not generated output.
-- **Aborted streams.** The streamed `usage` is read from the upstream's cumulative counts. When the final output count never arrives (a client disconnect, an upstream cut, or an adapter-synthesized end after a cut), output is billed at a floor of one token per 4 characters of text delivered to the client, rounded up.
+- **Aborted streams.** The streamed `usage` is read from the upstream's cumulative counts. When the final output count never arrives (a client disconnect, an upstream cut, or an adapter-synthesized end after a cut), output is billed at a floor of one token per 4 characters of text delivered to the client, rounded up. Input is billed from the `message_start` value; for translated Responses routes that is the local prompt estimate under the default `count_tokens = "tiktoken"`, and 0 for providers set to `count_tokens = "estimate"`.
 - **Unreadable non-streamed bodies.** A non-streamed body larger than 4 MiB, cut, or without a readable `usage` is billed a byte floor of one output token per 4 bytes.
-- **Side calls.** Router judge, classifier and escalation calls, and gated turns, are metered exactly once against the requesting principal. A gated streamed capture that `gated_max_duration_ms` cuts is billed for what it received. An Anthropic request pinned to the provider's `classifier_model` is priced on that model; a translated reply marked truncated bills at least the delivered-text floor.
+- **Side calls.** Router judge, classifier and escalation calls, and gated turns, are metered exactly once against the requesting principal. A gated streamed capture that `gated_max_duration_ms` or `gated_max_bytes` cuts is billed for what it received (including the chunk that crossed the byte cap). An Anthropic request pinned to the provider's `classifier_model` is priced on that model; a translated reply marked truncated bills at least the delivered-text floor.
 
 Known unmetered cases: a router judge reply that is truncated, times out, or exceeds its size bound, and a non-streamed gated capture that was cut.
 
+Limit: counters are u64 femto-USD and saturate at about $18,446.74 per principal per window, so a cap of 1,844,675 cents or more can never be reached (a follow-up issue tracks widening).
+
 ## Rate-limit headers
 
-For a principal with a cap in any period, shunt strips every upstream `anthropic-ratelimit-*` header from the response (on every status) and, on a `2xx`, writes the principal's own binding-cap view in their place. Claude Code 2.1.225 and later reads these to show its usage warnings. The binding cap is the exceeded one if any, else the highest utilization (a tie goes to the longer period).
+For a principal with a cap in any period, shunt strips every upstream `anthropic-ratelimit-*` header from the response (on every status of an admitted `/v1/messages` request) and, on a `2xx`, writes the principal's own binding-cap view in their place. Claude Code 2.1.225 and later reads these to show its usage warnings. The binding cap is the exceeded one if any, else the highest utilization (a tie goes to the longer period).
 
 | Header | Meaning |
 | :-- | :-- |
@@ -131,15 +133,16 @@ For a principal with a cap in any period, shunt strips every upstream `anthropic
 | `anthropic-ratelimit-unified-overage-period` | Refusal only: the exceeded period |
 | `anthropic-ratelimit-unified-overage-disabled-reason` | `org_spend_cap_reached` on the over-cap refusal, `fetch_error` on the fail-closed refusal |
 
-The over-cap `429` carries the "exceeded" set without `representative-claim` or `overage-status`, so Claude Code shows the refusal's own message. A principal with no cap, an unmetered request, and a fail-open forward carry no shunt-written headers; for an uncapped principal the upstream's headers pass through untouched.
+The over-cap `429` carries the "exceeded" set without `representative-claim` or `overage-status`, so Claude Code shows the refusal's own message. A principal with no cap, an unmetered request, a fail-open forward, and `POST /v1/messages/count_tokens` (never assessed) carry no shunt-written headers; for an uncapped principal, and for `count_tokens`, the upstream's headers pass through untouched.
 
 ## Counter persistence
 
 Counters live in a sibling of the caps file, `<state_path stem>.counters.json` (default `$HOME/.shunt/gateway-spend.counters.json`), with its own versioned envelope (`{"version": 1, "counters": [...]}`). The caps file is never rewritten by a counter flush, so rolling back to a build that only knows stage-1 caps still boots.
 
 - Changed counters are flushed at most every 10 seconds, and once more at shutdown after the listener drains, bounded by `[server] shutdown_timeout_seconds` (worst-case shutdown can therefore extend by that much).
-- `spend_retention_months` prunes, at flush time, windows that started before the first day of the month that many calendar months back and have already ended; a window that is still open is never pruned.
-- A counter record this build cannot read is carried through byte-for-byte; when it still names its principal, that principal is unavailable (see `fail_closed_on_error`) until the windows the record could cover have elapsed. Every other record loads normally.
+- `spend_retention_months` prunes windows that started before the first day of the month that many calendar months back and have already ended; a window that is still open is never pruned. The prune runs on every flush tick, including an idle one, so a lowered (hot-reloaded) value applies at the next tick without a new charge.
+- Spend from responses still open when the shutdown drain deadline expires is not persisted.
+- A counter record this build cannot read is carried through byte-for-byte; when it still names its principal, that principal is unavailable (see `fail_closed_on_error`) until the windows the record could cover have elapsed. A carried record with no usable start (missing, unparseable, or implausibly far in the future) is dropped once that deadline passes. Every other record loads normally.
 - An unreadable envelope or an unsupported version aborts startup, like the caps file.
 - `state_path = ""` keeps the counters in memory only.
 
