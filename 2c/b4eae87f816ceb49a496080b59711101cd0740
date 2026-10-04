@@ -1,0 +1,82 @@
+site/src/content/docs/reference/configuration.md
+  s_9f901e59727f87::t_ad37c8f0e48bb2 203
+  s_9f901e59727f87::t_98f76514441046 246
+src/gateway/spend/meter/persist.rs
+  s_9f901e59727f87::t_8ee5038a561c8e 239-244
+  s_9f901e59727f87::t_32acfe7120d8da 350-351,447-449
+  s_9f901e59727f87::t_169ea53e99542d 438-440
+  s_9f901e59727f87::t_7bd61b9f13bcbb 220-222
+  s_9f901e59727f87::t_983b1a18fa7a2c 315-337
+  s_9f901e59727f87::t_576dccbc278bd7 442-443,445-446,450-452
+  s_9f901e59727f87::t_853bf1e7749c26 468-469,471-475
+src/reload.rs
+  s_9f901e59727f87::t_f0e73395c6acfc 241
+  s_9f901e59727f87::t_76225f11d02ca2 235
+src/main.rs
+  s_9f901e59727f87::t_a78f1148c2a916 559-563
+  s_9f901e59727f87::t_ddce75b752770d 796-799
+tests/spend_persistence.rs
+  s_9f901e59727f87::t_3d8078d0254780 199-204,208-210,212
+  s_9f901e59727f87::t_32acfe7120d8da 205-207
+docs/bounded-shutdown.md
+  s_9f901e59727f87::t_a9d24ae79aba7a 44-46
+site/src/content/docs/ko/reference/configuration.md
+  s_9f901e59727f87::t_0a8f193b598458 185
+  s_9f901e59727f87::t_b270a857c439a7 142
+tests/spend_headers.rs
+  s_9f901e59727f87::t_c13c8a00b3d2a0 305-310,314-316,318
+  s_9f901e59727f87::t_32acfe7120d8da 311-313
+docs/gateway-spend-limits.md
+  s_9f901e59727f87::t_98f76514441046 105
+  s_9f901e59727f87::t_794dca12402408 142-143
+tests/spend_metering_routing.rs
+  s_9f901e59727f87::t_ace8d23e425d85 30
+  s_9f901e59727f87::t_a81f8ed1be6447 337-339,341-346
+tests/spend_enforcement.rs
+  s_9f901e59727f87::t_32acfe7120d8da 213-215
+  s_9f901e59727f87::t_df11efcc3cfcdf 207-212,216-218,220,498
+  s_9f901e59727f87::t_0eef66b71906bb 465,482-497
+  s_9f901e59727f87::t_128a6f9878d50e 499
+src/proxy/spend_gate.rs
+  s_9f901e59727f87::t_588baacc0f31f7 77-80
+site/src/content/docs/ja/reference/configuration.md
+  s_9f901e59727f87::t_c188b4e6fa8b1f 142
+  s_9f901e59727f87::t_0d56dddafcc173 185
+src/gateway/spend/meter/persist/tests.rs
+  s_9f901e59727f87::t_7f2016ed58427d 164-178
+  s_9f901e59727f87::t_51e1ab4de1922d 283-297
+  s_02f64583270fea::t_4cbcc0185f6355 163,282
+tests/spend_metering.rs
+  s_9f901e59727f87::t_afefd5f23e3b25 227-229,231-236
+  s_9f901e59727f87::t_4d1572b2443b14 33
+src/stream_metrics/spend_tap/tests.rs
+  s_9f901e59727f87::t_c89d427f0acbe4 19
+  s_9f901e59727f87::t_8cd31dd78c116c 47-48,50-55
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_9f901e59727f87::t_095b77ad07ac1f 142
+  s_9f901e59727f87::t_a114e7fe39234d 185
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2cb4eae87f816ceb49a496080b59711101cd0740",
+  "prompts": {},
+  "sessions": {
+    "s_02f64583270fea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a35777e-f23d-4abf-b74a-66c77bf6aad5",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_9f901e59727f87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "321677c8-cff9-4c24-9b5d-93c0c797c39d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
