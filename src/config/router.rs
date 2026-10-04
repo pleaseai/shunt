@@ -247,28 +247,41 @@ impl RouterConfig {
         ) || self.stage_classifier().is_some()
     }
 
-    /// Whether a turn this router serves can land on some upstream — what
-    /// pricing reachability (`Config::pricing_model_is_requestable`) asks of
-    /// a router-backed id.
+    /// Every id whose resolved chain an upstream call made for this router's
+    /// turn can travel — what pricing reachability
+    /// (`Config::pricing_model_is_requestable`) resolves for a router-backed
+    /// id.
+    ///
+    /// Judges are included because every call is stamped with the router's id
+    /// (`routing::resolve_target_chain`), the judge call `routing::serve`
+    /// dispatches as much as the answer: a row naming the router id prices a
+    /// judge's upstream exactly as it prices a target's.
     ///
     /// Exhaustive on purpose, like the match in `routing::resolve_chain`: a new
-    /// router type fails to compile here until its author decides whether it
-    /// calls an upstream, instead of silently counting as reachable everywhere.
-    pub(crate) fn can_reach_any_upstream(&self) -> bool {
+    /// router type fails to compile here until its author confirms where its
+    /// calls land, instead of silently inheriting the answer below.
+    pub(crate) fn priced_call_ids(&self) -> Vec<&str> {
         match self {
             // Synthesizes its answer and calls no upstream, so no row on any
             // upstream ever prices it.
-            Self::Noop {} => false,
-            // Each resolves its chosen target through the whole chain again,
-            // so it can land on any upstream. Claiming reachability is the
-            // safe answer: a warning here would be a false one.
+            Self::Noop {} => Vec::new(),
+            // A stage or auto tier is one of the two targets, the picker's
+            // default included, and a stage classifier's verdict only picks
+            // between them. `random` and `prefill_router` choose from
+            // `targets`, falling back to its first entry.
+            //
+            // The driven types hand libsy only ids these accessors enumerate
+            // (`routing::driven::build`): every verdict, fail-open default, and
+            // retained target is a target, and every model call is a target or
+            // a judge — the advisor's review and the REDO dispatch it may
+            // trigger included.
             Self::StageRouter(_)
             | Self::Auto(_)
             | Self::Random(_)
             | Self::PrefillRouter(_)
             | Self::LlmClassifier(_)
             | Self::Composite(_)
-            | Self::Advisor(_) => true,
+            | Self::Advisor(_) => self.targets().into_iter().chain(self.judges()).collect(),
         }
     }
 

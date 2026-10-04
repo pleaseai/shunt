@@ -4060,11 +4060,10 @@ impl Config {
     /// mapped only as the `codex` upstream model does not make an `anthropic`
     /// row usable. A client model *id* is scoped the same way — routing returns
     /// as soon as a `[[models]]` entry claims the id, and only for the upstreams
-    /// that entry names — except under a `[models.router]`, whose target is
-    /// resolved through the whole chain again and can land anywhere. A `noop`
-    /// router is the exception to the exception: it answers without calling
-    /// any upstream. A `[models.subagents]` overlay adds the upstreams its
-    /// named targets resolve to.
+    /// that entry names. A `[models.router]` entry reaches the upstreams its
+    /// targets and judges resolve to through the whole chain again, so a `noop`
+    /// router, which names neither, reaches none. A `[models.subagents]`
+    /// overlay adds the upstreams its named targets and judges resolve to.
     ///
     /// `routing::resolve_model_chain` ends by routing anything no `[[routes]]`
     /// or `[[route_prefixes]]` entry claimed to `server.default_provider` as a
@@ -4109,16 +4108,26 @@ impl Config {
                 // resolves that target through the chain again under the
                 // parent's id. Validation keeps every target one hop deep (no
                 // router or overlay of its own), so resolving each target here
-                // names exactly the upstreams a child turn can land on. The
-                // parent's own turns still take the arms below.
+                // names exactly the upstreams a child turn can land on. A
+                // classifier overlay's judge call is stamped with the parent's
+                // id too, so its upstreams count as well. The parent's own
+                // turns still take the arms below.
                 && (entry.subagents.as_ref().is_some_and(|overlay| {
-                    overlay.named_targets().iter().any(|(_, target)| {
+                    let targets = overlay.named_targets();
+                    let judges = overlay.named_judges();
+                    targets.iter().chain(&judges).any(|(_, target)| {
                         crate::routing::resolve_model_chain(self, target)
                             .iter()
                             .any(|route| route.provider == row.upstream)
                     })
                 }) || match (&entry.router, &entry.upstream_model) {
-                    (Some(router), _) => router.can_reach_any_upstream(),
+                    // A router re-resolves each id it calls through the chain
+                    // under its own id, one hop deep like an overlay target.
+                    (Some(router), _) => router.priced_call_ids().into_iter().any(|target| {
+                        crate::routing::resolve_model_chain(self, target)
+                            .iter()
+                            .any(|route| route.provider == row.upstream)
+                    }),
                     // An `upstream_model` map routes to the providers it names
                     // and nowhere else.
                     (None, Some(upstreams)) if !upstreams.is_empty() => {
@@ -5035,10 +5044,10 @@ impl Config {
         // The pricing table is read by the (not yet implemented) spend meter,
         // which has no way to report a bad rate per request. Reject an
         // unusable multiplier, rate, or upstream reference at boot instead.
-        // Last, because its reachability check resolves overlay targets
-        // through `routing::resolve_model_chain`, which recurses without
-        // bound on a router cycle; the router and overlay checks above
-        // reject those first.
+        // Last, because its reachability check resolves router and overlay
+        // targets and judges through `routing::resolve_model_chain`, which
+        // recurses without bound on a router cycle; the router and overlay
+        // checks above reject those first.
         self.validate_pricing()?;
         self.warn_service_tier_withheld_for_flavor();
         Ok(self)
@@ -8137,8 +8146,24 @@ cache_write = 4.125
             models: vec![
                 model_config("team-sonnet", Some(model_upstream("codex", "gpt-5.2"))),
                 // A stage router resolves its tier target through the whole
-                // chain again, so its id can land on any upstream.
+                // chain again, so its id reaches what its targets reach: both
+                // tiers here are unrouted and land on the default provider.
                 router_model("router-model", "capable-tier", "efficient-tier"),
+                // Both tiers resolve through the `eu-target` route, so this
+                // router reaches `bedrock-eu` and nothing else.
+                router_model("eu-router-model", "eu-target", "eu-target"),
+                // The tiers stay on the default provider, but the judge call
+                // is stamped with the router's id and resolves to `bedrock-eu`.
+                {
+                    let mut model =
+                        router_model("judged-router-model", "capable-tier", "efficient-tier");
+                    stage_mut(&mut model).classifier = Some(super::StageClassifierConfig {
+                        target: "eu-target".to_string(),
+                        base_threshold: 0.5,
+                        classify_trigger: Default::default(),
+                    });
+                    model
+                },
                 // A `noop` router answers without any upstream call.
                 ModelConfig {
                     router: Some(super::RouterConfig::Noop {}),
@@ -8160,6 +8185,26 @@ cache_write = 4.125
                         },
                     )),
                     ..model_config("overlay-model", None)
+                },
+                // A classifier overlay serves from its groups, all unrouted
+                // here, but its `judge` group's call is stamped with the
+                // parent's id and resolves to `bedrock-eu`.
+                ModelConfig {
+                    subagents: Some(
+                        toml::from_str(
+                            r#"
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["eu-target"], efficient = ["unrouted-target"], any = ["unrouted-target"] }
+default_target = "efficient"
+prompt = "Select a target."
+response_schema = '{"type": "object"}'
+policy = { type = "target_selector", selector = "/target" }
+"#,
+                        )
+                        .expect("the classifier overlay parses"),
+                    ),
+                    ..model_config("judged-overlay-model", None)
                 },
             ],
             routes: vec![
@@ -8243,9 +8288,13 @@ cache_write = 4.125
             // both the id and the mapped upstream model resolve on `codex`.
             ("codex", "team-sonnet"),
             ("codex", "GPT-5.2"),
-            // A stage router's target is resolved through the whole chain
-            // again, so the router's id stays reachable anywhere.
-            ("bedrock-eu", "router-model"),
+            // A router reaches the upstreams its targets resolve to...
+            ("bedrock-eu", "eu-router-model"),
+            // ...and those its judge resolves to, since the judge call is
+            // priced under the router's id too.
+            ("bedrock-eu", "judged-router-model"),
+            // An overlay's judge counts for the same reason.
+            ("bedrock-eu", "judged-overlay-model"),
             ("bedrock-eu", "overlay-model"),
             ("codex", "legacy-alias"),
             ("codex", "vendor-sonnet"),
@@ -8296,6 +8345,12 @@ cache_write = 4.125
             // The overlay's only target resolves to `bedrock-eu`, and the
             // parent's own turn falls through to the default provider.
             ("codex", "overlay-model"),
+            // No target or judge of these routers resolves to the row's
+            // upstream, so the row prices nothing.
+            ("bedrock-eu", "router-model"),
+            ("codex", "eu-router-model"),
+            ("codex", "judged-router-model"),
+            ("codex", "judged-overlay-model"),
             // A `noop` router calls no upstream, so nothing ever prices it.
             ("bedrock-eu", "noop-model"),
             ("codex", "noop-model"),
@@ -8316,9 +8371,9 @@ cache_write = 4.125
         assert!(!requestable(&passthrough, "codex", "my-sonnet-alias"));
     }
 
-    /// Pricing reachability resolves an overlay's targets through
-    /// `routing::resolve_model_chain`, which recurses without bound on a
-    /// router that targets itself. The one-hop check has to reject that config
+    /// Pricing reachability resolves router and overlay targets and judges
+    /// through `routing::resolve_model_chain`, which recurses without bound on
+    /// a router that targets itself. The one-hop check has to reject that config
     /// first, or validating it overflows the stack instead of returning an
     /// error.
     #[test]
