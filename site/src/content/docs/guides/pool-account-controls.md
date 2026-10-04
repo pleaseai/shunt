@@ -40,7 +40,7 @@ A hard utilization cap (`max_utilization*`, see [Anthropic Multi-Account](/guide
 | :-- | :-- | :-- | :-- |
 | Set by | `shunt.toml`, reloaded | Admin dashboard or `PATCH /admin/api/pool/{provider}/accounts/{account_ref}` | Observed utilization reaching a configured cap |
 | Ends | Never, until the config changes | When an operator resumes the account | Automatically, once utilization falls below the cap (window reset or expiry, a lower observation, or a raised cap on reload) |
-| Dashboard shows | `disabled` | `paused` | "Capped", or "Capped (Fable)" for a Fable-only cap |
+| Dashboard shows | `disabled` | `paused` | "Capped", or "Capped (Fable)" for a Fable-only cap; the configured cap itself is marked on each usage bar and shown in the pool table |
 
 A capped account is still configured and signed in; only new routing is withheld. `GET /usage` reports pool status `capped` when no account is available and at least one enabled (non-`disabled`), unpaused account is capped. When caps leave no selectable account, the request normally gets a gateway HTTP `429` (or fails over to the next upstream). One exception: when caps empty the pool mid-request on a streaming request already committed to a Codex/ChatGPT pool (HTTP `200` sent) and no later upstream serves it, the client gets a terminal SSE `error` event inside the stream instead of an HTTP `429`; see the [`[server.pool]`](/reference/configuration/#serverpool-optional) hard-cap notes.
 
