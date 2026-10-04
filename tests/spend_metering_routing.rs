@@ -334,7 +334,13 @@ fn spent(gateway: &Gateway) -> [u64; 3] {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    PERIODS.map(|period| meter.spent(PRINCIPAL, period, now))
+    // A charge lives in exactly one window per period; across a day, week or
+    // month boundary since it was recorded it sits in the earlier one.
+    PERIODS.map(|period| {
+        meter
+            .spent(PRINCIPAL, period, now)
+            .max(meter.spent(PRINCIPAL, period, now - 120))
+    })
 }
 
 fn source(response: &reqwest::Response) -> String {

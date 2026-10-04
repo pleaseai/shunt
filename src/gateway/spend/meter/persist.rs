@@ -16,7 +16,10 @@
 //! limit and audit records. When the record still names its principal, that
 //! principal is flagged unavailable until every window the record could cover
 //! has elapsed, so enforcement follows `fail_closed_on_error` instead of
-//! silently under-counting; every other record keeps loading.
+//! silently under-counting; every other record keeps loading. A carried object
+//! record whose start cannot date it also gets a reserved `"carried_until"`
+//! field (its flag-lift and drop deadline) so a restart does not restart the
+//! clock.
 
 use std::{
     io,
@@ -82,8 +85,15 @@ pub struct PersistState {
     gate: tokio::sync::Mutex<()>,
 }
 
-/// A carried-through record plus the in-memory deadline after which it is
-/// dropped when its own start cannot date it (never persisted).
+/// Reserved field a carried object record gets when its own start cannot date
+/// it: the unix second its principal flag lifts and the record is dropped.
+/// Persisting it keeps a restart from computing a fresh deadline from the new
+/// `now` and re-flagging the principal.
+const CARRIED_UNTIL: &str = "carried_until";
+
+/// A carried-through record plus the deadline after which it is dropped when
+/// its own start cannot date it (persisted inside the record as
+/// [`CARRIED_UNTIL`]).
 struct HeldRecord {
     record: OpaqueRecord,
     expires_at: Option<u64>,
@@ -188,10 +198,46 @@ fn usable_start(value: &serde_json::Value, now_secs: u64) -> Option<u64> {
         .filter(|start| *start <= now_secs.saturating_add(MAX_FUTURE_SKEW))
 }
 
+/// Wraps a freshly loaded opaque record. One with a usable start keeps the
+/// retention rule. One without (no start, unparseable, or beyond the skew
+/// bound) expires at its persisted [`CARRIED_UNTIL`] when that parses, else at
+/// the lift deadline computed now, which is written into the record so the
+/// next flush persists it. A record that is not a JSON object cannot carry the
+/// field, so it expires at once (dropped at the first flush after load).
+/// The flag is whether the record gained a `carried_until` it did not have, so
+/// the file is out of date and the next flush must write it.
+fn hold(mut record: OpaqueRecord, now_secs: u64) -> (HeldRecord, bool) {
+    if usable_start(&record.value, now_secs).is_some() {
+        let held = HeldRecord {
+            record,
+            expires_at: None,
+        };
+        return (held, false);
+    }
+    let carried = record
+        .value
+        .get(CARRIED_UNTIL)
+        .and_then(serde_json::Value::as_u64);
+    let deadline = carried.unwrap_or_else(|| lift_after(&record.value, now_secs));
+    let expires_at = match record.value.as_object_mut() {
+        Some(object) => {
+            object.insert(CARRIED_UNTIL.into(), deadline.into());
+            deadline
+        }
+        None => 0,
+    };
+    let stamped = carried.is_none() && record.value.is_object();
+    let held = HeldRecord {
+        record,
+        expires_at: Some(expires_at),
+    };
+    (held, stamped)
+}
+
 /// True for a carried-through record old enough to drop at the next flush. A
-/// record with a usable start follows the retention cutoff; one without (no
-/// start, unparseable, or beyond the skew bound) expires at its load-time
-/// lift deadline so it cannot flag its principal on every restart forever.
+/// record with a usable start follows the retention cutoff; one without
+/// expires at its (persisted) lift deadline so it cannot flag its principal on
+/// every restart forever.
 fn opaque_expired(held: &HeldRecord, cutoff: u64, now_secs: u64) -> bool {
     match usable_start(&held.record.value, now_secs) {
         Some(start) => start < cutoff && start.saturating_add(32 * DAY) <= now_secs,
@@ -213,9 +259,19 @@ impl SpendMeter {
                 *slot = slot.saturating_add(record.femto);
             }
         }
-        for record in &loaded.opaque {
-            let until = lift_after(&record.value, now_secs);
-            match record.value.get("principal").and_then(|p| p.as_str()) {
+        let (held, stamped): (Vec<HeldRecord>, Vec<bool>) = loaded
+            .opaque
+            .into_iter()
+            .map(|record| hold(record, now_secs))
+            .unzip();
+        if stamped.contains(&true) {
+            self.persist.mark_changed();
+        }
+        for held in &held {
+            let until = held
+                .expires_at
+                .unwrap_or_else(|| lift_after(&held.record.value, now_secs));
+            match held.record.value.get("principal").and_then(|p| p.as_str()) {
                 Some(principal) if until > now_secs => {
                     tracing::warn!(
                         principal,
@@ -234,12 +290,7 @@ impl SpendMeter {
             .opaque
             .lock()
             .expect("spend meter lock poisoned")
-            .extend(loaded.opaque.into_iter().map(|record| {
-                let expires_at = usable_start(&record.value, now_secs)
-                    .is_none()
-                    .then(|| lift_after(&record.value, now_secs));
-                HeldRecord { record, expires_at }
-            }));
+            .extend(held);
     }
 
     /// Loads `path` into this meter (see [`load`]). Public for the restart test

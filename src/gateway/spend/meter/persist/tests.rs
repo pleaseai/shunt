@@ -185,13 +185,106 @@ fn a_startless_opaque_record_flags_then_expires_at_its_lift_deadline() {
     let end = window(Period::Daily, WED).end;
     assert_eq!(meter.check(&[], "mallory", WED), Check::Unavailable);
 
-    assert!(!meter.flush_to(&path, 13, end - 1).unwrap());
-    assert!(read(&path)["counters"].as_array().unwrap().contains(&bad));
+    assert!(meter.flush_to(&path, 13, end - 1).unwrap());
+    let stamped = json!({"principal": "mallory", "period": "daily", "femto": 1,
+                         "carried_until": end});
+    assert!(read(&path)["counters"]
+        .as_array()
+        .unwrap()
+        .contains(&stamped));
     assert!(meter.flush_to(&path, 13, end).unwrap());
 
     assert!(!read(&path)["counters"].as_array().unwrap().contains(&bad));
     assert_eq!(meter.check(&[], "mallory", end), Check::Allow);
     assert!(restored(&path, end).check(&[], "mallory", end) == Check::Allow);
+}
+
+#[test]
+fn a_startless_record_persists_its_deadline_across_a_restart_into_a_new_month() {
+    let path = temp_path("carried-until");
+    let bad = json!({"principal": "mallory", "period": "daily", "femto": 1});
+    write(&path, &json!({"version": 1, "counters": [bad]}));
+    let meter = restored(&path, WED);
+    let end = window(Period::Daily, WED).end;
+    // A charge forces a write before the deadline.
+    meter.record("alice", WED, 1);
+    assert!(meter.flush_to(&path, 13, WED).unwrap());
+
+    let carried = read(&path)["counters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["principal"] == "mallory")
+        .cloned()
+        .expect("the opaque record is carried");
+    assert_eq!(carried["carried_until"], end);
+
+    // Restart in the next month: the persisted deadline has passed.
+    let next_month = window(Period::Monthly, WED).end + 3600;
+    let after = restored(&path, next_month);
+    assert_eq!(after.check(&[], "mallory", next_month), Check::Allow);
+    assert!(after.flush_to(&path, 13, next_month).unwrap());
+    assert!(!read(&path)["counters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|record| record["principal"] == "mallory"));
+}
+
+#[test]
+fn an_idle_restart_does_not_reflag_a_startless_record_in_a_new_month() {
+    let path = temp_path("carried-until-idle");
+    let bad = json!({"principal": "mallory", "period": "daily", "femto": 1});
+    write(&path, &json!({"version": 1, "counters": [bad]}));
+    let meter = restored(&path, WED);
+    let end = window(Period::Daily, WED).end;
+    // No charge since boot: loading alone must have made the file stale.
+    assert!(meter.flush_to(&path, 13, WED).unwrap());
+
+    let next_month = window(Period::Monthly, WED).end + 3600;
+    let after = restored(&path, next_month);
+    assert!(next_month > end);
+    assert_eq!(after.check(&[], "mallory", next_month), Check::Allow);
+    assert!(after.flush_to(&path, 13, next_month).unwrap());
+    assert!(!read(&path)["counters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|record| record["principal"] == "mallory"));
+}
+
+#[test]
+fn a_record_that_already_carries_its_deadline_does_not_dirty_the_restored_state() {
+    let path = temp_path("carried-until-clean");
+    let bad = json!({"principal": "mallory", "period": "daily", "femto": 1,
+                     "carried_until": WED + DAY});
+    write(&path, &json!({"version": 1, "counters": [bad]}));
+    let meter = restored(&path, WED);
+    assert!(!meter.flush_to(&path, 13, WED).unwrap());
+}
+
+#[test]
+fn a_persisted_carried_until_in_the_future_still_flags_after_a_restart() {
+    let path = temp_path("carried-until-future");
+    let deadline = WED + 5 * DAY;
+    let bad = json!({"principal": "mallory", "period": "daily", "femto": 1,
+                     "carried_until": deadline});
+    write(&path, &json!({"version": 1, "counters": [bad]}));
+    let meter = restored(&path, WED + DAY);
+    assert_eq!(
+        meter.check(&[], "mallory", deadline - 1),
+        Check::Unavailable
+    );
+    assert_eq!(meter.check(&[], "mallory", deadline), Check::Allow);
+}
+
+#[test]
+fn a_non_object_opaque_record_is_dropped_at_the_first_flush() {
+    let path = temp_path("non-object");
+    write(&path, &json!({"version": 1, "counters": ["junk", 7]}));
+    let meter = restored(&path, WED);
+    assert!(meter.flush_to(&path, 13, WED).unwrap());
+    assert!(read(&path)["counters"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -203,7 +296,7 @@ fn a_far_future_opaque_record_flags_then_expires_at_its_lift_deadline() {
     let end = window(Period::Monthly, WED).end;
     assert_eq!(meter.check(&[], "erin", WED), Check::Unavailable);
 
-    assert!(!meter.flush_to(&path, 13, end - 1).unwrap());
+    assert!(meter.flush_to(&path, 13, end - 1).unwrap());
     assert!(meter.flush_to(&path, 13, end).unwrap());
 
     assert!(!read(&path)["counters"].as_array().unwrap().contains(&bad));

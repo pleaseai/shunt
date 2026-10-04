@@ -335,6 +335,16 @@ fn parse_params(raw: &str) -> Result<Params, String> {
     {
         return Err("user_ids[]: at most 100 entries per request".into());
     }
+    // Repeats answer once, at the first-seen position.
+    let user_ids = user_ids.map(|ids| {
+        let mut unique: Vec<String> = Vec::with_capacity(ids.len());
+        for id in ids {
+            if !unique.contains(&id) {
+                unique.push(id);
+            }
+        }
+        unique
+    });
     if q.as_ref()
         .is_some_and(|q| q.chars().count() > MAX_QUERY_LENGTH)
     {

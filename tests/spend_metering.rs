@@ -224,7 +224,13 @@ async fn env() -> common::EnvVars {
 fn spent(gateway: &Gateway, principal: &str) -> [u64; 3] {
     let meter = gateway.state.gateway_stores.spend.meter();
     let now = now();
-    PERIODS.map(|period| meter.spent(principal, period, now))
+    // A charge lives in exactly one window per period; across a day, week or
+    // month boundary since it was recorded it sits in the earlier one.
+    PERIODS.map(|period| {
+        meter
+            .spent(principal, period, now)
+            .max(meter.spent(principal, period, now - 120))
+    })
 }
 
 async fn post(

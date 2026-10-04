@@ -204,6 +204,22 @@ async fn user_ids_returns_exactly_those_principals_in_order_even_without_spend()
 }
 
 #[tokio::test]
+async fn duplicate_user_ids_yield_one_row_set_per_period() {
+    let (config, _env) = SpendEnv::config("eff-userids-dup");
+    let (router, _, _) = build_router(config).unwrap();
+    let (response, body) = get(&router, "?user_ids[]=alice&user_ids[]=alice").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        principals(&body),
+        [
+            ("alice".into(), "daily".into()),
+            ("alice".into(), "weekly".into()),
+            ("alice".into(), "monthly".into()),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn period_filter_selects_in_given_order_and_dedupes() {
     let (config, _env) = SpendEnv::config("eff-period");
     let (router, _, state) = build_router(config).unwrap();
