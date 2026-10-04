@@ -60,7 +60,7 @@ Rejected: keep `cap_exhaustion` and take both locks in one critical section. Tha
 - [x] T001 Return the cap verdict from the selection pass (file: src/accounts.rs)
   Validation: The `_with_cap` selection returns `Some(CapExhaustion)` with the earliest `eligible_at` exactly when an unpaused, non-disabled representative is capped for that request. Once returned, the value is unaffected by later quota changes. `cap_exhaustion` is test-only and all existing `accounts::` cap tests pass unchanged.
   Method: `cargo test --all-features --lib accounts::`, plus a new unit test that clears the capping quota after selection returns and asserts the returned verdict still matches the empty order.
-- [ ] T002 Switch the five adapter exits to the returned verdict (file: src/adapters/mod.rs) (depends on T001)
+- [x] T002 Switch the five adapter exits to the returned verdict (file: src/adapters/mod.rs) (depends on T001)
   Validation: No production path calls `cap_exhaustion`. The Claude OAuth, Kimi, Codex HTTP, pooled-stream, and inbound exits read the verdict from the selection call that produced their order. The existing cap integration tests pass unmodified. The per-window track's Known Issue "Cap re-check after selection" and tech-debt TD-001 are marked resolved, citing #739.
   Method: `cargo test --all-features --test multi_account --test failover --test codex_multi_account --test inbound_codex_endpoint --test kimi_multi_account --test codex_websocket_fallback`, and `git grep -n cap_exhaustion -- src` shows only `#[cfg(test)]` uses.
   STOP: an exit's empty order comes from a different selection call than any one you can thread the verdict from (for example a retry loop that re-selects). Report it instead of re-checking the pool.
@@ -92,6 +92,9 @@ Rejected: keep `cap_exhaustion` and take both locks in one critical section. Tha
 - [x] (2026-10-05 KST) T002 Switch the five adapter exits to the returned verdict
   Evidence: `cargo test --all-features --test multi_account --test failover --test codex_multi_account --test inbound_codex_endpoint --test kimi_multi_account --test codex_websocket_fallback` -> 34/20/34/33/10/16 passed, 0 failed; `cargo test --all-features --lib` -> 3033 passed; `git grep cap_exhaustion -- src` -> only cfg(test) use
   Note: test PoolStreamContext literal got `cap: None` (pure field addition); responses/mod.rs:636 also builds a PoolStreamContext in production and now threads the verdict.
+- [x] (2026-10-05 KST) T003 Give the Gemini/Antigravity pool the cap exit
+  Evidence: `cargo test --all-features --test antigravity_multi_account ...` -> 7 passed incl. capped_pool_returns_the_cap_429_and_uncapped_serves; with the guard disabled that test FAILED (panicked at tests/antigravity_multi_account.rs:606); gemini lib tests 20 passed
+  Deferred: rotation-metric `capped` reason not asserted — no cheap metrics reader in the test harness
 
 ## Decision Log
 
