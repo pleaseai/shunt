@@ -1,0 +1,24 @@
+src/accounts.rs
+  s_afd8879efb217f::t_b395ef3c9ae0d4 762-782,797-817,819-820,823,845,849-866,883-884,894-895,906,908,959,964-966,980-983,1002-1012,1103-1109,1142,9389,9406
+  s_afd8879efb217f::t_2c6bd9e632ca83 881-882,885-886
+  s_afd8879efb217f::t_f54ffbc17d46b7 818,867,1242,9379-9388,9390-9405,9407
+.please/docs/tracks/active/select-order-cap-verdict-20261005/plan.md
+  s_afd8879efb217f::t_0d7a293b362fb1 90-92,95-97
+  s_afd8879efb217f::t_e6d87022a1d5f5 98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "874297166ec5f424e3f451005cff7f0eb3248852",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
