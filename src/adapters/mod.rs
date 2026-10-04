@@ -71,7 +71,7 @@ pub(crate) fn cap_exhausted_error(
     exhaustion: crate::accounts::CapExhaustion,
 ) -> AdapterError {
     let message = format!(
-        "all accounts for provider '{provider}' are at their max_utilization cap for this request"
+        "all selectable accounts for provider '{provider}' are at their max_utilization cap for this request"
     );
     let mut response = crate::error::ShuntError::new(
         StatusCode::TOO_MANY_REQUESTS,

@@ -933,6 +933,24 @@ async fn forward_kimi_oauth(
         }
     }
 
+    // Same cap exit as forward_claude_oauth: Kimi records quota through
+    // note_quota, so caps exclude a Kimi account whenever its upstream reports
+    // utilization.
+    if candidates == 0 && last_response.is_none() {
+        if let Some(exhaustion) = state.accounts.cap_exhaustion(
+            &route.provider,
+            &accounts,
+            Some(route.upstream_model.as_str()),
+            state.config.server.pool.as_ref(),
+        ) {
+            crate::metrics::record_pool_rotation(&route.provider, "capped");
+            return Err(crate::adapters::cap_exhausted_error(
+                &route.provider,
+                exhaustion,
+            ));
+        }
+    }
+
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
         return relay_response(&state, &route, response, None, bounds).await;
