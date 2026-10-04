@@ -1,0 +1,41 @@
+src/stream_metrics.rs
+  s_9f901e59727f87::t_93b2c604d78ba3 781-794,796
+src/stream_metrics/tests.rs
+  s_9f901e59727f87::t_434fca19f8531c 1108-1138,1140-1152
+  s_9f901e59727f87::t_a3ea9a8d1bb412 1139
+src/gateway/spend/meter/persist/tests.rs
+  s_9f901e59727f87::t_55300626965309 153
+  s_9f901e59727f87::t_13d39d9daef47e 340-344
+  s_9f901e59727f87::t_12cacb8b01b2af 214-218
+tests/spend_persistence.rs
+  s_9f901e59727f87::t_629e16da0e1aff 430-433,436
+  s_9f901e59727f87::t_cae00c4f65b0a8 452,456
+  s_9f901e59727f87::t_825dd7c6efe36a 339,358
+  s_9f901e59727f87::t_0244750d480715 468-477
+src/gateway/spend/meter/tests.rs
+  s_9f901e59727f87::t_74e32e702f43a7 58
+src/gateway/spend/tests/effective.rs
+  s_9f901e59727f87::t_477f5fdde05aa5 54-65,67
+  s_9f901e59727f87::t_c8bba995b52c29 6-10
+src/stream_metrics/spend_tap/tests.rs
+  s_9f901e59727f87::t_091f588cd88dce 405-428
+  s_9f901e59727f87::t_6b2de8aa8dc914 119-122
+tests/spend_metering.rs
+  s_9f901e59727f87::t_5f3e5563288ea2 527,529
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7bfb9ae9791017b13f0a64adfb1c8c4565361817",
+  "prompts": {},
+  "sessions": {
+    "s_9f901e59727f87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "321677c8-cff9-4c24-9b5d-93c0c797c39d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
