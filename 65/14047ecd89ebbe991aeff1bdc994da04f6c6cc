@@ -1,0 +1,32 @@
+ui/src/__tests__/coalescing.test.tsx
+  s_afd8879efb217f::t_095e4d4a53ee0c 165-166
+  s_afd8879efb217f::t_c95212d474336f 220-243
+ui/src/accounts.ts
+  s_afd8879efb217f::t_095e4d4a53ee0c 89-90,93,276-277,308-311
+ui/src/types.ts
+  s_afd8879efb217f::t_095e4d4a53ee0c 64-67
+ui/src/__tests__/pool-health.test.tsx
+  s_afd8879efb217f::t_c95212d474336f 97-130
+ui/src/components/PoolHealth.tsx
+  s_afd8879efb217f::t_095e4d4a53ee0c 24-25,28
+.please/docs/tracks/active/per-window-max-utilization-20261004/plan.md
+  s_afd8879efb217f::t_1e1c88e0248045 162-165
+ui/src/components/ObservedAccounts.tsx
+  s_afd8879efb217f::t_095e4d4a53ee0c 22-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6514047ecd89ebbe991aeff1bdc994da04f6c6cc",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
