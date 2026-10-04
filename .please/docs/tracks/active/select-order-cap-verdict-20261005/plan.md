@@ -64,7 +64,7 @@ Rejected: keep `cap_exhaustion` and take both locks in one critical section. Tha
   Validation: No production path calls `cap_exhaustion`. The Claude OAuth, Kimi, Codex HTTP, pooled-stream, and inbound exits read the verdict from the selection call that produced their order. The existing cap integration tests pass unmodified. The per-window track's Known Issue "Cap re-check after selection" and tech-debt TD-001 are marked resolved, citing #739.
   Method: `cargo test --all-features --test multi_account --test failover --test codex_multi_account --test inbound_codex_endpoint --test kimi_multi_account --test codex_websocket_fallback`, and `git grep -n cap_exhaustion -- src` shows only `#[cfg(test)]` uses.
   STOP: an exit's empty order comes from a different selection call than any one you can thread the verdict from (for example a retry loop that re-selects). Report it instead of re-checking the pool.
-- [ ] T003 Give the Gemini/Antigravity pool the cap exit (file: src/adapters/gemini/mod.rs) (depends on T002)
+- [x] T003 Give the Gemini/Antigravity pool the cap exit (file: src/adapters/gemini/mod.rs) (depends on T002)
   Validation: When injected utilization caps every Antigravity account, the request gets the gateway cap 429 with `retry-after`, and the rotation metric reason is `capped`. Uncapped behavior is unchanged.
   Method: A new test that seeds Antigravity account quota through the pool's existing test hooks and asserts status, error type, and `retry-after`. Then run `cargo test --all-features` for the Gemini/Antigravity suites.
 
