@@ -1,0 +1,38 @@
+src/adapters/responses/inbound.rs
+  s_afd8879efb217f::t_e05104b61d4701 152,303
+src/adapters/responses/pool.rs
+  s_afd8879efb217f::t_c441247624d096 366,1046,3969
+  s_afd8879efb217f::t_e05104b61d4701 39,61-81,130-132,348,408,540,1028,1061-1070,1072,1410
+src/adapters/mod.rs
+  s_afd8879efb217f::t_e05104b61d4701 96-98,101,103
+src/accounts.rs
+  s_afd8879efb217f::t_ad000d7b7966e8 787,834
+  s_afd8879efb217f::t_e05104b61d4701 881-882
+.please/docs/tracks/active/select-order-cap-verdict-20261005/plan.md
+  s_afd8879efb217f::t_6eb628731cf263 60
+  s_afd8879efb217f::t_a90c553dc83766 92-94
+src/adapters/responses/mod.rs
+  s_afd8879efb217f::t_e05104b61d4701 636,653
+src/adapters/anthropic/mod.rs
+  s_afd8879efb217f::t_e05104b61d4701 193,691,788,931
+.please/docs/tracks/completed/per-window-max-utilization-20261004/plan.md
+  s_afd8879efb217f::t_e5bd48f0edb152 199
+.please/docs/tracks/tech-debt-tracker.md
+  s_afd8879efb217f::t_49c990e750aafa 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c14356ccb181523f403bc97e97e0e85ab2ec5253",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
