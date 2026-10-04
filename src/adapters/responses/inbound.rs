@@ -299,8 +299,8 @@ async fn forward_codex_passthrough(
         }
     }
 
-    if candidates == 0 && last_response.is_none() {
-        if let Some(error) = super::pool::cap_exhausted(&state, &route, &accounts_config) {
+    if candidates == 0 {
+        if let Some(error) = crate::adapters::cap_exhausted(&state, &route, &accounts_config) {
             return Err(error);
         }
     }

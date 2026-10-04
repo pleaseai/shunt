@@ -278,7 +278,7 @@ fn pool_status<'a>(snapshots: impl Iterator<Item = &'a AccountSnapshot>) -> &'st
         any_selectable = true;
         any_available |= snapshot.available;
         any_near_quota |= snapshot.near_quota;
-        any_capped |= !snapshot.paused && (snapshot.capped || snapshot.capped_fable);
+        any_capped |= !snapshot.paused && snapshot.any_cap();
     }
 
     if any_selectable && !any_available && any_capped {

@@ -197,7 +197,7 @@ pub(crate) fn to_wire(
         |s| s.utilization_7d_oi,
         |s| s.reset_7d_oi,
         // A shared-window cap also keeps Fable traffic off the account.
-        |s| s.capped || s.capped_fable,
+        |s| s.any_cap(),
     );
     let limits = match fable {
         Some((used, resets_at)) => {

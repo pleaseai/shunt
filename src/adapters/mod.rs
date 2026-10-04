@@ -66,10 +66,7 @@ pub struct AdapterError {
 /// advances past it like an upstream rate limit (a `None` failure would stop the
 /// chain). `retry-after` is the whole seconds until the earliest eligibility,
 /// when known.
-pub(crate) fn cap_exhausted_error(
-    provider: &str,
-    exhaustion: crate::accounts::CapExhaustion,
-) -> AdapterError {
+fn cap_exhausted_error(provider: &str, exhaustion: crate::accounts::CapExhaustion) -> AdapterError {
     let message = format!(
         "all selectable accounts for provider '{provider}' are at their max_utilization cap for this request"
     );
@@ -79,17 +76,11 @@ pub(crate) fn cap_exhausted_error(
         message.clone(),
     )
     .into_response();
-    if let Some(eligible_at) = exhaustion.eligible_at {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let seconds = eligible_at.saturating_sub(now).max(1);
-        if let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string()) {
-            response
-                .headers_mut()
-                .insert(axum::http::header::RETRY_AFTER, value);
-        }
+    if let Some(seconds) = exhaustion.retry_after_secs() {
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from(seconds),
+        );
     }
     AdapterError {
         message,
@@ -98,6 +89,25 @@ pub(crate) fn cap_exhausted_error(
             StatusCode::TOO_MANY_REQUESTS,
         )),
     }
+}
+
+/// The cap-exhaustion error for a pool whose empty order is down to
+/// `max_utilization` caps, with the `capped` rotation metric recorded. `None`
+/// when no account is capped (a pause or outage keeps its own exit). Callers
+/// ask only when `select_order*` returned an empty order.
+pub(crate) fn cap_exhausted(
+    state: &AppState,
+    route: &Route,
+    accounts: &[crate::config::AccountConfig],
+) -> Option<AdapterError> {
+    let exhaustion = state.accounts.cap_exhaustion(
+        &route.provider,
+        accounts,
+        Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
+    )?;
+    crate::metrics::record_pool_rotation(&route.provider, "capped");
+    Some(cap_exhausted_error(&route.provider, exhaustion))
 }
 
 /// The byte cap a bounded call's upstream reply crossed.

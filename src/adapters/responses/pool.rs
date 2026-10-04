@@ -36,28 +36,6 @@ use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
 use crate::proxy::chain_stream::LazyEnvelope;
 
-/// The cap-exhaustion error for a Codex pool whose empty order is down to
-/// `max_utilization` caps, with the `capped` rotation metric recorded. `None`
-/// when no account is capped (a pause or outage keeps its own exit). Callers
-/// ask only when `select_order*` returned an empty order.
-pub(super) fn cap_exhausted(
-    state: &AppState,
-    route: &Route,
-    accounts: &[AccountConfig],
-) -> Option<AdapterError> {
-    let exhaustion = state.accounts.cap_exhaustion(
-        &route.provider,
-        accounts,
-        Some(route.upstream_model.as_str()),
-        state.config.server.pool.as_ref(),
-    )?;
-    crate::metrics::record_pool_rotation(&route.provider, "capped");
-    Some(crate::adapters::cap_exhausted_error(
-        &route.provider,
-        exhaustion,
-    ))
-}
-
 fn select_pool_order(
     state: &AppState,
     provider: &str,
@@ -532,39 +510,16 @@ pub(super) fn pool_events_stream(
                                 // upstream is a pause, an outage, or a cap; only
                                 // a cap gets its own advance-worthy 429.
                                 let capped = if candidates == 0 && last_response.is_none() {
-                                    cap_exhausted(&state, &route, &accounts_config)
+                                    crate::adapters::cap_exhausted(&state, &route, &accounts_config)
                                 } else {
                                     None
                                 };
-                                if let Some(error) = capped {
-                                    let retry_after = error
-                                        .response
-                                        .headers()
-                                        .get(reqwest::header::RETRY_AFTER)
-                                        .cloned();
-                                    let status = StatusCode::TOO_MANY_REQUESTS;
-                                    let envelope =
-                                        LazyEnvelope::Ready(adapter_error_envelope(error).await);
-                                    record(status);
-                                    return Some((
-                                        Ok(PoolItem::Exhausted {
-                                            status,
-                                            advance: true,
-                                            remember: true,
-                                            envelope,
-                                            retry_after,
-                                        }),
-                                        (
-                                            Phase::Done,
-                                            order_iter,
-                                            http_body,
-                                            last_response,
-                                            reprobe,
-                                            attempt_started,
-                                        ),
-                                    ));
+                                if capped.is_none() {
+                                    crate::metrics::record_pool_rotation(
+                                        &route.provider,
+                                        "exhausted",
+                                    );
                                 }
-                                crate::metrics::record_pool_rotation(&route.provider, "exhausted");
                                 // Classified pre-frame exhaustion: the
                                 // committed chain advances on it exactly like
                                 // the pre-commit loop (§4) — a relayed
@@ -572,8 +527,24 @@ pub(super) fn pool_events_stream(
                                 // remembered, transport exhaustion advances
                                 // without remembering.
                                 let (status, advance, remember, envelope, retry_after) =
-                                    match last_response.take() {
-                                        Some(upstream) => {
+                                    match (capped, last_response.take()) {
+                                        (Some(error), _) => {
+                                            let retry_after = error
+                                                .response
+                                                .headers()
+                                                .get(reqwest::header::RETRY_AFTER)
+                                                .cloned();
+                                            (
+                                                StatusCode::TOO_MANY_REQUESTS,
+                                                true,
+                                                true,
+                                                LazyEnvelope::Ready(
+                                                    adapter_error_envelope(error).await,
+                                                ),
+                                                retry_after,
+                                            )
+                                        }
+                                        (None, Some(upstream)) => {
                                             let status = upstream.status();
                                             let retry_after = retry_after_of(&upstream);
                                             let envelope =
@@ -594,7 +565,7 @@ pub(super) fn pool_events_stream(
                                                 retry_after,
                                             )
                                         }
-                                        None => (
+                                        (None, None) => (
                                             StatusCode::BAD_GATEWAY,
                                             true,
                                             false,
@@ -1409,8 +1380,8 @@ pub(super) async fn forward_chatgpt_oauth(
         }
     }
 
-    if candidates == 0 && last_response.is_none() {
-        if let Some(error) = cap_exhausted(&state, &route, &accounts_config) {
+    if candidates == 0 {
+        if let Some(error) = crate::adapters::cap_exhausted(&state, &route, &accounts_config) {
             return Err(error);
         }
     }
