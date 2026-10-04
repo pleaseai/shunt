@@ -95,6 +95,8 @@ Full OAuth는 새로운 갱신 가능 credential을 만듭니다. import는 현�
 | `uuid` | 아니요 | 기존 `metadata.user_id.account_uuid`를 다시 쓰기 위한, 선택된 계정의 Anthropic UUID이자, 풀에서 별칭을 통합하는 데 쓰이는 안정적인 아이덴티티. 이름만 있는 항목(스토어 스캔으로 해석됨)은 선택이 일어나기 전에 스토어의 `shuntAccountUuid`로부터 자동으로 채워집니다. `credentials` 또는 `token_env`로 설정된 항목의 아이덴티티는 `uuid`가 설정되어 있으면 그 값, 없으면 `name`이며, 그 아이덴티티가 다른 별칭의 명시적 `uuid` 또는 이름 폴백 아이덴티티와 일치할 때마다 통합됩니다. 명확하고 의도적인 통합을 위해서는 두 항목 모두에 일치하는 비어 있지 않은 `uuid`를 설정하세요(shunt는 명시적 `uuid`가 다른 계정의 이름 폴백 아이덴티티와 우연히 일치하는 경우도 경고합니다). |
 | `threshold` | 아니요 | 창(window)별 값이 없는 모든 창에 적용되는 계정별 소프트 쿼터 임계값, `[0.0, 1.0]` 범위. 낮은 값은 일찍 로테이션되는 백업 계정을 나타냅니다. |
 | `threshold_5h` / `threshold_7d` / `threshold_fable` | 아니요 | 창별 소프트 임계값; 각각 해당 창에서 `threshold`보다 우선합니다. |
+| `max_utilization` | 아니요 | 창별 값이 없는 모든 창에 적용되는 계정별 하드 캡, `[0.0, 1.0]` 범위. 적용되는 창에서 사용률이 이 값 이상인 계정은 선택에서 제외됩니다([하드 캡](#하드-캡-max_utilization) 참고). `[server.pool]` 없이도 동작합니다. |
+| `max_utilization_5h` / `max_utilization_7d` / `max_utilization_fable` | 아니요 | 창별 하드 캡; 각각 해당 창에서 `max_utilization`보다 우선합니다. Fable 캡은 Fable 모델 요청에만 적용됩니다. |
 | `priority` | 아니요 | 스티키 계정이 비정상일 때의 선택 우선순위; 낮을수록 우선되며 기본값은 `100`입니다. |
 | `disabled` | 아니요 | `true`이면 구성과 관리자 대시보드에는 남긴 채 계정을 선택 대상에서 완전히 제외합니다. |
 
@@ -123,7 +125,7 @@ admin web 화면을 통해 스토어 관리 계정을 삭제하면, 동일한 �
 - 기본 전환 임계값은 `0.98`입니다. 5시간 또는 공유 `7d` status가 `rejected`이면 모든 모델에서 그 계정은 쿼터에 근접한 것으로 간주합니다. `7d_oi` status가 `rejected`이면 Fable 요청에서 쿼터에 근접한 것으로 간주합니다. 공유 5시간 사용률이 임계값에 도달하거나 적용되는 주간 사용률이 임계값에 도달할 때도 쿼터에 근접한 것으로 간주합니다. status 거부 여부는 대응하는 사용률 헤더의 유무와 무관하게 평가합니다. 사용률 임계값과 여유를 계산할 때 Fable 모델은 `7d_oi` 사용률이 있으면 이를 사용하고, 없으면 공유 `7d`를 사용합니다. 집계 status는 창별 status가 하나도 기록되지 않았을 때만 쓰이는 호환용 폴백입니다. 임계값은 계정별로(위의 `threshold*` 필드) 또는 풀 전체로(자세한 내용은 [선택 튜닝](#선택-튜닝-serverpool) 참고) 낮출 수 있습니다.
 - 5시간 버킷은 모든 모델에 적용됩니다. Fable 모델 id는 `7d_oi` 주간 버킷의 사용률이 있으면 그것을 쓰고, 없으면 공유 `7d`로 폴백합니다. 그 외 모든 모델 계열은 공유 `7d`를 사용합니다; 현재 Sonnet 전용 헤더가 없으므로 Sonnet도 `7d`를 사용합니다.
 - 쿼터에 근접했거나 쿨다운됐거나 비활성화(disabled)된 스티키 계정은 선제적으로 로테이션됩니다. shunt는 임계값 아래의 사용 가능한 계정을 `priority`(낮은 값 우선) 순으로 먼저 선호하고, 그다음 적용되는 주간 버킷이 가장 빨리 리셋되는 순서로 선호해 쓰지 않으면 사라지는(use-or-lose) 쿼터부터 소진합니다. 주간 리셋을 알 수 없는 계정이 먼저 정렬됩니다. 그다음 사용 가능한 쿼터 근접 계정, 그다음 가장 빨리 회복되는 순서의 쿨다운 계정이 이어집니다. `[server.pool]`이 구성되어 있으면 번-레이트(burn-rate) 여유가 주간 리셋 타이브레이크를 대신합니다(아래 참고).
-- shunt는 로컬 쿼터 상태 때문에 닫힌 채로 실패(fail closed)하지 않습니다: `disabled`가 아닌 모든 계정은 쿼터에 근접했거나 쿨다운 중이어도 시도 순서에 남아 있습니다.
+- 로컬 쿼터 및 쿨다운 상태 때문에 시도 순서가 비는 일은 없습니다: `disabled`가 아니고 일시 정지되지 않은 모든 계정은 쿼터에 근접했거나 쿨다운 중이어도 시도 순서에 남아 있습니다. 유일한 예외는 하드 캡(`max_utilization*`, [하드 캡](#하드-캡-max_utilization) 참고)으로, 사용률이 캡 이상인 동안 계정을 제외합니다.
 - 사용률은 자체 관측 시각의 상한과 해당 창의 리셋 중 더 이른 시각에 만료됩니다. 자체 상한만 지나고 해당 창의 리셋이 미래라면 해당 창의 사용률과 그 시각만 지우고 그 미래 리셋은 독립 메타데이터로 남깁니다. 창별 status는 자체 관측 시각의 상한과 status를 관측할 때 캡처한 리셋 경계 중 더 이른 시각에 만료되며, status가 지워질 때 캡처한 경계도 함께 지워집니다. 이후 사용량 갱신이나 reset-only 갱신은 캡처한 status 경계를 옮기지 않습니다. 해당 창의 리셋이 지나면 해당 창의 사용률과 리셋이 지워지고, 캡처한 status 경계도 지났을 때 status가 지워집니다. 시각이 찍힌 집계 status는 자체 수명으로 관리되며 무관한 창이 만료되어도 지워지지 않습니다. legacy unstamped aggregate만 창 만료를 따릅니다. non-Fable 성공 응답은 계정 전체 쿨다운만 해제하고 Fable 전용 쿨다운은 그대로 둡니다; Fable 성공 응답은 두 쿨다운을 모두 해제합니다.
 
 풀의 선택, 쿨다운, 쿼터 상태는 프로세스가 살아 있는 동안 설정 핫 리로드를 거쳐도 유지됩니다. 선제 로테이션으로 업스트림 제한을 피하지 못하는 경우에는 반응형 페일오버가 계속 동작합니다.
@@ -162,6 +164,28 @@ disabled = true              # 구성은 유지되지만 절대 선택되지 않
 - **전체 근접 가드(All-near guard).** 모든 계정이 소프트 임계값을 넘겼거나(또는 소진이 예측되면), 풀이 비지 않습니다: 근접 계정은 여유가 가장 큰 순서로 서빙되고, `hard_threshold` 이상인 계정은 여전히 마지막으로 정렬되며, 그다음 쿨다운 중인 계정만 이어집니다.
 - **적용 범위(Scope).** 쿼터 관련 노브는 두 풀 계열 모두에 작동합니다: 이 풀은 `anthropic-ratelimit-unified-*` 헤더로부터, [Codex 풀](/ko/guides/codex-multi-account/)은 보고된 `x-codex-*` 5h/7d 윈도우로부터 동작합니다(이슈 #195). Codex에는 Fable 범위의 `7d_oi` 창이 없어 `default_threshold_fable`은 그곳에서 무력화되며, `priority`와 `disabled`는 어디서나 적용됩니다.
 - 관리자 풀 엔드포인트(`GET /admin/api/pool`)는 각 계정의 `priority`, `disabled` 플래그를 보고하며, `[server.pool]`이 구성되어 있으면 현재 여유(headroom) 예측치를 초 단위로 함께 보고합니다; 대시보드의 상태 열은 비활성화된 계정을 표시합니다.
+
+## 하드 캡 (`max_utilization`)
+
+소프트 임계값은 계정을 재정렬만 합니다. 하드 캡은 사용률이 캡 이상인 동안 계정을 선택에서 제거합니다.
+
+```toml
+[server.pool]
+default_max_utilization = 0.95     # 재정의하지 않는 한 모든 창
+default_max_utilization_5h = 0.9   # 창별 기본값
+
+[[providers.anthropic.accounts]]
+name = "primary"
+max_utilization_fable = 0.5        # Fable은 이 계정의 Fable 주간 버킷 약 50%에서 멈추고, Opus는 계속 사용
+```
+
+- **키.** 계정별: `max_utilization`, `max_utilization_5h`, `max_utilization_7d`, `max_utilization_fable`. `[server.pool]`에서: `default_max_utilization`, `default_max_utilization_5h`, `default_max_utilization_7d`, `default_max_utilization_fable`. 값은 `[0.0, 1.0]` 범위여야 하며, 그 밖의 값은 시작과 `shunt check`를 실패시킵니다.
+- **결정 순서.** 각 창에 대해: 계정 `max_utilization_X` → 계정 `max_utilization` → `default_max_utilization_X` → `default_max_utilization` → 캡 없음. 캡은 `hard_threshold`로 제한되지 않습니다. 계정 캡은 `[server.pool]` 없이도 동작하며, 스토어 스캔으로 찾은 계정(`[[providers.anthropic.accounts]]` 항목이 없는 계정)은 풀 기본값만 받습니다.
+- **제외이지 재정렬이 아님.** 적용되는 창에서 관측된 사용률이 캡 이상인 계정은 선택에서 제외됩니다. 5h와 7d 캡은 모든 요청에 적용되고, Fable 캡은 Fable 모델 요청에만, 그리고 해당 계정의 `7d_oi` 사용률이 관측된 뒤에만 적용됩니다. 사용률이 관측되지 않은 창은 제외하지 않습니다.
+- **복구.** 사용률이 캡 아래로 내려가면 계정은 자동으로 다시 선택 대상이 됩니다. 창 리셋 또는 만료, 더 낮은 관측값, 구성 리로드 시 캡 상향이 그 경로입니다. 캡은 새 라우팅만 막으며 정밀한 예산이 아니고 디스패치된 요청을 위해 사용량을 미리 확보하지도 않으므로, 진행 중이거나 동시에 들어온 요청은 소비하는 만큼 캡을 초과할 수 있습니다.
+- **소진.** 캡 때문에 선택 가능한 계정이 풀에 남지 않으면 shunt는 게이트웨이가 만든 HTTP `429` `rate_limit_error`("all selectable accounts for provider 'X' are at their max_utilization cap for this request")를 반환하며, 가장 이른 재선택 가능 시각을 알면 `retry-after`를 붙입니다. 업스트림 `429`와 마찬가지로 `[[upstreams]]` 페일오버 체인을 진행시키므로, 뒤의 업스트림(종량제일 수 있음)이 요청을 처리하고, 어느 것도 처리하지 못할 때만 클라이언트가 `429`를 받습니다. 단, 이미 Codex/ChatGPT 풀로 커밋된(HTTP `200`이 전송된) 스트리밍 요청은 뒤의 업스트림이 처리하지 못하면 HTTP `429`와 `retry-after` 헤더 없이 스트림 안의 종료 SSE `error` 이벤트를 받습니다. 인바운드 Codex 엔드포인트에서는 같은 오류가 OpenAI 오류 형태로 반환됩니다.
+- **프로바이더.** Claude OAuth 풀(5h, 7d, `7d_oi`)과 [Codex/ChatGPT 풀](/ko/guides/codex-multi-account/)(5시간 및 주간 창; Fable 키는 여기서 무효)에서 유효합니다. Kimi OAuth 풀에서도 Kimi 업스트림이 사용률 헤더를 보고하면 캡이 적용됩니다. 지금까지 보고가 관측된 적이 없어 실제로는 비활성 상태이며, 관측되지 않은 창은 제외하지 않습니다. Antigravity 쿼터는 캡에 반영되지 않습니다.
+- **상태 표시.** 관리자 대시보드는 캡이 걸린 계정을 "Capped"로, Fable 전용 캡이면 "Capped (Fable)"로 표시합니다. `GET /usage`는 사용 가능한 계정이 없고 활성화된(`disabled`가 아닌) 계정 중 일시 정지되지 않은 계정 하나 이상에 캡이 걸려 있으면 풀 상태 `capped`를 보고합니다.
 
 ## Usage-API 재보정
 

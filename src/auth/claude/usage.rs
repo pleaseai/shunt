@@ -360,6 +360,8 @@ mod tests {
             has_state: true,
             available: true,
             near_quota: false,
+            capped: false,
+            capped_fable: false,
             cooldown_secs_remaining: None,
             cooldown_fable_secs_remaining: None,
             priority: 100,

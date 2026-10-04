@@ -22,6 +22,8 @@ fn snapshot(
         has_state: true,
         available: true,
         near_quota: false,
+        capped: false,
+        capped_fable: false,
         cooldown_secs_remaining: None,
         cooldown_fable_secs_remaining: None,
         priority: 100,
@@ -140,6 +142,42 @@ fn aggregate_status_is_exhausted_when_no_account_available() {
     a.available = false;
     a.near_quota = true;
     let body = serde_json::to_value(aggregate(&[("anthropic", &[a])])).unwrap();
+    assert_eq!(body["pool"]["status"], "exhausted");
+}
+
+#[test]
+fn aggregate_status_is_capped_when_no_account_is_available_and_one_is_capped() {
+    let mut a = snapshot("acct-a", Some(0.90), None, None);
+    a.available = false;
+    a.capped = true;
+    let mut b = snapshot("acct-b", Some(0.99), None, None);
+    b.available = false;
+    b.near_quota = true;
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[a.clone(), b])])).unwrap();
+    assert_eq!(body["pool"]["status"], "capped");
+    // A Fable-only cap counts too, and the body names no cap setting.
+    let mut c = snapshot("acct-c", Some(0.1), None, None);
+    c.available = false;
+    c.capped_fable = true;
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[c])])).unwrap();
+    assert_eq!(body["pool"]["status"], "capped");
+    assert!(!body.to_string().contains("max_utilization"));
+    // An available account keeps the pool out of `capped`.
+    let ok = snapshot("acct-ok", Some(0.1), None, None);
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[a, ok])])).unwrap();
+    assert_eq!(body["pool"]["status"], "ok");
+}
+
+#[test]
+fn aggregate_status_ignores_caps_on_paused_accounts() {
+    let mut a = snapshot("acct-a", Some(0.90), None, None);
+    a.available = false;
+    a.capped = true;
+    a.paused = true;
+    let mut b = snapshot("acct-b", Some(0.99), None, None);
+    b.available = false;
+    b.paused = true;
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[a, b])])).unwrap();
     assert_eq!(body["pool"]["status"], "exhausted");
 }
 

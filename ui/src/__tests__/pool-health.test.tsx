@@ -94,4 +94,38 @@ describe('the pool table reports why an account is out, not just that it is', ()
     const cells = rowOf(tbody('pool').getByText('both-one')).querySelectorAll('td');
     expect(cells[8]?.textContent).toBe('300s · 60s (fable)');
   });
+
+  /** A hard cap lasts until the window resets, so it outranks a cooldown. */
+  it('reports a capped account as capped over cooling and near quota', async () => {
+    await renderDashboard(
+      poolWith({
+        name: 'capped-one',
+        has_state: true,
+        capped: true,
+        near_quota: true,
+        cooldown_secs_remaining: 300,
+      }),
+    );
+    expect(stateOf('capped-one')).toBe('capped');
+  });
+
+  /** The Fable cap is below the account-wide states and above the fable cooldown. */
+  it('reports a fable-only cap as capped (fable)', async () => {
+    await renderDashboard(
+      poolWith({
+        name: 'fable-capped',
+        has_state: true,
+        capped_fable: true,
+        cooldown_fable_secs_remaining: 300,
+      }),
+    );
+    expect(stateOf('fable-capped')).toBe('capped (fable)');
+  });
+
+  it('keeps near quota above a fable-only cap', async () => {
+    await renderDashboard(
+      poolWith({ name: 'both', has_state: true, capped_fable: true, near_quota: true }),
+    );
+    expect(stateOf('both')).toBe('near quota');
+  });
 });

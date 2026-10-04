@@ -21,8 +21,11 @@ function poolState(account: PoolAccount): string {
   // an account-wide cooldown is the fact that *all* of this account's traffic is
   // gated right now, while `near_quota` is a threshold warning about what is
   // coming. Reporting the warning while hiding the active gate is the defect.
+  // A hard cap lasts until its window resets, so it outranks the short cooldown.
+  if (account.capped) return 'capped';
   if (account.cooldown_secs_remaining) return 'cooling';
   if (account.near_quota) return 'near quota';
+  if (account.capped_fable) return 'capped (fable)';
   if (account.cooldown_fable_secs_remaining) return 'cooling (fable)';
   return 'available';
 }

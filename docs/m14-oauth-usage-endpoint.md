@@ -86,9 +86,16 @@ is not a rounding error — it answers a different question than the one the CLI
 
 1. Filter to non-disabled Claude accounts reporting a finite utilization for this window.
 2. Partition into `usable` (`AccountSnapshot.available == true`) and the rest; prefer
-   `usable` if non-empty, otherwise fall back to the full non-disabled set (mirrors
+   `usable` if non-empty. Otherwise fall back to the candidates that are not hard-capped
+   (`capped` for the shared 5h/7d bars; either `capped` or `capped_fable` for the Fable
+   `7d_oi` bar, because a shared-window cap also keeps Fable traffic off the account), and
+   to the full non-disabled set only when every candidate is capped. This mirrors
    `select_order`'s real behavior of still routing to a near-quota/cooling account when
-   nothing else is left).
+   nothing else is left, and skips capped accounts because selection never routes to them.
+   The all-capped fallback diverges from `select_order`, which returns an empty order
+   there (a cap-exhaustion `429`); the bar still reports the tier's utilization rather
+   than omitting the window. The fallback also keeps runtime-paused, uncapped candidates,
+   which selection excludes.
 3. Within whichever set step 2 selected, take the accounts at the lowest `priority` value
    present (the most-preferred tier `select_order` tries first).
 4. Within that tier, report the maximum utilization (worst case) — the tier is exactly the
