@@ -153,6 +153,9 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
 - [x] (2026-10-04 KST) T004 Return the cap-exhaustion 429 from Codex pool paths
   Evidence: `cargo test --all-features --test codex_multi_account --test inbound_codex_endpoint --test codex_websocket_fallback` -> 34 + 16 + 33 passed, 0 failed; `--test failover` -> 20 passed
   Note: `into_openai_error_shape` (src/error.rs) dropped every header, so `retry-after` did not survive the inbound Codex re-shape; it now carries `retry-after` over. The stream path (`pool_events_stream`) covers `pool_or_single_events` and the translated chain arm in responses/mod.rs
+- [x] (2026-10-04 20:30 KST) T007 Document max_utilization caps across reference, guides, and milestone docs — 0014c116 (merged)
+  Evidence: `cd site && bun run build` → exit 0, 209 pages built; grep for `max_utilization`/`capped` hits all 5 edited pages in en, ko, ja, zh-cn; locale anchors taken from built dist
+  Note: locale `reference/configuration.md` copies have no account table, so only their `[server.pool]` table and resolution paragraph were extended
 
 ## Decision Log
 
