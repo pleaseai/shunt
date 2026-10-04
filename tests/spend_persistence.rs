@@ -331,13 +331,14 @@ async fn counter_flushes_leave_the_caps_file_byte_unchanged() {
     seed(&gateway, "alice", 3);
     persist::flush(&gateway.state).await;
     seed(&gateway, "alice", 4);
+    // Taken right after the last charge, before any flush or read, so a day
+    // edge crossed later cannot move the window being looked for.
+    let daily = window(Period::Daily, now()).start;
     persist::flush(&gateway.state).await;
 
     assert_eq!(std::fs::read(&state_path).unwrap(), caps_before);
     let counters: Value = serde_json::from_slice(&std::fs::read(&counters_path).unwrap()).unwrap();
     assert_eq!(counters["version"], 1);
-    clear_of_window_edge();
-    let daily = window(Period::Daily, now()).start;
     assert!(counters["counters"]
         .as_array()
         .unwrap()

@@ -413,14 +413,14 @@ fn a_large_crlf_capture_bills_every_frame() {
         capture.push_str(&text("ab"));
         capture.push_str("\r\n\r\n");
     }
-    capture.push_str(&delta(7));
-    capture.push_str("\r\n\r\n");
+    // No final usage: the output is the floor of all 20,000 frames' text, so
+    // a skipped frame would change the bill. 40,000 chars / 4 = 10,000 tokens.
     tap.bill_sse(StatusCode::OK, capture.as_bytes());
     assert_eq!(
         spent(&tap),
         priced(Usage {
             input_tokens: 40,
-            output_tokens: 7,
+            output_tokens: 10_000,
             ..Usage::default()
         })
     );

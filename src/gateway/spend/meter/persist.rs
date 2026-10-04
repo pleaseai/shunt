@@ -207,19 +207,22 @@ fn usable_start(value: &serde_json::Value, now_secs: u64) -> Option<u64> {
 /// The flag is whether the record gained a `carried_until` it did not have, so
 /// the file is out of date and the next flush must write it.
 fn hold(mut record: OpaqueRecord, now_secs: u64) -> (HeldRecord, bool) {
-    if usable_start(&record.value, now_secs).is_some() {
-        let held = HeldRecord {
-            record,
-            expires_at: None,
-        };
-        return (held, false);
-    }
     let carried = record
         .value
         .get(CARRIED_UNTIL)
         .and_then(serde_json::Value::as_u64)
         // A deadline no real clock could reach is hand-edited: treat it as absent.
         .filter(|until| *until <= now_secs.saturating_add(MAX_FUTURE_SKEW));
+    // A stamped deadline wins over re-reading the start: a start that was
+    // beyond the skew when the record was stamped may be usable by now, and
+    // must not turn the deadline into the start's own far-off window end.
+    if carried.is_none() && usable_start(&record.value, now_secs).is_some() {
+        let held = HeldRecord {
+            record,
+            expires_at: None,
+        };
+        return (held, false);
+    }
     let deadline = carried.unwrap_or_else(|| lift_after(&record.value, now_secs));
     let expires_at = match record.value.as_object_mut() {
         Some(object) => {
@@ -243,14 +246,16 @@ fn expired_window(period: Period, start: u64, cutoff: u64, now_secs: u64) -> boo
 }
 
 /// True for a carried-through record old enough to drop at the next flush. A
-/// record with a usable start follows the retention cutoff; one without
-/// expires at its (persisted) lift deadline so it cannot flag its principal on
-/// every restart forever.
+/// record held with a deadline (its start could not date it when loaded)
+/// always expires at that (persisted) deadline, even if its start has since
+/// come inside the skew bound, so it cannot flag its principal forever; any
+/// other follows the retention cutoff.
 fn opaque_expired(held: &HeldRecord, cutoff: u64, now_secs: u64) -> bool {
-    match usable_start(&held.record.value, now_secs) {
-        Some(start) => start < cutoff && start.saturating_add(32 * DAY) <= now_secs,
-        None => held.expires_at.is_some_and(|deadline| now_secs >= deadline),
+    if let Some(deadline) = held.expires_at {
+        return now_secs >= deadline;
     }
+    usable_start(&held.record.value, now_secs)
+        .is_some_and(|start| start < cutoff && start.saturating_add(32 * DAY) <= now_secs)
 }
 
 impl SpendMeter {

@@ -176,15 +176,18 @@ fn summary(
 
 /// shunt has no user directory, so the display fields come from the principal:
 /// a configured static token's name is a name, the reserved anonymous principal
-/// has neither, and anything else (a JWT or gateway-login principal) is an
-/// email.
+/// has neither, and anything else is an email only when it looks like one (a
+/// JWT `sub` is often opaque and gets a null `email_address`).
 fn actor(principal: &str, static_token: &dyn Fn(&str) -> bool) -> Actor {
     let (name, email_address) = if principal == ANONYMOUS_PRINCIPAL {
         (None, None)
     } else if static_token(principal) {
         (Some(principal.to_string()), None)
-    } else {
+    } else if looks_like_email(principal) {
         (None, Some(principal.to_string()))
+    } else {
+        // An opaque identity (a JWT `sub`, say) is a user id, not an email.
+        (None, None)
     };
     Actor {
         actor_type: "user_actor",
@@ -193,6 +196,15 @@ fn actor(principal: &str, static_token: &dyn Fn(&str) -> bool) -> Actor {
         email_address,
         deleted: false,
     }
+}
+
+/// Exactly one `@`, a non-empty local part, and a domain containing a `.`.
+fn looks_like_email(principal: &str) -> bool {
+    let mut parts = principal.split('@');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(local), Some(domain), None) if !local.is_empty() && domain.contains('.')
+    )
 }
 
 /// Femto-USD as US cents with up to three decimals (half-up), trailing zeros

@@ -257,6 +257,33 @@ async fn refusal_message(response: reqwest::Response) -> String {
     body["error"]["message"].as_str().unwrap().to_string()
 }
 
+/// A `type = "noop"` entry never reaches an upstream, so it is a free turn: an
+/// over-cap principal is served it rather than refused with a spend `429`.
+#[tokio::test]
+async fn an_over_cap_principal_is_not_refused_a_noop_turn() {
+    let _env = env().await;
+    let upstream = upstream("/v1/messages", 0).await;
+    let mut cfg = config(&upstream.uri(), true, spend(None, false));
+    cfg.models.push(shunt::config::ModelConfig {
+        id: "quiet".to_string(),
+        display_name: None,
+        upstream_model: None,
+        router: Some(shunt::config::RouterConfig::Noop {}),
+        stage_router: None,
+        subagents: None,
+    });
+    let gateway = start(cfg.validate().expect("a noop entry is well formed")).await;
+    set_cap(&gateway, user("alice"), "daily", 100).await;
+    seed(&gateway, "alice", 100);
+
+    let noop = messages(&gateway, "quiet", Some("tok-a")).await;
+    assert_eq!(noop.status(), StatusCode::OK, "a noop turn is free");
+    // The same principal is still refused on a metered route.
+    let metered = messages(&gateway, "mapped-model", Some("tok-a")).await;
+    assert_eq!(metered.status(), StatusCode::TOO_MANY_REQUESTS);
+    upstream.verify().await;
+}
+
 #[tokio::test]
 async fn user_cap_refuses_with_period_reset_and_blocked_message() {
     let _env = env().await;

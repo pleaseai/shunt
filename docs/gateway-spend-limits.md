@@ -86,7 +86,9 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 
 Enforcement applies to `POST /v1/messages` when `[server.spend]` is configured. It reads the same state the Admin API writes.
 
-**Principal.** A request is attributed to one principal, matched verbatim against a `user` cap's `user_id`: the static `[server.auth]` token's name, the verified inbound JWT's email, or the gateway-login email. A request whose chain injects a gateway-held credential but carries no identity shares the reserved principal `shunt:anonymous`. A chain made only of passthrough routes (the caller's own upstream credential) is neither enforced nor metered, since the caller pays.
+**Principal.** A request is attributed to one principal, matched verbatim against a `user` cap's `user_id`: the static `[server.auth]` token's name, the verified inbound JWT's email, or the gateway-login email. A request whose chain injects a gateway-held credential but carries no identity shares the reserved principal `shunt:anonymous`. A chain made only of passthrough routes (the caller's own upstream credential) is neither enforced nor metered, since the caller pays; the same holds for a chain made only of `type = "noop"` entries, which never reach an upstream.
+
+The three identity sources share one key space. A static token name, a JWT identity claim and a gateway-login email that are equal share one counter and one `user` cap, so keep them distinct. The id `shunt:anonymous` is reserved for requests that carry no identity.
 
 **Effective cap.** Per period (`daily`, `weekly`, `monthly`) the cap is the principal's own `user` row, else the `organization` row, else unlimited. The organization row is a per-seat default, not a shared pool: every principal gets its own counter against it. A `user` row with `amount: null` is an explicit unlimited and wins over the organization row.
 
@@ -189,7 +191,7 @@ Query parameters:
 | `sort` | `spend_desc`; requires exactly one `period[]` |
 | `page` | The opaque `next_page` token from the previous response |
 
-Without `user_ids[]` the rows cover every principal with a counter in a retained window. Each row has `scope` (`{"type": "user", "user_id": ...}`), `groups` (always `[]`), `actor`, `amount` and `source`/`spend_limit_id` (the binding row, or null when unlimited), `currency`, `period`, and `period_to_date_spend` in US cents with up to three decimals. `actor` is derived from the principal alone: a static `[server.auth]` token name fills `name`, an email principal fills `email_address`, and `shunt:anonymous` has both null. Invalid parameters return `400 invalid_request_error`: `limit: must be between 1 and 1000`, `period[]: must be one of daily, weekly, monthly`, `user_ids[]: at most 100 entries per request`, `q: too long`, `sort: must be spend_desc`, `sort=spend_desc requires exactly one period[]`, `page: invalid page token`.
+Without `user_ids[]` the rows cover every principal with a counter in a retained window. Each row has `scope` (`{"type": "user", "user_id": ...}`), `groups` (always `[]`), `actor`, `amount` and `source`/`spend_limit_id` (the binding row, or null when unlimited), `currency`, `period`, and `period_to_date_spend` in US cents with up to three decimals. `actor` is derived from the principal alone: a static `[server.auth]` token name fills `name`, a principal that looks like an email (exactly one `@`, a non-empty local part, and a domain containing a `.`) fills `email_address`, and anything else, such as an opaque JWT `sub`, and `shunt:anonymous` have both null. Invalid parameters return `400 invalid_request_error`: `limit: must be between 1 and 1000`, `period[]: must be one of daily, weekly, monthly`, `user_ids[]: at most 100 entries per request`, `q: too long`, `sort: must be spend_desc`, `sort=spend_desc requires exactly one period[]`, `page: invalid page token`.
 
 ## Not yet implemented
 

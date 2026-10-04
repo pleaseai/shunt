@@ -921,6 +921,12 @@ pub(crate) async fn check_inbound_auth(
     let injects_credential = routes
         .iter()
         .any(|route| !is_passthrough_route(state, route));
+    // Spend admission is narrower than the auth gate: a `noop` route is
+    // non-passthrough for auth (fail closed) but never reaches an upstream, so
+    // a chain made only of them is a free turn that nothing should meter.
+    let meters_spend = routes
+        .iter()
+        .any(|route| route.adapter != AdapterKind::Noop && !is_passthrough_route(state, route));
     if !injects_credential || (state.inbound_auth.is_none() && state.gateway_auth.is_none()) {
         return Ok((
             forwarded,
@@ -928,7 +934,7 @@ pub(crate) async fn check_inbound_auth(
                 gateway_claims,
                 client: None,
                 static_client: false,
-                spend_principal: spend_gate::principal_for(None, injects_credential),
+                spend_principal: spend_gate::principal_for(None, meters_spend),
             },
         ));
     }
@@ -967,7 +973,7 @@ pub(crate) async fn check_inbound_auth(
             forwarded,
             InboundContext {
                 gateway_claims,
-                spend_principal: spend_gate::principal_for(Some(&client), injects_credential),
+                spend_principal: spend_gate::principal_for(Some(&client), meters_spend),
                 client: Some(client),
                 static_client,
             },

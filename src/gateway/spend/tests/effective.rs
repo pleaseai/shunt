@@ -203,6 +203,36 @@ async fn actor_is_derived_from_static_token_email_and_anonymous_principals() {
 }
 
 #[tokio::test]
+async fn an_opaque_principal_has_no_email_address() {
+    let (config, _env) = SpendEnv::config("eff-opaque-actor");
+    let (router, _, state) = build_router(config).unwrap();
+    let opaque = ["auth0|abc123", "a@b", "@example.com", "x@@y.com", "a@b.co"];
+    for principal in opaque {
+        record(&state, principal, CENT);
+    }
+    let (_, body) = get(&router, "?period[]=daily").await;
+    let emails: Vec<(String, Value)> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["actor"]["user_id"].as_str().unwrap().to_string(),
+                row["actor"]["email_address"].clone(),
+            )
+        })
+        .collect();
+    for (user_id, email) in emails {
+        if user_id == "a@b.co" {
+            assert_eq!(email, json!("a@b.co"));
+        } else {
+            assert_eq!(email, Value::Null, "{user_id}");
+        }
+    }
+    assert_eq!(body["data"].as_array().unwrap().len(), opaque.len());
+}
+
+#[tokio::test]
 async fn user_ids_returns_exactly_those_principals_in_order_even_without_spend() {
     let (config, _env) = SpendEnv::config("eff-userids");
     let (router, _, state) = build_router(config).unwrap();

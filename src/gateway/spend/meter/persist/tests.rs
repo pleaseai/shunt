@@ -301,6 +301,36 @@ fn an_implausible_carried_until_is_replaced_by_the_computed_deadline() {
 }
 
 #[test]
+fn a_future_start_that_becomes_usable_still_expires_at_its_stamped_deadline() {
+    let path = temp_path("future-becomes-usable");
+    // A monthly window ~390 days ahead: beyond the skew bound at load.
+    let far = window(Period::Monthly, WED + 390 * DAY).start;
+    let bad = json!({"principal": "mallory", "period": "monthly", "start": far, "femto": 1});
+    write(&path, &json!({"version": 1, "counters": [bad]}));
+    let meter = restored(&path, WED);
+    let deadline = window(Period::Monthly, WED).end;
+    assert_eq!(meter.check(&[], "mallory", WED), Check::Unavailable);
+    assert!(meter.flush_to(&path, 13, WED).unwrap());
+    assert_eq!(read(&path)["counters"][0]["carried_until"], deadline);
+
+    // By the deadline the start is inside the skew bound.
+    assert!(far <= deadline + MAX_FUTURE_SKEW);
+    // A restart after the deadline, from the stamped file, flags nobody.
+    let after = restored(&path, deadline + 3600);
+    assert_eq!(after.check(&[], "mallory", deadline + 3600), Check::Allow);
+
+    // The still-running process drops it at the deadline, not at the start's
+    // own window end.
+    assert!(!meter.flush_to(&path, 13, deadline - 1).unwrap());
+    assert!(meter.flush_to(&path, 13, deadline).unwrap());
+    assert!(!read(&path)["counters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|record| record["principal"] == "mallory"));
+}
+
+#[test]
 fn a_persisted_carried_until_in_the_future_still_flags_after_a_restart() {
     let path = temp_path("carried-until-future");
     let deadline = WED + 5 * DAY;
