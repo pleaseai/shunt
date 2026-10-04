@@ -19,6 +19,10 @@ function statusNote(row: AccountRow, state: string): string | null {
       return 'Current login could not read quota';
     case 'needs-relogin':
       return 'Re-add this account to sign in again';
+    case 'capped':
+      return 'Hard cap reached · clears when the window resets';
+    case 'capped-fable':
+      return 'Fable hard cap reached · other models still served';
     default:
       break;
   }

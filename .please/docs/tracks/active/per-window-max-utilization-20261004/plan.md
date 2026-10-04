@@ -159,6 +159,10 @@ T001 → T002. T002 fans out to T003 and T005. T003 → T004 (T004 reuses T003's
 - [x] (2026-10-04 KST) T005 Report capped state on snapshot and usage surfaces
   Evidence: `cargo test --all-features --lib -- usage:: oauth_usage:: accounts::` -> 283 passed; `--test admin_surface` -> 54 passed (new `admin_pool_marks_a_capped_account_with_both_cap_flags_and_unavailable`)
   Note: `AccountSnapshot` gains `capped` (5h/7d) and `capped_fable` (7d_oi, evaluated as for a Fable request); `available` honors the shared cap always and the Fable cap only for a Fable model; `/api/oauth/usage` fallback skips capped accounts for the bar's scope
+- [x] (2026-10-04 KST) T006 Show capped and Fable-capped states on the admin dashboard
+  Evidence: `cd ui && npm run test` -> 97 passed (new capped/capped-fable cases in coalescing and pool-health); `npx tsc --noEmit` -> exit 0; `npm run build` -> built
+  Deferred: `Skill("please:test-browser")` on the admin pool page — needs a running shunt with `[server.admin]` and a capped account; not run here
+  Note: also added row notes for both states in ObservedAccounts.tsx; no per-state CSS (cooling siblings have none); the UI has no locale tables
 
 ## Decision Log
 

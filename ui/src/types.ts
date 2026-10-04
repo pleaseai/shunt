@@ -61,6 +61,10 @@ export interface PoolAccount {
   needs_relogin?: boolean;
   has_state?: boolean;
   near_quota?: boolean;
+  /** A 5h or 7d `max_utilization` hard cap excludes the account from every request. */
+  capped?: boolean;
+  /** The Fable (7d_oi) cap excludes the account from Fable requests only. */
+  capped_fable?: boolean;
   cooldown_secs_remaining?: number | null;
   cooldown_fable_secs_remaining?: number | null;
   utilization_5h?: number | null;
