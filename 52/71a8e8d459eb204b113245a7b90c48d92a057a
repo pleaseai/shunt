@@ -1,0 +1,87 @@
+src/accounts.rs
+  s_5bd3170eaadf99::t_3ba7b689a7d4ad 9465-9471,9475-9504,9506-9518
+  s_5bd3170eaadf99::t_5e6814765510c2 9472-9474,9505
+  s_5bd3170eaadf99::t_263274d7e3a18b 484-493,542,544-545,565-567,2349-2355,2370-2371,2397-2399,3129-3139
+  s_5bd3170eaadf99::t_77385b5c205b8f 3140-3141,9464
+ui/src/types.ts
+  s_5bd3170eaadf99::t_65d87d2044365d 68-71
+site/src/content/docs/reference/endpoints.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 33
+site/src/content/docs/ko/reference/configuration.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 319
+ui/src/components/PoolHealth.tsx
+  s_5bd3170eaadf99::t_01609d6fe032cb 4,168,171,174
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 31
+ui/src/components/ObservedAccounts.tsx
+  s_5bd3170eaadf99::t_65d87d2044365d 93-96,102,108
+src/oauth_usage/tests.rs
+  s_5bd3170eaadf99::t_263274d7e3a18b 40-42
+site/src/content/docs/ja/reference/endpoints.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 31
+site/src/content/docs/zh-cn/guides/anthropic-multi-account.mdx
+  s_5bd3170eaadf99::t_6d9778f7850c06 188
+site/src/content/docs/ja/guides/pool-account-controls.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 43
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 320
+ui/src/format.ts
+  s_5bd3170eaadf99::t_01609d6fe032cb 38-47
+site/src/content/docs/ko/reference/endpoints.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 31
+ui/src/index.css
+  s_5bd3170eaadf99::t_01609d6fe032cb 172
+  s_5bd3170eaadf99::t_65d87d2044365d 171,204
+site/src/content/docs/ja/guides/anthropic-multi-account.mdx
+  s_5bd3170eaadf99::t_6d9778f7850c06 188
+site/src/content/docs/zh-cn/guides/pool-account-controls.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 43
+docs/m8-anthropic-multi-account.md
+  s_5bd3170eaadf99::t_baba752ce5a48a 135-136
+site/src/content/docs/reference/configuration.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 423
+ui/src/__tests__/usage-cap.test.tsx
+  s_5bd3170eaadf99::t_664e29b923714b 1-84
+site/src/content/docs/ja/reference/configuration.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 320
+site/src/content/docs/ko/guides/pool-account-controls.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 43
+src/auth/claude/usage.rs
+  s_5bd3170eaadf99::t_263274d7e3a18b 377-379
+site/src/content/docs/guides/pool-account-controls.md
+  s_5bd3170eaadf99::t_6d9778f7850c06 43
+site/src/content/docs/guides/anthropic-multi-account.mdx
+  s_5bd3170eaadf99::t_6d9778f7850c06 188
+site/src/content/docs/ko/guides/anthropic-multi-account.mdx
+  s_5bd3170eaadf99::t_6d9778f7850c06 188
+ui/src/components/UsageBar.tsx
+  s_5bd3170eaadf99::t_65d87d2044365d 1,20-29,35,40,43,50,54-62,64-71
+  s_5bd3170eaadf99::t_ca726233afb8eb 63
+  s_2eb85c9a309003::t_55f73ab2ef6188 72
+src/usage/tests.rs
+  s_5bd3170eaadf99::t_263274d7e3a18b 39-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5271a8e8d459eb204b113245a7b90c48d92a057a",
+  "prompts": {},
+  "sessions": {
+    "s_2eb85c9a309003": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "984cd4fd-ccb2-41c8-b5bf-3a3097c1518e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_5bd3170eaadf99": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "67007cc3-381d-4f2c-b264-eb2a245ef64b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
