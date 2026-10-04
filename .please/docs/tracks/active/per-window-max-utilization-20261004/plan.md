@@ -74,7 +74,7 @@ A cooldown-based design was rejected during brainstorming. It would make a cap c
 - [x] T001 Add max_utilization keys to account and pool config (file: src/config.rs)
   Validation: TOML with all eight keys parses and round-trips; a value outside `[0.0, 1.0]` or NaN fails `Config::validate` naming the offending key; a config with none of the keys loads unchanged; `shunt.toml.example` documents the pool defaults in comments and still parses.
   Method: `cargo test --all-features config::` plus the example-file load test
-- [ ] T002 Exclude capped accounts from pool selection (depends on T001, file: src/accounts.rs)
+- [x] T002 Exclude capped accounts from pool selection (depends on T001, file: src/accounts.rs)
   Validation: requirements-doc examples AE1 and AE3–AE6 hold at `select_order` (a capped account is absent from the order for exactly the models its capped windows govern, and it returns once the window resets); a capped sticky account is not returned via the fast path.
   Method: `cargo test --all-features accounts::` (new unit tests beside `threshold_resolution_prefers_most_specific_and_caps_at_hard` and `account_reenters_selection_after_reset_passes`)
   STOP: if excluding at `rotation` breaks the reprobe reservation (a probe candidate chosen before the filter), stop and report instead of moving the filter into the bucket stage.
