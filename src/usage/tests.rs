@@ -169,6 +169,19 @@ fn aggregate_status_is_capped_when_no_account_is_available_and_one_is_capped() {
 }
 
 #[test]
+fn aggregate_status_ignores_caps_on_paused_accounts() {
+    let mut a = snapshot("acct-a", Some(0.90), None, None);
+    a.available = false;
+    a.capped = true;
+    a.paused = true;
+    let mut b = snapshot("acct-b", Some(0.99), None, None);
+    b.available = false;
+    b.paused = true;
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[a, b])])).unwrap();
+    assert_eq!(body["pool"]["status"], "exhausted");
+}
+
+#[test]
 fn aggregate_status_is_degraded_when_near_quota_but_available() {
     let mut a = snapshot("acct-a", Some(0.90), None, None);
     a.near_quota = true; // still available (a backup remains), but flagged

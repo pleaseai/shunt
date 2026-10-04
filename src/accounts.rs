@@ -832,7 +832,13 @@ impl AccountPool {
         let mut any = false;
         let mut earliest: Option<u64> = None;
         let mut expired = false;
-        for account in accounts.iter().filter(|account| !account.disabled) {
+        // Selection only ever considers one representative per identity, so
+        // an alias's own caps must not contribute an `eligible_at`.
+        for account in collapse_representatives(provider, accounts)
+            .into_iter()
+            .map(|index| &accounts[index])
+            .filter(|account| !account.disabled)
+        {
             let Some(health) = entries.get_mut(&account_key(provider, account)) else {
                 continue;
             };
@@ -9308,6 +9314,31 @@ mod tests {
         accts[0].disabled = true;
         accts[1].disabled = true;
         assert_eq!(pool.cap_exhaustion("anthropic", &accts, OPUS, None), None);
+    }
+
+    #[test]
+    fn cap_exhaustion_uses_only_the_selection_representative_of_aliases() {
+        let pool = AccountPool::new();
+        let now = unix_now();
+        let mut rep = account_with_uuid("rep", "shared");
+        rep.priority = 0;
+        rep.max_utilization_7d = Some(0.5);
+        let mut alias = account_with_uuid("alias", "shared");
+        alias.priority = 1;
+        alias.max_utilization_5h = Some(0.5);
+        let accts = vec![alias, rep];
+        set_quota(&pool, "anthropic", &accts[1], |q| {
+            q.utilization_7d = Some(0.9);
+            q.reset_7d = Some(now + 86_400);
+            q.utilization_5h = Some(0.9);
+            q.reset_5h = Some(now + 600);
+        });
+        assert_eq!(
+            pool.cap_exhaustion("anthropic", &accts, OPUS, None),
+            Some(CapExhaustion {
+                eligible_at: Some(now + 86_400)
+            })
+        );
     }
 
     #[test]
