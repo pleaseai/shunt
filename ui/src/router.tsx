@@ -107,7 +107,7 @@ function AppShell(): ReactElement {
     <div className="min-h-screen md:grid md:grid-cols-[13rem_minmax(0,1fr)]">
       <aside className="border-b border-border bg-card px-4 py-4 backdrop-blur-[10px] md:min-h-screen md:border-r md:border-b-0 md:px-5 md:py-7">
         <div className="text-[1.05rem] font-bold tracking-[-0.04em]">shunt</div>
-        <nav aria-label="Admin" className="mt-4 flex gap-2 md:flex-col">
+        <nav aria-label="Admin" className="mt-4 flex flex-wrap gap-2 md:flex-col">
           {nav.map((item) => (
             <Link
               key={item.to}
