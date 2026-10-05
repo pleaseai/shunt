@@ -85,6 +85,29 @@ fn aggregate_counts_exhausted_accounts_against_pool_capacity() {
 }
 
 #[test]
+fn aggregate_measures_headroom_up_to_each_accounts_cap() {
+    // Headroom stops at the window's hard cap, the point where selection
+    // excludes the account, not at 100%: 0.44 Fable under a 0.5 cap leaves
+    // 0.06, an account past its 0.9 weekly cap leaves 0, and an uncapped
+    // window still measures to 1.0.
+    let mut capped = snapshot("capped", Some(0.10), None, Some(0.96));
+    capped.max_utilization_7d = Some(0.9);
+    capped.utilization_7d_oi = Some(0.44);
+    capped.max_utilization_fable = Some(0.5);
+    let mut uncapped = snapshot("uncapped", Some(0.30), None, Some(0.20));
+    uncapped.utilization_7d_oi = Some(0.40);
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[capped, uncapped])])).unwrap();
+    let windows = &body["pool"]["windows"];
+    // 5h: no cap on either → (0.90 + 0.70) / 2.
+    assert_eq!(windows["5h"]["remaining"], json!(0.8));
+    // 7d: past its cap → 0, plus the uncapped 0.80.
+    assert_eq!(windows["7d"]["remaining"], json!(0.4));
+    // Fable: 0.06 under the cap, plus the uncapped 0.60.
+    assert_eq!(windows["fable"]["remaining"], json!(0.33));
+    assert_eq!(body["providers"]["anthropic"]["windows"], *windows);
+}
+
+#[test]
 fn aggregate_split_reads_status_from_every_row_and_windows_from_representatives() {
     // An alias flagged near-quota (its own threshold) still degrades `status`
     // even though only the representative's row feeds the mean.

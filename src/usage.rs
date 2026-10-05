@@ -65,10 +65,14 @@ pub struct Windows {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct WindowStatus {
-    /// `mean(1 - utilization)` over non-disabled accounts reporting this
-    /// window — the fraction of the pool's combined capacity still unused,
-    /// clamped to `0.0..=1.0` and rounded to four decimals. Nine exhausted
-    /// accounts plus one fresh one report `0.1`, not `1.0`. This is a
+    /// `mean(cap - utilization)` over non-disabled accounts reporting this
+    /// window, where `cap` is the account's resolved `max_utilization` hard
+    /// cap for the window (`1.0` when none governs it) — the fraction of the
+    /// pool's combined capacity still usable before caps exclude accounts,
+    /// each term clamped to `0.0..=1.0` and the mean rounded to four
+    /// decimals. Nine exhausted accounts plus one fresh uncapped one report
+    /// `0.1`, not `1.0`; an account at 44% under a 50% cap counts `0.06`.
+    /// The cap values themselves never leave the aggregate. This is a
     /// pool-wide aggregate, not a prediction of whether the next request will
     /// be admitted (routing also weighs availability, model, session affinity,
     /// and priority). `None` when no non-disabled account reports the window.
@@ -154,26 +158,38 @@ fn pool_aggregate<'a>(
             five_hour: window_status(
                 window_snapshots.clone(),
                 |s| s.utilization_5h,
+                |s| s.max_utilization_5h,
                 |s| s.reset_5h,
             ),
             seven_day: window_status(
                 window_snapshots.clone(),
                 |s| s.utilization_7d,
+                |s| s.max_utilization_7d,
                 |s| s.reset_7d,
             ),
-            fable: window_status(window_snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
+            fable: window_status(
+                window_snapshots,
+                |s| s.utilization_7d_oi,
+                |s| s.max_utilization_fable,
+                |s| s.reset_7d_oi,
+            ),
         },
     }
 }
 
-/// Aggregate headroom for one window: the mean `1 - utilization` over the
+/// Aggregate headroom for one window: the mean `cap - utilization` over the
 /// non-disabled accounts reporting a finite utilization for it (the fraction of
-/// the pool's combined capacity still unused), and the earliest reset any of
-/// them reported. Not a guarantee about which account the next request will
-/// actually route to.
+/// the pool's combined capacity still usable before each account's resolved
+/// hard cap, `1.0` when uncapped), and the earliest reset any of them reported.
+/// The snapshot's cap is the one selection's `utilization >= cap` check reads,
+/// so an account's term reaches zero exactly when that check excludes it. A
+/// cap with no observed window behind it (the Fable cap on a Codex account,
+/// which reports no `7d_oi`) adds nothing. Not a guarantee about which account
+/// the next request will actually route to.
 fn window_status<'a>(
     snapshots: impl Iterator<Item = &'a AccountSnapshot>,
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
+    cap: impl Fn(&AccountSnapshot) -> Option<f64>,
     reset: impl Fn(&AccountSnapshot) -> Option<u64>,
 ) -> WindowStatus {
     let mut reporting = 0usize;
@@ -184,7 +200,8 @@ fn window_status<'a>(
             continue;
         };
         reporting += 1;
-        headroom_sum += (1.0 - used).clamp(0.0, 1.0);
+        let ceiling = cap(snapshot).unwrap_or(1.0);
+        headroom_sum += (ceiling - used).clamp(0.0, 1.0);
         if let Some(at) = reset(snapshot) {
             earliest_reset = Some(earliest_reset.unwrap_or(at).min(at));
         }

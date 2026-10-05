@@ -52,9 +52,13 @@ table is present; a config reload only re-resolves the client tokens it authenti
 Per tracked window — the rolling 5-hour session window (`5h`), the shared weekly window (`7d`), and
 the Fable-scoped weekly window (`fable` / `7d_oi`):
 
-- `remaining` — `mean(1 - utilization)` over **non-disabled** accounts that report the window: the
-  fraction of the pool's combined capacity still unused, clamped to `0.0..=1.0` and rounded to four
-  decimals. Nine exhausted accounts plus one fresh one read `0.1`, not `1.0`. This is a pool-wide
+- `remaining` — `mean(cap - utilization)` over **non-disabled** accounts that report the window,
+  where `cap` is the account's resolved `max_utilization` hard cap for the window, or `1.0` when
+  none governs it (see [M8](m8-anthropic-multi-account.md)). This is the fraction of the pool's
+  combined capacity still usable before caps exclude accounts, each term clamped to `0.0..=1.0`
+  and the mean rounded to four decimals. Nine
+  exhausted accounts plus one fresh uncapped one read `0.1`, not `1.0`; an account at 44% under a
+  50% cap counts `0.06`. The cap values themselves are not exposed. This is a pool-wide
   aggregate, not a prediction of whether the next request will be admitted (routing also weighs
   availability, model, session affinity, and priority); for that question use the routing-aware
   worst case that `GET /api/oauth/usage` ([M14](m14-oauth-usage-endpoint.md)) reports. `null` only when
