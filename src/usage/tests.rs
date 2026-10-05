@@ -887,6 +887,30 @@ async fn rejects_a_request_without_a_valid_client_token() {
     let body = body_json(response).await;
     assert_eq!(body["type"], "error");
     assert_eq!(body["error"]["type"], "authentication_error");
+    // Only `[server.auth]` is configured, so no gateway login is offered.
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("client token"), "{message}");
+    assert!(!message.contains("shunt gateway login"), "{message}");
+}
+
+#[tokio::test]
+async fn rejection_names_both_credentials_when_auth_and_gateway_are_configured() {
+    let mut config = Config::default();
+    let auth_env = add_client_auth(&mut config, "tok-secret", "rejects_both");
+    let gateway_env = add_gateway(&mut config, "rejects_both");
+    let (state, _) = state_with_seeded_pool(config);
+
+    let response = get(State(state), HeaderMap::new()).await;
+    std::env::remove_var(&auth_env);
+    for var in &gateway_env {
+        std::env::remove_var(var);
+    }
+
+    assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let body = body_json(response).await;
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("client token"), "{message}");
+    assert!(message.contains("shunt gateway login"), "{message}");
 }
 
 #[tokio::test]

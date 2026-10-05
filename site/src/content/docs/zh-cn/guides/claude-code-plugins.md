@@ -79,7 +79,7 @@ shunt · 5H 5% ↻1h 41m · WK 46% ↻1d 7h · Fable 31% ↻1d 7h ⚠ anthropic 
    export ANTHROPIC_AUTH_TOKEN=<your client token>
    ```
 
-2. 启用该端点。`GET /usage` 是选择性开启的,并且需要 [`[server.auth]`](/zh-cn/guides/shared-gateway/),因此你的 [配置](/zh-cn/reference/configuration/) 中两个表都必须存在:
+2. 启用该端点。`GET /usage` 是选择性开启的;在你的 [配置](/zh-cn/reference/configuration/) 中,除 `[server.usage]` 表外,还需要 [`[server.auth]`](/zh-cn/guides/shared-gateway/)(客户端令牌)或 `[server.gateway]`(网关登录)二者之一。使用客户端令牌时:
 
    ```toml
    [server.auth]
@@ -118,7 +118,7 @@ shunt · 5H 5% ↻1h 41m · WK 46% ↻1d 7h · Fable 31% ↻1d 7h ⚠ anthropic 
 
 正是 `SHUNT_BASE_URL` 让你可以在把流量路由经由另一个网关的同时,读取某一个网关的池。
 
-用 `shunt gateway claude` 启动的会话在上述变量中没有凭据:启动器会清除这些变量,改为把 `apiKeyHelper` 接到 `shunt gateway token`。因此当上述变量都未设置时,mod 会读取合并后的 Claude Code 设置;如果 `apiKeyHelper` 是 shunt 自己的 `shunt gateway token`(无论只写名字还是带路径),就不经 shell 直接运行它,并把它打印的网关登录 token 作为 `Authorization: Bearer` 发送。该 token 会复用 5 分钟;网关拒绝复用的 token 时,会再运行一次 helper。其他任何 `apiKeyHelper` 都不会被运行,这类会话请改为 export `SHUNT_TOKEN`。网关在 `GET /usage` 上除了 `[server.auth]` 客户端 token,也接受网关登录。
+用 `shunt gateway claude` 启动的会话在上述变量中没有凭据:启动器会清除 `ANTHROPIC_AUTH_TOKEN` 和 `ANTHROPIC_API_KEY`,改为把 `apiKeyHelper` 接到 `shunt gateway token`。因此当表中的变量都未设置时,mod 会读取合并后的 Claude Code 设置;如果 `apiKeyHelper` 是 shunt 自己的 `shunt gateway token`(无论只写名字还是带路径),就不经 shell 直接运行它,并把它打印的网关登录 token 作为 `Authorization: Bearer` 发送。由于不经 shell,未加引号的 helper 路径开头的 `~/` 会由 mod 自己展开为主目录。该 token 会复用 5 分钟;网关拒绝复用的 token 时,会再运行一次 helper。helper 失败时(退出码非零、无输出或无法启动),状态栏会标出 `shunt · ⚠ gateway login unavailable`,`/shunt:usage` 会提示运行 `shunt gateway login`,而不是悄悄显示会话自身的限额。启动器不会清除 `SHUNT_TOKEN`:从 shell 继承来的值仍优先于 helper,想使用网关登录就请 unset 它。其他任何 `apiKeyHelper` 都不会被运行,这类会话请改为 export `SHUNT_TOKEN`。网关在 `GET /usage` 上除了 `[server.auth]` 客户端 token,也接受网关登录。
 
 ### 为什么是 `/shunt:usage` 而不是 `/usage`
 

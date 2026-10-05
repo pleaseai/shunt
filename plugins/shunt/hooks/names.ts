@@ -20,15 +20,16 @@ export const NO_BASE_URL_TEXT =
   '/shunt:usage again.'
 
 export const NO_TOKEN_TEXT =
-  'no credential to authenticate with — none of SHUNT_TOKEN, ' +
-  'ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY is set, and the apiKeyHelper ' +
-  'is not shunt gateway token. Log in with shunt gateway login, or ask the ' +
-  'gateway operator for a client token.'
+  'no usable credential to authenticate with — none of SHUNT_TOKEN, ' +
+  'ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY is set, and there is no shunt ' +
+  'gateway token apiKeyHelper to read a gateway login from. Log in with ' +
+  'shunt gateway login, or ask the gateway operator for a client token.'
 
 export const NOT_ENABLED_TEXT =
   'the gateway answered, but GET /usage is not enabled on it. Add an ' +
   '[server.usage] table to the gateway config and restart it; the table takes ' +
-  'no keys, but it requires [server.auth] to be set as well.'
+  'no keys, but it requires [server.auth] (client tokens) or ' +
+  '[server.gateway] (gateway login) to be set as well.'
 
 export const REFUSED_TEXT =
   'the gateway refused the credential this session is using. The first ' +

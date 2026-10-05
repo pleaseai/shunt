@@ -12,7 +12,7 @@
     {
       "name": "shunt",
       "source": "./plugins/shunt",
-      "description": "A Claude Mod for the gateway itself: a band above the prompt shows the shared account pool's usage and reset times (the session's own rate limits off shunt), and /shunt:usage the pool's full breakdown, read from GET /usage. Requires function hooks (early access).",
+      "description": "A Claude Mod for the gateway itself: a band above the prompt shows the shared account pool's usage and reset times (the session's own rate limits off shunt), and /shunt:usage shows the pool's full breakdown, read from GET /usage. Requires function hooks (early access).",
       "keywords": ["usage", "quota", "pool", "usage-band", "mod", "function-hooks"]
     },
     {

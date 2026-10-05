@@ -407,12 +407,17 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         tracing::info!("inbound gateway login authenticated for GET /usage");
     } else {
         let rejected = || {
-            let message = match &state.inbound_auth {
-                Some(auth) => format!(
+            // Name only the credentials this gateway actually accepts.
+            let message = match (&state.inbound_auth, state.gateway_auth.is_some()) {
+                (Some(auth), true) => format!(
                     "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) or a gateway login (`shunt gateway login`) to read pool usage; ask the operator for one",
                     auth.header()
                 ),
-                None => "missing or invalid credential: this gateway requires a gateway login (`shunt gateway login`) to read pool usage".to_string(),
+                (Some(auth), false) => format!(
+                    "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) to read pool usage; ask the operator for one",
+                    auth.header()
+                ),
+                (None, _) => "missing or invalid credential: this gateway requires a gateway login (`shunt gateway login`) to read pool usage".to_string(),
             };
             ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
                 .into_response()

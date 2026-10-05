@@ -1604,10 +1604,11 @@ fn default_codex_endpoint_provider() -> String {
 /// `[server.usage]` — opt-in client-facing usage endpoint. When present, shunt
 /// registers `GET /usage`, which returns a **sanitized, aggregated** view of the
 /// shared account pool's quota state (per-window remaining headroom and reset)
-/// for `[server.auth]` client-token holders. Unlike the admin dashboard
+/// for `[server.auth]` client-token holders or `[server.gateway]` gateway
+/// logins. Unlike the admin dashboard
 /// (`GET /admin/api/pool`), it never exposes account identities, counts, priorities,
 /// disabled flags, or thresholds. Presence alone opts in; the table has no
-/// fields today. Requires `[server.auth]`. Absent ⇒ the route does not exist.
+/// fields today. Requires `[server.auth]` or `[server.gateway]`. Absent ⇒ the route does not exist.
 /// See `docs/m12-client-usage-endpoint.md`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct UsageEndpointConfig {}

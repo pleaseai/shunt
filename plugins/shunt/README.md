@@ -42,8 +42,8 @@ at the end (`⚠ anthropic degraded`: amber for `degraded`, red for `exhausted`
 or `capped`), or the pool itself when no provider is listed. A window no
 account reports is left out.
 
-Off shunt — no gateway set, a gateway that answers `GET /usage` with 404 or
-with something other than a pool report, or one that pools no provider — the
+Off shunt — no gateway set, a gateway that answers `GET /usage` with 404, a
+successful response that is not a pool report, or one that pools no provider — the
 band shows the session's own rate limits instead, untagged, as
 `$.session.usage()` and `session.measure` report them:
 
@@ -54,9 +54,10 @@ band shows the session's own rate limits instead, untagged, as
 On shunt it reads `GET /usage` when the session starts, every minute after,
 and after each turn — the moment the pool has just been spent from — and
 ignores the session's own limits, which come from whichever pool account
-answered last. A refused token, an unreachable gateway or another error status
-is a fault on shunt, so it is flagged rather than replaced:
-`shunt · ⚠ credential refused`. With neither a gateway nor rate limits (an
+answered last. A refused token (401 or 403), an unreachable gateway, another
+error status, or a `shunt gateway token` helper that fails is a fault on shunt,
+so it is flagged rather than replaced: `shunt · ⚠ credential refused`, or
+`shunt · ⚠ gateway login unavailable` for the helper. With neither a gateway nor rate limits (an
 API key sent straight to Anthropic) the band draws nothing. Whatever another
 plugin draws in the band stays on its left.
 
@@ -105,7 +106,8 @@ stays behind the admin-only `GET /admin/api/pool`.
    ```
 
 2. **Enable the endpoint** on the gateway. `GET /usage` is opt-in and requires
-   `[server.auth]`, so both tables must be present in `shunt.toml`:
+   either `[server.auth]` (client tokens) or `[server.gateway]` (gateway login),
+   next to the `[server.usage]` table in `shunt.toml`:
 
    ```toml
    [server.auth]
@@ -114,6 +116,8 @@ stays behind the admin-only `GET /admin/api/pool`.
    [server.usage]
    ```
 
+   With `[server.gateway]` instead of `[server.auth]`, see
+   [`shunt gateway claude` sessions](#shunt-gateway-claude-sessions) below.
    `[server.auth]` takes its tokens from the environment rather than the TOML —
    by default `SHUNT_CLIENT_TOKENS`, as `name:token` pairs — and the gateway
    fails to start when it is unset. Export it where the gateway runs, using the
@@ -175,7 +179,13 @@ re-exports it. When none of the variables above holds a credential, the mod
 therefore reads the merged settings (`--settings` included) and, if
 `apiKeyHelper` is shunt's own — `shunt gateway token`, by bare name or by path,
 as the launcher writes it — runs it directly, without a shell, and sends the
-gateway login token it prints as `Authorization: Bearer`.
+gateway login token it prints as `Authorization: Bearer`. Because there is no
+shell, a leading `~/` in an unquoted helper path is expanded to the home
+directory (`HOME`, else `USERPROFILE`) by the mod itself; a quoted `'~/…'` stays
+literal, as in a shell. If that helper fails — a non-zero exit, no output, or it
+cannot be started — the band flags `shunt · ⚠ gateway login unavailable` and
+`/shunt:usage` says to run `shunt gateway login`, rather than silently showing
+the session's own limits.
 
 The token is reused for five minutes, so a poll every minute does not run the
 helper every minute. A reused token the gateway refuses is dropped and the

@@ -79,7 +79,7 @@ shunt에서는 세션이 시작될 때, 그 뒤로 1분마다, 그리고 턴이 
    export ANTHROPIC_AUTH_TOKEN=<your client token>
    ```
 
-2. 엔드포인트를 활성화하세요. `GET /usage`는 옵트인이며 [`[server.auth]`](/ko/guides/shared-gateway/)를 요구하므로, [구성](/ko/reference/configuration/)에 두 테이블이 모두 있어야 합니다:
+2. 엔드포인트를 활성화하세요. `GET /usage`는 옵트인이며, [구성](/ko/reference/configuration/)의 `[server.usage]` 테이블과 함께 [`[server.auth]`](/ko/guides/shared-gateway/)(클라이언트 토큰) 또는 `[server.gateway]`(gateway 로그인) 중 하나가 필요합니다. 클라이언트 토큰을 쓰는 경우:
 
    ```toml
    [server.auth]
@@ -118,7 +118,7 @@ mod는 환경 변수 다섯 개를 읽고 아무것도 쓰지 않습니다. 기�
 
 `SHUNT_BASE_URL`은 트래픽을 다른 게이트웨이로 라우팅하면서 어느 한 게이트웨이의 풀을 읽을 수 있게 해 주는 수단입니다.
 
-`shunt gateway claude`로 시작한 세션은 위 변수에 credential이 없습니다. launcher가 이 변수들을 지우고, 대신 `apiKeyHelper`를 `shunt gateway token`으로 연결하기 때문입니다. 그래서 위 변수가 하나도 없으면 mod는 합쳐진 Claude Code 설정을 읽고, `apiKeyHelper`가 shunt 자체의 `shunt gateway token`(이름만 쓰든 경로로 쓰든)이면 셸 없이 직접 실행해 출력된 gateway 로그인 토큰을 `Authorization: Bearer`로 보냅니다. 이 토큰은 5분 동안 재사용하고, 재사용한 토큰을 게이트웨이가 거부하면 helper를 한 번 더 실행합니다. 그 밖의 `apiKeyHelper`는 실행하지 않으므로, 그런 세션에서는 대신 `SHUNT_TOKEN`을 export하세요. 게이트웨이는 `GET /usage`에서 `[server.auth]` 클라이언트 토큰과 함께 gateway 로그인도 받습니다.
+`shunt gateway claude`로 시작한 세션은 위 변수에 credential이 없습니다. launcher가 `ANTHROPIC_AUTH_TOKEN`과 `ANTHROPIC_API_KEY`를 지우고, 대신 `apiKeyHelper`를 `shunt gateway token`으로 연결하기 때문입니다. 그래서 표의 변수가 하나도 없으면 mod는 합쳐진 Claude Code 설정을 읽고, `apiKeyHelper`가 shunt 자체의 `shunt gateway token`(이름만 쓰든 경로로 쓰든)이면 셸 없이 직접 실행해 출력된 gateway 로그인 토큰을 `Authorization: Bearer`로 보냅니다. 셸이 실행되지 않으므로 따옴표 없는 helper 경로 앞머리의 `~/`는 mod가 직접 홈 디렉터리로 바꿉니다. 이 토큰은 5분 동안 재사용하고, 재사용한 토큰을 게이트웨이가 거부하면 helper를 한 번 더 실행합니다. helper가 실패하면(0이 아닌 종료 코드, 출력 없음, 실행 불가) 밴드는 세션 자체의 한도를 조용히 보여 주는 대신 `shunt · ⚠ gateway login unavailable`로 표시하고, `/shunt:usage`는 `shunt gateway login`을 실행하라고 안내합니다. launcher는 `SHUNT_TOKEN`을 지우지 않습니다. 셸에서 상속된 값이 있으면 helper보다 먼저 쓰이므로, gateway 로그인을 쓰려면 unset하세요. 그 밖의 `apiKeyHelper`는 실행하지 않으므로, 그런 세션에서는 대신 `SHUNT_TOKEN`을 export하세요. 게이트웨이는 `GET /usage`에서 `[server.auth]` 클라이언트 토큰과 함께 gateway 로그인도 받습니다.
 
 ### 왜 `/usage`가 아니라 `/shunt:usage`인가
 

@@ -59,7 +59,11 @@ const world = (
   env: Record<string, string>,
   answer: (headers: Record<string, string>) => [number, string],
   rateLimits: Limit[] | 'unavailable' = [],
-  helper: { command?: string; tokens: string[] } = { tokens: [] },
+  helper: {
+    command?: string
+    tokens: string[]
+    failure?: { exitCode: number; stderr: string }
+  } = { tokens: [] },
 ) => {
   const clock = mock.clock(on, { now: NOW_MS })
   const calls: string[] = []
@@ -70,6 +74,10 @@ const world = (
   }))
   on('process.run', ($, e) => {
     runs.push(e.argv)
+
+    if (helper.failure !== undefined) {
+      return { value: { exitCode: helper.failure.exitCode, stdout: '', stderr: helper.failure.stderr } }
+    }
 
     return { value: { exitCode: 0, stdout: `${helper.tokens[runs.length - 1] ?? ''}\n`, stderr: '' } }
   })
@@ -238,6 +246,22 @@ describe('usage band in a shunt gateway claude session', () => {
 
     expect(runs).toHaveLength(2)
     expect((await ui.find({ key: 'usage' }))?.text).toBe('shunt · 5H 40% ↻2h 54m · WK 46% ↻3d 14h')
+  })
+
+  test('flags a shunt helper that fails instead of falling back', async ($, on) => {
+    const { clock, runs } = world(on, LAUNCHED, accepting('login-1'), [{ kind: 'five_hour', percentUsed: 12 }], {
+      command: HELPER,
+      tokens: [],
+      failure: { exitCode: 1, stderr: 'not logged in' },
+    })
+
+    await $.session.start(START)
+    await clock.settle()
+
+    const ui = await $.ui.mount({ plugin: 'shunt', surface: 'terminal', component: 'AbovePrompt', props: PROPS })
+
+    expect(runs).toEqual([['/opt/shunt/bin/shunt', 'gateway', 'token']])
+    expect((await ui.find({ key: 'usage' }))?.text).toBe('shunt · ⚠ gateway login unavailable')
   })
 
   test('leaves any other apiKeyHelper alone', async ($, on) => {

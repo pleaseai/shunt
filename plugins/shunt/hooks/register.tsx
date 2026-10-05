@@ -10,7 +10,12 @@ import { endpointOf } from './endpoint'
 import { shuntHelperArgvOf } from './helper'
 import { COMMAND_NAME, HOOK_FAILED_TEXT, NO_TOKEN_TEXT } from './names'
 import type { Reading } from './reading'
-import { CREDENTIAL_REFUSED, readingOf, unreachableOf } from './reading'
+import {
+  CREDENTIAL_REFUSED,
+  helperFailedOf,
+  readingOf,
+  unreachableOf,
+} from './reading'
 import { reportText } from './views'
 
 /** How often the band reads `GET /usage` again while the session is open. */
@@ -54,14 +59,18 @@ let helperToken: { value: string; at: number } | undefined
 /**
  * The gateway login token of a `shunt gateway claude` session: what shunt's
  * own `apiKeyHelper` prints, run the way Claude Code runs it. `undefined`
- * when the helper is not shunt's (see `hooks/helper.ts`) or prints nothing.
+ * when the helper is not shunt's (see `hooks/helper.ts`); a `failure` when it
+ * is shunt's but could not give a token, which is a fault to flag rather than
+ * a set-up to fall back from.
  *
  * Reused for five minutes so a poll every minute does not run the helper
  * every minute; `isCached` says the token came from that reuse.
  */
 async function helperTokenOf(
   $: EngineInterface,
-): Promise<{ value: string; isCached: boolean } | undefined> {
+): Promise<
+  { value: string; isCached: boolean } | { failure: Reading } | undefined
+> {
   const at = await $.clock.now()
 
   if (helperToken !== undefined && at - helperToken.at < HELPER_TTL_MS) {
@@ -70,7 +79,8 @@ async function helperTokenOf(
 
   helperToken = undefined
 
-  const argv = shuntHelperArgvOf((await $.settings.read()).apiKeyHelper)
+  const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE'))
+  const argv = shuntHelperArgvOf((await $.settings.read()).apiKeyHelper, home)
 
   if (argv === null) {
     return undefined
@@ -80,12 +90,16 @@ async function helperTokenOf(
     const run = await $.process.run(argv)
     const value = run.exitCode === 0 ? run.stdout.trim() : ''
 
-    helperToken = value === '' ? undefined : { value, at }
-  } catch {
-    // Not runnable here (a host with no processes): no token.
-  }
+    if (value === '') {
+      return { failure: helperFailedOf(run) }
+    }
 
-  return helperToken === undefined ? undefined : { value: helperToken.value, isCached: false }
+    helperToken = { value, at }
+
+    return { value, isCached: false }
+  } catch (error) {
+    return { failure: helperFailedOf({ error }) }
+  }
 }
 
 /** One request to `GET /usage`, read into a reading. */
@@ -135,6 +149,10 @@ async function readUsage($: EngineInterface): Promise<Reading> {
 
     if (token === undefined) {
       return { problem: resolved.problem, brief: null }
+    }
+
+    if ('failure' in token) {
+      return token.failure
     }
 
     const withHelper = endpointOf({ ...env, helperToken: token.value })
@@ -284,9 +302,11 @@ function registerBand(on: On) {
             </Box>
           ))}
           {band.alerts.map((alert, index) => (
-            <Text color={COLORS[alert.level]}>
-              {`${index === 0 && band.cells.length === 0 ? '' : ' '}⚠ ${alert.text}`}
-            </Text>
+            <Box key={`alert:${index}:${alert.text}`} flexDirection="row">
+              <Text color={COLORS[alert.level]}>
+                {`${index === 0 && band.cells.length === 0 ? '' : ' '}⚠ ${alert.text}`}
+              </Text>
+            </Box>
           ))}
         </Box>
       </Box>

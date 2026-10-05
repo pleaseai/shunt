@@ -21,6 +21,9 @@ export type Reading =
 /** The band's brief for a 401 or 403: the gateway refused the credential. */
 export const CREDENTIAL_REFUSED = 'credential refused'
 
+/** The band's brief when shunt's own `apiKeyHelper` could not give a token. */
+export const HELPER_FAILED = 'gateway login unavailable'
+
 /** The subset of the engine's `HttpResponse` a reading needs. */
 export type Response = { status: number; ok: boolean; text: string }
 
@@ -44,6 +47,38 @@ const firstLineOf = (text: string): string => {
   const line = text.split('\n', 1)[0]?.trim() ?? ''
 
   return line.length > 200 ? `${line.slice(0, 200)}…` : line
+}
+
+/**
+ * The reading for shunt's own `apiKeyHelper` (`shunt gateway token`) failing:
+ * it exited non-zero, printed nothing, or could not be started. The session
+ * logs in through that helper, so this is a fault on shunt — flagged rather
+ * than hidden behind the session's own limits.
+ *
+ * @param cause the finished run, or what `$.process.run` rejected with
+ */
+export function helperFailedOf(
+  cause:
+    | { exitCode: number; stdout: string; stderr: string }
+    | { error: unknown },
+): Reading {
+  const stderr = 'error' in cause ? '' : firstLineOf(cause.stderr)
+
+  const detail =
+    'error' in cause
+      ? messageOf(cause.error)
+      : stderr !== ''
+        ? stderr
+        : cause.exitCode === 0
+          ? 'it printed nothing'
+          : `it exited with ${cause.exitCode}`
+
+  return {
+    problem:
+      'the apiKeyHelper is shunt gateway token, but running it failed ' +
+      `${'—'} ${detail}. Run shunt gateway login to log in again.`,
+    brief: HELPER_FAILED,
+  }
 }
 
 /**

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 
 import type { Endpoint } from '../hooks/endpoint'
 import { NOT_ENABLED_TEXT, NO_POOL_TEXT, REFUSED_TEXT } from '../hooks/names'
-import { readingOf, unreachableOf } from '../hooks/reading'
+import { helperFailedOf, readingOf, unreachableOf } from '../hooks/reading'
 
 import { USAGE_BODY } from './fixtures'
 
@@ -69,6 +69,20 @@ describe('reading', () => {
       problem:
         'could not reach the gateway at http://127.0.0.1:3001 — connection refused',
       brief: 'gateway unreachable',
+    })
+  })
+
+  test.each([
+    [{ exitCode: 1, stdout: '', stderr: 'not logged in\nhint' }, 'not logged in'],
+    [{ exitCode: 2, stdout: '', stderr: '' }, 'it exited with 2'],
+    [{ exitCode: 0, stdout: '\n', stderr: '' }, 'it printed nothing'],
+    [{ error: new Error('shunt: spawn failed') }, 'spawn failed'],
+  ])('a failed helper is a fault: %j', (cause, detail) => {
+    expect(helperFailedOf(cause)).toEqual({
+      problem:
+        `the apiKeyHelper is shunt gateway token, but running it failed — ${detail}. ` +
+        'Run shunt gateway login to log in again.',
+      brief: 'gateway login unavailable',
     })
   })
 })

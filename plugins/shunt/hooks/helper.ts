@@ -8,6 +8,11 @@
  * helper's output itself and never re-exports it. `shunt gateway login`
  * suggests the bare `shunt gateway token` for a hand-written setting.
  *
+ * The command is a shell command line to Claude Code, which expands a leading
+ * `~/` in an unquoted executable word; the mod runs the argv without a shell,
+ * so it expands that one case itself. A quoted `'~/x'` is literal in a shell
+ * and stays literal here.
+ *
  * Only that command is run. Any other helper — a password manager, a script
  * that prompts — is left alone: the mod would otherwise run it every few
  * minutes for a usage figure, with whatever side effects it has.
@@ -38,14 +43,26 @@ const unquote = (word: string): string =>
  * setting is interpreted beyond the quoting the launcher writes.
  *
  * @param command the merged settings' `apiKeyHelper`, as read
+ * @param home the home directory a leading `~/` expands to, when known
  */
-export function shuntHelperArgvOf(command: unknown): string[] | null {
+export function shuntHelperArgvOf(command: unknown, home?: string): string[] | null {
   if (typeof command !== 'string') {
     return null
   }
 
   const match = SHUNT_HELPER.exec(command)
-  const executable = match?.[1] === undefined ? '' : unquote(match[1])
+  const word = match?.[1] ?? ''
+  const executable = unquote(word)
 
-  return BASENAME.test(executable) ? [executable, 'gateway', 'token'] : null
+  if (!BASENAME.test(executable)) {
+    return null
+  }
+
+  if (word.startsWith('~/')) {
+    const root = home?.replace(/[\\/]+$/, '') ?? ''
+
+    return root === '' ? null : [`${root}${executable.slice(1)}`, 'gateway', 'token']
+  }
+
+  return [executable, 'gateway', 'token']
 }

@@ -9,9 +9,16 @@ describe('shunt apiKeyHelper', () => {
     ["'/opt/it'\\''s/shunt' gateway token", ["/opt/it's/shunt", 'gateway', 'token']],
     ['"C:\\Program Files\\shunt\\shunt.exe" gateway token', ['C:\\Program Files\\shunt\\shunt.exe', 'gateway', 'token']],
     ['shunt gateway token', ['shunt', 'gateway', 'token']],
-    ['  ~/bin/shunt   gateway  token  ', ['~/bin/shunt', 'gateway', 'token']],
+    ['  ~/bin/shunt   gateway  token  ', ['/home/me/bin/shunt', 'gateway', 'token']],
+    ["'~/bin/shunt' gateway token", ['~/bin/shunt', 'gateway', 'token']],
   ])('runs %j as its argv', (command, argv) => {
-    expect(shuntHelperArgvOf(command)).toEqual(argv)
+    expect(shuntHelperArgvOf(command, '/home/me/')).toEqual(argv)
+  })
+
+  test('cannot expand a leading ~/ without a home directory', () => {
+    expect(shuntHelperArgvOf('~/bin/shunt gateway token')).toBeNull()
+    expect(shuntHelperArgvOf('~/bin/shunt gateway token', '')).toBeNull()
+    expect(shuntHelperArgvOf('shunt gateway token')).toEqual(['shunt', 'gateway', 'token'])
   })
 
   test.each([

@@ -79,7 +79,7 @@ The first block is the aggregate across every pooled provider; the rows beneath 
    export ANTHROPIC_AUTH_TOKEN=<your client token>
    ```
 
-2. Enable the endpoint. `GET /usage` is opt-in and requires [`[server.auth]`](/guides/shared-gateway/), so both tables must be present in your [configuration](/reference/configuration/):
+2. Enable the endpoint. `GET /usage` is opt-in and needs one of [`[server.auth]`](/guides/shared-gateway/) (client tokens) or `[server.gateway]` (gateway login) alongside the `[server.usage]` table in your [configuration](/reference/configuration/). With client tokens:
 
    ```toml
    [server.auth]
@@ -118,7 +118,7 @@ The mod reads five environment variables and writes none. By default it sends th
 
 `SHUNT_BASE_URL` is what lets you read one gateway's pool while routing traffic through another.
 
-A session started with [`shunt gateway claude`](/guides/gateway-login/) keeps no credential in these variables: the launcher scrubs them and wires `apiKeyHelper` to `shunt gateway token` instead. When none of them is set, the mod reads the merged Claude Code settings and, if `apiKeyHelper` is shunt's own `shunt gateway token` (by bare name or by path), runs it directly, without a shell, and sends the gateway login token it prints as `Authorization: Bearer`. It reuses that token for five minutes, and asks the helper once more when the gateway refuses a reused one. Any other `apiKeyHelper` is never run; export `SHUNT_TOKEN` in such a session instead. The gateway accepts a gateway login on `GET /usage` alongside `[server.auth]` client tokens.
+A session started with [`shunt gateway claude`](/guides/gateway-login/) keeps no credential in these variables: the launcher scrubs `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` and wires `apiKeyHelper` to `shunt gateway token` instead. When none of the variables in the table is set, the mod reads the merged Claude Code settings and, if `apiKeyHelper` is shunt's own `shunt gateway token` (by bare name or by path), runs it directly, without a shell, and sends the gateway login token it prints as `Authorization: Bearer`. Because no shell runs, a leading `~/` in an unquoted helper path is expanded to your home directory by the mod itself. It reuses that token for five minutes, and asks the helper once more when the gateway refuses a reused one. If the helper fails (non-zero exit, no output, or it cannot be started), the band flags `shunt · ⚠ gateway login unavailable` and `/shunt:usage` tells you to run `shunt gateway login`, rather than quietly showing the session's own limits. The launcher does not scrub `SHUNT_TOKEN`: one inherited from your shell still takes precedence over the helper, so unset it to use the gateway login. Any other `apiKeyHelper` is never run; export `SHUNT_TOKEN` in such a session instead. The gateway accepts a gateway login on `GET /usage` alongside `[server.auth]` client tokens.
 
 ### Why `/shunt:usage` and not `/usage`
 
