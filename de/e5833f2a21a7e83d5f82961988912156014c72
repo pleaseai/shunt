@@ -1,0 +1,25 @@
+.please/docs/tracks/completed/select-order-cap-verdict-20261005/metadata.json
+  s_afd8879efb217f::t_11f1815eb7b757 1-13
+.please/docs/tracks.jsonl
+  s_afd8879efb217f::t_11f1815eb7b757 2
+.please/docs/tracks/completed/select-order-cap-verdict-20261005/plan.md
+  s_afd8879efb217f::t_eb9bb3d1350bdc 83-86,98-99,108-127
+.please/docs/tracks/completed/select-order-cap-verdict-20261005/stakeholder-comm.md
+  s_afd8879efb217f::t_1bd8253ae067e8 11-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dee5833f2a21a7e83d5f82961988912156014c72",
+  "prompts": {},
+  "sessions": {
+    "s_afd8879efb217f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee518b19-8581-4321-ad02-98ace461cd4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
