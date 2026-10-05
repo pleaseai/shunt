@@ -64,12 +64,7 @@ fn select_pool_order_with_cap(
     accounts: &[AccountConfig],
     session_id: Option<&str>,
     upstream_model: &str,
-    ws_enabled: bool,
 ) -> (Vec<usize>, Option<accounts::CapExhaustion>) {
-    debug_assert!(
-        ws_enabled,
-        "non-WebSocket selection uses deferred reservation"
-    );
     state.accounts.select_order_without_reprobe_with_cap(
         provider,
         accounts,
@@ -1065,7 +1060,6 @@ pub(super) async fn forward_chatgpt_oauth(
             &accounts_config,
             session_id.as_deref(),
             &route.upstream_model,
-            true,
         );
         (order, None, cap)
     } else {

@@ -137,7 +137,7 @@ fn reprobe_interval(pool: Option<&PoolConfig>) -> Option<Duration> {
         Some(0) => None,
         // Positive values below 60 are clamped up to a 60-second floor, same
         // as `usage_refresh_seconds`. This is the single read site for
-        // `reprobe_seconds` (`select_order_deferred` calls this on HTTP pool
+        // `reprobe_seconds` (`select_order_deferred_with_cap` calls this on HTTP pool
         // requests); the operator-facing warning is emitted once after a
         // successful config load.
         Some(seconds) => Some(Duration::from_secs(seconds.max(REPROBE_FLOOR_SECS))),
@@ -388,7 +388,7 @@ struct AccountHealth {
     /// Instant of the last admission or release, for the idle-reset rule.
     ramp_last_activity: Option<Instant>,
     /// Instant this identity was last dispatched for an opportunistic re-probe
-    /// (see [`AccountPool::select_order_deferred`]). Memory-only, like
+    /// (see [`AccountPool::select_order_deferred_with_cap`]). Memory-only, like
     /// `cooldown_until`: a restart just means the next stale-check treats the
     /// account as never probed, which is the safe default.
     last_probe_at: Option<Instant>,
@@ -787,12 +787,8 @@ impl AccountPool {
         (order, cap)
     }
 
-    /// Return account indices and, when one stale near-quota ChatGPT account
-    /// was promoted, an opaque reservation for the first HTTP dispatch. The
-    /// reservation does not consume the reprobe interval until the caller
-    /// commits it immediately before sending upstream. Dropping it cancels the
-    /// pending token, so admission and credential-resolution failures remain
-    /// immediately eligible for a later request.
+    /// [`select_order_deferred_with_cap`](Self::select_order_deferred_with_cap)
+    /// without the hard-cap verdict.
     #[cfg(test)]
     pub(crate) fn select_order_deferred(
         self: &Arc<Self>,
@@ -807,10 +803,16 @@ impl AccountPool {
         (order, reservation)
     }
 
-    /// [`select_order_deferred`](Self::select_order_deferred) plus the
-    /// hard-cap verdict from the same pass that built the order. Callers read
-    /// the verdict only when the order is empty; `None` means no selectable
-    /// representative is capped.
+    /// Return account indices, an opaque reservation when one stale
+    /// near-quota ChatGPT account was promoted, and the hard-cap verdict from
+    /// the same pass that built the order.
+    ///
+    /// The reservation does not consume the reprobe interval until the caller
+    /// commits it immediately before sending upstream. Dropping it cancels the
+    /// pending token, so admission and credential-resolution failures remain
+    /// immediately eligible for a later request. Callers read the verdict only
+    /// when the order is empty; `None` means no selectable representative is
+    /// capped.
     pub(crate) fn select_order_deferred_with_cap(
         self: &Arc<Self>,
         provider: &str,
@@ -829,17 +831,8 @@ impl AccountPool {
         (order, reservation, cap)
     }
 
-    /// Return account indices without opportunistic re-probing.
-    ///
-    /// Responses pools use this entry point when WebSocket transport is
-    /// enabled. An in-stream rate-limit error arrives as a normal event, so
-    /// the pool does not rotate; the streaming path then calls `mark_healthy`,
-    /// which clears the cooldown and, when the turn is treated as successful
-    /// and the account already has a positive ramp allowance, doubles that
-    /// allowance. That contamination predates re-probing, and this entry point
-    /// only removes re-probing as its new trigger while the deeper fix remains
-    /// deferred. The provider-labelled re-probe metric therefore counts only
-    /// inbound probes for providers with WebSocket enabled.
+    /// [`select_order_without_reprobe_with_cap`](Self::select_order_without_reprobe_with_cap)
+    /// without the hard-cap verdict.
     #[cfg(test)]
     pub(crate) fn select_order_without_reprobe(
         &self,
@@ -853,10 +846,20 @@ impl AccountPool {
             .0
     }
 
-    /// [`select_order_without_reprobe`](Self::select_order_without_reprobe)
-    /// plus the hard-cap verdict from the same pass that built the order.
-    /// Callers read the verdict only when the order is empty; `None` means no
-    /// selectable representative is capped.
+    /// Return account indices without opportunistic re-probing, plus the
+    /// hard-cap verdict from the same pass that built the order.
+    ///
+    /// Responses pools use this entry point when WebSocket transport is
+    /// enabled. An in-stream rate-limit error arrives as a normal event, so
+    /// the pool does not rotate; the streaming path then calls `mark_healthy`,
+    /// which clears the cooldown and, when the turn is treated as successful
+    /// and the account already has a positive ramp allowance, doubles that
+    /// allowance. That contamination predates re-probing, and this entry point
+    /// only removes re-probing as its new trigger while the deeper fix remains
+    /// deferred. The provider-labelled re-probe metric therefore counts only
+    /// inbound probes for providers with WebSocket enabled. Callers read the
+    /// verdict only when the order is empty; `None` means no selectable
+    /// representative is capped.
     pub(crate) fn select_order_without_reprobe_with_cap(
         &self,
         provider: &str,

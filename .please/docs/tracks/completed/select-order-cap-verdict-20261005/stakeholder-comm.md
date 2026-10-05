@@ -15,7 +15,7 @@ Hello. Issue #739 is fixed, and here is a summary.
 
 **What was wrong**: The gateway decided which accounts it could use, then checked a second time whether usage caps were the reason none were available. If a cap cleared in the short gap between those two steps, the client got a generic "pool exhausted" error with no retry time, instead of the usage-cap error that says when to retry.
 **How it was fixed**: The gateway now makes the cap decision in the same step that picks the accounts, so the error always matches that decision. The Antigravity pool also uses the same usage-cap error when caps block every account.
-**What to expect**: Nothing changes in normal use. When every account in a pool is at its usage cap, the client gets the usage-cap error (HTTP 429 with `retry-after`), and requests still move on to the next configured upstream as before.
+**What to expect**: Nothing changes in normal use. When caps block every selectable account in a pool, the client gets the usage-cap error (HTTP 429, with `retry-after` when an eligibility time is known), and requests still move on to the next configured upstream as before.
 **Release status**: PR #743 is in review and will ship in a release after it merges.
 
 Let us know if you see anything unexpected. Thank you.

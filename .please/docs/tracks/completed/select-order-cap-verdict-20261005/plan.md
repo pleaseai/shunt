@@ -88,7 +88,7 @@ Rejected: keep `cap_exhaustion` and take both locks in one critical section. Tha
 ## Progress
 
 - [x] (2026-10-05 KST) T001 Return the cap verdict from the selection pass
-  Evidence: `cargo test --all-features --lib accounts::` -> 223 passed, 0 failed (includes new select_order_with_cap_verdict_is_a_value_from_the_selection_pass)
+  Evidence: `cargo test --all-features --lib accounts::` -> 223 passed, 0 failed (includes the new test, since renamed `select_order_with_cap_reports_cap_exhaustion_only_while_capped` in the review-stage commit; its "verdict survives a later quota change" assertion was dropped as vacuous, because the verdict is an owned `Copy` value no later pool write can reach — the test instead pins the capped verdict and an uncapped positive twin)
 - [x] (2026-10-05 KST) T002 Switch the five adapter exits to the returned verdict
   Evidence: `cargo test --all-features --test multi_account --test failover --test codex_multi_account --test inbound_codex_endpoint --test kimi_multi_account --test codex_websocket_fallback` -> 34/20/34/33/10/16 passed, 0 failed; `cargo test --all-features --lib` -> 3033 passed; `git grep cap_exhaustion -- src` -> only cfg(test) use
   Note: test PoolStreamContext literal got `cap: None` (pure field addition); responses/mod.rs:636 also builds a PoolStreamContext in production and now threads the verdict.
