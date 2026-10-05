@@ -1,0 +1,50 @@
+site/src/content/docs/ko/guides/claude-code-plugins.md
+  s_93c09460a30bc1::t_a56feac48fe161 39
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_93c09460a30bc1::t_4fdd27232c0e02 290
+site/src/content/docs/reference/endpoints.md
+  s_93c09460a30bc1::t_a69ad15944aea4 165
+site/src/content/docs/ja/reference/endpoints.md
+  s_93c09460a30bc1::t_a56feac48fe161 131
+site/src/content/docs/ko/reference/configuration.md
+  s_93c09460a30bc1::t_a56feac48fe161 291
+src/usage/tests.rs
+  s_93c09460a30bc1::t_2b0a3629c37947 88-109
+  s_93c09460a30bc1::t_0b1868ee0d102d 87
+docs/m12-client-usage-endpoint.md
+  s_93c09460a30bc1::t_a69ad15944aea4 55,60-61
+  s_93c09460a30bc1::t_eaa5a247c65d8a 56-59
+site/src/content/docs/reference/configuration.md
+  s_93c09460a30bc1::t_a69ad15944aea4 387
+src/usage.rs
+  s_93c09460a30bc1::t_b8a37065738e5a 68-75,161,167,170-175,180,182-183,188,192,203-204
+  s_93c09460a30bc1::t_5055f5a0674209 184-187
+site/src/content/docs/ko/reference/endpoints.md
+  s_93c09460a30bc1::t_a56feac48fe161 129
+site/src/content/docs/ja/reference/configuration.md
+  s_93c09460a30bc1::t_a56feac48fe161 290
+site/src/content/docs/ja/guides/claude-code-plugins.md
+  s_93c09460a30bc1::t_a56feac48fe161 39
+site/src/content/docs/guides/claude-code-plugins.md
+  s_93c09460a30bc1::t_a69ad15944aea4 39
+site/src/content/docs/zh-cn/guides/claude-code-plugins.md
+  s_93c09460a30bc1::t_4fdd27232c0e02 39
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_93c09460a30bc1::t_a56feac48fe161 124
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "96358abef21419492b199cf5004db22ab0a4107b",
+  "prompts": {},
+  "sessions": {
+    "s_93c09460a30bc1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "22b74a61-960e-44fa-9aaf-0aa45067fe5f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
