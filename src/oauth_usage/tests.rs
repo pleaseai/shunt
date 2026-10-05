@@ -25,6 +25,8 @@ fn snapshot(
         near_quota: false,
         capped: false,
         capped_fable: false,
+        cap_clears_at: None,
+        cap_clears_at_fable: None,
         cooldown_secs_remaining: None,
         cooldown_fable_secs_remaining: None,
         priority,

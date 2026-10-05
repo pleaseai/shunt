@@ -70,8 +70,9 @@ the Fable-scoped weekly window (`fable` / `7d_oi`):
   including turns on a reused connection; Codex has no Fable-scoped (`7d_oi`) signal, though
   another provider in a mixed pool may supply the aggregate Fable window.
 - `resets_at` — the earliest window reset (unix epoch seconds) reported by the accounts counted in
-  `remaining`, including the reset that clears a cap holding an account's term at zero (a 5h cap
-  zeroes its 7d and Fable terms until the 5h window resets): the soonest moment the aggregate can
+  `remaining`, including when a cap holding an account's term at zero clears (a 5h cap zeroes its 7d
+  and Fable terms until the 5h window resets, or until that 5h observation expires five hours after
+  it was taken, whichever comes first — the deadline selection itself uses): the soonest moment the aggregate can
   change. `null` when none of them reported one.
 
 Plus a pool-level `status` derived purely from availability booleans (no numbers): `exhausted` when

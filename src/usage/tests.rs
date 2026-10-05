@@ -24,6 +24,8 @@ fn snapshot(
         near_quota: false,
         capped: false,
         capped_fable: false,
+        cap_clears_at: None,
+        cap_clears_at_fable: None,
         cooldown_secs_remaining: None,
         cooldown_fable_secs_remaining: None,
         priority: 100,
@@ -138,10 +140,10 @@ fn aggregate_zeroes_headroom_an_excluding_cap_makes_unusable() {
 
 #[test]
 fn aggregate_resets_at_includes_when_a_cross_window_cap_clears() {
-    // A 5h-capped account adds nothing to 7d or Fable until the 5h window
-    // resets, so that reset is when both aggregates can next change — even
-    // though each window's own reset is later. A window under its cap does
-    // not hold the exclusion, so its reset is not folded in.
+    // A 5h-capped account adds nothing to 7d or Fable until its cap clears
+    // (the snapshot's `cap_exclusion` deadline, here the 5h reset), so that is
+    // when both aggregates can next change — even though each window's own
+    // reset is later.
     let mut five_hour_capped = snapshot("5h-capped", Some(0.95), Some(100), Some(0.30));
     five_hour_capped.max_utilization_5h = Some(0.9);
     five_hour_capped.max_utilization_7d = Some(0.9);
@@ -149,6 +151,8 @@ fn aggregate_resets_at_includes_when_a_cross_window_cap_clears() {
     five_hour_capped.utilization_7d_oi = Some(0.20);
     five_hour_capped.reset_7d_oi = Some(800);
     five_hour_capped.capped = true;
+    five_hour_capped.cap_clears_at = Some(100);
+    five_hour_capped.cap_clears_at_fable = Some(100);
     let body = serde_json::to_value(aggregate(&[("anthropic", &[five_hour_capped])])).unwrap();
     let windows = &body["pool"]["windows"];
     assert_eq!(windows["7d"]["remaining"], json!(0.0));

@@ -83,7 +83,8 @@ pub struct WindowStatus {
     pub remaining: Option<f64>,
     /// Earliest reported reset time (unix epoch seconds) among the accounts
     /// counted in `remaining`, including when a cap that zeroes an account's
-    /// term clears (the reset of the window holding it at its cap) — the
+    /// term clears (selection's deadline: the reset of each window holding it
+    /// at its cap, or that observation's expiry when earlier) — the
     /// soonest moment the aggregate can change. `None` when none of them
     /// reported one.
     pub resets_at: Option<u64>,
@@ -256,36 +257,14 @@ impl CapScope {
         }
     }
 
-    /// When that exclusion clears: the latest reset among this scope's windows
-    /// at or past their cap (every one must clear), or `None` when one of them
-    /// reports no reset.
+    /// When that exclusion clears, as selection computes it (the snapshot's
+    /// `cap_exclusion` deadline, which folds each capping window's reset and
+    /// observation expiry), or `None` when unknown.
     fn exclusion_clears_at(self, snapshot: &AccountSnapshot) -> Option<u64> {
-        let fable = (
-            snapshot.utilization_7d_oi,
-            snapshot.max_utilization_fable,
-            snapshot.reset_7d_oi,
-        );
-        let windows = [
-            Some((
-                snapshot.utilization_5h,
-                snapshot.max_utilization_5h,
-                snapshot.reset_5h,
-            )),
-            Some((
-                snapshot.utilization_7d,
-                snapshot.max_utilization_7d,
-                snapshot.reset_7d,
-            )),
-            matches!(self, Self::Fable).then_some(fable),
-        ];
-        let mut clears_at = None;
-        for (used, cap, reset) in windows.into_iter().flatten() {
-            if used.zip(cap).is_some_and(|(used, cap)| used >= cap) {
-                let reset = reset?;
-                clears_at = Some(clears_at.map_or(reset, |at: u64| at.max(reset)));
-            }
+        match self {
+            Self::Shared => snapshot.cap_clears_at,
+            Self::Fable => snapshot.cap_clears_at_fable,
         }
-        clears_at
     }
 }
 
