@@ -25,8 +25,7 @@ pool's combined capacity still **usable** before any account's `max_utilization`
 hard cap excludes it, so `0.62` means 62% of the headroom is left, not that 62%
 is spent; `null` means no account reported that window.
 `resets_at` is unix epoch seconds, the earliest reset among the accounts
-counted; for an account a cap holds at zero, the reset that clears that cap
-instead of the window's own reset. The figures are a shared pool-wide mean, not a prediction that the
+counted, including the reset that clears a cap holding an account at zero. The figures are a shared pool-wide mean, not a prediction that the
 next request will be admitted.
 
 A `404` means the gateway is running but `GET /usage` is not enabled: it needs

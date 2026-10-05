@@ -158,19 +158,20 @@ fn aggregate_resets_at_includes_when_a_cross_window_cap_clears() {
 }
 
 #[test]
-fn aggregate_resets_at_skips_a_reset_that_leaves_the_account_excluded() {
-    // A 7d-capped account stays excluded from every request when its 5h
-    // window resets at 100, so that reset releases nothing: the 5h aggregate
-    // next changes when the 7d cap clears at 900.
+fn aggregate_resets_at_keeps_an_excluded_accounts_own_reset() {
+    // A 7d-capped account is still excluded after its 5h window resets at
+    // 100, but the snapshot path expires that window's utilization then, so
+    // the account leaves the 5h mean (0.3 -> 0.6). That reset is the soonest
+    // change, not the 7d cap clearing at 900.
     let mut week_capped = snapshot("7d-capped", Some(0.10), Some(100), Some(0.95));
     week_capped.max_utilization_7d = Some(0.9);
     week_capped.reset_7d = Some(900);
     week_capped.capped = true;
-    let body = serde_json::to_value(aggregate(&[("anthropic", &[week_capped])])).unwrap();
-    let windows = &body["pool"]["windows"];
-    assert_eq!(windows["5h"]["remaining"], json!(0.0));
-    assert_eq!(windows["5h"]["resets_at"], json!(900));
-    assert_eq!(windows["7d"]["resets_at"], json!(900));
+    let healthy = snapshot("healthy", Some(0.40), Some(500), Some(0.20));
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[week_capped, healthy])])).unwrap();
+    let five_hour = &body["pool"]["windows"]["5h"];
+    assert_eq!(five_hour["remaining"], json!(0.3));
+    assert_eq!(five_hour["resets_at"], json!(100));
 }
 
 #[test]

@@ -82,11 +82,10 @@ pub struct WindowStatus {
     /// that aggregate window.
     pub remaining: Option<f64>,
     /// Earliest reported reset time (unix epoch seconds) among the accounts
-    /// counted in `remaining`. An account a cap excludes contributes only when
-    /// that exclusion clears (the reset of the window holding it at its cap),
-    /// not this window's own reset, which releases nothing while it is still
-    /// excluded — the soonest moment the aggregate can change. `None` when
-    /// none of them reported one.
+    /// counted in `remaining`, including when a cap that zeroes an account's
+    /// term clears (the reset of the window holding it at its cap) — the
+    /// soonest moment the aggregate can change. `None` when none of them
+    /// reported one.
     pub resets_at: Option<u64>,
 }
 
@@ -193,8 +192,7 @@ fn pool_aggregate<'a>(
 /// from them — a shared 5h/7d cap excludes it from every request, Fable ones
 /// included — counts zero even when this window alone is still under its cap,
 /// since that headroom is not usable until the blocking window clears. That
-/// clearing time, not the window's own reset, is what such an account adds to
-/// `resets_at`, because only it releases the zeroed term. A cap with no
+/// clearing time joins `resets_at`, because the aggregate changes then too. A cap with no
 /// observed window behind it (the Fable cap on a Codex account, which reports
 /// no `7d_oi`) adds nothing. Not a guarantee about which account the next
 /// request will actually route to.
@@ -220,9 +218,12 @@ fn window_status<'a>(
         } else {
             let ceiling = cap(snapshot).unwrap_or(1.0);
             headroom_sum += (ceiling - used).clamp(0.0, 1.0);
-            if let Some(at) = reset(snapshot) {
-                earliest_reset = Some(earliest_reset.unwrap_or(at).min(at));
-            }
+        }
+        // Folded even while a cap excludes the account: at this reset the
+        // snapshot path (`expire_stale_quota`) clears the window's utilization,
+        // so the account leaves `reporting` and the mean changes then.
+        if let Some(at) = reset(snapshot) {
+            earliest_reset = Some(earliest_reset.unwrap_or(at).min(at));
         }
     }
     if reporting == 0 {
