@@ -65,10 +65,14 @@ off with the `usageBand` option below.
 
 ## Reading the numbers
 
-`remaining` is the fraction of the pool's combined capacity still **unused**, so
+`remaining` is the fraction of the pool's combined capacity still **usable**, so
 `62%` means 62% of the headroom is left, not that 62% is spent. It is
-`mean(1 - utilization)` over the non-disabled accounts that report the window:
-nine exhausted accounts plus one fresh one read `10%`, not `100%`.
+`mean(clamp(cap - utilization, 0, 1))` over the non-disabled accounts that report
+the window, where `cap` is the account's `max_utilization` hard cap for that
+window (`100%` when none is set): nine exhausted accounts plus one fresh uncapped
+one read `10%`, not `100%`, and an account at 44% under a 50% cap counts only `6%`.
+An account a cap already excludes from the window's requests counts zero; a 5h or
+7d cap excludes it from every request, Fable ones included.
 
 It is a **pool-wide aggregate, not a prediction** — routing also weighs
 availability, model, session affinity and priority, so a healthy figure is not a

@@ -56,7 +56,7 @@ Collapse the band for the session with its `[-]` (ctrl+x ctrl+a). To turn it off
 
 ### Reading the numbers
 
-`remaining` is the fraction of the pool's combined capacity still **unused**. `62%` means 62% of the headroom is left, not that 62% is spent. It is `mean(1 - utilization)` over the non-disabled accounts reporting the window, so nine exhausted accounts plus one fresh one read `10%`, not `100%`.
+`remaining` is the fraction of the pool's combined capacity still **usable**. `62%` means 62% of the headroom is left, not that 62% is spent. It is `mean(clamp(cap - utilization, 0, 1))` over the non-disabled accounts reporting the window, where `cap` is the account's `max_utilization` hard cap for that window (`100%` when none is set), so nine exhausted accounts plus one fresh uncapped one read `10%`, not `100%`, and an account at 44% under a 50% cap counts only `6%`. An account a cap currently excludes from the requests a window serves counts zero there: a 5h or 7d cap excludes it from every request, so it also counts zero in the other shared window and in the Fable window.
 
 It is a **pool-wide aggregate, not a prediction**. Routing also weighs availability, model, session affinity and priority, so a healthy figure is not a promise that your next request is admitted.
 

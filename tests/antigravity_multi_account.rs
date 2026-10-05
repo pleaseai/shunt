@@ -543,3 +543,102 @@ async fn failover_counts_one_attempt_against_each_account() {
     gateway.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Hard caps that hold every Antigravity account out answer with the gateway
+/// cap 429 (and `retry-after`) without reaching the backend; below the cap the
+/// same pool serves.
+#[tokio::test]
+async fn capped_pool_returns_the_cap_429_and_uncapped_serves() {
+    if !can_bind_loopback() {
+        return;
+    }
+
+    let backend = MockServer::start().await;
+    mount_backend(&backend, "token-none").await;
+
+    let dir = fresh_dir("capped");
+    std::fs::create_dir_all(&dir).unwrap();
+    let accounts_dir = dir.join("accounts");
+    std::fs::create_dir_all(&accounts_dir).unwrap();
+    write_account(&accounts_dir, "a", "token-a", "proj-a");
+    write_account(&accounts_dir, "b", "token-b", "proj-b");
+
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &accounts_dir);
+    vars.set("SHUNT_ANTIGRAVITY_AUTH_FILE", dir.join("no-singleton.json"));
+
+    let mut config = config_with_base(&dir, &backend.uri());
+    config.server.pool = Some(shunt::config::PoolConfig {
+        default_max_utilization_5h: Some(0.5),
+        ..Default::default()
+    });
+    let (addr, gateway, state) = serve_with_state(config).await;
+
+    let accounts = state
+        .config
+        .provider("antigravity")
+        .unwrap()
+        .resolve_pool_accounts()
+        .await
+        .unwrap();
+    assert_eq!(accounts.len(), 2);
+    let note = |utilization: &str, reset: u64| {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "anthropic-ratelimit-unified-5h-utilization",
+            utilization.parse().unwrap(),
+        );
+        headers.insert(
+            "anthropic-ratelimit-unified-5h-reset",
+            reset.to_string().parse().unwrap(),
+        );
+        for account in &accounts {
+            state.accounts.note_quota("antigravity", account, &headers);
+        }
+    };
+    let reset = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 1_800;
+    note("0.9", reset);
+
+    let response = post_message(addr).await;
+    assert_eq!(response.status(), 429);
+    let retry_after: u64 = response
+        .headers()
+        .get("retry-after")
+        .expect("cap 429 carries retry-after")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(retry_after >= 1);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "rate_limit_error");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("max_utilization cap"));
+    let inference = |requests: Vec<wiremock::Request>| {
+        requests
+            .into_iter()
+            .filter(|request| request.url.path() == "/v1internal:generateContent")
+            .count()
+    };
+    assert_eq!(
+        inference(backend.received_requests().await.unwrap()),
+        0,
+        "a capped pool must not reach the backend"
+    );
+
+    // Positive twin: below the cap the same pool serves.
+    note("0.1", reset);
+    let response = post_message(addr).await;
+    assert_eq!(response.status(), 200);
+    response.bytes().await.unwrap();
+    assert_eq!(inference(backend.received_requests().await.unwrap()), 1);
+
+    gateway.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}

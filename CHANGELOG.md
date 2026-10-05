@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.54.1](https://github.com/pleaseai/shunt/compare/v0.54.0...v0.54.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **usage:** measure /usage remaining headroom up to each account's max_utilization cap ([#745](https://github.com/pleaseai/shunt/issues/745)) ([7b334ed](https://github.com/pleaseai/shunt/commit/7b334ed5f9636bbcf1ac5939d24b88939aa36c23))
+
 ## [0.54.0](https://github.com/pleaseai/shunt/compare/v0.53.0...v0.54.0) (2026-10-05)
 
 
