@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.54.0](https://github.com/pleaseai/shunt/compare/v0.53.0...v0.54.0) (2026-10-05)
+
+
+### Features
+
+* **admin:** show per-window max_utilization caps in the dashboard ([#740](https://github.com/pleaseai/shunt/issues/740)) ([ab9f55f](https://github.com/pleaseai/shunt/commit/ab9f55f1d0344ed165a2425220125e5d27f2a2ec))
+
+
+### Bug Fixes
+
+* **ui:** admin dashboard follow-ups from [#740](https://github.com/pleaseai/shunt/issues/740) browser check ([#742](https://github.com/pleaseai/shunt/issues/742)) ([f09740f](https://github.com/pleaseai/shunt/commit/f09740fc7e87449e7c862bb7265c6af19964c5a7))
+
 ## [0.53.0](https://github.com/pleaseai/shunt/compare/v0.52.0...v0.53.0) (2026-10-04)
 
 
