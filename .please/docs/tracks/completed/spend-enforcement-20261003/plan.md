@@ -198,6 +198,8 @@ T001 → {T002, T003, T005, T007}; T003 → T004; T002 → T006; {T006, T007} �
 - [x] (2026-10-04 KST) T008 Document enforcement, pricing interaction, headers, `/effective`, and the Codex-endpoint gap
   Evidence: `cd site && bun run build` → exit 0, 209 pages built; `site/dist` has `spend_limits/effective` in all four endpoints pages and no stray `**` in the edited pages (one pre-existing `**<code>503</code>**` in ko configuration, an unrelated JWT paragraph); no cross-page fragment links added (only external GitHub links); `cargo fmt --all --check` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0
 
+- [x] (2026-10-05 04:02 KST) Review-stage commits (SHA: `b9e197f7`, `8288ce80`, `88f63230`, `31fea09b`, `2cb4eae8`, `996e91f3`, `7bfb9ae9`, `d024dd59`, `2727509d`, `4b13fc2a`, `d2c8e766`)
+
 ## Decision Log
 
 - 2026-10-03: Counters persist to a sibling file, not the stage-1 envelope. FR-11 was reworded to "under the existing spend state configuration". This keeps rollback safe for caps and audit, and counter flushes never rewrite the audit log.
@@ -220,3 +222,52 @@ T001 → {T002, T003, T005, T007}; T003 → T004; T002 → T006; {T006, T007} �
 
 - Observation: A "final usage" frame is not always the upstream's own count. After an upstream cut, the Responses adapter emits `:shunt-upstream-truncated` and then a synthesized `message_delta` whose `output_tokens` is 0, so trusting the last `message_delta` would bill a cut turn's text as free.
   Evidence: `model::responses::AnthropicSseMachine::usage_value` reports the unobserved output as 0. The stream tap applies the delivered-text floor whenever the marker was seen (`spend_tap::tests::a_synthesized_end_after_a_cut_still_bills_the_floor`).
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+
+- The stage-1 `user` and `organization` caps are now enforced on `POST /v1/messages`.
+  - The cap is keyed on the authenticated inbound principal. A credential-injecting request with no identity is attributed to `shunt:anonymous`.
+  - An over-cap principal gets `429 billing_error`, with `retry-after` and `x-should-retry: false`.
+- Every paid upstream call is metered exactly once: served streamed and JSON responses, translated adapters, committed streams, routing judges and classifiers, and gated captures.
+  - Calls are priced through the `[server.spend.pricing]` table and added to UTC daily, weekly and monthly femto-USD counters.
+  - Metering is decided per serving route. Passthrough and `noop` routes are not billed.
+- Counters are persisted to `<stem>.counters.json`.
+  - A background flush runs, and retention pruning happens on every flush.
+  - Restore isolates opaque or malformed records, with expiry deadlines.
+  - The final flush on shutdown is bounded.
+- A capped principal gets its own `anthropic-ratelimit-unified-*` headers, which replace the upstream's.
+- `GET /v1/organizations/spend_limits/effective` adds filtering, sorting and cursor pagination.
+- The docs are updated in `docs/`, README (4 locales) and the site reference pages (4 locales).
+
+### What Went Well
+
+- The parity notes for the reference gateway (`reference-gateway.md`) settled the header shapes, the refusal shapes and the fold rules up front. That left little design churn.
+- Mutation checks on each task caught several vacuous tests early.
+- The multi-engine review (gpt, ocr, cubic) found real billing gaps that the single-engine passes missed:
+  - a JSON usage block with no `output_tokens`
+  - the chunk that crosses `gated_max_bytes`
+  - quadratic SSE boundary scans
+  - noop winners
+
+### What Could Improve
+
+- The review-fix loop ran about nine rounds. Some fixes introduced new defects:
+  - the 5 ms gated margin
+  - the stamped-header change, later reverted
+  - the max-trick test helper
+
+  Stating each fix as "what turns red if this is removed" would have reduced that churn.
+- Greptile could not run locally because a dylib was missing, so the loop could never exit `no_issues`. Each round ended at `needs_human_read`.
+- The manual live check (SC-2: a 1-cent cap is served once, refused, and the block survives a restart) was not run before the PR went ready.
+
+### Tech Debt Created
+
+- Counters saturate at u64::MAX femto-USD, about $18.4k per principal per window (#736).
+- The inbound Codex endpoint is not enforced or metered (#733).
+- Data-only SSE frames (no `event:` line) are not metered.
+- `shunt:anonymous` is not reserved against authenticated identities.
+- A caught meter panic poisons the counters mutex.
+- Some doc comments still say "injects a credential" or "all-passthrough" where the rule is now "metered".
+- Three files are over the 500-line guideline: `auto_mode_classifier.rs` (508), `meter/persist.rs` (507) and `meter/persist/tests.rs` (545).
