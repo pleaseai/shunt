@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { endpointOf } from '../hooks/endpoint'
+import { endpointOf, helperMayRideTo } from '../hooks/endpoint'
 import { NO_BASE_URL_TEXT, NO_TOKEN_TEXT } from '../hooks/names'
 
 const endpoint = (resolved: ReturnType<typeof endpointOf>) => {
@@ -171,5 +171,34 @@ describe('endpoint', () => {
     )
 
     expect(headers).toEqual({ 'x-api-key': 'key' })
+  })
+
+  test.each([
+    [{}, true],
+    [{ shuntBaseUrl: '  ' }, true],
+    [{ shuntBaseUrl: 'http://gateway' }, true],
+    [{ shuntBaseUrl: ' http://gateway/ ' }, true],
+  ])('the helper login rides to the session gateway: %j', (extra, rides) => {
+    const resolved = endpointOf({
+      anthropicBaseUrl: 'http://gateway/',
+      helperToken: 'login',
+      ...extra,
+    })
+
+    expect('endpoint' in resolved).toBe(rides)
+    expect('endpoint' in resolved && resolved.endpoint.headers).toEqual({
+      authorization: 'Bearer login',
+    })
+  })
+
+  test('the helper login never rides to another gateway', () => {
+    const resolved = endpointOf({
+      shuntBaseUrl: 'http://other',
+      anthropicBaseUrl: 'http://gateway',
+      helperToken: 'login',
+    })
+
+    expect(resolved).toEqual({ problem: NO_TOKEN_TEXT })
+    expect(helperMayRideTo({ shuntBaseUrl: 'http://other', anthropicBaseUrl: 'http://gateway' })).toBe(false)
   })
 })

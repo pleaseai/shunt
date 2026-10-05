@@ -6,7 +6,7 @@ import type { ShuntRateLimit, ShuntSnapshot } from '../types'
 import { bandOf, snapshotOf } from './band'
 import type { Level } from './band'
 import type { Endpoint, Environment } from './endpoint'
-import { endpointOf } from './endpoint'
+import { endpointOf, helperMayRideTo } from './endpoint'
 import { shuntHelperArgvOf } from './helper'
 import { COMMAND_NAME, HOOK_FAILED_TEXT, NO_TOKEN_TEXT } from './names'
 import type { Reading } from './reading'
@@ -143,7 +143,13 @@ async function readUsage($: EngineInterface): Promise<Reading> {
   }
 
   // No credential in the environment: a `shunt gateway claude` session keeps
-  // its gateway login behind the helper instead.
+  // its gateway login behind the helper instead. That login belongs to the
+  // session's own gateway, so when `SHUNT_BASE_URL` names another one the
+  // helper is not even run.
+  if (!helperMayRideTo(env)) {
+    return { problem: resolved.problem, brief: null }
+  }
+
   const readWithHelper = async (): Promise<Reading & { isCached?: boolean }> => {
     const token = await helperTokenOf($)
 

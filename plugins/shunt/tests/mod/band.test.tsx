@@ -264,6 +264,25 @@ describe('usage band in a shunt gateway claude session', () => {
     expect((await ui.find({ key: 'usage' }))?.text).toBe('shunt · ⚠ gateway login unavailable')
   })
 
+  test('never runs the helper for another gateway than the session\'s', async ($, on) => {
+    const { clock, calls, runs } = world(
+      on,
+      { ...LAUNCHED, SHUNT_BASE_URL: 'http://other:3001' },
+      accepting('login-1'),
+      [{ kind: 'five_hour', percentUsed: 12 }],
+      { command: HELPER, tokens: ['login-1'] },
+    )
+
+    await $.session.start(START)
+    await clock.settle()
+
+    const ui = await $.ui.mount({ plugin: 'shunt', surface: 'terminal', component: 'AbovePrompt', props: PROPS })
+
+    expect(runs).toEqual([])
+    expect(calls).toEqual([])
+    expect((await ui.find({ key: 'usage' }))?.text).toBe('5H 12%')
+  })
+
   test('leaves any other apiKeyHelper alone', async ($, on) => {
     const { clock, calls, runs } = world(on, LAUNCHED, accepting('login-1'), [{ kind: 'five_hour', percentUsed: 12 }], {
       command: 'op read op://vault/anthropic/key',
