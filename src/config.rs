@@ -2801,7 +2801,7 @@ pub enum ConfigError {
     DuplicateCodexRoute { model: String },
     #[error("[server.codex_endpoint] route field `{field}` is empty for model {model}")]
     EmptyCodexRouteField { model: String, field: &'static str },
-    #[error("[server.usage] requires [server.auth]: the usage endpoint must identify a non-admin caller by client token")]
+    #[error("[server.usage] requires [server.auth] or [server.gateway]: the usage endpoint must identify a non-admin caller by client token or gateway login")]
     UsageEndpointRequiresAuth,
     #[error("[server.oauth_usage] on a non-loopback [server.bind] requires [server.auth] or [server.gateway]: without one, Claude subscription quota telemetry would be served to any caller on the network")]
     OauthUsageEndpointRequiresAuthOnNonLoopback,
@@ -4930,11 +4930,15 @@ impl Config {
                 }
             }
         }
-        // The client-facing usage endpoint identifies its caller by client token,
-        // so it is only meaningful — and only safe to register — when inbound auth
-        // is configured. Without it, `GET /usage` would be world-readable pool
+        // The client-facing usage endpoint identifies its caller by client token
+        // (`[server.auth]`) or gateway login (`[server.gateway]`), so it is only
+        // meaningful — and only safe to register — when at least one of them is
+        // configured. Without either, `GET /usage` would be world-readable pool
         // telemetry; fail closed at boot rather than expose it.
-        if self.server.usage.is_some() && self.server.auth.is_none() {
+        if self.server.usage.is_some()
+            && self.server.auth.is_none()
+            && self.server.gateway.is_none()
+        {
             return Err(ConfigError::UsageEndpointRequiresAuth);
         }
         // `[server.oauth_usage]` serves Claude subscription quota telemetry
@@ -9176,10 +9180,12 @@ policy = { type = "target_selector", selector = "/target" }
 
     #[test]
     fn usage_endpoint_requires_inbound_auth() {
-        // Opting into `[server.usage]` without `[server.auth]` is rejected at
-        // boot: the endpoint must identify a non-admin caller by client token.
+        // Opting into `[server.usage]` with neither `[server.auth]` nor
+        // `[server.gateway]` is rejected at boot: the endpoint must identify a
+        // non-admin caller by client token or gateway login.
         let mut config = Config::default();
         config.server.usage = Some(UsageEndpointConfig::default());
+        assert!(config.server.auth.is_none() && config.server.gateway.is_none());
         assert!(matches!(
             config.validate().unwrap_err(),
             ConfigError::UsageEndpointRequiresAuth
@@ -9202,6 +9208,36 @@ policy = { type = "target_selector", selector = "/target" }
         });
         let result = config.validate();
         std::env::remove_var(&env);
+        result.unwrap();
+    }
+
+    #[test]
+    fn usage_endpoint_accepts_when_only_gateway_login_is_configured() {
+        // `[server.gateway]` alone identifies the caller by gateway login, so
+        // the pairing validates without `[server.auth]`. `validate()` resolves
+        // the gateway too, so give it a signing secret and an approval user.
+        let suffix = format!("{}_usage", std::process::id());
+        let secret_env = format!("SHUNT_USAGE_VALIDATE_GW_SECRET_{suffix}");
+        let users_env = format!("SHUNT_USAGE_VALIDATE_GW_USERS_{suffix}");
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&users_env, "dev@example.com:password");
+        let mut config = Config::default();
+        config.server.usage = Some(UsageEndpointConfig::default());
+        config.server.gateway = Some(GatewayConfig {
+            public_url: "https://gateway.example".to_string(),
+            jwt_secret_env: Some(secret_env.clone()),
+            users_env: users_env.clone(),
+            token_ttl_seconds: Some(3600),
+            trust_forwarded_for: false,
+            policies: None,
+            telemetry: None,
+            state_path: None,
+            oidc: None,
+            session: None,
+        });
+        let result = config.validate();
+        std::env::remove_var(&secret_env);
+        std::env::remove_var(&users_env);
         result.unwrap();
     }
 

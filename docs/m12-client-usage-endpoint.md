@@ -2,9 +2,9 @@
 
 M12 adds an opt-in, read-only **client-facing** endpoint that exposes a *sanitized, aggregated*
 view of the shared account pool's quota state. Its purpose is transparency: a non-admin client
-(a `[server.auth]` token holder) can see how close the shared pool is to a rate limit — per-window
-remaining headroom and reset time — and anticipate throttling, instead of being surprised by a
-`429`.
+(a `[server.auth]` token holder or a `[server.gateway]` login) can see how close the shared pool is
+to a rate limit — per-window remaining headroom and reset time — and anticipate throttling, instead
+of being surprised by a `429`.
 
 The only surface that previously showed usage was the admin dashboard
 ([M9](m9-admin-surface.md), `GET /admin/api/pool`), gated by the separate `[server.admin]` credential
@@ -23,11 +23,11 @@ be a separate subsystem and is out of scope.
 
 | | `GET /admin/api/pool` (M9) | `GET /usage` (this milestone) |
 | :-- | :-- | :-- |
-| Auth | `[server.admin]` admin token / browser session | `[server.auth]` client token (header, `x-api-key`, or `Authorization: Bearer`) |
+| Auth | `[server.admin]` admin token / browser session | `[server.auth]` client token (header, `x-api-key`, or `Authorization: Bearer`), or a `[server.gateway]` login access token (`Authorization: Bearer`) |
 | Audience | Operator | Any authenticated client |
 | Granularity | Per account: name, priority, `disabled`, cooldown, utilization, headroom, status | Pool aggregate only |
 | Account identity | Exposed | **Never** — no name, count, priority, `disabled`, threshold, or headroom |
-| Registered when | `[server.admin]` present | `[server.usage]` present (which requires `[server.auth]`) |
+| Registered when | `[server.admin]` present | `[server.usage]` present (which requires `[server.auth]` or `[server.gateway]`) |
 
 Both read the same `AccountPool::snapshot` output; `GET /usage` collapses it to an aggregate and
 drops every identifying field.
@@ -42,10 +42,28 @@ in; the table has no keys today.
 [server.usage]
 ```
 
-It **requires `[server.auth]`**: the endpoint must identify its caller by client token, so a
-`[server.usage]` set without `[server.auth]` fails startup (`ConfigError::UsageEndpointRequiresAuth`)
-rather than serving pool telemetry unauthenticated. The route is registered once at boot when the
-table is present; a config reload only re-resolves the client tokens it authenticates against.
+It **requires `[server.auth]` or `[server.gateway]`**: the endpoint must identify its caller by
+client token or gateway login, so a `[server.usage]` set with neither fails startup
+(`ConfigError::UsageEndpointRequiresAuth`) rather than serving pool telemetry unauthenticated. The
+route is registered once at boot when the table is present; a config reload only re-resolves the
+client tokens and gateway signing secrets it authenticates against.
+
+### Gateway login
+
+As first shipped, `GET /usage` accepted only `[server.auth]` credentials, and `[server.usage]`
+required `[server.auth]`. A Claude Code session launched with `shunt gateway claude` authenticates
+with a `[server.gateway]` login access token (what `shunt gateway token` prints) sent as
+`Authorization: Bearer`, so it was refused with `401`. The endpoint now also accepts a valid gateway
+login bearer, as `GET /api/oauth/usage` ([M14](m14-oauth-usage-endpoint.md)) does on a non-loopback
+bind, and `[server.usage]` validates with either table present.
+
+The handler checks the gateway login bearer **first**. It is a local signature check, and when it
+verifies, the caller is authenticated without consulting `[server.auth]` at all: otherwise a gateway
+JWT presented as `Bearer` would also be offered to the `[[server.auth.jwt]]` issuer path, where an
+unreachable key set (`503`) must not lock out a valid gateway login. When the bearer does not verify
+as a gateway login and `[server.auth]` is configured, the existing client gate runs unchanged
+(`Authenticated` serves, an unreachable issuer key set answers `503`, anything else `401`). With
+neither table configured the handler still fails closed with `401`.
 
 ## Response
 
@@ -118,8 +136,8 @@ map is empty.
 A per-provider `fable` window is `null` for a provider that has no Fable-scoped signal (Codex), even
 when `pool.windows.fable` is populated by another provider.
 
-Gateway-owned errors (a `401` for a missing/invalid client token, a `500` if the account store
-cannot be read) use the Anthropic error shape, like the rest of the gateway.
+Gateway-owned errors (a `401` for a missing/invalid client token or gateway login, a `500` if the
+account store cannot be read) use the Anthropic error shape, like the rest of the gateway.
 
 ## Boundaries
 

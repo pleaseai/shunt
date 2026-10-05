@@ -3,7 +3,8 @@ use serde_json::{json, Value};
 
 use crate::{
     accounts::{AccountSnapshot, UsageSnapshot, UsageWindow},
-    config::{AccountConfig, InboundAuthConfig, UsageEndpointConfig},
+    config::{AccountConfig, Config, GatewayConfig, InboundAuthConfig, UsageEndpointConfig},
+    gateway::{approval::Identity, jwt},
     server::AppState,
 };
 
@@ -286,21 +287,79 @@ fn aggregate_breaks_the_pool_down_per_provider() {
 /// the snapshot). Returns the state, the env var name (caller removes it),
 /// and the seeded 5h reset for assertion.
 fn state_with_auth_and_seeded_pool(token: &str, label: &str) -> (AppState, String, u64) {
+    let mut config = crate::config::Config::default();
+    let env = add_client_auth(&mut config, token, label);
+    let (state, reset_5h) = state_with_seeded_pool(config);
+    (state, env, reset_5h)
+}
+
+/// Point `[server.auth]` at a per-test env var holding `tester:{token}` and
+/// return the var's name (caller removes it).
+fn add_client_auth(config: &mut Config, token: &str, label: &str) -> String {
     // Per-test-unique name: tests share the process env, and one test's
     // `remove_var` must not race another's construction-time resolve.
     let env = format!("SHUNT_USAGE_TEST_TOKENS_{}_{label}", std::process::id());
     std::env::set_var(&env, format!("tester:{token}"));
-    let reset_5h = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + 3_600;
-    let mut config = crate::config::Config::default();
     config.server.auth = Some(InboundAuthConfig {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: env.clone(),
     });
+    env
+}
+
+const GATEWAY_URL: &str = "https://gateway.example";
+const GATEWAY_SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
+
+/// Configure `[server.gateway]` with per-test signing-secret and approval-user
+/// env vars, returning both names (caller removes them).
+fn add_gateway(config: &mut Config, label: &str) -> [String; 2] {
+    let suffix = format!("{}_{label}", std::process::id());
+    let secret_env = format!("SHUNT_USAGE_TEST_GW_SECRET_{suffix}");
+    let users_env = format!("SHUNT_USAGE_TEST_GW_USERS_{suffix}");
+    std::env::set_var(&secret_env, std::str::from_utf8(GATEWAY_SECRET).unwrap());
+    std::env::set_var(&users_env, "dev@example.com:password");
+    config.server.gateway = Some(GatewayConfig {
+        public_url: GATEWAY_URL.to_string(),
+        jwt_secret_env: Some(secret_env.clone()),
+        users_env: users_env.clone(),
+        token_ttl_seconds: Some(3600),
+        trust_forwarded_for: false,
+        policies: None,
+        telemetry: None,
+        state_path: None,
+        oidc: None,
+        session: None,
+    });
+    [secret_env, users_env]
+}
+
+/// A real gateway login access token, minted with the issuer and secret
+/// `add_gateway` configures — what `shunt gateway token` prints.
+fn gateway_bearer() -> String {
+    let token = jwt::mint(
+        &Identity {
+            sub: "dev".to_string(),
+            email: "dev@example.com".to_string(),
+            name: "Dev".to_string(),
+        },
+        GATEWAY_URL,
+        GATEWAY_SECRET,
+        3600,
+    );
+    format!("Bearer {token}")
+}
+
+/// `config` with `[server.usage]` enabled, plus the built-in `codex` provider
+/// given one explicit account so the snapshot path does not touch the account
+/// store, seeded as described on [`state_with_auth_and_seeded_pool`]. Returns
+/// the state and the seeded 5h reset.
+fn state_with_seeded_pool(mut config: Config) -> (AppState, u64) {
+    let reset_5h = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
     config.server.usage = Some(UsageEndpointConfig::default());
     let account = AccountConfig {
         name: "acct-a".to_string(),
@@ -329,7 +388,7 @@ fn state_with_auth_and_seeded_pool(token: &str, label: &str) -> (AppState, Strin
         (reset_5h + 3_600).to_string().parse().unwrap(),
     );
     state.accounts.note_codex_quota("codex", &account, &headers);
-    (state, env, reset_5h)
+    (state, reset_5h)
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -710,9 +769,72 @@ async fn rejects_a_request_without_a_valid_client_token() {
 }
 
 #[tokio::test]
+async fn serves_a_valid_gateway_login_without_server_auth() {
+    let mut config = Config::default();
+    let gateway_env = add_gateway(&mut config, "gateway_only");
+    let (state, _) = state_with_seeded_pool(config);
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", gateway_bearer().parse().unwrap());
+
+    let response = get(State(state), headers).await;
+    for var in &gateway_env {
+        std::env::remove_var(var);
+    }
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.75));
+}
+
+#[tokio::test]
+async fn serves_a_valid_gateway_login_alongside_server_auth() {
+    // The gateway bearer authenticates on its own even though it matches no
+    // `[server.auth]` client token.
+    let mut config = Config::default();
+    let auth_env = add_client_auth(&mut config, "tok-secret", "gateway_and_auth");
+    let gateway_env = add_gateway(&mut config, "gateway_and_auth");
+    let (state, _) = state_with_seeded_pool(config);
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", gateway_bearer().parse().unwrap());
+
+    let response = get(State(state), headers).await;
+    std::env::remove_var(&auth_env);
+    for var in &gateway_env {
+        std::env::remove_var(var);
+    }
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.75));
+}
+
+#[tokio::test]
+async fn rejects_an_invalid_bearer_when_only_gateway_login_is_configured() {
+    let mut config = Config::default();
+    let gateway_env = add_gateway(&mut config, "gateway_garbage");
+    let (state, _) = state_with_seeded_pool(config);
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", "Bearer not-a-gateway-jwt".parse().unwrap());
+
+    let response = get(State(state), headers).await;
+    for var in &gateway_env {
+        std::env::remove_var(var);
+    }
+
+    assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["type"], "authentication_error");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("shunt gateway login"), "{message}");
+    // No `[server.auth]` header exists to name.
+    assert!(!message.contains("x-shunt-token"), "{message}");
+}
+
+#[tokio::test]
 async fn fails_closed_when_inbound_auth_is_absent() {
     // Defense in depth for the branch config validation normally forbids:
-    // with no `[server.auth]`, the handler must not serve pool telemetry.
+    // with neither `[server.auth]` nor `[server.gateway]`, the handler must
+    // not serve pool telemetry.
     let state = AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
     let response = get(State(state), HeaderMap::new()).await;
     assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
