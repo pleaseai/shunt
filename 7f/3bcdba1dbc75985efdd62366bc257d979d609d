@@ -1,0 +1,34 @@
+plugins/shunt/commands/usage.md
+  s_93c09460a30bc1::t_a39e1771daa6f6 28
+docs/m12-client-usage-endpoint.md
+  s_93c09460a30bc1::t_a39e1771daa6f6 73-75
+src/usage.rs
+  s_93c09460a30bc1::t_b3bfd664cb6e15 222-224
+  s_93c09460a30bc1::t_a39e1771daa6f6 85-88,195,221,225-226
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_93c09460a30bc1::t_a39e1771daa6f6 124
+site/src/content/docs/ko/reference/endpoints.md
+  s_93c09460a30bc1::t_a39e1771daa6f6 129
+site/src/content/docs/reference/endpoints.md
+  s_93c09460a30bc1::t_a39e1771daa6f6 165
+src/usage/tests.rs
+  s_93c09460a30bc1::t_a5bf2c5d3d5217 161-165,170-174
+site/src/content/docs/ja/reference/endpoints.md
+  s_93c09460a30bc1::t_a39e1771daa6f6 131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7f3bcdba1dbc75985efdd62366bc257d979d609d",
+  "prompts": {},
+  "sessions": {
+    "s_93c09460a30bc1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "22b74a61-960e-44fa-9aaf-0aa45067fe5f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
