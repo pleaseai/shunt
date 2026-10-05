@@ -80,10 +80,10 @@ Rejected: keep `cap_exhaustion` and take both locks in one critical section. Tha
 
 ### Automated Tests
 
-- [ ] `cargo fmt --all --check`
-- [ ] `PYO3_PYTHON=/usr/local/bin/python3 cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] `PYO3_PYTHON=/usr/local/bin/python3 cargo test --all-features --workspace` (build `ui/dist` first)
-- [ ] `git grep -n "cap_exhaustion" -- src` lists only the test shim and its tests.
+- [x] `cargo fmt --all --check`
+- [x] `PYO3_PYTHON=/usr/local/bin/python3 cargo clippy --all-targets --all-features -- -D warnings`
+- [x] `PYO3_PYTHON=/usr/local/bin/python3 cargo test --all-features --workspace` (build `ui/dist` first)
+- [x] `git grep -n "cap_exhaustion" -- src` lists only the test shim and its tests.
 
 ## Progress
 
@@ -95,6 +95,8 @@ Rejected: keep `cap_exhaustion` and take both locks in one critical section. Tha
 - [x] (2026-10-05 KST) T003 Give the Gemini/Antigravity pool the cap exit
   Evidence: `cargo test --all-features --test antigravity_multi_account ...` -> 7 passed incl. capped_pool_returns_the_cap_429_and_uncapped_serves; with the guard disabled that test FAILED (panicked at tests/antigravity_multi_account.rs:606); gemini lib tests 20 passed
   Deferred: rotation-metric `capped` reason not asserted — no cheap metrics reader in the test harness
+- [x] (2026-10-05 KST) Review-stage commits (SHA: `73c4e17d`)
+  Note: ensemble review (gpt, ocr, cubic; greptile skipped, local CLI broken) found 0 Critical/Important. The two validated Minor findings (hot-path allocation plus extra representative pass, and a vacuous test assertion) were fixed in this commit, and the test was renamed `select_order_with_cap_reports_cap_exhaustion_only_while_capped`. The engines have not re-reviewed it.
 
 ## Decision Log
 
@@ -103,3 +105,23 @@ Rejected: keep `cap_exhaustion` and take both locks in one critical section. Tha
   Date/Author: 2026-10-05 / luna-implementer
 
 ## Surprises & Discoveries
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+- `select_order_inner` produces the hard-cap verdict in the same locked pass that builds the order, and returns it through new `select_order*_with_cap` siblings.
+- All five existing pool exits (Claude OAuth, Kimi, Codex HTTP, pooled stream, inbound Codex) read that verdict, plus a new Gemini/Antigravity exit. `cap_exhaustion` is a `#[cfg(test)]` shim, so the selectability rules exist in one place.
+- The race between selection and the cap check is closed. The Known Issue from the per-window cap track and TD-001 are resolved.
+
+### What Went Well
+- Computing the verdict on every selection kept every existing cap test unchanged.
+- The `_with_cap` siblings avoided touching more than ten `(order, reprobe)` destructurings.
+- The mutation check (guard disabled → FAILED) made the Antigravity test's value concrete.
+
+### What Could Improve
+- The first cut added a per-call allocation and an extra representative pass on the hot path, which contradicted the spec constraint. Review caught it, and it was fixed by folding into the existing rotation loop. Hot-path constraints should be checked against the diff before the executor reports done.
+- The SC-4 regression test first asserted a `Copy` value after mutating the pool, which cannot fail. "Same pass, no re-query" is a structural property (enforced by `cap_exhaustion` being test-only), not a runtime one.
+
+### Tech Debt Created
+- None. The `capped` rotation metric is not asserted for the Gemini exit because no test harness metrics reader exists. It shares `cap_exhausted` with the other adapters.
+
