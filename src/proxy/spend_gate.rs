@@ -128,7 +128,11 @@ pub(crate) fn enforce(
             tracing::warn!(principal, "spend state unavailable; forwarding the request");
             // Fail-open carries no rate-limit headers; a capped principal
             // still never sees the upstream's own.
-            Ok(binding.map_or(Plan::Unchanged, |_| Plan::Replace(Vec::new())))
+            Ok(if binding.is_some() {
+                Plan::Replace(Vec::new())
+            } else {
+                Plan::Unchanged
+            })
         }
     }
 }

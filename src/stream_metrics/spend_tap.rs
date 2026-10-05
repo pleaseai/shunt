@@ -303,11 +303,19 @@ impl StreamSpend {
     }
 
     /// What this stream costs: the reported usage, with the output raised to
-    /// the delivered-text floor when the final count is missing or was
-    /// synthesized after a cut.
+    /// the delivered-text floor when the final count is missing, was
+    /// synthesized after a cut, or is zero.
+    ///
+    /// A reported zero is not a count for a stream that delivered text — a
+    /// translating adapter that ends the turn on an emulated stop sequence
+    /// reports `output_tokens: 0` because the upstream's usage never arrived
+    /// — and when no text was delivered the floor is zero anyway, so a real
+    /// zero still bills zero. A nonzero final count on a stream not marked
+    /// truncated is billed as reported; a truncated stream, or one whose final
+    /// count never arrived, still bills at least the floor.
     fn billable(&self) -> RequestUsage {
         let mut usage = self.usage;
-        if !self.output_reported || self.truncated {
+        if !self.output_reported || self.truncated || usage.tokens.output_tokens == 0 {
             let floor = floor_tokens(self.delivered_chars);
             usage.tokens.output_tokens = usage.tokens.output_tokens.max(floor);
         }

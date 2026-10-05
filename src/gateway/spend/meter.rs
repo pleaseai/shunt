@@ -161,7 +161,7 @@ impl SpendMeter {
     pub fn mark_unavailable_until(&self, principal: &str, until: u64) {
         let mut flagged = self.unavailable.lock().expect("spend meter lock poisoned");
         let slot = flagged.entry(principal.to_string()).or_insert(None);
-        *slot = Some(slot.map_or(until, |current| current.max(until)));
+        *slot = Some(slot.unwrap_or(until).max(until));
     }
 
     /// Clears the flag, e.g. once the poisoned windows have elapsed.

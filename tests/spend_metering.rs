@@ -26,8 +26,8 @@ use reqwest::StatusCode;
 use serde_json::json;
 use shunt::{
     config::{
-        AdminConfig, ApiKeyHeader, AuthMap, AuthMode, Config, InboundAuthConfig, ModelConfig,
-        PricingConfig, PricingOverride, ProviderKind, SpendConfig, UpstreamAuth,
+        AdminConfig, ApiKeyHeader, AuthMap, AuthMode, Config, CountTokens, InboundAuthConfig,
+        ModelConfig, PricingConfig, PricingOverride, ProviderKind, SpendConfig, UpstreamAuth,
     },
     gateway::spend::{
         meter::{window, ANONYMOUS_PRINCIPAL, PERIODS},
@@ -505,6 +505,75 @@ async fn a_translated_adapter_stream_is_billed_on_its_upstream_model() {
 
     let expected = rates(TRANSLATED).cost_femto_usd(&translated_usage());
     assert_eq!(spent(&gateway, PRINCIPAL), [expected; 3]);
+}
+
+/// A Responses stream whose text hits the client's stop sequence after 17
+/// delivered chars. The adapter ends the turn there, before
+/// `response.completed`, so the usage it reports is synthesized with
+/// `output_tokens: 0` and no truncation marker.
+const STOPPED_RESPONSES_SSE: &str = concat!(
+    "event: response.created\n",
+    "data: {\"response\":{\"id\":\"resp_1\",\"usage\":{\"output_tokens\":0}}}\n\n",
+    "event: response.output_text.delta\n",
+    "data: {\"delta\":\"0123456789abcdefgSTOP and more\"}\n\n",
+    "event: response.output_text.done\n",
+    "data: {}\n\n",
+    "event: response.completed\n",
+    "data: {\"response\":{\"usage\":{\"input_tokens\":1000,\"output_tokens\":40}}}\n\n",
+    "data: [DONE]\n\n"
+);
+
+/// A stop sequence emulated on a translated route still bills the text the
+/// client was sent: the synthesized `output_tokens: 0` is not a real count,
+/// so the delivered-text floor applies, streamed and non-streamed alike.
+#[tokio::test]
+async fn a_translated_turn_cut_by_a_stop_sequence_bills_its_delivered_text() {
+    let _env = env().await;
+    for stream in [true, false] {
+        let anth = unused_upstream().await;
+        let resp = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(sse_reply(STOPPED_RESPONSES_SSE.to_string()))
+            .mount(&resp)
+            .await;
+        let mut config = config(&anth.uri(), &resp.uri(), true);
+        // No local prompt estimate, so the bill is the output floor alone.
+        config.providers.get_mut("resp").unwrap().count_tokens = CountTokens::Estimate;
+        let gateway = start(config).await;
+
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .post(format!("{}/v1/messages", gateway.base_url))
+            .header("content-type", "application/json")
+            .header("anthropic-version", "2023-06-01")
+            .header("x-shunt-token", TOKEN)
+            .body(
+                json!({"model": "translated-alias", "max_tokens": 16, "stream": stream,
+                       "stop_sequences": ["STOP"],
+                       "messages": [{"role": "user", "content": "hi"}]})
+                .to_string(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("0123456789abcdefg"), "{body}");
+        assert!(!body.contains("and more"), "{body}");
+
+        let floor = Usage {
+            output_tokens: 5,
+            ..Usage::default()
+        };
+        let expected = rates(TRANSLATED).cost_femto_usd(&floor);
+        assert_eq!(
+            spent(&gateway, PRINCIPAL),
+            [expected; 3],
+            "stream: {stream}\n{body}"
+        );
+    }
 }
 
 #[tokio::test]

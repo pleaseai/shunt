@@ -120,6 +120,25 @@ fn a_reported_final_count_is_billed_as_reported() {
     );
 }
 
+/// A reported zero beside delivered text is not a count (an emulated stop
+/// sequence reports one), so it bills the floor; a nonzero count below the
+/// floor is a real tokenization and is billed as reported.
+#[test]
+fn a_reported_zero_with_delivered_text_bills_the_floor_but_a_low_count_wins() {
+    let zero = stream_spend(&[start(100, 0), text("0123456789abcdefg"), delta(0)]);
+    assert_eq!(
+        zero.billable().tokens.output_tokens,
+        5,
+        "17 chars floor to 5"
+    );
+
+    let low = stream_spend(&[start(100, 0), text("0123456789abcdefg"), delta(2)]);
+    assert_eq!(low.billable().tokens.output_tokens, 2);
+
+    let silent = stream_spend(&[start(100, 0), delta(0)]);
+    assert_eq!(silent.billable().tokens.output_tokens, 0, "a real zero");
+}
+
 #[test]
 fn a_cut_stream_bills_its_delivered_text_at_four_chars_a_token() {
     // 8 chars (9 bytes, because of the two-byte `é`) = 2 tokens; counting bytes
@@ -342,7 +361,7 @@ async fn an_unreadable_or_cut_json_body_bills_a_floor_not_zero() {
 
 #[tokio::test]
 async fn a_truncated_json_message_bills_the_delivered_text_floor() {
-    const CUT: &[u8] = br#"{"type":"message","content":[{"type":"text","text":"abcdefghijklmnopqrst"}],"usage":{"input_tokens":10,"output_tokens":0}}"#;
+    const CUT: &[u8] = br#"{"type":"message","content":[{"type":"text","text":"abcdefghijklmnopqrst"}],"usage":{"input_tokens":10,"output_tokens":1}}"#;
     let tap = tap();
     let body = JsonSpendBody::new(json_body(CUT), tap.clone(), StatusCode::OK).truncated(true);
     to_bytes(Body::new(body), usize::MAX).await.unwrap();
@@ -363,9 +382,10 @@ async fn a_truncated_json_message_bills_the_delivered_text_floor() {
         spent(&tap),
         priced(Usage {
             input_tokens: 10,
+            output_tokens: 1,
             ..Usage::default()
         }),
-        "an unmarked message bills its parsed usage unchanged"
+        "an unmarked message bills its reported nonzero count unchanged"
     );
 }
 
@@ -398,6 +418,44 @@ async fn a_json_usage_without_an_output_count_bills_the_content_floor() {
         }),
         "an empty usage block is not free"
     );
+}
+
+/// The JSON twin of the stream rule: a reported zero beside content bills
+/// the content floor, a reported zero with no content to count stays zero
+/// (never the byte floor), and a nonzero count on an untruncated message is
+/// billed as reported.
+#[test]
+fn a_json_reported_zero_bills_the_content_floor_but_a_low_count_wins() {
+    let output = |body: &[u8]| {
+        super::json_usage(Some(body), body.len() as u64, false)
+            .tokens
+            .output_tokens
+    };
+    let cases: [(&[u8], u64, &str); 4] = [
+        (
+            br#"{"type":"message","content":[{"type":"text","text":"0123456789abcdefg"}],"usage":{"input_tokens":10,"output_tokens":0}}"#,
+            5,
+            "17 chars floor to 5",
+        ),
+        (
+            br#"{"type":"message","content":[],"usage":{"input_tokens":10,"output_tokens":0}}"#,
+            0,
+            "no content: a real zero",
+        ),
+        (
+            br#"{"type":"message","usage":{"input_tokens":10,"output_tokens":0}}"#,
+            0,
+            "no content key: a zero, not the byte floor",
+        ),
+        (
+            br#"{"type":"message","content":[{"type":"text","text":"0123456789abcdefg"}],"usage":{"input_tokens":10,"output_tokens":2}}"#,
+            2,
+            "a nonzero count is billed as reported",
+        ),
+    ];
+    for (body, expected, case) in cases {
+        assert_eq!(output(body), expected, "{case}");
+    }
 }
 
 #[tokio::test]

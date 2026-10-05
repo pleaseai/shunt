@@ -104,20 +104,38 @@ impl JsonSpend {
 
 /// A whole JSON message's billable usage: its `usage` block when `kept`
 /// holds a body that parses with one, otherwise `ceil(bytes / 4)` output
-/// tokens. A `truncated` message additionally raises the output to the floor
-/// of its delivered content, since its output count was synthesized.
+/// tokens. A `truncated` message, or one reporting `output_tokens: 0`,
+/// additionally raises the output to the floor of its delivered content: the
+/// first count was synthesized, and the second is what a translating adapter
+/// reports when an emulated stop sequence ended the turn before the
+/// upstream's usage arrived. A nonzero count on an untruncated message is
+/// billed as reported.
+///
+/// When the content is unreadable, the floor falls back to the byte count for
+/// a truncated message or a usage block without an output count, but to zero
+/// for a clean message reporting zero — with no content to count, a reported
+/// zero stays zero rather than billing the whole body.
 pub(super) fn json_usage(kept: Option<&[u8]>, bytes: u64, truncated: bool) -> RequestUsage {
     let parsed = kept
         .and_then(|kept| serde_json::from_slice::<UsageHolder>(kept).ok())
         .and_then(|holder| holder.usage);
+    let reported_zero = parsed
+        .as_ref()
+        .is_some_and(|fields| fields.output_tokens == Some(0));
+    let missing_output = parsed
+        .as_ref()
+        .is_some_and(|fields| fields.output_tokens.is_none());
+    let raise_to_floor = truncated || reported_zero;
     // The delivered-content floor, parsed at most once: a usage block without
-    // an output count and a truncated message both want it.
-    let wants_content_floor = truncated
-        || parsed
-            .as_ref()
-            .is_some_and(|fields| fields.output_tokens.is_none());
-    let content_floor =
-        wants_content_floor.then(|| floor_tokens(kept.and_then(content_chars).unwrap_or(bytes)));
+    // an output count, a reported zero, and a truncated message all want it.
+    let wants_content_floor = raise_to_floor || missing_output;
+    let unreadable_content = if truncated || missing_output {
+        bytes
+    } else {
+        0
+    };
+    let content_floor = wants_content_floor
+        .then(|| floor_tokens(kept.and_then(content_chars).unwrap_or(unreadable_content)));
     let mut usage = RequestUsage::default();
     match parsed {
         Some(fields) => {
@@ -130,7 +148,7 @@ pub(super) fn json_usage(kept: Option<&[u8]>, bytes: u64, truncated: bool) -> Re
         }
         None => usage.tokens.output_tokens = floor_tokens(bytes),
     }
-    if let Some(floor) = content_floor.filter(|_| truncated) {
+    if let Some(floor) = content_floor.filter(|_| raise_to_floor) {
         usage.tokens.output_tokens = usage.tokens.output_tokens.max(floor);
     }
     usage
