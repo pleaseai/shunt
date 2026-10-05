@@ -83,7 +83,8 @@ impl SpendConfig {
 
 /// `[server.spend.enforcement]` — how `/v1/messages` admission behaves when
 /// the spend meter cannot be trusted for a principal (`false` forwards the
-/// request with a warning, `true` refuses it with `429`).
+/// request with a warning, `true` refuses it with `429` when the principal has
+/// a cap; a principal with no cap is forwarded either way).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SpendEnforcementConfig {
     #[serde(default)]

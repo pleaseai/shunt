@@ -130,7 +130,7 @@ proxy::post Ok ─► (capped principal) replace anthropic-ratelimit-unified-* �
 - [x] T005 Persist counters across restarts with background flush and retention pruning (file: src/gateway/spend/meter/persist.rs) (depends on T001) [FR-11, AC-010, AC-019]
   Validation: After a restart, enforcement uses pre-restart spend. Windows older than `spend_retention_months` are absent from the written file. A malformed counter record makes only its principal unavailable. `state_path = ""` keeps counters in memory. Counter flushes leave the stage-1 caps file byte-unchanged.
   Method: `cargo test --all-features -- gateway::spend` plus a restart test on a temp `state_path`
-  STOP: shutdown offers no way to await a final flush within `shutdown_timeout_seconds`.
+  STOP: shutdown offers no way to await a final flush within `shutdown_timeout_seconds`. Resolved: `serve` in `src/main.rs` awaits `persist::flush_final` after the listener drains, bounded by its own `FINAL_SPEND_FLUSH_BOUND` (5 s); see `docs/bounded-shutdown.md`.
 - [x] T006 Report the principal's own cap in `anthropic-ratelimit-unified-*` headers (file: src/proxy.rs) (depends on T002) [FR-13, AC-016, AC-016b, SC-2]
   Validation: A 2xx response to a capped principal carries unified headers for that principal's most-consumed cap. No upstream unified value reaches a capped principal on any 2xx path: relay, committed stream, or gated replay. Responses to uncapped principals are unchanged.
   Method: integration tests over the three 2xx paths

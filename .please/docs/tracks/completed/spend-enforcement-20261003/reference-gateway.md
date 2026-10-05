@@ -109,7 +109,7 @@ How the rows are selected:
 - **Default order:** principal ascending. The page token is a cursor on the last principal.
 - **`sort=spend_desc`:** current-window spend for the single period, descending, with ties broken by principal ascending. The cursor holds `(principal, cents)`.
 - **`q`:** a case-insensitive substring match over the principal id and the last-seen email and display name.
-- **Page token:** base64url JSON `{"p": principal}` or `{"p", "c": cents, "s": true}`. It is opaque, so ours may differ.
+- **Page token:** base64url JSON `{"p": "alice"}` or `{"p": "alice", "c": 123, "s": true}` (`c` is the cursor's spend in cents). It is opaque, so ours may differ.
 - **Fetching:** fetch `limit + 1` rows; `next_page` is set only when more remain.
 
 Out of scope here: the gateway also answers `GET /api/oauth/usage` (the

@@ -222,11 +222,11 @@ async fn an_opaque_principal_has_no_email_address() {
             )
         })
         .collect();
-    for (user_id, email) in emails {
+    for (row, (user_id, email)) in emails.into_iter().enumerate() {
         if user_id == "a@b.co" {
             assert_eq!(email, json!("a@b.co"));
         } else {
-            assert_eq!(email, Value::Null, "{user_id}");
+            assert_eq!(email, Value::Null, "row {row}");
         }
     }
     assert_eq!(body["data"].as_array().unwrap().len(), opaque.len());

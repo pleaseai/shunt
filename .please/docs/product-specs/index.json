@@ -45,7 +45,7 @@
         {
           "id": "REQ-007",
           "kind": "functional",
-          "statement": "meter the cost of every upstream call made on a principal's behalf — the served response plus any routing-judge, classifier, advisor, or escalation call — from the upstream-reported token usage (input, output, cache read, cache write) priced through the pricing table, and add it to the principal's daily, weekly, and monthly counters"
+          "statement": "meter the cost of every upstream call made on a principal's behalf — the served response plus any routing-judge, classifier, advisor, or escalation call — from the upstream-reported token usage (input, output, cache read, cache write) and server-side web-search requests, priced through the pricing table, and add it to the principal's daily, weekly, and monthly counters"
         },
         {
           "id": "REQ-008",
@@ -75,7 +75,7 @@
         {
           "id": "REQ-013",
           "kind": "functional",
-          "statement": "add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses for a principal who has a cap, replacing any upstream rate-limit headers of that family"
+          "statement": "add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status"
         },
         {
           "id": "REQ-014",
@@ -100,7 +100,7 @@
         {
           "id": "REQ-018",
           "kind": "non-functional",
-          "statement": "preserve streaming semantics — metering observes usage as the stream passes and never buffers or alters bytes sent to the client"
+          "statement": "preserve streaming semantics — metering observes usage as a directly relayed stream passes and never buffers or alters bytes sent to the client; a gated capture, which the router retains before serving, is metered from its retained bytes"
         },
         {
           "id": "REQ-019",

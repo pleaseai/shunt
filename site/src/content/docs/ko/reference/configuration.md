@@ -143,7 +143,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 
 ### `[server.spend.pricing]` (선택)
 
-요청의 비용을 정의합니다. 테이블을 생략하면 내장 정가에 multiplier 1이 적용됩니다. meter는 계측 대상인 각 `/v1/messages` 응답을 이 테이블로, 응답을 처리한 업스트림 모델 기준으로 계산합니다. 가격을 알 수 없는 모델은 백만 토큰당 입력 / 출력 / 캐시 읽기 / 캐시 쓰기 `$5 / $25 / $0.50 / $6.25`(여기에 `multiplier` 적용)로 계산하며 모델 id마다 경고를 한 번 기록합니다.
+요청의 비용을 정의합니다. 테이블을 생략하면 내장 정가에 multiplier 1이 적용됩니다. meter는 계측 대상인 각 `/v1/messages` 응답을 이 테이블로, 응답을 처리한 업스트림 모델 기준으로 계산합니다. 가격을 알 수 없는 모델은 백만 토큰당 입력 / 출력 / 캐시 읽기 / 캐시 쓰기 `$5 / $25 / $0.50 / $6.25`(여기에 `multiplier` 적용)로 계산하며, 처음 256개의 서로 다른 모델 id까지는 id마다 경고를 한 번 기록하고 그 이후에는 더 이상 보고하지 않는다는 경고를 한 번만 기록합니다.
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
@@ -184,7 +184,7 @@ rate는 upstream 단위로 가장 구체적인 것부터 매칭됩니다. upstre
 | :-- | :-- | :-- |
 | `fail_closed_on_error` | `false` | 주체의 meter를 신뢰할 수 없을 때(복원에 실패한 카운터 레코드, 해당 window가 끝날 때까지): `false`는 요청을 전달하고 경고를 기록, `true`는 cap이 있는 주체에 대해 `429` `spend limit unavailable`로 거부(cap이 없는 주체는 전달) |
 
-제한은 `POST /v1/messages`에 적용됩니다(`count_tokens`는 제외). 주체(principal)는 정적 `[server.auth]` 토큰 이름, 검증된 JWT 이메일, 또는 gateway 로그인 이메일이며 `user` 한도의 `user_id`와 그대로 일치시킵니다. 자격 증명을 주입하지만 신원이 없는 요청은 `shunt:anonymous`를 공유하고, passthrough 또는 `type = "noop"` 라우트만으로 이루어진 체인은 제한도 계측도 하지 않습니다. UTC 기간(일, 월요일 시작 주, 월)별 상한은 해당 주체의 `user` 행, 없으면 `organization` 행(공유 풀이 아니라 사용자별 기본값), 그것도 없으면 무제한입니다. `amount: null`인 `user` 행은 명시적 무제한입니다. 검사는 예약 없는 사전 검사이므로 진행 중인 요청은 상한을 넘을 수 있습니다. 상한에 도달한 주체는 `retry-after`와 `x-should-retry: false`가 붙은 `429 billing_error`(`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`)를 받고, 상한이 있는 주체의 응답에는 업스트림 헤더 대신 해당 주체 자신의 `anthropic-ratelimit-unified-*` 헤더가 붙습니다. 인바운드 Codex 엔드포인트(`[server.codex_endpoint]`)는 아직 제한도 계측도 하지 않습니다([#733](https://github.com/pleaseai/shunt/issues/733)). `/audit`, 감사·아이덴티티 보존 sweep, group scope는 아직 구현하지 않았습니다. 전체 동작은 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(영문)를 참고하세요.
+제한은 `POST /v1/messages`에 적용됩니다(`count_tokens`는 제외). 주체(principal)는 정적 `[server.auth]` 토큰 이름, 검증된 JWT 이메일, 또는 gateway 로그인 이메일이며 `user` 한도의 `user_id`와 그대로 일치시킵니다. 자격 증명을 주입하지만 신원이 없는 요청은 `shunt:anonymous`를 공유하고, passthrough 또는 `type = "noop"` 라우트만으로 이루어진 체인은 제한도 계측도 하지 않습니다. UTC 기간(일, 월요일 시작 주, 월)별 상한은 해당 주체의 `user` 행, 없으면 `organization` 행(공유 풀이 아니라 사용자별 기본값), 그것도 없으면 무제한입니다. `amount: null`인 `user` 행은 명시적 무제한입니다. 검사는 예약 없는 사전 검사이므로 진행 중인 요청은 상한을 넘을 수 있습니다. 상한에 도달한 주체는 `retry-after`와 `x-should-retry: false`가 붙은 `429 billing_error`(`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`)를 받고, 상한이 있는 주체의 응답에서는 모든 상태 코드에서 업스트림 `anthropic-ratelimit-*` 헤더가 제거되고, 해당 주체 자신의 `anthropic-ratelimit-unified-*` 헤더는 `2xx`와 두 가지 지출 한도 거부 응답, 즉 상한 초과 `429`와 `anthropic-ratelimit-unified-overage-disabled-reason: fetch_error`가 붙는 fail-closed `429 spend limit unavailable`에만 붙습니다(그 밖의 오류나 fail-open 전달에는 붙지 않음). 인바운드 Codex 엔드포인트(`[server.codex_endpoint]`)는 아직 제한도 계측도 하지 않습니다([#733](https://github.com/pleaseai/shunt/issues/733)). `/audit`, 감사·아이덴티티 보존 sweep, group scope는 아직 구현하지 않았습니다. 전체 동작은 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(영문)를 참고하세요.
 
 ## `[server.gateway]` (선택)
 

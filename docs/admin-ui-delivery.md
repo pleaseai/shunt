@@ -62,7 +62,7 @@ baseline for any new route.
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |
 | `[server.codex_endpoint]` | `POST` | `/backend-api/codex/responses`, `/responses`, `/v1/responses` |
 | `[server.codex_endpoint]` | `POST` | `/backend-api/codex/analytics-events/events`, `/codex/analytics-events/events` |
-| `[server.spend]` | `GET`, `POST` | `/v1/organizations/spend_limits` — the only shunt-owned routes inside the otherwise reserved `/v1/organizations/*` namespace ([below](#reserved-namespace--v1organizations)) |
+| `[server.spend]` | `GET`, `POST` | `/v1/organizations/spend_limits` — with the two `spend_limits` paths below, the only shunt-owned routes inside the otherwise reserved `/v1/organizations/*` namespace ([below](#reserved-namespace--v1organizations)) |
 | `[server.spend]` | `GET`, `DELETE` | `/v1/organizations/spend_limits/{id}` |
 | `[server.spend]` | `GET` | `/v1/organizations/spend_limits/effective` — the effective limits and period-to-date spend |
 | `[server.usage]` | `GET` | `/usage` |
