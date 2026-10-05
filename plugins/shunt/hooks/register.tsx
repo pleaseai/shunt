@@ -188,11 +188,15 @@ async function readUsage($: EngineInterface): Promise<Reading> {
  * band.
  */
 async function refresh($: EngineInterface) {
-  const reading = await readUsage($)
-  const at = await $.clock.now()
+  try {
+    const reading = await readUsage($)
+    const at = await $.clock.now()
 
-  await update($, snapshot, () => snapshotOf(reading))
-  await update($, now, () => at)
+    await update($, snapshot, () => snapshotOf(reading))
+    await update($, now, () => at)
+  } catch {
+    // A timer's callback has no caller to report to: the next tick retries.
+  }
 }
 
 /**
@@ -237,6 +241,15 @@ function registerCommand(on: On) {
  * from. Whatever another plugin draws in the band stays on its left.
  */
 function registerBand(on: On) {
+  registerPolling(on)
+  registerDrawing(on)
+}
+
+/**
+ * Keeps the band's figures current: the pool at session start, every minute
+ * and after each turn, and the session's own rate limits as they are measured.
+ */
+function registerPolling(on: On) {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
 
@@ -271,7 +284,13 @@ function registerBand(on: On) {
 
     return result
   })
+}
 
+/**
+ * Draws the band to the right of whatever is drawn beneath it, or leaves the
+ * row alone when there is nothing to show or a survey holds it.
+ */
+function registerDrawing(on: On) {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const inner = await next(e)
 
