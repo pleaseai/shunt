@@ -158,6 +158,22 @@ fn aggregate_resets_at_includes_when_a_cross_window_cap_clears() {
 }
 
 #[test]
+fn aggregate_resets_at_skips_a_reset_that_leaves_the_account_excluded() {
+    // A 7d-capped account stays excluded from every request when its 5h
+    // window resets at 100, so that reset releases nothing: the 5h aggregate
+    // next changes when the 7d cap clears at 900.
+    let mut week_capped = snapshot("7d-capped", Some(0.10), Some(100), Some(0.95));
+    week_capped.max_utilization_7d = Some(0.9);
+    week_capped.reset_7d = Some(900);
+    week_capped.capped = true;
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[week_capped])])).unwrap();
+    let windows = &body["pool"]["windows"];
+    assert_eq!(windows["5h"]["remaining"], json!(0.0));
+    assert_eq!(windows["5h"]["resets_at"], json!(900));
+    assert_eq!(windows["7d"]["resets_at"], json!(900));
+}
+
+#[test]
 fn window_representative_is_the_alias_selection_prefers() {
     // Aliases of one identity can configure different caps, so the row the
     // mean reads must be selection's representative (`collapse_representatives`:
