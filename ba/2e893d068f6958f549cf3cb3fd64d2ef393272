@@ -1,0 +1,44 @@
+site/src/content/docs/ja/reference/endpoints.md
+  s_93c09460a30bc1::t_477a9960f05809 131
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_93c09460a30bc1::t_477a9960f05809 124
+src/usage/tests.rs
+  s_93c09460a30bc1::t_c99058b945a4eb 27-28
+  s_93c09460a30bc1::t_dbbe7f10e63e51 143-146,154-155
+docs/m12-client-usage-endpoint.md
+  s_93c09460a30bc1::t_477a9960f05809 73-75
+plugins/shunt/commands/usage.md
+  s_93c09460a30bc1::t_477a9960f05809 28
+src/usage.rs
+  s_93c09460a30bc1::t_477a9960f05809 86-87
+  s_93c09460a30bc1::t_df2d3456be3336 260-262,264-266
+src/oauth_usage/tests.rs
+  s_93c09460a30bc1::t_c99058b945a4eb 28-29
+site/src/content/docs/ko/reference/endpoints.md
+  s_93c09460a30bc1::t_477a9960f05809 129
+site/src/content/docs/reference/endpoints.md
+  s_93c09460a30bc1::t_477a9960f05809 165
+src/accounts.rs
+  s_93c09460a30bc1::t_c99058b945a4eb 462-470,562-563,2395-2398
+  s_93c09460a30bc1::t_13ecc523b832c8 9480-9497,9507-9518
+  s_93c09460a30bc1::t_421cd65010df57 9498-9506
+  s_93c09460a30bc1::t_95dd271165d831 9479
+src/auth/claude/usage.rs
+  s_93c09460a30bc1::t_c99058b945a4eb 365-366
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ba2e893d068f6958f549cf3cb3fd64d2ef393272",
+  "prompts": {},
+  "sessions": {
+    "s_93c09460a30bc1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "22b74a61-960e-44fa-9aaf-0aa45067fe5f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
