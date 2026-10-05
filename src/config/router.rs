@@ -247,6 +247,47 @@ impl RouterConfig {
         ) || self.stage_classifier().is_some()
     }
 
+    /// Every id whose resolved chain an upstream call made for this router's
+    /// turn can travel — what pricing reachability
+    /// (`Config::pricing_model_is_requestable`) resolves for a router-backed
+    /// id.
+    ///
+    /// Judges are included because every call is stamped with the router's id
+    /// (`routing::resolve_target_chain`), the judge call `routing::serve`
+    /// dispatches as much as the answer: a row naming the router id prices a
+    /// judge's upstream exactly as it prices a target's.
+    ///
+    /// Exhaustive on purpose, like the match in `routing::resolve_chain`: a new
+    /// router type fails to compile here until its author confirms where its
+    /// calls land, instead of silently inheriting the answer below.
+    pub(crate) fn priced_call_ids(&self) -> Vec<&str> {
+        match self {
+            // Synthesizes its answer and calls no upstream, so no row on any
+            // upstream ever prices it.
+            Self::Noop {} => Vec::new(),
+            // Only positive-weight arms: both the weighted draw and its
+            // first-target fallback walk `enabled()`, so a target parked at
+            // weight `0` is never served. A random router has no judge.
+            Self::Random(random) => random.enabled().map(|(_, target)| target).collect(),
+            // A stage or auto tier is one of the two targets, the picker's
+            // default included, and a stage classifier's verdict only picks
+            // between them. `prefill_router` chooses from `targets`, falling
+            // back to its first entry.
+            //
+            // The driven types hand libsy only ids these accessors enumerate
+            // (`routing::driven::build`): every verdict, fail-open default, and
+            // retained target is a target, and every model call is a target or
+            // a judge — the advisor's review and the REDO dispatch it may
+            // trigger included.
+            Self::StageRouter(_)
+            | Self::Auto(_)
+            | Self::PrefillRouter(_)
+            | Self::LlmClassifier(_)
+            | Self::Composite(_)
+            | Self::Advisor(_) => self.targets().into_iter().chain(self.judges()).collect(),
+        }
+    }
+
     /// Where a driven router sends a turn it has not decided yet — the first
     /// pass of [`crate::routing::resolve_chain`], a body-less surface, and the
     /// answer when the judge produces no usable verdict.

@@ -632,3 +632,54 @@ async fn rotation_counts_one_attempt_against_each_account() {
     assert_eq!(totals(1), (1, 1, 0));
     upstream.verify().await;
 }
+
+/// Caps apply to Kimi whenever its upstream reports utilization: once the
+/// account is observed past its 5h cap, an emptied pool returns the gateway
+/// cap 429 (with `retry-after`) rather than the generic exhaustion error.
+#[tokio::test]
+async fn capped_kimi_pool_returns_the_gateway_cap_429() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token = ["fake-kimi-", "capped-a"].concat();
+    vars.set("SHUNT_TEST_KIMI_CAPPED_A", &token);
+    let upstream = MockServer::start().await;
+    let reset = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("anthropic-ratelimit-unified-5h-utilization", "0.9")
+                .insert_header("anthropic-ratelimit-unified-5h-reset", reset.to_string())
+                .set_body_string(r#"{"type":"message"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut capped = account("account-a", "SHUNT_TEST_KIMI_CAPPED_A");
+    capped.max_utilization_5h = Some(0.5);
+    let gateway = start_gateway_with(test_config(&upstream.uri(), vec![capped])).await;
+
+    // First request is served and teaches the pool the account is at 0.9.
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().contains_key("retry-after"));
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "rate_limit_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("max_utilization"),
+        "{body}"
+    );
+    upstream.verify().await;
+}

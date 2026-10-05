@@ -191,8 +191,8 @@ OpenAI の Thibault Sottiaux は、他のコーディングハーネスを通じ
 
 | 機能 | 有効化 | ドキュメント |
 | :-- | :-- | :-- |
-| Anthropic マルチアカウントプーリング — スティッキーセッション、クォータを考慮したローテーション、予測的回避 | アカウント 2 つ以上の `auth = "claude_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.sh/ja/guides/anthropic-multi-account/) |
-| Codex マルチアカウントプーリング — `x-codex-*` ウィンドウの追跡、スロースタートのランプ、再プローブ | アカウント 2 つ以上の `auth = "chatgpt_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.sh/ja/guides/codex-multi-account/) |
+| Anthropic マルチアカウントプーリング — スティッキーセッション、クォータを考慮したローテーション、予測的回避、プールがキャップで尽きたときにアカウントを除外して次のアップストリームへフェイルオーバーするウィンドウ別ハードキャップ（`max_utilization*`） | アカウント 2 つ以上の `auth = "claude_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.sh/ja/guides/anthropic-multi-account/) |
+| Codex マルチアカウントプーリング — `x-codex-*` ウィンドウの追跡、スロースタートのランプ、再プローブ、プールがキャップで尽きたときにアカウントを除外して次のアップストリームへフェイルオーバーするウィンドウ別ハードキャップ（`max_utilization*`） | アカウント 2 つ以上の `auth = "chatgpt_oauth"`（`[server.pool]` は任意のチューニング） | [ガイド](https://shunt.sh/ja/guides/codex-multi-account/) |
 | 学習済みプリフィルルーティング (`type = "prefill_router"`) | コンパイル時のオプトイン — `cargo build --release --features prefill-router`（**既定で無効**。リリースバイナリと Homebrew formula は `--features ui` でビルドされるため含まれません）。加えて `type = "prefill_router"` を指定した `[models.router]` テーブル、ディスク上のルーターチェックポイント、`torch` と `transformers` が入った Python 環境が必要です | [リファレンス](https://shunt.sh/ja/reference/configuration/#type--prefill_router) |
 | 受信 Codex エンドポイント — **Codex CLI** 自体を HTTP/SSE または WebSocket で shunt に向けて同じプールに載せ、モデル単位のルーティングも選択可能 | `[server.codex_endpoint]` | [ガイド](https://shunt.sh/ja/guides/inbound-codex-endpoint/) |
 | LLM ジャッジによるルーティング (`type = "llm_classifier"`、`type = "composite"`) — ジャッジモデルが `classify_trigger` に従ってターンごとに宛先を選びます。その応答がクライアントに渡ることはありません | `type = "llm_classifier"`（`mode = "capability"` または `"custom"`）か `type = "composite"` を指定した `[models.router]` テーブル、あるいは classifier 形式の `[models.subagents]` オーバーレイ | [リファレンス](https://shunt.sh/ja/reference/configuration/#type--llm_classifier) |

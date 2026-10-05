@@ -1,0 +1,13 @@
+{
+  "id": "per-window-max-utilization-20261004",
+  "title": "Per-window hard utilization caps for pool accounts",
+  "type": "feature",
+  "status": "completed",
+  "origin": ".please/docs/brainstorms/2026-10-04-per-window-max-utilization-requirements.md",
+  "issue": null,
+  "code_branch": "amondnet/limit",
+  "created_at": "2026-10-04",
+  "updated_at": "2026-10-04T15:29:14Z",
+  "pr": "#738",
+  "code_pr": "#738"
+}

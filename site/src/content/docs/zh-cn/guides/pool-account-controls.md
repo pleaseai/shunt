@@ -32,6 +32,19 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool/anthropic/accounts/$ACCOUNT_REF" \
 
 设置 `"paused": false` 即可恢复。完整端点参考见 [`PATCH /admin/api/pool/{provider}/accounts/{account_ref}`](/zh-cn/reference/endpoints/)。
 
+## 达到上限不同于暂停或禁用
+
+硬使用率上限(`max_utilization*`,参见 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/#硬上限max_utilization))同样会把账户移出选择,但它是自动且有条件的。
+
+| | `disabled`(配置) | `paused`(运行时) | 达到上限(`max_utilization*`) |
+| :-- | :-- | :-- | :-- |
+| 设置方式 | `shunt.toml`,需要重载 | 管理仪表盘或 `PATCH /admin/api/pool/{provider}/accounts/{account_ref}` | 观测到的使用率达到所配置的上限 |
+| 何时结束 | 直到配置改变为止 | 运维人员恢复该账户时 | 使用率降到上限以下时自动结束(窗口重置或过期、更低的观测值,或重载时调高上限) |
+| 仪表盘显示 | `disabled` | `paused` | "Capped",仅 Fable 上限则为 "Capped (Fable)";已配置的上限值标注在各使用量条和池表格中 |
+
+达到上限的账户仍然已配置且保持登录,只是暂不接收新的路由。当没有可用账户且至少有一个已启用(非 `disabled`)且未暂停的账户达到上限时,`GET /usage` 报告池状态 `capped`。当上限导致没有可选账户时,请求通常会收到网关的 HTTP `429`(或故障转移到下一个上游)。有一个例外:对于已提交到 Codex/ChatGPT 池(已发送 HTTP `200`)的流式请求,若在请求进行中因上限导致池变空,且后面的上游也无法处理,客户端收到的是流内的终止 SSE `error` 事件,而不是 HTTP `429`。参见 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选) 中的硬上限说明。
+
+
 ## 按最快重置排序
 
 `[server.pool] sort_by_reset`(默认 `false`)会改变 *available* 层的排序方式:不再按预计的燃烧速率余量最大排序,而是按已知的最早配额重置时间升序排序(最先恢复的账户被最先尝试;没有重置信号的账户排在最后)。这样做的思路是先耗尽最快恢复的账户,把重置更晚的账户留作缓冲。

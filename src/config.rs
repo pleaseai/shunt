@@ -232,6 +232,19 @@ pub struct PoolConfig {
     pub default_threshold_7d: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_threshold_fable: Option<f64>,
+    /// Hard utilization cap common to all windows: an account at or above it
+    /// is EXCLUDED from selection for requests the window governs (unlike the
+    /// soft `default_threshold*`, which only reorders). Resolution: account
+    /// window key -> account `max_utilization` -> `default_max_utilization_<X>`
+    /// -> `default_max_utilization` -> no cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization_5h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization_7d: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_utilization_fable: Option<f64>,
     /// Avoid an account projected to exhaust a soft threshold before reset.
     #[serde(default)]
     pub burn_rate_avoidance: bool,
@@ -293,6 +306,10 @@ impl Default for PoolConfig {
             default_threshold_5h: None,
             default_threshold_7d: None,
             default_threshold_fable: None,
+            default_max_utilization: None,
+            default_max_utilization_5h: None,
+            default_max_utilization_7d: None,
+            default_max_utilization_fable: None,
             burn_rate_avoidance: false,
             sort_by_reset: false,
             usage_refresh_seconds: None,
@@ -2002,6 +2019,18 @@ pub struct AccountConfig {
     pub threshold_7d: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold_fable: Option<f64>,
+    /// Hard utilization cap for every window: the account is EXCLUDED from
+    /// selection for requests that window governs once at or above it (unlike
+    /// the soft `threshold*`, which only reorders). Overrides the pool's
+    /// `default_max_utilization*`; the per-window keys beat this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization_5h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization_7d: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_utilization_fable: Option<f64>,
     /// Selection priority among available accounts: lower is preferred.
     /// Applies to Claude, Codex, and Kimi pools alike.
     #[serde(default = "default_account_priority")]
@@ -2036,6 +2065,10 @@ impl Default for AccountConfig {
             threshold_5h: None,
             threshold_7d: None,
             threshold_fable: None,
+            max_utilization: None,
+            max_utilization_5h: None,
+            max_utilization_7d: None,
+            max_utilization_fable: None,
             priority: default_account_priority(),
             disabled: false,
             store_entry: false,
@@ -4060,11 +4093,10 @@ impl Config {
     /// mapped only as the `codex` upstream model does not make an `anthropic`
     /// row usable. A client model *id* is scoped the same way — routing returns
     /// as soon as a `[[models]]` entry claims the id, and only for the upstreams
-    /// that entry names — except under a `[models.router]`, whose target is
-    /// resolved through the whole chain again and can land anywhere. A `noop`
-    /// router is the exception to the exception: it answers without calling
-    /// any upstream. A `[models.subagents]` overlay adds the upstreams its
-    /// named targets resolve to.
+    /// that entry names. A `[models.router]` entry reaches the upstreams its
+    /// targets and judges resolve to through the whole chain again, so a `noop`
+    /// router, which names neither, reaches none. A `[models.subagents]`
+    /// overlay adds the upstreams its named targets and judges resolve to.
     ///
     /// `routing::resolve_model_chain` ends by routing anything no `[[routes]]`
     /// or `[[route_prefixes]]` entry claimed to `server.default_provider` as a
@@ -4109,23 +4141,26 @@ impl Config {
                 // resolves that target through the chain again under the
                 // parent's id. Validation keeps every target one hop deep (no
                 // router or overlay of its own), so resolving each target here
-                // names exactly the upstreams a child turn can land on. The
-                // parent's own turns still take the arms below.
+                // names exactly the upstreams a child turn can land on. A
+                // classifier overlay's judge call is stamped with the parent's
+                // id too, so its upstreams count as well. The parent's own
+                // turns still take the arms below.
                 && (entry.subagents.as_ref().is_some_and(|overlay| {
-                    overlay.named_targets().iter().any(|(_, target)| {
+                    let targets = overlay.named_targets();
+                    let judges = overlay.named_judges();
+                    targets.iter().chain(&judges).any(|(_, target)| {
                         crate::routing::resolve_model_chain(self, target)
                             .iter()
                             .any(|route| route.provider == row.upstream)
                     })
                 }) || match (&entry.router, &entry.upstream_model) {
-                    // A `noop` router synthesizes its answer and calls no
-                    // upstream, so no row on any upstream ever prices it.
-                    (Some(RouterConfig::Noop {}), _) => false,
-                    // Every other router resolves its chosen target through the
-                    // whole chain again, so it can land on any upstream.
-                    // Claiming reachability is the safe answer: a warning here
-                    // would be a false one.
-                    (Some(_), _) => true,
+                    // A router re-resolves each id it calls through the chain
+                    // under its own id, one hop deep like an overlay target.
+                    (Some(router), _) => router.priced_call_ids().into_iter().any(|target| {
+                        crate::routing::resolve_model_chain(self, target)
+                            .iter()
+                            .any(|route| route.provider == row.upstream)
+                    }),
                     // An `upstream_model` map routes to the providers it names
                     // and nowhere else.
                     (None, Some(upstreams)) if !upstreams.is_empty() => {
@@ -4312,6 +4347,19 @@ impl Config {
                 ("default_threshold_5h", pool.default_threshold_5h),
                 ("default_threshold_7d", pool.default_threshold_7d),
                 ("default_threshold_fable", pool.default_threshold_fable),
+                ("default_max_utilization", pool.default_max_utilization),
+                (
+                    "default_max_utilization_5h",
+                    pool.default_max_utilization_5h,
+                ),
+                (
+                    "default_max_utilization_7d",
+                    pool.default_max_utilization_7d,
+                ),
+                (
+                    "default_max_utilization_fable",
+                    pool.default_max_utilization_fable,
+                ),
             ] {
                 if let Some(value) = value {
                     if !(0.0..=1.0).contains(&value) {
@@ -4756,6 +4804,10 @@ impl Config {
                     ("threshold_5h", account.threshold_5h),
                     ("threshold_7d", account.threshold_7d),
                     ("threshold_fable", account.threshold_fable),
+                    ("max_utilization", account.max_utilization),
+                    ("max_utilization_5h", account.max_utilization_5h),
+                    ("max_utilization_7d", account.max_utilization_7d),
+                    ("max_utilization_fable", account.max_utilization_fable),
                 ] {
                     if let Some(value) = value {
                         if !(0.0..=1.0).contains(&value) {
@@ -5042,10 +5094,10 @@ impl Config {
         // The pricing table is read by the (not yet implemented) spend meter,
         // which has no way to report a bad rate per request. Reject an
         // unusable multiplier, rate, or upstream reference at boot instead.
-        // Last, because its reachability check resolves overlay targets
-        // through `routing::resolve_model_chain`, which recurses without
-        // bound on a router cycle; the router and overlay checks above
-        // reject those first.
+        // Last, because its reachability check resolves router and overlay
+        // targets and judges through `routing::resolve_model_chain`, which
+        // recurses without bound on a router cycle; the router and overlay
+        // checks above reject those first.
         self.validate_pricing()?;
         self.warn_service_tier_withheld_for_flavor();
         Ok(self)
@@ -6874,6 +6926,7 @@ mod tests {
                 .extract()
                 .unwrap();
         assert_eq!(bare.threshold, None);
+        assert_eq!(bare.max_utilization, None);
         assert_eq!(bare.priority, 100, "serde default");
         assert!(!bare.disabled);
     }
@@ -7057,6 +7110,107 @@ confidence_threshold = 0.6
             };
             assert_eq!(pool.storm_ramp_initial(), expected, "{configured:?}");
         }
+    }
+
+    #[test]
+    fn max_utilization_keys_parse_and_round_trip() {
+        let pool: PoolConfig = figment::Figment::from(figment::providers::Toml::string(
+            "default_max_utilization = 0.9\ndefault_max_utilization_5h = 0.8\n\
+             default_max_utilization_7d = 0.7\ndefault_max_utilization_fable = 0.6",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(pool.default_max_utilization, Some(0.9));
+        assert_eq!(pool.default_max_utilization_5h, Some(0.8));
+        assert_eq!(pool.default_max_utilization_7d, Some(0.7));
+        assert_eq!(pool.default_max_utilization_fable, Some(0.6));
+        let again: PoolConfig = figment::Figment::from(figment::providers::Toml::string(
+            &toml::to_string(&pool).unwrap(),
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(again.default_max_utilization_fable, Some(0.6));
+
+        let account: AccountConfig = figment::Figment::from(figment::providers::Toml::string(
+            "name = \"a\"\nmax_utilization = 0.9\nmax_utilization_5h = 0.8\n\
+             max_utilization_7d = 0.7\nmax_utilization_fable = 0.6",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(account.max_utilization, Some(0.9));
+        assert_eq!(account.max_utilization_5h, Some(0.8));
+        assert_eq!(account.max_utilization_7d, Some(0.7));
+        assert_eq!(account.max_utilization_fable, Some(0.6));
+        let again: AccountConfig = figment::Figment::from(figment::providers::Toml::string(
+            &toml::to_string(&account).unwrap(),
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(again.max_utilization_5h, Some(0.8));
+
+        let serialized = toml::to_string(&PoolConfig::default()).unwrap();
+        assert!(!serialized.contains("max_utilization"), "{serialized}");
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_max_utilization() {
+        for key in [
+            "default_max_utilization",
+            "default_max_utilization_5h",
+            "default_max_utilization_7d",
+            "default_max_utilization_fable",
+        ] {
+            for bad in [1.5, -0.1, f64::NAN] {
+                let mut pool = PoolConfig::default();
+                match key {
+                    "default_max_utilization" => pool.default_max_utilization = Some(bad),
+                    "default_max_utilization_5h" => pool.default_max_utilization_5h = Some(bad),
+                    "default_max_utilization_7d" => pool.default_max_utilization_7d = Some(bad),
+                    _ => pool.default_max_utilization_fable = Some(bad),
+                }
+                let mut config = Config::default();
+                config.server.pool = Some(pool);
+                assert!(matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::InvalidPoolThreshold { key: found, .. } if found == key
+                ));
+            }
+        }
+        let mut config = Config::default();
+        config.server.pool = Some(PoolConfig {
+            default_max_utilization: Some(1.0),
+            default_max_utilization_5h: Some(0.0),
+            ..Default::default()
+        });
+        config.validate().unwrap();
+
+        for key in [
+            "max_utilization",
+            "max_utilization_5h",
+            "max_utilization_7d",
+            "max_utilization_fable",
+        ] {
+            for bad in [1.01, -0.5, f64::NAN] {
+                let mut config = claude_oauth_config();
+                let mut backup = account("backup");
+                match key {
+                    "max_utilization" => backup.max_utilization = Some(bad),
+                    "max_utilization_5h" => backup.max_utilization_5h = Some(bad),
+                    "max_utilization_7d" => backup.max_utilization_7d = Some(bad),
+                    _ => backup.max_utilization_fable = Some(bad),
+                }
+                config.providers.get_mut("anthropic").unwrap().accounts = vec![backup];
+                assert!(matches!(
+                    config.validate().unwrap_err(),
+                    ConfigError::InvalidAccountThreshold { key: found, .. } if found == key
+                ));
+            }
+        }
+        let mut config = claude_oauth_config();
+        let mut backup = account("backup");
+        backup.max_utilization = Some(0.9);
+        config.providers.get_mut("anthropic").unwrap().accounts = vec![backup];
+        config.validate().unwrap();
     }
 
     #[test]
@@ -8144,8 +8298,45 @@ cache_write = 4.125
             models: vec![
                 model_config("team-sonnet", Some(model_upstream("codex", "gpt-5.2"))),
                 // A stage router resolves its tier target through the whole
-                // chain again, so its id can land on any upstream.
+                // chain again, so its id reaches what its targets reach: both
+                // tiers here are unrouted and land on the default provider.
                 router_model("router-model", "capable-tier", "efficient-tier"),
+                // Both tiers resolve through the `eu-target` route, so this
+                // router reaches `bedrock-eu` and nothing else.
+                router_model("eu-router-model", "eu-target", "eu-target"),
+                // The tiers stay on the default provider, but the judge call
+                // is stamped with the router's id and resolves to `bedrock-eu`.
+                {
+                    let mut model =
+                        router_model("judged-router-model", "capable-tier", "efficient-tier");
+                    stage_mut(&mut model).classifier = Some(super::StageClassifierConfig {
+                        target: "eu-target".to_string(),
+                        base_threshold: 0.5,
+                        classify_trigger: Default::default(),
+                    });
+                    model
+                },
+                // A random split never serves a zero-weight arm, so the
+                // parked `eu-target` arm does not reach `bedrock-eu`.
+                ModelConfig {
+                    router: Some(super::RouterConfig::Random(super::RandomRouterConfig {
+                        targets: vec!["unrouted-target".to_string(), "eu-target".to_string()],
+                        weights: Some(vec![1.0, 0.0]),
+                        seed: None,
+                        affinity: super::RandomAffinity::Session,
+                    })),
+                    ..model_config("split-model", None)
+                },
+                // Its mirror: the live arm is the one that reaches `bedrock-eu`.
+                ModelConfig {
+                    router: Some(super::RouterConfig::Random(super::RandomRouterConfig {
+                        targets: vec!["unrouted-target".to_string(), "eu-target".to_string()],
+                        weights: Some(vec![0.0, 1.0]),
+                        seed: None,
+                        affinity: super::RandomAffinity::Session,
+                    })),
+                    ..model_config("live-split-model", None)
+                },
                 // A `noop` router answers without any upstream call.
                 ModelConfig {
                     router: Some(super::RouterConfig::Noop {}),
@@ -8167,6 +8358,26 @@ cache_write = 4.125
                         },
                     )),
                     ..model_config("overlay-model", None)
+                },
+                // A classifier overlay serves from its groups, all unrouted
+                // here, but its `judge` group's call is stamped with the
+                // parent's id and resolves to `bedrock-eu`.
+                ModelConfig {
+                    subagents: Some(
+                        toml::from_str(
+                            r#"
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["eu-target"], efficient = ["unrouted-target"], any = ["unrouted-target"] }
+default_target = "efficient"
+prompt = "Select a target."
+response_schema = '{"type": "object"}'
+policy = { type = "target_selector", selector = "/target" }
+"#,
+                        )
+                        .expect("the classifier overlay parses"),
+                    ),
+                    ..model_config("judged-overlay-model", None)
                 },
             ],
             routes: vec![
@@ -8250,9 +8461,15 @@ cache_write = 4.125
             // both the id and the mapped upstream model resolve on `codex`.
             ("codex", "team-sonnet"),
             ("codex", "GPT-5.2"),
-            // A stage router's target is resolved through the whole chain
-            // again, so the router's id stays reachable anywhere.
-            ("bedrock-eu", "router-model"),
+            // A router reaches the upstreams its targets resolve to...
+            ("bedrock-eu", "eu-router-model"),
+            // ...and those its judge resolves to, since the judge call is
+            // priced under the router's id too.
+            ("bedrock-eu", "judged-router-model"),
+            // An overlay's judge counts for the same reason.
+            ("bedrock-eu", "judged-overlay-model"),
+            // A random split reaches what its positive-weight arms reach.
+            ("bedrock-eu", "live-split-model"),
             ("bedrock-eu", "overlay-model"),
             ("codex", "legacy-alias"),
             ("codex", "vendor-sonnet"),
@@ -8303,6 +8520,14 @@ cache_write = 4.125
             // The overlay's only target resolves to `bedrock-eu`, and the
             // parent's own turn falls through to the default provider.
             ("codex", "overlay-model"),
+            // No target or judge of these routers resolves to the row's
+            // upstream, so the row prices nothing.
+            ("bedrock-eu", "router-model"),
+            ("codex", "eu-router-model"),
+            ("codex", "judged-router-model"),
+            ("codex", "judged-overlay-model"),
+            // Only a zero-weight arm resolves to `bedrock-eu`.
+            ("bedrock-eu", "split-model"),
             // A `noop` router calls no upstream, so nothing ever prices it.
             ("bedrock-eu", "noop-model"),
             ("codex", "noop-model"),
@@ -8323,9 +8548,9 @@ cache_write = 4.125
         assert!(!requestable(&passthrough, "codex", "my-sonnet-alias"));
     }
 
-    /// Pricing reachability resolves an overlay's targets through
-    /// `routing::resolve_model_chain`, which recurses without bound on a
-    /// router that targets itself. The one-hop check has to reject that config
+    /// Pricing reachability resolves router and overlay targets and judges
+    /// through `routing::resolve_model_chain`, which recurses without bound on
+    /// a router that targets itself. The one-hop check has to reject that config
     /// first, or validating it overflows the stack instead of returning an
     /// error.
     #[test]

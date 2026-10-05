@@ -701,6 +701,14 @@ async fn forward_claude_oauth(
         }
     }
 
+    if candidates == 0 {
+        // An empty order is a pause, a cap, or both; only a cap gets its own
+        // error and metric reason. A pause alone keeps the generic exit below.
+        if let Some(error) = crate::adapters::cap_exhausted(&state, &route, &accounts) {
+            return Err(error);
+        }
+    }
+
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
         return relay_response(&state, &route, response, None, bounds).await;
@@ -929,6 +937,15 @@ async fn forward_kimi_oauth(
                 );
                 last_response = Some(upstream);
             }
+        }
+    }
+
+    // Same cap exit as forward_claude_oauth: Kimi records quota through
+    // note_quota, so caps exclude a Kimi account whenever its upstream reports
+    // utilization.
+    if candidates == 0 {
+        if let Some(error) = crate::adapters::cap_exhausted(&state, &route, &accounts) {
+            return Err(error);
         }
     }
 

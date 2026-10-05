@@ -1395,6 +1395,94 @@ async fn codex_quota_headers_drive_proactive_rotation() {
     upstream.verify().await;
 }
 
+/// A one-account pool whose 5h cap is 0.5, served by an upstream that reports
+/// 99% used (with a far-future reset) on its first response and must never see
+/// a second request: the account is capped from then on.
+async fn capped_codex_gateway(upstream: &MockServer, token_env: &str, token: &str) -> TestGateway {
+    let reset_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_add(16_200);
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token.to_string()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-codex-primary-window-minutes", "300")
+                .insert_header("x-codex-primary-used-percent", "99")
+                .insert_header("x-codex-primary-reset-at", reset_at.to_string().as_str())
+                .set_body_string(sse_body("served once")),
+        )
+        .expect(1)
+        .mount(upstream)
+        .await;
+    let mut capped = account("capped", token_env);
+    capped.max_utilization_5h = Some(0.5);
+    let mut config = test_config(&upstream.uri(), capped, account("unused", "UNSET_UNUSED"));
+    config
+        .providers
+        .get_mut("codex")
+        .unwrap()
+        .accounts
+        .truncate(1);
+    start_gateway_with(config).await
+}
+
+fn assert_cap_exhausted_429(headers: &reqwest::header::HeaderMap) {
+    let retry_after: u64 = headers
+        .get("retry-after")
+        .expect("retry-after when the reset is known")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((16_000..=16_200).contains(&retry_after), "{retry_after}");
+}
+
+#[tokio::test]
+async fn capped_codex_pool_returns_a_429_with_retry_after_over_http() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token = chatgpt_token(FAR_FUTURE_EXP, "acct-capped-http");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_CAPPED_HTTP", &token);
+    let upstream = MockServer::start().await;
+    let gateway = capped_codex_gateway(&upstream, "SHUNT_TEST_CODEX_CAPPED_HTTP", &token).await;
+
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_cap_exhausted_429(response.headers());
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "rate_limit_error");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("max_utilization"));
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn capped_codex_pool_emits_a_cap_error_on_the_committed_stream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token = chatgpt_token(FAR_FUTURE_EXP, "acct-capped-stream");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_CODEX_CAPPED_STREAM", &token);
+    let upstream = MockServer::start().await;
+    let gateway = capped_codex_gateway(&upstream, "SHUNT_TEST_CODEX_CAPPED_STREAM", &token).await;
+
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+    let response = post_streaming_messages(&gateway, None).await;
+    let body = response.text().await.unwrap();
+    assert!(body.contains("\"type\":\"error\""), "body: {body}");
+    assert!(body.contains("max_utilization"), "body: {body}");
+    upstream.verify().await;
+}
+
 #[tokio::test]
 async fn storm_control_spills_concurrent_request_to_next_account() {
     // Issue #195 storm control: with `ramp_initial_concurrency = 1`, a second

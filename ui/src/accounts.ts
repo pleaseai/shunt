@@ -86,8 +86,11 @@ function managedState(account: PoolAccount): string {
   if (account.disabled) return 'disabled';
   if (account.needs_relogin) return 'needs-relogin';
   if (!account.has_state) return 'unseen';
+  // A hard cap lasts until its window resets, so it outranks the short cooldown.
+  if (account.capped) return 'capped';
   if (account.cooldown_secs_remaining) return 'cooling';
   if (account.near_quota) return 'near-quota';
+  if (account.capped_fable) return 'capped-fable';
   if (account.cooldown_fable_secs_remaining) return 'cooling-fable';
   return 'available';
 }
@@ -270,6 +273,8 @@ export function effectiveState(row: AccountRow): string {
   if (
     row.state === 'disabled' ||
     row.state === 'needs-relogin' ||
+    row.state === 'capped' ||
+    row.state === 'capped-fable' ||
     row.state === 'cooling' ||
     row.state === 'near-quota' ||
     row.state === 'cooling-fable'
@@ -300,6 +305,10 @@ export function rowStatusText(state: string): string {
       return 'Connected';
     case 'disabled':
       return 'Disabled';
+    case 'capped':
+      return 'Capped';
+    case 'capped-fable':
+      return 'Capped (Fable)';
     case 'cooling':
       return 'Cooling';
     case 'cooling-fable':

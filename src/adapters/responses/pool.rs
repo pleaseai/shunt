@@ -506,7 +506,20 @@ pub(super) fn pool_events_stream(
                                 }
                             };
                             let Some((position, index)) = order_iter.next() else {
-                                crate::metrics::record_pool_rotation(&route.provider, "exhausted");
+                                // An empty order with nothing kept from an
+                                // upstream is a pause, an outage, or a cap; only
+                                // a cap gets its own advance-worthy 429.
+                                let capped = if candidates == 0 && last_response.is_none() {
+                                    crate::adapters::cap_exhausted(&state, &route, &accounts_config)
+                                } else {
+                                    None
+                                };
+                                if capped.is_none() {
+                                    crate::metrics::record_pool_rotation(
+                                        &route.provider,
+                                        "exhausted",
+                                    );
+                                }
                                 // Classified pre-frame exhaustion: the
                                 // committed chain advances on it exactly like
                                 // the pre-commit loop (§4) — a relayed
@@ -514,8 +527,24 @@ pub(super) fn pool_events_stream(
                                 // remembered, transport exhaustion advances
                                 // without remembering.
                                 let (status, advance, remember, envelope, retry_after) =
-                                    match last_response.take() {
-                                        Some(upstream) => {
+                                    match (capped, last_response.take()) {
+                                        (Some(error), _) => {
+                                            let retry_after = error
+                                                .response
+                                                .headers()
+                                                .get(reqwest::header::RETRY_AFTER)
+                                                .cloned();
+                                            (
+                                                StatusCode::TOO_MANY_REQUESTS,
+                                                true,
+                                                true,
+                                                LazyEnvelope::Ready(
+                                                    adapter_error_envelope(error).await,
+                                                ),
+                                                retry_after,
+                                            )
+                                        }
+                                        (None, Some(upstream)) => {
                                             let status = upstream.status();
                                             let retry_after = retry_after_of(&upstream);
                                             let envelope =
@@ -536,7 +565,7 @@ pub(super) fn pool_events_stream(
                                                 retry_after,
                                             )
                                         }
-                                        None => (
+                                        (None, None) => (
                                             StatusCode::BAD_GATEWAY,
                                             true,
                                             false,
@@ -1351,6 +1380,11 @@ pub(super) async fn forward_chatgpt_oauth(
         }
     }
 
+    if candidates == 0 {
+        if let Some(error) = crate::adapters::cap_exhausted(&state, &route, &accounts_config) {
+            return Err(error);
+        }
+    }
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     Err(exhausted_error(last_response, auth, turn.response_bounds.idle).await)
 }

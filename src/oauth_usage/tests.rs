@@ -23,6 +23,8 @@ fn snapshot(
         has_state: true,
         available,
         near_quota: false,
+        capped: false,
+        capped_fable: false,
         cooldown_secs_remaining: None,
         cooldown_fable_secs_remaining: None,
         priority,
@@ -35,6 +37,9 @@ fn snapshot(
         reset_7d: None,
         utilization_7d_oi: None,
         reset_7d_oi: None,
+        max_utilization_5h: None,
+        max_utilization_7d: None,
+        max_utilization_fable: None,
         status: None,
         quota_buckets: Vec::new(),
         needs_relogin: false,
@@ -117,6 +122,27 @@ fn falls_back_to_full_set_when_no_account_is_available() {
     assert_eq!(resets_at, Some(111));
 }
 
+/// A capped account is never routed to, so with nothing `available` the
+/// fallback skips it in favor of an uncapped (merely cooling) account, and only
+/// uses the capped ones when nothing else remains.
+#[test]
+fn fallback_skips_capped_accounts_unless_every_account_is_capped() {
+    let mut capped = snapshot("capped", 1, false, Some(0.99), Some(111));
+    capped.capped = true;
+    let cooling = snapshot("cooling", 100, false, Some(0.10), Some(222));
+    let (used, resets_at) = routing_aware_window(
+        &[capped.clone(), cooling],
+        |s| s.utilization_5h,
+        |s| s.reset_5h,
+    )
+    .unwrap();
+    assert_eq!((used, resets_at), (0.10, Some(222)));
+
+    let (used, resets_at) =
+        routing_aware_window(&[capped], |s| s.utilization_5h, |s| s.reset_5h).unwrap();
+    assert_eq!((used, resets_at), (0.99, Some(111)));
+}
+
 /// A seen account snapshot reporting only the `7d_oi` (Fable) window.
 fn oi_snapshot(
     name: &str,
@@ -163,6 +189,61 @@ fn fable_limit_uses_fable_scoped_availability_not_the_model_none_set() {
     // the cooled preferred account, which is the bug this test pins.
     let regressed = serde_json::to_value(to_wire(&general, &general)).unwrap();
     assert_eq!(regressed["limits"][0]["percent"], json!(95.0));
+}
+
+/// The Fable bar's capped fallback keys on `any_cap()`: with no account
+/// `available`, a preferred account that only Fable traffic is capped on
+/// (`capped_fable`) is skipped in favor of the uncapped, merely cooling backup.
+#[test]
+fn fable_limit_fallback_skips_an_account_with_a_fable_only_cap() {
+    let mut preferred = oi_snapshot("preferred", 1, false, 0.95, 111);
+    preferred.capped_fable = true;
+    let backup = oi_snapshot("backup", 100, false, 0.05, 222);
+
+    let fable = [preferred, backup];
+    let body = serde_json::to_value(to_wire(&fable, &fable)).unwrap();
+    assert_eq!(body["limits"][0]["percent"], json!(5.0));
+    assert_eq!(
+        body["limits"][0]["resets_at"],
+        json!("1970-01-01T00:03:42Z")
+    );
+}
+
+/// A shared-window cap (`capped`, not `capped_fable`) also keeps Fable traffic
+/// off the account, so the Fable bar's fallback skips it too; this is what
+/// `any_cap()` adds over `capped_fable` alone.
+#[test]
+fn fable_limit_fallback_skips_an_account_with_a_shared_window_cap() {
+    let mut preferred = oi_snapshot("preferred", 1, false, 0.95, 111);
+    preferred.capped = true;
+    let backup = oi_snapshot("backup", 100, false, 0.05, 222);
+
+    let fable = [preferred, backup];
+    let body = serde_json::to_value(to_wire(&fable, &fable)).unwrap();
+    assert_eq!(body["limits"][0]["percent"], json!(5.0));
+    assert_eq!(
+        body["limits"][0]["resets_at"],
+        json!("1970-01-01T00:03:42Z")
+    );
+}
+
+/// When every candidate is capped (by either kind of cap) there is nothing
+/// uncapped to prefer, so the Fable bar falls back to all candidates and the
+/// most-preferred tier's (lowest `priority` value) worst case governs.
+#[test]
+fn fable_limit_falls_back_to_all_candidates_when_every_account_is_capped() {
+    let mut preferred = oi_snapshot("preferred", 1, false, 0.95, 111);
+    preferred.capped_fable = true;
+    let mut backup = oi_snapshot("backup", 100, false, 0.05, 222);
+    backup.capped = true;
+
+    let fable = [preferred, backup];
+    let body = serde_json::to_value(to_wire(&fable, &fable)).unwrap();
+    assert_eq!(body["limits"][0]["percent"], json!(95.0));
+    assert_eq!(
+        body["limits"][0]["resets_at"],
+        json!("1970-01-01T00:01:51Z")
+    );
 }
 
 /// Config with `[server.auth]` bound to a unique env var and one explicit

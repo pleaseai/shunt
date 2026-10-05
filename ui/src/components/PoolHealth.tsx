@@ -1,7 +1,7 @@
 import { useState, type ReactElement } from 'react';
 
 import { patchPoolAccount, patchPoolSortByReset } from '../api';
-import { pctReset, titleCase } from '../format';
+import { pctResetCap, titleCase } from '../format';
 import { useCanWrite, useSession } from '../session';
 import type { PoolAccount, PoolData } from '../types';
 import type { Loadable } from '../useDashboard';
@@ -21,8 +21,11 @@ function poolState(account: PoolAccount): string {
   // an account-wide cooldown is the fact that *all* of this account's traffic is
   // gated right now, while `near_quota` is a threshold warning about what is
   // coming. Reporting the warning while hiding the active gate is the defect.
+  // A hard cap lasts until its window resets, so it outranks the short cooldown.
+  if (account.capped) return 'capped';
   if (account.cooldown_secs_remaining) return 'cooling';
   if (account.near_quota) return 'near quota';
+  if (account.capped_fable) return 'capped (fable)';
   if (account.cooldown_fable_secs_remaining) return 'cooling (fable)';
   return 'available';
 }
@@ -162,13 +165,13 @@ export function PoolHealth({ pool, onMutated }: PoolHealthProps): ReactElement {
                     {state}
                   </td>
                   <td title={resetTitle(account.reset_5h)}>
-                    {pctReset(account.utilization_5h, account.reset_5h)}
+                    {pctResetCap(account.utilization_5h, account.reset_5h, account.max_utilization_5h)}
                   </td>
                   <td title={resetTitle(account.reset_7d)}>
-                    {pctReset(account.utilization_7d, account.reset_7d)}
+                    {pctResetCap(account.utilization_7d, account.reset_7d, account.max_utilization_7d)}
                   </td>
                   <td title={resetTitle(account.reset_7d_oi)}>
-                    {pctReset(account.utilization_7d_oi, account.reset_7d_oi)}
+                    {pctResetCap(account.utilization_7d_oi, account.reset_7d_oi, account.max_utilization_fable)}
                   </td>
                   <td>{account.status || '—'}</td>
                   <td>{cooldownText(account)}</td>

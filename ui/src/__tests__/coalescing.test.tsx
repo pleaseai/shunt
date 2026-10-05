@@ -162,6 +162,8 @@ describe('folding managed accounts and local observations into one row', () => {
   it.each([
     ['disabled', { disabled: true }, 'Disabled'],
     ['needs_relogin', { needs_relogin: true }, 'Needs re-login'],
+    ['capped', { capped: true }, 'Capped'],
+    ['capped_fable', { capped_fable: true }, 'Capped (Fable)'],
     ['cooling', { cooldown_secs_remaining: 600 }, 'Cooling'],
     ['near_quota', { near_quota: true }, 'Near quota'],
     ['fable cooldown', { cooldown_fable_secs_remaining: 600 }, 'Cooling (Fable)'],
@@ -214,5 +216,29 @@ describe('folding managed accounts and local observations into one row', () => {
     expect(status.querySelector('.status-note')).toHaveTextContent(
       'retries in 10m · Fable retries in 30m',
     );
+  });
+
+  /** A hard cap lasts until the window resets, so it outranks a short cooldown. */
+  it('reports a capped account as capped even while it is cooling down', async () => {
+    await renderDashboard({
+      accounts: [],
+      pool: poolWith('claude_oauth', 'anthropic', { capped: true, cooldown_secs_remaining: 600 }),
+    });
+    const status = statusOf('pool-a');
+    expect(status).toHaveAttribute('data-state', 'capped');
+    expect(status).toHaveTextContent('Capped');
+    expect(status).not.toHaveTextContent('Cooling');
+  });
+
+  /** The Fable cap is reported above the Fable cooldown. */
+  it('reports a fable cap above the fable cooldown', async () => {
+    await renderDashboard({
+      accounts: [],
+      pool: poolWith('claude_oauth', 'anthropic', {
+        capped_fable: true,
+        cooldown_fable_secs_remaining: 600,
+      }),
+    });
+    expect(statusOf('pool-a')).toHaveAttribute('data-state', 'capped-fable');
   });
 });

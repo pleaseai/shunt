@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.54.0](https://github.com/pleaseai/shunt/compare/v0.53.0...v0.54.0) (2026-10-05)
+
+
+### Features
+
+* **admin:** show per-window max_utilization caps in the dashboard ([#740](https://github.com/pleaseai/shunt/issues/740)) ([ab9f55f](https://github.com/pleaseai/shunt/commit/ab9f55f1d0344ed165a2425220125e5d27f2a2ec))
+
+
+### Bug Fixes
+
+* **ui:** admin dashboard follow-ups from [#740](https://github.com/pleaseai/shunt/issues/740) browser check ([#742](https://github.com/pleaseai/shunt/issues/742)) ([f09740f](https://github.com/pleaseai/shunt/commit/f09740fc7e87449e7c862bb7265c6af19964c5a7))
+
+## [0.53.0](https://github.com/pleaseai/shunt/compare/v0.52.0...v0.53.0) (2026-10-04)
+
+
+### Features
+
+* **pool:** add per-window max_utilization hard caps ([#738](https://github.com/pleaseai/shunt/issues/738)) ([d76774b](https://github.com/pleaseai/shunt/commit/d76774b35c3fd70bcec3d413c323f4bd6892f99f))
+* **spend:** add [server.spend.pricing] multiplier and override rates ([#472](https://github.com/pleaseai/shunt/issues/472)) ([bc0557b](https://github.com/pleaseai/shunt/commit/bc0557b51326f1ac2fb3c0138208faca6841858a))
+* **spend:** resolve router targets and judges in pricing reachability ([#737](https://github.com/pleaseai/shunt/issues/737)) ([be606d7](https://github.com/pleaseai/shunt/commit/be606d783032a17c46288ee5fc3a919e2b76a171))
+
+
+### Bug Fixes
+
+* **responses:** cut a gated error body that sends no byte within the envelope budget ([#729](https://github.com/pleaseai/shunt/issues/729)) ([ce91e46](https://github.com/pleaseai/shunt/commit/ce91e4628fd3640a21dec30290c987bd47d43c76))
+
 ## [0.52.0](https://github.com/pleaseai/shunt/compare/v0.51.1...v0.52.0) (2026-10-02)
 
 

@@ -172,7 +172,7 @@ cache_read = 0.33
 cache_write = 4.125
 ```
 
-超出范围的 multiplier、缺失或超出范围的费率、空的 `upstream`、指向未配置 upstream 的 `upstream`,以及在同一个 upstream 上为同一模型配置的两行,都会导致启动时校验失败。两行冲突的判定依据是指向同一个模型,而非字符串相同:`claude-sonnet-4-6` 与 `claude-sonnet-4-6-20260217` 是同一个模型。若 `model` 既不是内置模型,也不是**在该行自己的 `upstream` 上**任何 `[[models]]`、`[[routes]]`、`[[route_prefixes]]` 条目能够请求的模型,则只记录警告。该检查按 upstream 进行,并涵盖前缀路由,且与路由不同,按大小写不敏感匹配前缀(但路由采用第一个匹配,因此被前面路由到别处、且以大小写完全一致的方式作为其前缀的条目所遮蔽的前缀不计入)——行与请求模型按大小写不敏感匹配,因此只要该模型的任一拼写能路由到该 upstream,该行就是可达的,而拼写由客户端决定:仅作为其他 upstream 的 `upstream_model` 映射的模型仍会告警,而由该行 upstream 上的 `[[route_prefixes]]` 条目提供的模型则不会。指向 `server.default_provider` 的行不会告警,因为路由会把所有未被 route 或 prefix 认领的模型都发往该 provider。
+超出范围的 multiplier、缺失或超出范围的费率、空的 `upstream`、指向未配置 upstream 的 `upstream`,以及在同一个 upstream 上为同一模型配置的两行,都会导致启动时校验失败。两行冲突的判定依据是指向同一个模型,而非字符串相同:`claude-sonnet-4-6` 与 `claude-sonnet-4-6-20260217` 是同一个模型。若 `model` 既不是内置模型,也不是**在该行自己的 `upstream` 上**任何 `[[models]]`、`[[routes]]`、`[[route_prefixes]]` 条目能够请求的模型,则只记录警告。该检查按 upstream 进行,并涵盖前缀路由,且与路由不同,按大小写不敏感匹配前缀(但路由采用第一个匹配,因此被前面路由到别处、且以大小写完全一致的方式作为其前缀的条目所遮蔽的前缀不计入)——行与请求模型按大小写不敏感匹配,因此只要该模型的任一拼写能路由到该 upstream,该行就是可达的,而拼写由客户端决定:仅作为其他 upstream 的 `upstream_model` 映射的模型仍会告警,而由该行 upstream 上的 `[[route_prefixes]]` 条目提供的模型则不会。`[models.router]` 的 id 可在其 target 与 judge 解析到的 upstream 上请求(judge 调用同样按路由器 id 计价),而 `noop` 路由器自身不调用任何 upstream;同一条目上的 `[models.subagents]` 覆盖层的调用同样按父 id 计价,因此还会加入其 target 与 judge 解析到的 upstream。该 id 在其他 upstream 上的行会告警。指向 `server.default_provider` 的行不会告警,因为路由会把所有未被 route 或 prefix 认领的模型都发往该 provider。
 
 模型 id 在匹配前会被规范化:Claude Code 的 `[1m]` 上下文窗口提示、Bedrock 区域前缀与 `anthropic.` 命名空间、Bedrock 的 `-v<major>:<minor>` 版本后缀、日期快照后缀(`-20260217`、`@20251101`),以及 OpenRouter / Vercel AI Gateway 形式——后者会去掉 `anthropic/` 命名空间并把点号版本改为连字符,因此 `anthropic/claude-opus-4.8` 按 `claude-opus-4-8` 计价;而 `~anthropic/claude-sonnet-latest` 这类浮动别名未指定版本,仍无法计价。
 
@@ -304,6 +304,10 @@ headers = { "x-api-key" = "..." }
 | `default_threshold_5h` | 未设置 | 5 小时窗口的软默认值 |
 | `default_threshold_7d` | 未设置 | 共享周(`7d`)窗口的软默认值 |
 | `default_threshold_fable` | 未设置 | 仅 fable 的周(`7d_oi`)窗口的软默认值 |
+| `default_max_utilization` | 未设置 | 没有更具体取值的任何窗口的硬上限默认值;达到或超过它的账户会被移出选择 |
+| `default_max_utilization_5h` | 未设置 | 5 小时窗口的硬上限默认值 |
+| `default_max_utilization_7d` | 未设置 | 共享周(`7d`)窗口的硬上限默认值 |
+| `default_max_utilization_fable` | 未设置 | 仅 fable 的周(`7d_oi`)窗口的硬上限默认值;只作用于 Fable 模型请求 |
 | `burn_rate_avoidance` | `false` | 同时避开按预测会在窗口重置之前耗尽其软阈值的账户 |
 | `sort_by_reset` | `false` | 按配额重置时间最早排序(升序;未知重置排最后)可用账户,而不是按燃烧速率余量排序。可在不编辑 `shunt.toml` 的情况下,通过管理仪表盘或 `PATCH /admin/api/pool` 在运行时切换 —— 参见[账户池控制](/zh-cn/guides/pool-account-controls/) |
 | `usage_refresh_seconds` | 禁用(`0`/未设置) | Claude `GET /api/oauth/usage`、Codex `GET /wham/usage` 和 Antigravity `POST :retrieveUserQuotaSummary` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
@@ -312,6 +316,10 @@ headers = { "x-api-key" = "..." }
 | `reprobe_seconds` | 只要该表存在就是 `900`;`0` 则禁用 | 对陈旧的近配额 Codex/ChatGPT 账户进行机会性重新探测的间隔(秒);低于 60 的正值会向上取到 60 秒下限。`0` 禁用重新探测;若 `[server.pool]` 本身不存在,无论该值为何都禁用重新探测(#135 之前的行为)。非 WebSocket 的 outbound Responses 选择和可选的 inbound Codex HTTP 端点会保留重新探测;WebSocket 启用时的 outbound 选择会禁用重新探测 |
 
 对每个窗口 `X`,生效的软阈值按账户 `threshold_X` → 账户 `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold` 的顺序解析,并以 `hard_threshold` 为上限。所有阈值都是 `[0.0, 1.0]` 范围内的使用率。真正参与选择阈值与 burn-rate 的两个家族是 Anthropic 与 Codex/ChatGPT:Anthropic 使用 `anthropic-ratelimit-unified-*` 头部,Codex/ChatGPT 使用 `x-codex-*` 的 5 小时/周窗口(Codex 没有 Fable 专用 `7d_oi`)。`usage_refresh_seconds` 也会通过 Code Assist 的 `retrieveUserQuotaSummary` RPC 轮询 imported `antigravity_oauth` 账户。Antigravity summary 返回两个共享配额池:**Gemini Models** 和 **Claude + GPT Models**;若账号方案提供相应窗口,每个池都有 5 小时和每周窗口。这些值仅在仪表盘展示,不参与池选择。
+
+硬上限与软阈值是两回事。对每个窗口 `X`,生效的硬上限按账户 `max_utilization_X` → 账户 `max_utilization` → `default_max_utilization_X` → `default_max_utilization` → 无上限 解析。它不受 `hard_threshold` 钳制,账户上限在没有 `[server.pool]` 时同样生效;通过存储扫描得到的账户(没有 `[[providers.X.accounts]]` 条目)只获得池默认值。每个上限都是 `[0.0, 1.0]` 范围内的使用率,其他取值会使启动和 `shunt check` 失败。`threshold_*` 与 `hard_threshold` 只对账户重新排序,而在某个起作用的窗口里已观测到的使用率达到或超过其上限的账户会被移出选择。5 小时与共享周上限作用于每个请求;Fable 上限只作用于 Fable 模型请求,且只有在该账户的 `7d_oi` 使用率已被观测到之后才起作用。没有观测到使用率的窗口从不剔除账户。被剔除的账户在使用率降到上限以下后会自动重新可选:途径是窗口重置或过期、更低的观测值,或配置重载时调高上限。上限只阻止新的路由,并不是精确的预算,也不会为已分派的请求预留用量,因此进行中或并发的请求可能超出上限,超出量取决于它们实际消耗的量。当上限使池中没有可选账户时,shunt 返回网关自身生成的 HTTP `429` `rate_limit_error`("all selectable accounts for provider '…' are at their max_utilization cap for this request"),在已知最早可用时间时附带 `retry-after`。与上游 `429` 一样,它会推进 [`[[upstreams]]`](#upstreams有序故障转移) 故障转移链,因此后面的上游(可能是按量付费)会处理该请求;只有都无法处理时客户端才会看到这个 `429`。但对于已提交到 Codex/ChatGPT 池(已发送 HTTP `200`)的流式请求,若后面的上游都无法处理,客户端收到的是流内的终止 SSE `error` 事件,而不是 HTTP `429`,也没有 `retry-after` 头。在入站 Codex 端点上,同一错误以 OpenAI 错误形态返回。上限对 Claude OAuth 池(5h、7d、`7d_oi`)和 Codex/ChatGPT 池(5 小时与周窗口;Fable 的键在那里不起作用)有效。Kimi OAuth 池在 Kimi 上游报告使用率头时同样适用上限;目前尚未观测到其报告,因此实际上保持不起作用,未观测到的窗口从不剔除账户。Antigravity 的配额不计入上限。管理仪表板把达到上限的账户显示为 "Capped",仅 Fable 上限则显示 "Capped (Fable)",并把已配置的各上限标注在账户的使用量条和池表格中,`GET /admin/api/pool` 按账户报告解析后的 `max_utilization_5h`、`max_utilization_7d`、`max_utilization_fable`(为比例,该窗口没有生效上限时为 `null`);当没有可用账户且至少有一个已启用(非 `disabled`)且未暂停的账户达到上限时,`GET /usage` 报告池状态 `capped`。示例:在账户上设置 `max_utilization_fable = 0.5`,可让 Fable 最多只用该账户 Fable 周桶的约 50%,而 Opus 仍可继续使用它。
+
+账户级键 `max_utilization`、`max_utilization_5h`、`max_utilization_7d`、`max_utilization_fable` 在每个 `[[providers.X.accounts]]` 条目上设置,详见英文参考页的 [accounts 表](/reference/configuration/#providersnameaccounts)。
 
 正的 `usage_refresh_seconds` 会启动后台轮询器,分别读取 Claude 的官方 usage API、Codex/ChatGPT 的非官方 `wham/usage` 以及 Antigravity 的非公开 `retrieveUserQuotaSummary` RPC;未设置或为 `0` 时禁用(默认)。只轮询 imported(可刷新)账户;长期 `claude setup-token` 与 `token_env` 凭据会被跳过。Claude 会对账每个报告窗口的用量、重置时刻和用量观测时间,status 的新鲜度仍来自响应头。Codex 会对账用量与观测时间,重置元数据来自响应,status 元数据仍来自头部;未来的已存重置会保留,已经过去的重置会在写入新用量前清除,wham 的 `reset_at` 不会被当作实际重置元数据。Antigravity 会通过现有 daily-host resolver 规范化生产主机写法,并只把 Gemini / Claude+GPT 的 grouped windows 写入仪表盘 quota-bucket 字段,不会写入通用的选择 quota state。非公开 schema 采用 fail-soft 解析;轮询间隔在启动时固定,配置重载不会启动、停止或重新调整轮询器。
 
