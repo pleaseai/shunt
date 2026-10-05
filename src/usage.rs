@@ -159,18 +159,22 @@ fn pool_aggregate<'a>(
                 window_snapshots.clone(),
                 |s| s.utilization_5h,
                 |s| s.max_utilization_5h,
+                |s| s.capped,
                 |s| s.reset_5h,
             ),
             seven_day: window_status(
                 window_snapshots.clone(),
                 |s| s.utilization_7d,
                 |s| s.max_utilization_7d,
+                |s| s.capped,
                 |s| s.reset_7d,
             ),
             fable: window_status(
                 window_snapshots,
                 |s| s.utilization_7d_oi,
                 |s| s.max_utilization_fable,
+                // A shared 5h/7d cap also keeps Fable traffic off the account.
+                |s| s.any_cap(),
                 |s| s.reset_7d_oi,
             ),
         },
@@ -182,14 +186,19 @@ fn pool_aggregate<'a>(
 /// the pool's combined capacity still usable before each account's resolved
 /// hard cap, `1.0` when uncapped), and the earliest reset any of them reported.
 /// The snapshot's cap is the one selection's `utilization >= cap` check reads,
-/// so an account's term reaches zero exactly when that check excludes it. A
-/// cap with no observed window behind it (the Fable cap on a Codex account,
-/// which reports no `7d_oi`) adds nothing. Not a guarantee about which account
-/// the next request will actually route to.
+/// so an account's term reaches zero exactly when that check excludes it.
+/// `excluded` is the cap verdict for the requests this window serves — a shared
+/// 5h/7d cap excludes the account from every request, Fable ones included — and
+/// zeroes the term even when this window alone is still under its cap, since
+/// that headroom is not usable until the other window clears. A cap with no
+/// observed window behind it (the Fable cap on a Codex account, which reports
+/// no `7d_oi`) adds nothing. Not a guarantee about which account the next
+/// request will actually route to.
 fn window_status<'a>(
     snapshots: impl Iterator<Item = &'a AccountSnapshot>,
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
     cap: impl Fn(&AccountSnapshot) -> Option<f64>,
+    excluded: impl Fn(&AccountSnapshot) -> bool,
     reset: impl Fn(&AccountSnapshot) -> Option<u64>,
 ) -> WindowStatus {
     let mut reporting = 0usize;
@@ -200,8 +209,10 @@ fn window_status<'a>(
             continue;
         };
         reporting += 1;
-        let ceiling = cap(snapshot).unwrap_or(1.0);
-        headroom_sum += (ceiling - used).clamp(0.0, 1.0);
+        if !excluded(snapshot) {
+            let ceiling = cap(snapshot).unwrap_or(1.0);
+            headroom_sum += (ceiling - used).clamp(0.0, 1.0);
+        }
         if let Some(at) = reset(snapshot) {
             earliest_reset = Some(earliest_reset.unwrap_or(at).min(at));
         }

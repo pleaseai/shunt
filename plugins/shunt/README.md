@@ -32,6 +32,8 @@ calling `next`, so nothing is sent to the model and the answer costs no tokens.
 the window, where `cap` is the account's `max_utilization` hard cap for that
 window (`100%` when none is set): nine exhausted accounts plus one fresh uncapped
 one read `10%`, not `100%`, and an account at 44% under a 50% cap counts only `6%`.
+An account a cap already excludes from the window's requests counts zero; a 5h or
+7d cap excludes it from every request, Fable ones included.
 
 It is a **pool-wide aggregate, not a prediction** — routing also weighs
 availability, model, session affinity and priority, so a healthy figure is not a

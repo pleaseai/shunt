@@ -108,6 +108,35 @@ fn aggregate_measures_headroom_up_to_each_accounts_cap() {
 }
 
 #[test]
+fn aggregate_zeroes_headroom_an_excluding_cap_makes_unusable() {
+    // Past its 0.9 weekly cap, an account serves no request at all, so its
+    // 5h and Fable headroom count zero even though both windows are still
+    // under their own caps. A Fable-only cap excludes Fable requests only,
+    // so that account keeps its 5h and 7d headroom.
+    let mut week_capped = snapshot("week-capped", Some(0.0), None, Some(0.96));
+    week_capped.max_utilization_7d = Some(0.9);
+    week_capped.utilization_7d_oi = Some(0.62);
+    week_capped.max_utilization_fable = Some(0.9);
+    week_capped.capped = true;
+    let mut fable_capped = snapshot("fable-capped", Some(0.20), None, Some(0.40));
+    fable_capped.utilization_7d_oi = Some(0.55);
+    fable_capped.max_utilization_fable = Some(0.5);
+    fable_capped.capped_fable = true;
+    let body =
+        serde_json::to_value(aggregate(&[("anthropic", &[week_capped, fable_capped])])).unwrap();
+    let windows = &body["pool"]["windows"];
+    // 5h: week-capped 0, fable-capped 0.80.
+    assert_eq!(windows["5h"]["remaining"], json!(0.4));
+    // 7d: week-capped 0, fable-capped 0.60.
+    assert_eq!(windows["7d"]["remaining"], json!(0.3));
+    // Fable: both excluded from Fable requests. Only week-capped pins the
+    // exclusion (0.28 would show otherwise); fable-capped is past its own cap,
+    // so the clamp zeroes it either way — `capped_fable` derives from that
+    // same cap and utilization, so the flag and the clamp cannot disagree.
+    assert_eq!(windows["fable"]["remaining"], json!(0.0));
+}
+
+#[test]
 fn window_representative_is_the_alias_selection_prefers() {
     // Aliases of one identity can configure different caps, so the row the
     // mean reads must be selection's representative (`collapse_representatives`:
