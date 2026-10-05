@@ -1,0 +1,122 @@
+plugins/shunt/hooks/register.tsx
+  s_dc30f1453d3aba::t_31e1d89422aff3 59-60,64,67-68,88,133-137,140,142-154,157
+  s_dc30f1453d3aba::t_2acdb78b446244 1-2,5,7,12,15-18,22-26,29-33,104-105,108-112,114-118,122,128-130,139,155,158,160,165-169,172,174-184,203-205,208,214-220,231-234,243-256,263,265,267-270,278,281,283-285,289,291-310
+  s_dc30f1453d3aba::t_5afee67a47fd32 192-202
+  s_dc30f1453d3aba::t_b4e59c7153bcab 4,28,34-45,103,161-164,170-171,206-207,209-213,235-242,257-262,264,266,271-277,279-280,282,287,290
+  s_dc30f1453d3aba::t_7f213195691379 8-11,13,19-21,46-58,61-63,65-66,69-87,89-102,106-107,113,119-121,123-127,131-132,138,141,156
+  s_dc30f1453d3aba::t_6f285436c63a58 221-230
+  s_dc30f1453d3aba::t_0356d1e4f6c762 6
+  s_dc30f1453d3aba::t_77460988589b19 286,288
+  s_dc30f1453d3aba::t_25a3f7de02dd8d 3,14,27,159,173,185-191
+plugins/shunt/hooks/band.ts
+  s_dc30f1453d3aba::t_1c103eaf3eb831 2-12,17,19-22,25,47-55,58,61-62,65-69,72-95,99,101,111-112,114,129-130,135,137,143-144,146-151,153,204,206
+  s_dc30f1453d3aba::t_bce3fd4303e8eb 1,13-16,18,23-24,26-46,56-57,59-60,63-64,70-71,96-98,100,102-110,113,115-128,131-134,136,138-142,145,152,154-203,205
+plugins/shunt/.claude-plugin/plugin.json
+  s_dc30f1453d3aba::t_46faea2e76c8a9 15-28,30-32
+  s_dc30f1453d3aba::t_b3562bbff1bf6e 6,29
+plugins/shunt/hooks/reading.ts
+  s_dc30f1453d3aba::t_7f213195691379 21-23,76
+  s_dc30f1453d3aba::t_407db1acf434b4 1-10,16-20,24-75,77-92,94-107
+  s_dc30f1453d3aba::t_67beb66cbb5536 11-15,93
+plugins/shunt/tests/helper.spec.ts
+  s_dc30f1453d3aba::t_3279c41c63cc89 1-28
+plugins/shunt/tsconfig.json
+  s_dc30f1453d3aba::t_89d2008781aba1 7-8,30-31
+  s_dc30f1453d3aba::t_ebf39d892c2961 2
+plugins/shunt/types/index.d.ts
+  s_dc30f1453d3aba::t_2b05370d874bd5 2-4,21-23,25-26,28-29,31-43,47-57
+  s_dc30f1453d3aba::t_29b610206c4a2b 1,5-20,24,27,30,44-46,58-59
+plugins/shunt/README.md
+  s_dc30f1453d3aba::t_8f2c829eef8964 165-186
+  s_dc30f1453d3aba::t_b3562bbff1bf6e 5-11,35-52,54-58,60-61,206,211,213
+  s_dc30f1453d3aba::t_2e1bc1e96517f4 12,33-34,53,62-65,128-130,141-146,209-210,215-216,228-232,237,241-242
+  s_dc30f1453d3aba::t_bc4d14b2430cf6 59
+plugins/shunt/hooks/endpoint.ts
+  s_dc30f1453d3aba::t_e806bb67cafb34 13-18,53-54,72,78-80
+site/src/content/docs/ko/guides/claude-code-plugins.md
+  s_dc30f1453d3aba::t_a9569230a5c6c4 37-38,40-41,43-44,46,54-56,105
+  s_dc30f1453d3aba::t_bc4d14b2430cf6 53
+  s_dc30f1453d3aba::t_9117127f222c37 3,12,39,42,45,47-52
+  s_dc30f1453d3aba::t_8add7dcfce421e 121
+  s_dc30f1453d3aba::t_01afc4c4df490f 97-98
+  s_dc30f1453d3aba::t_18706bb890c8c1 122
+site/src/content/docs/reference/endpoints.md
+  s_dc30f1453d3aba::t_c56a966988910b 200
+.claude-plugin/marketplace.json
+  s_dc30f1453d3aba::t_2e1bc1e96517f4 16
+  s_dc30f1453d3aba::t_b3562bbff1bf6e 15
+plugins/shunt/vitest.config.ts
+  s_dc30f1453d3aba::t_f10a7fec1ce28f 8-11
+.github/workflows/ci.yml
+  s_dc30f1453d3aba::t_a2d1cf53c1628a 79-80,85,88
+  s_dc30f1453d3aba::t_2e1bc1e96517f4 75-78
+site/src/content/docs/ja/guides/claude-code-plugins.md
+  s_dc30f1453d3aba::t_9117127f222c37 3,12,39,42,45,47-52
+  s_dc30f1453d3aba::t_8add7dcfce421e 121
+  s_dc30f1453d3aba::t_a9569230a5c6c4 37-38,40-41,43-44,46,54-56,105
+  s_dc30f1453d3aba::t_bc4d14b2430cf6 53
+  s_dc30f1453d3aba::t_01afc4c4df490f 97-98
+  s_dc30f1453d3aba::t_eb146e8d687ea2 122
+.gitignore
+  s_dc30f1453d3aba::t_2e1bc1e96517f4 18-19
+plugins/shunt/hooks/hooks.json
+  s_dc30f1453d3aba::t_b3562bbff1bf6e 2
+  s_dc30f1453d3aba::t_46faea2e76c8a9 3-5
+plugins/shunt/tests/band.spec.ts
+  s_dc30f1453d3aba::t_93bc535f8ee86d 35-36,40-163
+  s_02f64583270fea::t_3c2b87eda81299 1-34,37-39
+site/src/content/docs/zh-cn/guides/claude-code-plugins.md
+  s_dc30f1453d3aba::t_8add7dcfce421e 121
+  s_dc30f1453d3aba::t_9117127f222c37 3,12,39,42,45,47-52
+  s_dc30f1453d3aba::t_bc4d14b2430cf6 53
+  s_dc30f1453d3aba::t_01afc4c4df490f 97-98
+  s_dc30f1453d3aba::t_a9569230a5c6c4 37-38,40-41,43-44,46,54-56,105
+  s_dc30f1453d3aba::t_1de6ccc6d50d85 122
+site/src/content/docs/guides/claude-code-plugins.md
+  s_dc30f1453d3aba::t_01afc4c4df490f 97-98
+  s_dc30f1453d3aba::t_555c46c0033535 121
+  s_dc30f1453d3aba::t_aeb0b32e2bc3f8 37-38,40-41,43-44,46,54-56,105
+  s_dc30f1453d3aba::t_bc4d14b2430cf6 53
+  s_dc30f1453d3aba::t_c56a966988910b 3,12,39,42,45,47-52
+  s_dc30f1453d3aba::t_b53394bb03622d 122
+plugins/shunt/tests/reading.spec.ts
+  s_dc30f1453d3aba::t_121dbf6805166b 1-74
+plugins/shunt/tests/mod/band.test.tsx
+  s_dc30f1453d3aba::t_89d2008781aba1 7-8
+  s_dc30f1453d3aba::t_80324d76c5bf46 60,62,66-75,88,99,168-247,254-256
+  s_dc30f1453d3aba::t_9f3534b75c5136 61,79-83,152-163
+  s_dc30f1453d3aba::t_a71ed7c1bb5524 1,6,9-19,21-22,38,40,43-52,56,64-65,76-78,85-87,89,97-98,100-103,105,113-119,124-138,141,149-151,164-165,248-253,257,266-272,314,316,322-328,330-331,334-336,338-340
+  s_dc30f1453d3aba::t_57eec8f68d01e3 90-96
+  s_dc30f1453d3aba::t_e6e3bd6c79b620 2-5,20,23-37,39,41-42,53-55,57-59,63,84,104,106-112,120-123,139-140,166-167,258-265,273-313,315,317-321,329,332-333,337
+  s_dc30f1453d3aba::t_4c4768d9e129a4 142-148
+plugins/shunt/hooks/helper.ts
+  s_dc30f1453d3aba::t_ced7d81145d241 1-51
+plugins/shunt/hooks/names.ts
+  s_dc30f1453d3aba::t_e806bb67cafb34 23-26,34-38
+plugins/shunt/tests/endpoint.spec.ts
+  s_dc30f1453d3aba::t_6cd14a5ff97f36 155-174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "241f4dc3483240a7a09967679df8ef36508f579a",
+  "prompts": {},
+  "sessions": {
+    "s_02f64583270fea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a35777e-f23d-4abf-b74a-66c77bf6aad5",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_dc30f1453d3aba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ee22080-e786-4110-8a41-9770b4fcf913",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
