@@ -617,6 +617,15 @@ pub struct AccountPool {
     sort_by_reset_override: Mutex<Option<bool>>,
 }
 
+/// Why one account is not selectable for this request.
+#[derive(Clone, Copy)]
+enum Exclusion {
+    Selectable,
+    Paused,
+    /// Held out by a hard cap; carries the verdict folded into the pool's.
+    Capped(CapExhaustion),
+}
+
 #[derive(Debug)]
 struct PendingReprobe {
     index: usize,
@@ -956,10 +965,7 @@ impl AccountPool {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let mut snapshots = Vec::with_capacity(accounts.len());
             // Paused or hard-capped for this request: not selectable.
-            let mut excluded = vec![false; accounts.len()];
-            // Per-account cap verdict, kept only for non-disabled, unpaused
-            // accounts; folded over the representatives below.
-            let mut capped = vec![None; accounts.len()];
+            let mut exclusions = vec![Exclusion::Selectable; accounts.len()];
             let mut quota_expired = false;
             for (index, account) in accounts.iter().enumerate() {
                 let health = self.health_entry(&mut entries, account_key(&provider, account));
@@ -973,10 +979,13 @@ impl AccountPool {
                 // assessment (which swaps 7d for 7d_oi on Fable requests).
                 // The rotation filter drops disabled and paused accounts
                 // anyway, so only the rest need the cap verdict.
-                if !paused && !account.disabled {
-                    capped[index] = cap_exclusion(&health.quota, account, is_fable, pool);
+                if paused {
+                    exclusions[index] = Exclusion::Paused;
+                } else if !account.disabled {
+                    if let Some(cap) = cap_exclusion(&health.quota, account, is_fable, pool) {
+                        exclusions[index] = Exclusion::Capped(cap);
+                    }
                 }
-                excluded[index] = paused || capped[index].is_some();
                 let weekly_reset = governing_weekly_reset(&health.quota, is_fable);
                 // Match quota assessment's request-aware weekly window so a
                 // stale Fable-only reset cannot reorder ordinary traffic.
@@ -991,17 +1000,26 @@ impl AccountPool {
                 let cooldown_until = governing_cooldown(health, is_fable, model_key.as_deref());
                 snapshots.push((cooldown_until, assessment, weekly_reset, min_reset));
             }
-            let rotation = (0..distinct)
-                .map(|offset| ident_reps[(start_slot + offset) % distinct])
-                .filter(|&index| !accounts[index].disabled && !excluded[index])
-                .collect::<Vec<_>>();
-            // Selection only considers one representative per identity, so an
-            // alias's own caps must not contribute an `eligible_at`.
+            // One visit per identity representative builds the rotation and
+            // folds the cap verdict: an alias's own caps must not contribute
+            // an `eligible_at`, and a paused or disabled representative is
+            // not selectable whatever its cap.
+            let mut rotation = Vec::with_capacity(distinct);
             let mut any_capped = false;
             let mut earliest: Option<u64> = None;
-            for exclusion in ident_reps.iter().filter_map(|&index| capped[index]) {
-                any_capped = true;
-                earliest = earliest.into_iter().chain(exclusion.eligible_at).min();
+            for offset in 0..distinct {
+                let index = ident_reps[(start_slot + offset) % distinct];
+                if accounts[index].disabled {
+                    continue;
+                }
+                match exclusions[index] {
+                    Exclusion::Selectable => rotation.push(index),
+                    Exclusion::Paused => {}
+                    Exclusion::Capped(cap) => {
+                        any_capped = true;
+                        earliest = earliest.into_iter().chain(cap.eligible_at).min();
+                    }
+                }
             }
             let cap_verdict = any_capped.then_some(CapExhaustion {
                 eligible_at: earliest,
@@ -9373,7 +9391,7 @@ mod tests {
     }
 
     #[test]
-    fn select_order_with_cap_verdict_is_a_value_from_the_selection_pass() {
+    fn select_order_with_cap_reports_cap_exhaustion_only_while_capped() {
         let pool = AccountPool::new();
         let now = unix_now();
         let mut accts = vec![account("a"), account("b")];
@@ -9390,12 +9408,10 @@ mod tests {
         });
         assert!(order.is_empty());
         assert_eq!(verdict, capped);
-        // Clearing the quota afterwards must not change the value already returned.
+        // Positive twin: with the quota cleared a fresh selection sees an uncapped pool.
         for acct in &accts {
             set_quota(&pool, "anthropic", acct, |q| q.utilization_5h = Some(0.1));
         }
-        assert_eq!(verdict, capped);
-        // Positive twin: a fresh selection now sees an uncapped pool.
         let (order, verdict) = pool.select_order_with_cap("anthropic", &accts, None, OPUS, None);
         assert!(!order.is_empty());
         assert_eq!(verdict, None);
