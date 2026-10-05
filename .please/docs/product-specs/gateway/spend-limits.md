@@ -151,15 +151,15 @@ The system MUST honor `[server.spend.enforcement] fail_closed_on_error` — when
 - WHEN honor `[server.spend.enforcement] fail_closed_on_error` — when a principal's spend state cannot be consulted (its persisted counter record failed to restore, or the cap check hit an internal error), forward the request and warn by default, or refuse it with `429 billing_error` "spend limit unavailable" when set
 - THEN the behavior is carried out as specified
 
-### Requirement: add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status
+### Requirement: add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status of a metered request
 <!-- req: REQ-013 tracks=spend-enforcement-20261003 -->
 
-The system MUST add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status.
+The system MUST add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status of a metered request.
 
-#### Scenario: add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status
+#### Scenario: add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status of a metered request
 
 - GIVEN the system is operating normally
-- WHEN add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status
+- WHEN add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status of a metered request
 - THEN the behavior is carried out as specified
 
 ### Requirement: serve `GET /v1/organizations/spend_limits/effective` returning, per principal and period, the resolved cap, period-to-date spend, and actor details, with `user_ids[]`, `period[]`, `sort=spend_desc`, `q`, `limit`, and `page` query parameters, authorized by read or write admin credentials

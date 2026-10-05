@@ -111,7 +111,7 @@
     {
       "id": "REQ-013",
       "kind": "functional",
-      "statement": "add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status",
+      "statement": "add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status of a metered request",
       "source_tracks": [
         "spend-enforcement-20261003"
       ]

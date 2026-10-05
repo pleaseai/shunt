@@ -42,7 +42,7 @@ this track builds on it after it merges.
 - [ ] FR-10: reset counters on UTC calendar boundaries — daily at 00:00 UTC, weekly on Monday 00:00 UTC, monthly on the 1st 00:00 UTC
 - [ ] FR-11: persist counters under the existing spend state configuration (`state_path`, memory-only when empty) so a restart keeps period-to-date spend, and prune elapsed windows older than `spend_retention_months`
 - [ ] FR-12: honor `[server.spend.enforcement] fail_closed_on_error` — when a principal's spend state cannot be consulted (its persisted counter record failed to restore, or the cap check hit an internal error), forward the request and warn by default, or refuse it with `429 billing_error` "spend limit unavailable" when set
-- [ ] FR-13: add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status
+- [ ] FR-13: add `anthropic-ratelimit-unified-*` headers describing the principal's own most-consumed cap to successful `/v1/messages` responses and to the spend refusal (`429 billing_error`) for a principal who has a cap, stripping every upstream `anthropic-ratelimit-*` header on every status of a metered request
 - [ ] FR-14: serve `GET /v1/organizations/spend_limits/effective` returning, per principal and period, the resolved cap, period-to-date spend, and actor details, with `user_ids[]`, `period[]`, `sort=spend_desc`, `q`, `limit`, and `page` query parameters, authorized by read or write admin credentials
 - [ ] FR-15: never block or meter `/v1/messages/count_tokens`
 - [ ] FR-16: leave passthrough routes unmetered and unenforced, because those callers pay with their own upstream credential
@@ -74,8 +74,8 @@ this track builds on it after it merges.
 - [ ] AC-013: The system shall not meter or refuse requests on passthrough routes.
 - [ ] AC-014: If spend state cannot be consulted and `fail_closed_on_error` is unset, then the system shall forward the request and log a warning.
 - [ ] AC-015: If spend state cannot be consulted and `fail_closed_on_error` is `true`, then the system shall return `429 billing_error` with the message `spend limit unavailable` and no `retry-after`.
-- [ ] AC-016: When a principal with a cap receives a successful response, the system shall include `anthropic-ratelimit-unified-*` headers that report that principal's own cap utilization and reset.
-- [ ] AC-016b: The system shall not forward upstream `anthropic-ratelimit-unified-*` values to a principal with a cap.
+- [ ] AC-016: When a principal with a cap receives a successful response, the system shall include `anthropic-ratelimit-unified-*` headers that report that principal's own cap utilization and reset. When the spend check refuses that principal, the over-cap `429` shall carry the exceeded set (`status: rejected`, the period, and `overage-disabled-reason: org_spend_cap_reached`), and the fail-closed `429 spend limit unavailable` shall carry only `overage-disabled-reason: fetch_error`.
+- [ ] AC-016b: The system shall not forward any upstream `anthropic-ratelimit-*` header (the unified family and the others, such as `anthropic-ratelimit-tokens-limit`) to a principal with a cap on a metered request, whatever the response status; a fail-open forward carries none, and a chain made only of passthrough or `noop` routes keeps the upstream headers unchanged.
 - [ ] AC-017: When an admin calls `/effective` with a read credential, the system shall return one row per principal and period with the resolved cap and period-to-date spend.
 - [ ] AC-018: The system shall not alter, delay, or truncate response bytes delivered to the client because of metering.
 - [ ] AC-019: When a counter window ended more than `spend_retention_months` ago, the system shall drop it from the persisted spend state.
