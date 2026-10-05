@@ -206,7 +206,7 @@ async fn forward_claude_oauth(
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok());
     let is_fable = accounts::is_fable_model(Some(route.upstream_model.as_str()));
-    let order = state.accounts.select_order(
+    let (order, cap) = state.accounts.select_order_with_cap(
         &route.provider,
         &accounts,
         session_id,
@@ -704,7 +704,7 @@ async fn forward_claude_oauth(
     if candidates == 0 {
         // An empty order is a pause, a cap, or both; only a cap gets its own
         // error and metric reason. A pause alone keeps the generic exit below.
-        if let Some(error) = crate::adapters::cap_exhausted(&state, &route, &accounts) {
+        if let Some(error) = crate::adapters::cap_exhausted(&route, cap) {
             return Err(error);
         }
     }
@@ -801,7 +801,7 @@ async fn forward_kimi_oauth(
     let session_id = headers
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok());
-    let order = state.accounts.select_order(
+    let (order, cap) = state.accounts.select_order_with_cap(
         &route.provider,
         &accounts,
         session_id,
@@ -944,7 +944,7 @@ async fn forward_kimi_oauth(
     // note_quota, so caps exclude a Kimi account whenever its upstream reports
     // utilization.
     if candidates == 0 {
-        if let Some(error) = crate::adapters::cap_exhausted(&state, &route, &accounts) {
+        if let Some(error) = crate::adapters::cap_exhausted(&route, cap) {
             return Err(error);
         }
     }

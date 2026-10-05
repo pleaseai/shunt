@@ -207,7 +207,7 @@ async fn forward(
             ),
         ));
     }
-    let order = state.accounts.select_order(
+    let (order, cap) = state.accounts.select_order_with_cap(
         &route.provider,
         &accounts,
         None,
@@ -458,6 +458,13 @@ async fn forward(
                     }
                 }
             }
+        }
+    }
+    // An empty order with nothing kept from an upstream is a pause, an outage,
+    // or a cap; only a cap gets its own advance-worthy 429.
+    if candidates == 0 && last_error.is_none() {
+        if let Some(error) = crate::adapters::cap_exhausted(&route, cap) {
+            return Err(error);
         }
     }
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");

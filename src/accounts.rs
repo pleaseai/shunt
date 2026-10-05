@@ -137,7 +137,7 @@ fn reprobe_interval(pool: Option<&PoolConfig>) -> Option<Duration> {
         Some(0) => None,
         // Positive values below 60 are clamped up to a 60-second floor, same
         // as `usage_refresh_seconds`. This is the single read site for
-        // `reprobe_seconds` (`select_order_deferred` calls this on HTTP pool
+        // `reprobe_seconds` (`select_order_deferred_with_cap` calls this on HTTP pool
         // requests); the operator-facing warning is emitted once after a
         // successful config load.
         Some(seconds) => Some(Duration::from_secs(seconds.max(REPROBE_FLOOR_SECS))),
@@ -388,7 +388,7 @@ struct AccountHealth {
     /// Instant of the last admission or release, for the idle-reset rule.
     ramp_last_activity: Option<Instant>,
     /// Instant this identity was last dispatched for an opportunistic re-probe
-    /// (see [`AccountPool::select_order_deferred`]). Memory-only, like
+    /// (see [`AccountPool::select_order_deferred_with_cap`]). Memory-only, like
     /// `cooldown_until`: a restart just means the next stale-check treats the
     /// account as never probed, which is the safe default.
     last_probe_at: Option<Instant>,
@@ -633,6 +633,15 @@ pub struct AccountPool {
     sort_by_reset_override: Mutex<Option<bool>>,
 }
 
+/// Why one account is not selectable for this request.
+#[derive(Clone, Copy)]
+enum Exclusion {
+    Selectable,
+    Paused,
+    /// Held out by a hard cap; carries the verdict folded into the pool's.
+    Capped(CapExhaustion),
+}
+
 #[derive(Debug)]
 struct PendingReprobe {
     index: usize,
@@ -775,12 +784,28 @@ impl AccountPool {
             .0
     }
 
-    /// Return account indices and, when one stale near-quota ChatGPT account
-    /// was promoted, an opaque reservation for the first HTTP dispatch. The
-    /// reservation does not consume the reprobe interval until the caller
-    /// commits it immediately before sending upstream. Dropping it cancels the
-    /// pending token, so admission and credential-resolution failures remain
-    /// immediately eligible for a later request.
+    /// [`select_order`](Self::select_order) plus the hard-cap verdict.
+    ///
+    /// The verdict comes from the same pass that built the order, so it cannot
+    /// disagree with it. Callers read it only when the order is empty: `None`
+    /// means no selectable representative is capped, `Some(eligible_at: None)`
+    /// means capped with no known eligibility time.
+    pub(crate) fn select_order_with_cap(
+        &self,
+        provider: &str,
+        accounts: &[AccountConfig],
+        session_id: Option<&str>,
+        model: Option<&str>,
+        pool: Option<&PoolConfig>,
+    ) -> (Vec<usize>, Option<CapExhaustion>) {
+        let (order, _, cap) =
+            self.select_order_inner(provider, accounts, session_id, model, pool, false);
+        (order, cap)
+    }
+
+    /// [`select_order_deferred_with_cap`](Self::select_order_deferred_with_cap)
+    /// without the hard-cap verdict.
+    #[cfg(test)]
     pub(crate) fn select_order_deferred(
         self: &Arc<Self>,
         provider: &str,
@@ -789,13 +814,56 @@ impl AccountPool {
         model: Option<&str>,
         pool: Option<&PoolConfig>,
     ) -> (Vec<usize>, Option<ReprobeReservation>) {
-        let (order, pending) =
-            self.select_order_inner(provider, accounts, session_id, model, pool, true);
-        let reservation = pending.map(|pending| ReprobeReservation::new(Arc::clone(self), pending));
+        let (order, reservation, _) =
+            self.select_order_deferred_with_cap(provider, accounts, session_id, model, pool);
         (order, reservation)
     }
 
-    /// Return account indices without opportunistic re-probing.
+    /// Return account indices, an opaque reservation when one stale
+    /// near-quota ChatGPT account was promoted, and the hard-cap verdict from
+    /// the same pass that built the order.
+    ///
+    /// The reservation does not consume the reprobe interval until the caller
+    /// commits it immediately before sending upstream. Dropping it cancels the
+    /// pending token, so admission and credential-resolution failures remain
+    /// immediately eligible for a later request. Callers read the verdict only
+    /// when the order is empty; `None` means no selectable representative is
+    /// capped.
+    pub(crate) fn select_order_deferred_with_cap(
+        self: &Arc<Self>,
+        provider: &str,
+        accounts: &[AccountConfig],
+        session_id: Option<&str>,
+        model: Option<&str>,
+        pool: Option<&PoolConfig>,
+    ) -> (
+        Vec<usize>,
+        Option<ReprobeReservation>,
+        Option<CapExhaustion>,
+    ) {
+        let (order, pending, cap) =
+            self.select_order_inner(provider, accounts, session_id, model, pool, true);
+        let reservation = pending.map(|pending| ReprobeReservation::new(Arc::clone(self), pending));
+        (order, reservation, cap)
+    }
+
+    /// [`select_order_without_reprobe_with_cap`](Self::select_order_without_reprobe_with_cap)
+    /// without the hard-cap verdict.
+    #[cfg(test)]
+    pub(crate) fn select_order_without_reprobe(
+        &self,
+        provider: &str,
+        accounts: &[AccountConfig],
+        session_id: Option<&str>,
+        model: Option<&str>,
+        pool: Option<&PoolConfig>,
+    ) -> Vec<usize> {
+        self.select_order_without_reprobe_with_cap(provider, accounts, session_id, model, pool)
+            .0
+    }
+
+    /// Return account indices without opportunistic re-probing, plus the
+    /// hard-cap verdict from the same pass that built the order.
     ///
     /// Responses pools use this entry point when WebSocket transport is
     /// enabled. An in-stream rate-limit error arrives as a normal event, so
@@ -805,17 +873,20 @@ impl AccountPool {
     /// allowance. That contamination predates re-probing, and this entry point
     /// only removes re-probing as its new trigger while the deeper fix remains
     /// deferred. The provider-labelled re-probe metric therefore counts only
-    /// inbound probes for providers with WebSocket enabled.
-    pub(crate) fn select_order_without_reprobe(
+    /// inbound probes for providers with WebSocket enabled. Callers read the
+    /// verdict only when the order is empty; `None` means no selectable
+    /// representative is capped.
+    pub(crate) fn select_order_without_reprobe_with_cap(
         &self,
         provider: &str,
         accounts: &[AccountConfig],
         session_id: Option<&str>,
         model: Option<&str>,
         pool: Option<&PoolConfig>,
-    ) -> Vec<usize> {
-        self.select_order_inner(provider, accounts, session_id, model, pool, false)
-            .0
+    ) -> (Vec<usize>, Option<CapExhaustion>) {
+        let (order, _, cap) =
+            self.select_order_inner(provider, accounts, session_id, model, pool, false);
+        (order, cap)
     }
 
     #[cfg(test)]
@@ -831,12 +902,12 @@ impl AccountPool {
             .and_then(|health| health.last_probe_at)
     }
 
-    /// Whether a hard `max_utilization` cap excluded at least one non-disabled
-    /// account for this request, and the earliest known time one becomes
-    /// eligible again; paused accounts are skipped. Callers ask only after
-    /// [`select_order`] came back empty, to tell a cap-driven exhaustion from a
-    /// pause or outage. `None` means no selectable account is capped;
-    /// `Some(None)` means capped with no known eligibility time.
+    /// Shim for the cap verdict: runs a selection and returns the verdict its
+    /// pass produced, so the rules live only in
+    /// [`select_order_inner`](Self::select_order_inner). `None` means no
+    /// selectable representative is capped; `Some(None)` means capped with no
+    /// known eligibility time.
+    #[cfg(test)]
     pub(crate) fn cap_exhaustion(
         &self,
         provider: &str,
@@ -844,41 +915,8 @@ impl AccountPool {
         model: Option<&str>,
         pool: Option<&PoolConfig>,
     ) -> Option<CapExhaustion> {
-        let unix_now = unix_now();
-        let is_fable = is_fable_model(model);
-        let mut entries = self.entries.lock().expect("account health lock poisoned");
-        let mut any = false;
-        let mut earliest: Option<u64> = None;
-        let mut expired = false;
-        // Selection only ever considers one representative per identity, so
-        // an alias's own caps must not contribute an `eligible_at`.
-        for account in collapse_representatives(provider, accounts)
-            .into_iter()
-            .map(|index| &accounts[index])
-            .filter(|account| !account.disabled)
-        {
-            let Some(health) = entries.get_mut(&account_key(provider, account)) else {
-                continue;
-            };
-            expired |= expire_stale_quota(&mut health.quota, unix_now);
-            // A paused account is not selectable regardless of its cap, and
-            // its pause can outlive the cap reset, so it must not drive the
-            // cap error or its `eligible_at`.
-            if health.paused_providers.contains(provider) {
-                continue;
-            }
-            if let Some(exclusion) = cap_exclusion(&health.quota, account, is_fable, pool) {
-                any = true;
-                earliest = earliest.into_iter().chain(exclusion.eligible_at).min();
-            }
-        }
-        drop(entries);
-        if expired {
-            self.mark_dirty();
-        }
-        any.then_some(CapExhaustion {
-            eligible_at: earliest,
-        })
+        self.select_order_inner(provider, accounts, None, model, pool, false)
+            .2
     }
 
     fn select_order_inner(
@@ -889,9 +927,9 @@ impl AccountPool {
         model: Option<&str>,
         pool: Option<&PoolConfig>,
         allow_reprobe: bool,
-    ) -> (Vec<usize>, Option<PendingReprobe>) {
+    ) -> (Vec<usize>, Option<PendingReprobe>, Option<CapExhaustion>) {
         if accounts.is_empty() {
-            return (Vec::new(), None);
+            return (Vec::new(), None, None);
         }
 
         let provider = provider.to_string();
@@ -942,11 +980,11 @@ impl AccountPool {
         let is_fable = is_fable_model(model);
         let model_key = model.map(str::to_ascii_lowercase);
         let reprobe = allow_reprobe.then(|| reprobe_interval(pool)).flatten();
-        let (snapshots, rotation, pending_reprobe, quota_expired) = {
+        let (snapshots, rotation, pending_reprobe, quota_expired, cap_verdict) = {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let mut snapshots = Vec::with_capacity(accounts.len());
             // Paused or hard-capped for this request: not selectable.
-            let mut excluded = vec![false; accounts.len()];
+            let mut exclusions = vec![Exclusion::Selectable; accounts.len()];
             let mut quota_expired = false;
             for (index, account) in accounts.iter().enumerate() {
                 let health = self.health_entry(&mut entries, account_key(&provider, account));
@@ -960,11 +998,13 @@ impl AccountPool {
                 // assessment (which swaps 7d for 7d_oi on Fable requests).
                 // The rotation filter drops disabled and paused accounts
                 // anyway, so only the rest need the cap verdict.
-                excluded[index] = paused
-                    || (!account.disabled && {
-                        let (shared, fable) = cap_flags(&health.quota, account, pool);
-                        shared || (is_fable && fable)
-                    });
+                if paused {
+                    exclusions[index] = Exclusion::Paused;
+                } else if !account.disabled {
+                    if let Some(cap) = cap_exclusion(&health.quota, account, is_fable, pool) {
+                        exclusions[index] = Exclusion::Capped(cap);
+                    }
+                }
                 let weekly_reset = governing_weekly_reset(&health.quota, is_fable);
                 // Match quota assessment's request-aware weekly window so a
                 // stale Fable-only reset cannot reorder ordinary traffic.
@@ -979,10 +1019,30 @@ impl AccountPool {
                 let cooldown_until = governing_cooldown(health, is_fable, model_key.as_deref());
                 snapshots.push((cooldown_until, assessment, weekly_reset, min_reset));
             }
-            let rotation = (0..distinct)
-                .map(|offset| ident_reps[(start_slot + offset) % distinct])
-                .filter(|&index| !accounts[index].disabled && !excluded[index])
-                .collect::<Vec<_>>();
+            // One visit per identity representative builds the rotation and
+            // folds the cap verdict: an alias's own caps must not contribute
+            // an `eligible_at`, and a paused or disabled representative is
+            // not selectable whatever its cap.
+            let mut rotation = Vec::with_capacity(distinct);
+            let mut any_capped = false;
+            let mut earliest: Option<u64> = None;
+            for offset in 0..distinct {
+                let index = ident_reps[(start_slot + offset) % distinct];
+                if accounts[index].disabled {
+                    continue;
+                }
+                match exclusions[index] {
+                    Exclusion::Selectable => rotation.push(index),
+                    Exclusion::Paused => {}
+                    Exclusion::Capped(cap) => {
+                        any_capped = true;
+                        earliest = earliest.into_iter().chain(cap.eligible_at).min();
+                    }
+                }
+            }
+            let cap_verdict = any_capped.then_some(CapExhaustion {
+                eligible_at: earliest,
+            });
             // Opportunistic re-probe (Change B): among the final rotation
             // representatives, find the single stale near-quota ChatGPT-family
             // account and reserve it while still holding the entries lock.
@@ -1073,7 +1133,13 @@ impl AccountPool {
                 }
             });
 
-            (snapshots, rotation, pending_reprobe, quota_expired)
+            (
+                snapshots,
+                rotation,
+                pending_reprobe,
+                quota_expired,
+                cap_verdict,
+            )
         };
 
         if quota_expired {
@@ -1106,7 +1172,7 @@ impl AccountPool {
             && sticky_cooldown.is_none_or(|until| until <= now)
             && !sticky_quota.near
         {
-            return (promote(rotation), pending_reprobe);
+            return (promote(rotation), pending_reprobe, cap_verdict);
         }
 
         let is_available =
@@ -1206,6 +1272,7 @@ impl AccountPool {
                     .collect(),
             ),
             pending_reprobe,
+            cap_verdict,
         )
     }
 
@@ -9364,6 +9431,33 @@ mod tests {
         accts[0].disabled = true;
         accts[1].disabled = true;
         assert_eq!(pool.cap_exhaustion("anthropic", &accts, OPUS, None), None);
+    }
+
+    #[test]
+    fn select_order_with_cap_reports_cap_exhaustion_only_while_capped() {
+        let pool = AccountPool::new();
+        let now = unix_now();
+        let mut accts = vec![account("a"), account("b")];
+        for (acct, reset) in accts.iter_mut().zip([now + 7_200, now + 1_800]) {
+            acct.max_utilization_5h = Some(0.5);
+            set_quota(&pool, "anthropic", acct, |q| {
+                q.utilization_5h = Some(0.9);
+                q.reset_5h = Some(reset);
+            });
+        }
+        let (order, verdict) = pool.select_order_with_cap("anthropic", &accts, None, OPUS, None);
+        let capped = Some(CapExhaustion {
+            eligible_at: Some(now + 1_800),
+        });
+        assert!(order.is_empty());
+        assert_eq!(verdict, capped);
+        // Positive twin: with the quota cleared a fresh selection sees an uncapped pool.
+        for acct in &accts {
+            set_quota(&pool, "anthropic", acct, |q| q.utilization_5h = Some(0.1));
+        }
+        let (order, verdict) = pool.select_order_with_cap("anthropic", &accts, None, OPUS, None);
+        assert!(!order.is_empty());
+        assert_eq!(verdict, None);
     }
 
     #[test]
