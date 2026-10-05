@@ -1,5 +1,5 @@
-//! `[server.spend]` — spend-limit policy for the admin spend API and (from the
-//! next stage) enforcement on inference requests.
+//! `[server.spend]` — spend-limit policy for the admin spend API and for
+//! enforcement and metering on `/v1/messages`.
 //!
 //! Policy only: the section holds no credentials. Spend endpoints authenticate
 //! with the `[server.admin]` credential, so enabling spend limits no longer
@@ -24,9 +24,12 @@ pub enum GroupLimitMode {
     Max,
 }
 
-/// `[server.spend]`. Stage 1 deserializes the retention fields without range
-/// validation and validates `group_limit_mode` against its enum, but does not
-/// yet run retention sweeps or resolve group limits.
+/// `[server.spend]`. `blocked_message`, `enforcement.fail_closed_on_error` and
+/// `spend_retention_months` are live: the refusals, the fail-closed switch and
+/// the meter-counter pruning read them. The audit and identity retention days
+/// are deserialized without range validation and no sweep runs yet, and
+/// `group_limit_mode` is validated against its enum but no group limit is
+/// resolved.
 ///
 /// Unlike the `[server.gateway.admin]` block it replaces, this struct retains
 /// no key material, so a derived `Debug` cannot leak a credential.
@@ -78,8 +81,10 @@ impl SpendConfig {
     }
 }
 
-/// `[server.spend.enforcement]` — how the (not yet implemented) enforcement
-/// path behaves when the spend meter itself errors.
+/// `[server.spend.enforcement]` — how `/v1/messages` admission behaves when
+/// the spend meter cannot be trusted for a principal (`false` forwards the
+/// request with a warning, `true` refuses it with `429` when the principal has
+/// a cap; a principal with no cap is forwarded either way).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SpendEnforcementConfig {
     #[serde(default)]

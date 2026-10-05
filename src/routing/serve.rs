@@ -100,8 +100,9 @@ pub(crate) struct AdmittedContext<'a> {
     /// The caller's headers, stripped of every credential slot before they are
     /// sent (see [`judge_headers`]).
     headers: &'a HeaderMap,
-    /// Kept so the borrow cannot outlive the admission that produced it.
-    _inbound: &'a InboundContext,
+    /// The admission that produced this context: it keeps the borrow from
+    /// outliving it, and it names the principal a side call is billed to.
+    inbound: &'a InboundContext,
 }
 
 impl<'a> AdmittedContext<'a> {
@@ -115,8 +116,14 @@ impl<'a> AdmittedContext<'a> {
         Self {
             router_id,
             headers,
-            _inbound: inbound,
+            inbound,
         }
+    }
+
+    /// The requesting principal, whose spend a side call made for this
+    /// request lands on. `None` when the request is unmetered.
+    pub(crate) fn spend_principal(&self) -> Option<&str> {
+        self.inbound.spend_principal()
     }
 
     /// The advertised id, for the routes this call is dispatched on.
@@ -175,7 +182,11 @@ async fn dispatch(
     // codec emits that shape and the adapters route on this path exactly as
     // they do for a client turn.
     let uri = Uri::from_static("/v1/messages");
+    // The judge call itself rides a principal-less internal context — it is
+    // never admitted or enforced on its own — but its cost is the requesting
+    // caller's, billed here once the reply is collected.
     let inbound = InboundContext::internal();
+    let spend = crate::stream_metrics::SpendTap::for_request(state, admitted.spend_principal());
     // The deadline wraps dispatch *and* collection. Awaited in place, never
     // spawned: dropping this future on elapse is what cancels the upstream
     // request, and a spawned task would keep running with nothing to answer.
@@ -225,6 +236,9 @@ async fn dispatch(
                 })
             }
         };
+        if let Some(tap) = &spend {
+            tap.set_target(&outcome.target);
+        }
         // A Responses target answers an upstream that ended before
         // `response.completed` with a whole-looking message, marked. The bytes
         // parse, so without the mark a cut reply is accepted as a verdict —
@@ -272,6 +286,9 @@ async fn dispatch(
                 },
             ),
         })?;
+        if let Some(tap) = &spend {
+            tap.bill_json(status, &bytes);
+        }
         if !status.is_success() {
             // Collected first, and under the same cap: the error body is what
             // makes an upstream refusal diagnosable, and it is no more trusted

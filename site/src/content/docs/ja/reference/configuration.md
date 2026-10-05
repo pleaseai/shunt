@@ -128,22 +128,22 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 
 ## `[server.spend]`（オプション）
 
-このテーブルの存在が、`/v1/organizations/spend_limits` 配下の spend-limit Admin API を登録します。**ポリシーのみ**を保持するトップレベルのセクションで、キー材料は一切持ちません。ルートは [`[server.admin]`](#serveradminオプション) の認証情報で認証するため、spend limit を有効にしても gateway ログインサーフェスは不要です。`[server.admin]` のない `[server.spend]` は設定検証に失敗します。
+このテーブルの存在が、`/v1/organizations/spend_limits` 配下の spend-limit Admin API を登録し、`/v1/messages` の支出計測と上限適用を有効にします。**ポリシーのみ**を保持するトップレベルのセクションで、キー材料は一切持ちません。ルートは [`[server.admin]`](#serveradminオプション) の認証情報で認証するため、spend limit を有効にしても gateway ログインサーフェスは不要です。`[server.admin]` のない `[server.spend]` は設定検証に失敗します。
 
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
-| `blocked_message` | 未設定 | 将来の上限エラー用。ステージ 1 では使用しません |
+| `blocked_message` | 未設定 | `429` 拒否メッセージ（`spend limit reached`、`spend limit unavailable`）の末尾にエムダッシュ付きで追加 |
 | `audit_retention_days` | `365` | 将来の監査レコード保持日数 |
-| `spend_retention_months` | `13` | 将来の支出データ保持月数 |
+| `spend_retention_months` | `13` | counters ファイルに保持するメーターカウンターの暦月数。まだ開いているウィンドウは削除しません |
 | `identity_retention_days` | `90` | 将来のアイデンティティ保持日数 |
 | `group_limit_mode` | `min` | `min` または `max`。将来のグループ上限解決用 |
-| `state_path` | `~/.shunt/gateway-spend.json` | 上限と監査レコードを保存するバージョン付き JSON。`""` はメモリのみ |
+| `state_path` | `~/.shunt/gateway-spend.json` | 上限と監査レコードを保存するバージョン付き JSON。`""` はメモリのみ。メーターのカウンターは兄弟ファイル `<stem>.counters.json`（デフォルト `~/.shunt/gateway-spend.counters.json`）に保存され、10 秒ごとと終了時に flush されます |
 
-管理認証情報は設定された `[server.admin] header` または `x-api-key` で送信します。`read_keys` の認証情報は `GET` のみ使用できます。状態ファイルは変更のたびに非公開の一時ファイルを使ってアトミックに置換されます。ホームディレクトリを解決できない場合、デフォルトはメモリのみです。テーブルの追加・削除と状態パスはどちらも起動時に固定され、設定のリロードでは適用されず警告が記録されます。
+管理認証情報は設定された `[server.admin] header` または `x-api-key` で送信します。`read_keys` の認証情報は `GET` のみ使用できます。状態ファイルは変更のたびに非公開の一時ファイルを使ってアトミックに置換されます。ホームディレクトリを解決できない場合、デフォルトはメモリのみです。上限の適用と支出の計測は現在の設定を読むため、リロードでテーブルを削除すると即座に停止し、追加すると即座に開始します。spend-limit Admin API のルートと永続化は起動時に固定されます。テーブルを追加・削除してもルートは登録も削除もされず、状態パスを変えてもストアは移動しません。再起動までは、どちらの場合もリロード時に警告が記録されます。
 
 ### `[server.spend.pricing]`（オプション）
 
-リクエストのコストを定義します。テーブルを省略すると、組み込みの定価に multiplier 1 が適用されます。テーブルとリゾルバーは起動時に検証されますが、stage 1 にはトークン使用量を読むメーターがないため、まだリクエストの価格計算は行われません。
+リクエストのコストを定義します。テーブルを省略すると、組み込みの定価に multiplier 1 が適用されます。メーターは計測対象の各 `/v1/messages` レスポンスを、応答したアップストリームモデルでこのテーブルに通して価格計算します。価格を解決できないモデルは 100 万トークンあたり入力 / 出力 / キャッシュ読み取り / キャッシュ書き込み `$5 / $25 / $0.50 / $6.25`（`multiplier` を乗算）で計算され、最初の 256 種類のモデル ID まではモデル ID ごとに警告を 1 回記録し、それ以降はこれ以上報告しない旨の警告を 1 回だけ記録します。
 
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
@@ -182,9 +182,9 @@ rate は upstream ごとに、最も具体的なものから順に一致しま�
 
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
-| `fail_closed_on_error` | `false` | 将来の上限適用ステージ用。ステージ 1 では読み取りません |
+| `fail_closed_on_error` | `false` | プリンシパルのメーターを信頼できないとき（復元に失敗したカウンターレコード。そのウィンドウが終わるまで）: `false` はリクエストを転送して警告を記録、`true` は上限のあるプリンシパルを `429` `spend limit unavailable` で拒否（上限のないプリンシパルは転送） |
 
-ステージ 1 はこれらの保持設定、`blocked_message`、`group_limit_mode`、`fail_closed_on_error` を受け付けますが、推論への上限適用、使用量計測、`/effective`、`/audit`、保持スイープ、group scope はまだ実装していません。
+上限適用は `POST /v1/messages` に対して行われます（`count_tokens` は対象外）。プリンシパルは静的な `[server.auth]` トークン名、検証済み JWT のメール、または gateway ログインのメールで、`user` 上限の `user_id` とそのまま照合されます。認証情報を注入するが ID を持たないリクエストは `shunt:anonymous` を共有し、passthrough または `type = "noop"` ルートのみのチェーンは適用も計測もされません。UTC の期間（日、月曜開始の週、月）ごとの上限は、そのプリンシパルの `user` 行、なければ `organization` 行（共有プールではなくユーザーごとのデフォルト）、それもなければ無制限です。`amount: null` の `user` 行は明示的な無制限です。チェックは予約を伴わない事前チェックなので、処理中のリクエストは上限を超えることがあります。上限に達したプリンシパルには `retry-after` と `x-should-retry: false` 付きの `429 billing_error`（`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`）が返り、上限のあるプリンシパルの計測対象レスポンスでは（passthrough または `noop` ルートのみのチェーンはアップストリームのヘッダーをそのまま保持）、すべてのステータスでアップストリームの `anthropic-ratelimit-*` ヘッダーが除去され、そのプリンシパル自身の `anthropic-ratelimit-unified-*` ヘッダーは `2xx` と 2 種類の支出上限による拒否、つまり上限超過の `429` と、`anthropic-ratelimit-unified-overage-disabled-reason: fetch_error` が付く fail-closed の `429 spend limit unavailable` にのみ付きます（その他のエラーや fail-open での転送には付きません）。受信 Codex エンドポイント（`[server.codex_endpoint]`）は、まだ適用も計測もされません（[#733](https://github.com/pleaseai/shunt/issues/733)）。`/audit`、監査・アイデンティティの保持スイープ、group scope は未実装です。詳細な動作は [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)（英語）を参照してください。
 
 ## `[server.gateway]`（オプション）
 

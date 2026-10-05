@@ -28,6 +28,21 @@ mod model_rewrite;
 mod safeguards;
 mod thinking;
 
+/// The model `route` puts on the wire for `request`: the provider's
+/// `classifier_model` for an auto-mode classifier request, otherwise the
+/// route's own `upstream_model`. The one rule spend pricing reads, so the
+/// price follows the model the adapter actually sends.
+pub(crate) fn effective_upstream_model(
+    config: &crate::config::Config,
+    route: &Route,
+    request: &serde_json::Value,
+) -> String {
+    config
+        .provider(&route.provider)
+        .and_then(|provider| auto_mode_classifier::classifier_upstream_model(provider, request))
+        .map_or_else(|| route.upstream_model.clone(), str::to_string)
+}
+
 pub struct AnthropicAdapter;
 
 impl Adapter for AnthropicAdapter {
@@ -65,6 +80,7 @@ async fn forward(
     if let Some(classifier_model) =
         auto_mode_classifier::classifier_upstream_model(provider, body.json())
     {
+        auto_mode_classifier::log_pin(classifier_model);
         route.upstream_model = classifier_model.to_string();
     }
     let route = route;
@@ -1453,6 +1469,7 @@ pub(crate) async fn chain_attempt(
     let pinned;
     let route = match auto_mode_classifier::classifier_upstream_model(provider, body.json()) {
         Some(classifier_model) => {
+            auto_mode_classifier::log_pin(classifier_model);
             pinned = Route {
                 upstream_model: classifier_model.to_string(),
                 ..route.clone()

@@ -62,8 +62,9 @@ baseline for any new route.
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |
 | `[server.codex_endpoint]` | `POST` | `/backend-api/codex/responses`, `/responses`, `/v1/responses` |
 | `[server.codex_endpoint]` | `POST` | `/backend-api/codex/analytics-events/events`, `/codex/analytics-events/events` |
-| `[server.spend]` | `GET`, `POST` | `/v1/organizations/spend_limits` — the only shunt-owned routes inside the otherwise reserved `/v1/organizations/*` namespace ([below](#reserved-namespace--v1organizations)) |
+| `[server.spend]` | `GET`, `POST` | `/v1/organizations/spend_limits` — with the two `spend_limits` paths below, the only shunt-owned routes inside the otherwise reserved `/v1/organizations/*` namespace ([below](#reserved-namespace--v1organizations)) |
 | `[server.spend]` | `GET`, `DELETE` | `/v1/organizations/spend_limits/{id}` |
+| `[server.spend]` | `GET` | `/v1/organizations/spend_limits/effective` — the effective limits and period-to-date spend |
 | `[server.usage]` | `GET` | `/usage` |
 | `[server.oauth_usage]` | `GET` | `/api/oauth/usage` |
 | `[server.admin]` + `--features ui` | `GET` | `/admin/assets/{*path}` and `/admin/{*path}` — the embedded SPA bundle and the shell fallback. Both are registered with `get`, so `GET`/`HEAD` answer and every other method answers `405` with `Allow: GET,HEAD` rather than falling through; plus `/admin/api/{*path}`, registered for **every** method so an unmatched JSON path answers `404` rather than the shell (Decision 3). Absent from a default build, which embeds no bundle |
@@ -74,8 +75,8 @@ Two properties of this table matter downstream:
 - **The router has no catch-all for otherwise-unmatched paths** outside the
   `/admin` mount, which `--features ui` gives the three catch-alls above. Two
   things that do exist are not that: `[server.spend]` attaches a
-  `MethodRouter::fallback` to each of its two paths
-  (`src/gateway/spend/mod.rs:20-32`), which shapes the response to a wrong
+  `MethodRouter::fallback` to each of its three paths
+  (`src/gateway/spend/mod.rs:24-38`), which shapes the response to a wrong
   *method* on a path that matched — it never sees an unmatched path; and the
   `/admin` catch-alls are scoped to their mount. An unmatched path
   therefore gets axum's built-in `404` with an **empty body** — not a
@@ -303,7 +304,7 @@ Any of them works — the load-bearing constraint is *one* call, fanned out.
 | :-- | :-- | :-- |
 | `/admin/*` | operator UI: HTML shell, SPA client routes, `/admin/assets/*` — minus the server-rendered pages that stay (`/admin/login`, `/admin/oidc/callback`), below | shunt |
 | `/admin/api/*` | shunt-specific JSON: pool, status, accounts, observed, provisioning | shunt |
-| `/v1/organizations/*` | **reserved**, minus the two spend-limit paths `[server.spend]` already serves — see below | Anthropic |
+| `/v1/organizations/*` | **reserved**, minus the three spend-limit paths `[server.spend]` already serves — see below | Anthropic |
 
 ### Why the UI and the JSON API must split
 
@@ -390,12 +391,14 @@ retarget it by changing base URL alone. Its conventions — `type` on every obje
 `{type, error:{type,message}, request_id}` envelope, a `request-id` header on
 every response — are fixed by that contract.
 
-shunt implements a **two-path subset** of this today, registered only when
+shunt implements a **three-path subset** of this today, registered only when
 `[server.spend]` is set (`src/gateway/spend/mod.rs`): `GET`/`POST
-/v1/organizations/spend_limits` and `GET`/`DELETE
-/v1/organizations/spend_limits/{id}`. Those carry limit *policy* and its
-mutation audit — not spend counters. `/effective`, `/audit`, and the metering
-they presuppose are unimplemented, and the wider Admin API stays out of scope
+/v1/organizations/spend_limits`, `GET`/`DELETE
+/v1/organizations/spend_limits/{id}`, and `GET
+/v1/organizations/spend_limits/effective`, which serves the effective limits
+with period-to-date spend. Metering and enforcement on `/v1/messages` are
+implemented (see [`gateway-spend-limits.md`](gateway-spend-limits.md)); only
+`/audit` is unimplemented, and the wider Admin API stays out of scope
 for epic #186. The namespace is recorded here so that:
 
 - No shunt-owned route claims `/v1/organizations/*` **outside** that

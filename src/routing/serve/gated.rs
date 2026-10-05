@@ -65,7 +65,7 @@ use crate::proxy::ForwardError;
 use crate::request::RequestBody;
 use crate::routing;
 use crate::server::AppState;
-use crate::stream_metrics::{UpstreamTruncated, UPSTREAM_TRUNCATED_MARKER};
+use crate::stream_metrics::{SpendTap, UpstreamTruncated, UPSTREAM_TRUNCATED_MARKER};
 
 /// Everything the gated call needs from the admitted client request.
 ///
@@ -201,6 +201,14 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let routes = routing::resolve_target_chain(&request.state.config, target, request.router_id);
+    // The turn is billed here, at capture, whatever the verdict then does with
+    // it: a replay is served with the served-response hook off, and a turn
+    // discarded for escalation is never served at all.
+    let spend = crate::stream_metrics::SpendTap::for_request(
+        request.state,
+        request.inbound.spend_principal(),
+    );
+    let started_at = tokio::time::Instant::now();
     let captured = tokio::time::timeout(bounds.gated_max_duration, async {
         // A streaming turn the live path would send through the committed
         // chain stream takes it here too, so a first route that fails before
@@ -250,7 +258,12 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
         let gated = GatedBounds {
             max_bytes: bounds.gated_max_bytes,
             idle: bounds.gated_idle,
-            max_duration: bounds.gated_max_duration,
+            // What is left of the outer bound. An outer timeout that drops
+            // this future still settles the turn (the bill settles on drop)
+            // and maps to a duration cut.
+            max_duration: bounds
+                .gated_max_duration
+                .saturating_sub(started_at.elapsed()),
         };
         let success = match outcome {
             Ok(success) => success,
@@ -260,9 +273,9 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
             return relay_refusal(success, gated).await;
         }
         if streaming {
-            retain_stream(success, gated, synthesized).await
+            retain_stream(success, gated, synthesized, spend.as_ref()).await
         } else {
-            retain_message(success, gated).await
+            retain_message(success, gated, spend.as_ref()).await
         }
     })
     .await;
@@ -353,13 +366,63 @@ async fn collect_gated(body: axum::body::Body, gated: GatedBounds) -> Result<Vec
     }
 }
 
+/// Bills a retained stream exactly once: explicitly when the read ends, or on
+/// drop when the outer `gated_max_duration` cancels the capture mid-read, so a
+/// cut turn is never left unmetered.
+struct StreamBill {
+    tap: Option<SpendTap>,
+    status: StatusCode,
+    retained: Vec<u8>,
+    winner: Option<crate::proxy::chain_stream::ChainStreamWinner>,
+}
+
+impl StreamBill {
+    fn settle(&mut self) {
+        let Some(tap) = self.tap.take() else {
+            return;
+        };
+        // A committed chain stream names its winner only as the body is read;
+        // otherwise the tap already points at the route that answered.
+        if let Some(winner) = &self.winner {
+            tap.set_target(&winner.served());
+        }
+        tap.bill_sse(self.status, &self.retained);
+    }
+}
+
+impl Drop for StreamBill {
+    fn drop(&mut self) {
+        self.settle();
+    }
+}
+
 /// Retain a streaming turn's rendered frames under [`bound_stream`].
+///
+/// The captured bytes — whole or cut — are billed to `spend` once the read
+/// ends, under the streamed rule (usage frames, else the delivered-text
+/// floor), priced on the route that won.
 async fn retain_stream(
     success: ChainSuccess,
     gated: GatedBounds,
     synthesized: bool,
+    spend: Option<&SpendTap>,
 ) -> GatedCapture {
     let (parts, body) = success.response.into_parts();
+    let winner = parts
+        .extensions
+        .get::<crate::proxy::chain_stream::ChainStreamWinner>()
+        .cloned();
+    // Point the tap at the route that answered up front: nothing records
+    // before the bill settles, and a committed stream's winner overrides it.
+    if let Some(tap) = spend {
+        tap.set_target(&success.target);
+    }
+    let mut bill = StreamBill {
+        tap: spend.cloned(),
+        status: success.status,
+        retained: Vec::new(),
+        winner: winner.clone(),
+    };
     // `bound_stream` takes unwrapped chunks on purpose (its closed bound set
     // has no transport member), so a transport error ends the source here and
     // is remembered as its own reason.
@@ -382,9 +445,11 @@ async fn retain_stream(
         ..gated
     };
     let mut bounded = std::pin::pin!(bound_stream(source, uncapped));
-    let mut retained = Vec::new();
     let mut scan = TerminalScan::default();
-    while let Some(item) = bounded.next().await {
+    let bound_cut = loop {
+        let Some(item) = bounded.next().await else {
+            break None;
+        };
         match item {
             Ok(chunk) => {
                 scan.feed(&chunk);
@@ -392,21 +457,33 @@ async fn retain_stream(
                 // it: nothing after it is replayed, and nothing after it is
                 // waited for.
                 let end = scan.terminal_len();
-                let turn = end.map_or(chunk.len(), |end| end - retained.len());
-                if retained.len().saturating_add(turn) > gated.max_bytes {
-                    return GatedCapture::Cut(CutReason::Bound(BoundExceeded::MaxBytes));
+                let turn = end.map_or(chunk.len(), |end| end - bill.retained.len());
+                let over = bill.retained.len().saturating_add(turn) > gated.max_bytes;
+                // A cut capture is never replayed, so without a bill to charge
+                // the crossing chunk is not worth copying.
+                if over && bill.tap.is_none() {
+                    break Some(BoundExceeded::MaxBytes);
                 }
-                retained.extend_from_slice(&chunk[..turn]);
+                // The crossing chunk was received and charged upstream, so it
+                // reaches the bill too; a cut capture is never replayed, so
+                // holding it changes no client-visible byte.
+                bill.retained.extend_from_slice(&chunk[..turn]);
+                if over {
+                    break Some(BoundExceeded::MaxBytes);
+                }
                 if end.is_some() {
-                    break;
+                    break None;
                 }
             }
-            Err(exceeded) => return GatedCapture::Cut(CutReason::Bound(exceeded)),
+            Err(exceeded) => break Some(exceeded),
         }
+    };
+    bill.settle();
+    let retained = std::mem::take(&mut bill.retained);
+    let winner = winner.as_ref();
+    if let Some(exceeded) = bound_cut {
+        return GatedCapture::Cut(CutReason::Bound(exceeded));
     }
-    let winner = parts
-        .extensions
-        .get::<crate::proxy::chain_stream::ChainStreamWinner>();
     // A committed chain stream answers a chain that produced no turn — it ran
     // out, or an attempt failed terminally before its headers — with a `200`
     // and one `error` frame. That is the refusal the ordered loop would have
@@ -440,7 +517,10 @@ async fn retain_stream(
     }
     // A committed chain stream names its winner only as the body is read; the
     // ordered loop knew it when it returned.
-    let (provider, model) = winner.map_or((success.provider, success.model), |winner| winner.get());
+    let (provider, model) = winner
+        .map_or((success.target.provider, success.target.model), |winner| {
+            winner.get()
+        });
     GatedCapture::Retained(RetainedTurn {
         status: success.status,
         headers: parts.headers,
@@ -454,7 +534,14 @@ async fn retain_stream(
 
 /// Retain a non-streaming turn's single JSON message, collected by
 /// [`collect_gated`].
-async fn retain_message(success: ChainSuccess, gated: GatedBounds) -> GatedCapture {
+///
+/// A collected body is billed to `spend` under the non-streamed rule (its
+/// `usage`, else a byte floor), priced on the route that answered.
+async fn retain_message(
+    success: ChainSuccess,
+    gated: GatedBounds,
+    spend: Option<&SpendTap>,
+) -> GatedCapture {
     let (parts, body) = success.response.into_parts();
     // A Responses target synthesizes a whole-looking message from an upstream
     // that ended before `response.completed`; only this mark tells it apart.
@@ -465,6 +552,10 @@ async fn retain_message(success: ChainSuccess, gated: GatedBounds) -> GatedCaptu
         Ok(retained) => retained,
         Err(reason) => return GatedCapture::Cut(reason),
     };
+    if let Some(tap) = spend {
+        tap.set_target(&success.target);
+        tap.bill_json(success.status, &retained);
+    }
     if !is_single_message(&retained) {
         return GatedCapture::Cut(CutReason::Nonterminal);
     }
@@ -473,8 +564,8 @@ async fn retain_message(success: ChainSuccess, gated: GatedBounds) -> GatedCaptu
         headers: parts.headers,
         body: Bytes::from(retained),
         streaming: false,
-        provider: success.provider,
-        model: success.model,
+        provider: success.target.provider,
+        model: success.target.model,
         synthesized: false,
     })
 }

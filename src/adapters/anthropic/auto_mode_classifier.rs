@@ -169,6 +169,9 @@ pub(super) fn is_classifier_request(request: &Value) -> bool {
 /// The upstream model `provider` pins the auto-mode classifier to, when
 /// `request` is a classifier request and the provider configures one.
 ///
+/// Pure: spend pricing reads it too, so the record of the pin
+/// ([`log_pin`]) belongs to the paths that actually send.
+///
 /// Unlike the identity repair this is not gated on the bearer: it is an operator
 /// config choice about which model answers a permission check, not a repair of a
 /// shape upstream would otherwise reject.
@@ -177,17 +180,18 @@ pub(super) fn classifier_upstream_model<'a>(
     request: &Value,
 ) -> Option<&'a str> {
     let classifier_model = provider.classifier_model.as_deref()?;
-    if !is_classifier_request(request) {
-        return None;
-    }
-    // Same reasoning as the identity repair's line: the gateway does not
-    // otherwise pick a model the client did not ask for, so record the one case
-    // where it does. `debug` because it marks configured routine behavior.
+    is_classifier_request(request).then_some(classifier_model)
+}
+
+/// Records that a request about to be sent was pinned to the classifier model.
+/// Same reasoning as the identity repair's line: the gateway does not
+/// otherwise pick a model the client did not ask for, so record the one case
+/// where it does. `debug` because it marks configured routine behavior.
+pub(super) fn log_pin(classifier_model: &str) {
     tracing::debug!(
         classifier_model,
         "pinned an auto-mode classifier request to the configured classifier model"
     );
-    Some(classifier_model)
 }
 
 /// A system block's text with leading whitespace trimmed, or `None` when the

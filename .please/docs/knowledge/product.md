@@ -52,6 +52,9 @@ A single Rust binary that:
 - OAuth login + credential refresh, multi-account pooling & load balancing — `src/auth/`
 - `/v1/models` discovery, `/v1/messages` proxy, `count_tokens`
 - Opt-in admin web surface for browser account provisioning + read-only pool dashboard
+- Opt-in per-user/organization spend caps (`[server.spend]`): metered and enforced on
+  `/v1/messages` requests the gateway pays for (chains made only of passthrough or
+  `noop` routes are neither enforced nor metered), with an Admin API and `/effective` view — `src/gateway/spend/`
 - Observability: tracing, opt-in OpenTelemetry export, Sentry
 
 ## Design Constraints

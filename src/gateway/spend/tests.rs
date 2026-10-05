@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::MutexGuard,
 };
 
 use axum::{
@@ -22,7 +22,12 @@ const READ_KEY: &str = "read-key-0123456789abcdef01234567890";
 /// A legacy `tokens_env` pair. Those are the write tier, so it must behave
 /// exactly like `WRITE_KEY`.
 const TOKEN_KEY: &str = "token-key-0123456789abcdef0123456789";
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+/// The config suite's env lock, not a suite-local one: every test here sets
+/// process env vars (`tokens_env`, and `[server.auth]` tokens in the
+/// `/effective` actor test), so sharing `CONFIG_ENV_LOCK` orders those writes
+/// against the config tests that read the environment. Other modules' env
+/// locks (the auth stores', the Responses pool's) are not covered.
+use crate::config::CONFIG_ENV_LOCK as ENV_LOCK;
 
 /// `[server.admin]` + `[server.spend]` and deliberately **no**
 /// `[server.gateway]`: the whole suite therefore runs against a config that
@@ -175,6 +180,8 @@ fn failing_state_path(directory: &Path) -> PathBuf {
     std::fs::write(&blocker, b"file blocks directory creation").expect("create blocker file");
     blocker.join("state.json")
 }
+
+mod effective;
 
 #[tokio::test]
 async fn upsert_preserves_identity_and_distinguishes_unlimited_from_zero() {

@@ -310,7 +310,7 @@ pub async fn method_not_allowed() -> Response {
 /// its privilege is the maximum over every set it matched. `required_access` is
 /// enforced as a comparison — `write` implies `read` — rather than an equality
 /// test, so a write credential passes a read route.
-fn authenticate(
+pub(super) fn authenticate(
     state: &AppState,
     headers: &HeaderMap,
     required_access: AdminAccess,
@@ -429,7 +429,7 @@ fn not_found(id: &str, request_id: String) -> Response {
     )
 }
 
-fn success<T: Serialize>(status: StatusCode, value: &T, request_id: String) -> Response {
+pub(super) fn success<T: Serialize>(status: StatusCode, value: &T, request_id: String) -> Response {
     let mut response = (status, Json(value)).into_response();
     response.headers_mut().insert(
         "request-id",
@@ -438,7 +438,7 @@ fn success<T: Serialize>(status: StatusCode, value: &T, request_id: String) -> R
     response
 }
 
-fn error(
+pub(super) fn error(
     status: StatusCode,
     error_type: &'static str,
     message: impl Into<String>,
@@ -455,7 +455,7 @@ fn error(
     success(status, &body, request_id)
 }
 
-fn request_id() -> String {
+pub(super) fn request_id() -> String {
     format!("req_{}", crate::admin::session::random_id())
 }
 

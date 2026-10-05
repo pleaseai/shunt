@@ -556,6 +556,11 @@ fn prompt_claude_mode() -> anyhow::Result<LoginMode> {
 /// blocking work" — not a silent 60s.
 const BLOCKING_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Budget for the last spend-counter flush once the drain has ended. A small
+/// fixed constant like [`BLOCKING_SHUTDOWN_GRACE`], so it adds a known 5s to
+/// the worst case instead of a second `shutdown_timeout_seconds`.
+const FINAL_SPEND_FLUSH_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Drives `future` to completion on `runtime`, then bounds runtime teardown
 /// instead of letting the runtime drop.
 ///
@@ -746,6 +751,13 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     shunt::gateway::spend::persist::restore(&state)
         .await
         .context("failed to restore gateway spend-limit state")?;
+    // Spend counters live in a sibling file so a rollback binary that only
+    // knows the caps file still boots. An unreadable envelope aborts startup
+    // like the caps file does; an unreadable record only flags its principal.
+    shunt::gateway::spend::meter::persist::restore(&state)
+        .await
+        .context("failed to restore gateway spend counters")?;
+    shunt::gateway::spend::meter::persist::spawn_flusher(state.clone());
     // Opt-in `[server.status]`: poll provider Statuspage `summary.json`
     // endpoints in the background, sharing the router's status store.
     // Observation-only (see AGENTS.md) and a no-op when `sources` is empty.
@@ -753,7 +765,7 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // Opt-in `[server.pool] usage_refresh_seconds`: poll imported Claude,
     // ChatGPT/Codex, and Antigravity OAuth usage APIs in the background,
     // sharing the router's account pool. A no-op when the key is unset.
-    shunt::usage_poll::spawn_usage_poller(state);
+    shunt::usage_poll::spawn_usage_poller(state.clone());
     let (drain_started_tx, drain_started_rx) = tokio::sync::oneshot::channel();
     let server = axum::serve(
         listener,
@@ -776,6 +788,15 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
             );
         }
     }
+    // The listener is closed. After a clean drain every in-flight turn has had
+    // its chance to record spend; on `TimedOut` the per-connection tasks outlive
+    // the dropped server future, so spend from responses still open at the
+    // deadline bills into memory only after this flush and is not persisted.
+    // Persist the counters once more so a restart enforces against what was
+    // spent before it, bounded by the fixed `FINAL_SPEND_FLUSH_BOUND` so a
+    // timed-out drain cannot double the documented worst case
+    // (docs/bounded-shutdown.md).
+    shunt::gateway::spend::meter::persist::flush_final(&state, FINAL_SPEND_FLUSH_BOUND).await;
     Ok(())
 }
 

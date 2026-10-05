@@ -164,7 +164,7 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
     }))
 }
 
-fn parse_records<T>(
+pub(crate) fn parse_records<T>(
     values: Vec<serde_json::Value>,
     path: &Path,
     kind: &str,

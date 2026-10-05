@@ -128,22 +128,22 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 
 ## `[server.spend]` (선택)
 
-이 테이블의 존재가 `/v1/organizations/spend_limits` 아래의 spend-limit Admin API를 등록합니다. **정책만** 담는 최상위 섹션으로 key 자료는 전혀 갖지 않습니다: 라우트는 [`[server.admin]`](#serveradmin-선택) 자격 증명으로 인증하므로 spend limit을 켜는 데 gateway 로그인 표면이 필요하지 않습니다. `[server.admin]` 없이 `[server.spend]`만 두면 설정 검증에 실패합니다.
+이 테이블의 존재가 `/v1/organizations/spend_limits` 아래의 spend-limit Admin API를 등록하고 `/v1/messages`의 지출 계측과 제한 적용을 켭니다. **정책만** 담는 최상위 섹션으로 key 자료는 전혀 갖지 않습니다: 라우트는 [`[server.admin]`](#serveradmin-선택) 자격 증명으로 인증하므로 spend limit을 켜는 데 gateway 로그인 표면이 필요하지 않습니다. `[server.admin]` 없이 `[server.spend]`만 두면 설정 검증에 실패합니다.
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
-| `blocked_message` | 미설정 | 향후 제한 오류에 사용할 메시지. stage 1은 사용하지 않음 |
+| `blocked_message` | 미설정 | `429` 거부 메시지(`spend limit reached`, `spend limit unavailable`) 뒤에 em dash와 함께 덧붙임 |
 | `audit_retention_days` | `365` | 향후 감사 레코드 보존 일수 |
-| `spend_retention_months` | `13` | 향후 지출 데이터 보존 개월 수 |
+| `spend_retention_months` | `13` | counters 파일에 보존할 meter 카운터의 달력 개월 수. 아직 열려 있는 window는 정리하지 않음 |
 | `identity_retention_days` | `90` | 향후 아이덴티티 보존 일수 |
 | `group_limit_mode` | `min` | 향후 그룹 제한 결정 모드. `min` 또는 `max` |
-| `state_path` | `~/.shunt/gateway-spend.json` | 제한과 감사 레코드를 저장하는 버전이 있는 JSON. `""`은 메모리 전용 |
+| `state_path` | `~/.shunt/gateway-spend.json` | 제한과 감사 레코드를 저장하는 버전이 있는 JSON. `""`은 메모리 전용. meter 카운터는 형제 파일 `<stem>.counters.json`(기본값 `~/.shunt/gateway-spend.counters.json`)에 저장되며 10초마다와 종료 시 flush됨 |
 
-관리자 자격 증명은 구성된 `[server.admin] header` 또는 `x-api-key`로 보냅니다. `read_keys` 자격 증명은 `GET`만 사용할 수 있습니다. 상태 파일은 변경할 때마다 비공개 임시 파일로 원자적으로 교체됩니다. 홈 디렉터리를 확인할 수 없으면 기본값은 메모리 전용입니다. 테이블의 추가·제거와 상태 경로는 모두 부팅 시 고정되며, 구성 리로드는 적용 대신 경고를 기록합니다.
+관리자 자격 증명은 구성된 `[server.admin] header` 또는 `x-api-key`로 보냅니다. `read_keys` 자격 증명은 `GET`만 사용할 수 있습니다. 상태 파일은 변경할 때마다 비공개 임시 파일로 원자적으로 교체됩니다. 홈 디렉터리를 확인할 수 없으면 기본값은 메모리 전용입니다. 제한 적용과 지출 계측은 현재 구성을 읽으므로, 리로드로 테이블을 제거하면 즉시 멈추고 추가하면 즉시 시작됩니다. spend-limit Admin API 라우트와 영속화는 부팅 시 고정됩니다. 테이블을 추가하거나 제거해도 라우트가 등록되거나 빠지지 않고, 상태 경로를 바꿔도 저장소가 옮겨지지 않으며, 재시작 전까지 리로드는 두 경우 모두 경고를 기록합니다.
 
 ### `[server.spend.pricing]` (선택)
 
-요청의 비용을 정의합니다. 테이블을 생략하면 내장 정가에 multiplier 1이 적용됩니다. 테이블과 resolver는 부팅 시 검증되지만, stage 1에는 토큰 사용량을 읽는 meter가 없으므로 아직 어떤 요청도 가격이 매겨지지 않습니다.
+요청의 비용을 정의합니다. 테이블을 생략하면 내장 정가에 multiplier 1이 적용됩니다. meter는 계측 대상인 각 `/v1/messages` 응답을 이 테이블로, 응답을 처리한 업스트림 모델 기준으로 계산합니다. 가격을 알 수 없는 모델은 백만 토큰당 입력 / 출력 / 캐시 읽기 / 캐시 쓰기 `$5 / $25 / $0.50 / $6.25`(여기에 `multiplier` 적용)로 계산하며, 처음 256개의 서로 다른 모델 id까지는 id마다 경고를 한 번 기록하고 그 이후에는 더 이상 보고하지 않는다는 경고를 한 번만 기록합니다.
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
@@ -182,9 +182,9 @@ rate는 upstream 단위로 가장 구체적인 것부터 매칭됩니다. upstre
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
-| `fail_closed_on_error` | `false` | 향후 제한 단계용 설정. stage 1은 읽지 않음 |
+| `fail_closed_on_error` | `false` | 주체의 meter를 신뢰할 수 없을 때(복원에 실패한 카운터 레코드, 해당 window가 끝날 때까지): `false`는 요청을 전달하고 경고를 기록, `true`는 cap이 있는 주체에 대해 `429` `spend limit unavailable`로 거부(cap이 없는 주체는 전달) |
 
-stage 1은 이 보존 설정, `blocked_message`, `group_limit_mode`, `fail_closed_on_error`를 받지만 추론 제한, 사용량 계측, `/effective`, `/audit`, 보존 sweep, group scope는 아직 구현하지 않습니다.
+제한은 `POST /v1/messages`에 적용됩니다(`count_tokens`는 제외). 주체(principal)는 정적 `[server.auth]` 토큰 이름, 검증된 JWT 이메일, 또는 gateway 로그인 이메일이며 `user` 한도의 `user_id`와 그대로 일치시킵니다. 자격 증명을 주입하지만 신원이 없는 요청은 `shunt:anonymous`를 공유하고, passthrough 또는 `type = "noop"` 라우트만으로 이루어진 체인은 제한도 계측도 하지 않습니다. UTC 기간(일, 월요일 시작 주, 월)별 상한은 해당 주체의 `user` 행, 없으면 `organization` 행(공유 풀이 아니라 사용자별 기본값), 그것도 없으면 무제한입니다. `amount: null`인 `user` 행은 명시적 무제한입니다. 검사는 예약 없는 사전 검사이므로 진행 중인 요청은 상한을 넘을 수 있습니다. 상한에 도달한 주체는 `retry-after`와 `x-should-retry: false`가 붙은 `429 billing_error`(`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`)를 받고, 상한이 있는 주체의 계측 대상 응답에서는(passthrough 또는 `noop` 라우트만으로 이루어진 체인은 업스트림 헤더를 그대로 유지) 모든 상태 코드에서 업스트림 `anthropic-ratelimit-*` 헤더가 제거되고, 해당 주체 자신의 `anthropic-ratelimit-unified-*` 헤더는 `2xx`와 두 가지 지출 한도 거부 응답, 즉 상한 초과 `429`와 `anthropic-ratelimit-unified-overage-disabled-reason: fetch_error`가 붙는 fail-closed `429 spend limit unavailable`에만 붙습니다(그 밖의 오류나 fail-open 전달에는 붙지 않음). 인바운드 Codex 엔드포인트(`[server.codex_endpoint]`)는 아직 제한도 계측도 하지 않습니다([#733](https://github.com/pleaseai/shunt/issues/733)). `/audit`, 감사·아이덴티티 보존 sweep, group scope는 아직 구현하지 않았습니다. 전체 동작은 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(영문)를 참고하세요.
 
 ## `[server.gateway]` (선택)
 
