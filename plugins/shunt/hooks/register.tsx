@@ -181,6 +181,9 @@ async function readUsage($: EngineInterface): Promise<Reading> {
   return reading
 }
 
+/** The refresh under way, which a refresh asked for meanwhile joins. */
+let inFlight: Promise<void> | undefined
+
 /**
  * Reads the pool again and moves the band's clock on. Off a gateway the read
  * resolves at once, with no request, and only the clock moves. A refresh that
@@ -188,15 +191,23 @@ async function readUsage($: EngineInterface): Promise<Reading> {
  * band.
  */
 async function refresh($: EngineInterface) {
-  try {
-    const reading = await readUsage($)
-    const at = await $.clock.now()
+  // The minute's poll and a turn's end can land together: join the read
+  // already under way rather than run the helper and the request twice.
+  inFlight ??= (async () => {
+    try {
+      const reading = await readUsage($)
+      const at = await $.clock.now()
 
-    await update($, snapshot, () => snapshotOf(reading))
-    await update($, now, () => at)
-  } catch {
-    // A timer's callback has no caller to report to: the next tick retries.
-  }
+      await update($, snapshot, () => snapshotOf(reading))
+      await update($, now, () => at)
+    } catch {
+      // A timer's callback has no caller to report to: the next tick retries.
+    } finally {
+      inFlight = undefined
+    }
+  })()
+
+  return inFlight
 }
 
 /**
