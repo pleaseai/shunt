@@ -1,0 +1,59 @@
+site/src/content/docs/reference/configuration.md
+  s_93c09460a30bc1::t_0ac836ca0aed88 387
+src/usage.rs
+  s_93c09460a30bc1::t_24c8d974cfb69d 162,169,176-177,189-196,201,212-215
+plugins/shunt/README.md
+  s_93c09460a30bc1::t_0ac836ca0aed88 35-36
+site/src/content/docs/ko/reference/configuration.md
+  s_93c09460a30bc1::t_0597491cba5fbe 291
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_93c09460a30bc1::t_0597491cba5fbe 124
+site/src/content/docs/reference/endpoints.md
+  s_93c09460a30bc1::t_0ac836ca0aed88 165
+site/src/content/docs/ja/guides/claude-code-plugins.md
+  s_93c09460a30bc1::t_0597491cba5fbe 39
+site/src/content/docs/ja/reference/configuration.md
+  s_93c09460a30bc1::t_0597491cba5fbe 290
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_93c09460a30bc1::t_0597491cba5fbe 290
+docs/m12-client-usage-endpoint.md
+  s_93c09460a30bc1::t_0ac836ca0aed88 61-63
+site/src/content/docs/ja/reference/endpoints.md
+  s_93c09460a30bc1::t_0597491cba5fbe 131
+src/usage/tests.rs
+  s_93c09460a30bc1::t_8acc739aa056fc 132-135
+  s_93c09460a30bc1::t_43405c299eebfe 111-131,136-138
+  s_44faff8d837ce3::t_a100f082ccd95c 110
+site/src/content/docs/ko/reference/endpoints.md
+  s_93c09460a30bc1::t_0597491cba5fbe 129
+site/src/content/docs/guides/claude-code-plugins.md
+  s_93c09460a30bc1::t_0ac836ca0aed88 39
+site/src/content/docs/ko/guides/claude-code-plugins.md
+  s_93c09460a30bc1::t_0597491cba5fbe 39
+site/src/content/docs/zh-cn/guides/claude-code-plugins.md
+  s_93c09460a30bc1::t_0597491cba5fbe 39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e8bccd6c590715f6bc7a207a3af8573974a2e286",
+  "prompts": {},
+  "sessions": {
+    "s_44faff8d837ce3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a91ad3b-f15e-4b9d-9962-0fd7dc8fd119",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    },
+    "s_93c09460a30bc1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "22b74a61-960e-44fa-9aaf-0aa45067fe5f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
