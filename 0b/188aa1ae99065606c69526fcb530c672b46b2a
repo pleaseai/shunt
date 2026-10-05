@@ -1,0 +1,21 @@
+plugins/shunt/hooks/register.tsx
+  s_dc30f1453d3aba::t_5b9ee264b6e067 187-189,198-202,204-221
+plugins/shunt/tests/mod/band.test.tsx
+  s_dc30f1453d3aba::t_5b9ee264b6e067 162-211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0b188aa1ae99065606c69526fcb530c672b46b2a",
+  "prompts": {},
+  "sessions": {
+    "s_dc30f1453d3aba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ee22080-e786-4110-8a41-9770b4fcf913",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
