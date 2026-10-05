@@ -159,6 +159,56 @@ describe('usage band on shunt', () => {
     expect(calls).toHaveLength(3)
   })
 
+  test('reads once more when a refresh joins one already under way', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW_MS })
+    const calls: string[] = []
+    let release: (() => void) | undefined
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+
+    mock.env(on, GATEWAY)
+    on('settings.read', () => ({ value: {} }))
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }))
+    on('session.measure', ($, e) => ({ changed: e.changed }))
+    on('turn.complete', () => ({ text: '' }))
+    on('http.fetch', async () => {
+      calls.push('GET')
+
+      // The first read is held open and answers with the pre-turn figures.
+      if (calls.length === 1) {
+        await held
+
+        return { value: { status: 200, ok: true, headers: {}, text: bodyOf(0.62) } }
+      }
+
+      return { value: { status: 200, ok: true, headers: {}, text: bodyOf(0.05) } }
+    })
+    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+      const { Box } = $.ui.resolve(e)
+
+      return <Box key="engine" />
+    })
+
+    await $.session.start(START)
+    await clock.advance(0)
+    expect(calls).toHaveLength(1)
+
+    await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 'turn-1', reason: 'answer' })
+    await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 'turn-2', reason: 'answer' })
+    await clock.settle()
+    expect(calls).toHaveLength(1)
+
+    release?.()
+    await clock.settle()
+
+    const ui = await $.ui.mount({ plugin: 'shunt', surface: 'terminal', component: 'AbovePrompt', props: PROPS })
+
+    expect(calls).toHaveLength(2)
+    expect((await ui.find({ key: '5h' }))?.text).toBe('5H 95% ↻2h 55m')
+  })
+
   test('polls the pool even when the session usage cannot be read', async ($, on) => {
     const { clock, calls } = world(on, GATEWAY, () => [200, bodyOf(0.5)], 'unavailable')
 

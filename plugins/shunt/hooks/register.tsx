@@ -184,6 +184,9 @@ async function readUsage($: EngineInterface): Promise<Reading> {
 /** The refresh under way, which a refresh asked for meanwhile joins. */
 let inFlight: Promise<void> | undefined
 
+/** Set when a refresh joined the one under way: it reads once more. */
+let again = false
+
 /**
  * Reads the pool again and moves the band's clock on. Off a gateway the read
  * resolves at once, with no request, and only the clock moves. A refresh that
@@ -192,16 +195,30 @@ let inFlight: Promise<void> | undefined
  */
 async function refresh($: EngineInterface) {
   // The minute's poll and a turn's end can land together: join the read
-  // already under way rather than run the helper and the request twice.
-  inFlight ??= (async () => {
-    try {
-      const reading = await readUsage($)
-      const at = await $.clock.now()
+  // under way rather than run the helper and the request twice. A read that
+  // began before the turn's usage was recorded would leave the band stale, so
+  // the joiner asks for one trailing read, however many join.
+  if (inFlight !== undefined) {
+    again = true
 
-      await update($, snapshot, () => snapshotOf(reading))
-      await update($, now, () => at)
-    } catch {
-      // A timer's callback has no caller to report to: the next tick retries.
+    return inFlight
+  }
+
+  inFlight = (async () => {
+    try {
+      do {
+        again = false
+
+        try {
+          const reading = await readUsage($)
+          const at = await $.clock.now()
+
+          await update($, snapshot, () => snapshotOf(reading))
+          await update($, now, () => at)
+        } catch {
+          // A timer's callback has no caller to report to: the next tick retries.
+        }
+      } while (again)
     } finally {
       inFlight = undefined
     }
