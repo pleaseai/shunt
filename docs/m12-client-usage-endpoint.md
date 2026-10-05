@@ -52,9 +52,15 @@ table is present; a config reload only re-resolves the client tokens it authenti
 Per tracked window — the rolling 5-hour session window (`5h`), the shared weekly window (`7d`), and
 the Fable-scoped weekly window (`fable` / `7d_oi`):
 
-- `remaining` — `mean(1 - utilization)` over **non-disabled** accounts that report the window: the
-  fraction of the pool's combined capacity still unused, clamped to `0.0..=1.0` and rounded to four
-  decimals. Nine exhausted accounts plus one fresh one read `0.1`, not `1.0`. This is a pool-wide
+- `remaining` — `mean(cap - utilization)` over **non-disabled** accounts that report the window,
+  where `cap` is the account's resolved `max_utilization` hard cap for the window, or `1.0` when
+  none governs it (see [M8](m8-anthropic-multi-account.md)). This is the fraction of the pool's
+  combined capacity still usable before caps exclude accounts, each term clamped to `0.0..=1.0`
+  and the mean rounded to four decimals. Nine
+  exhausted accounts plus one fresh uncapped one read `0.1`, not `1.0`; an account at 44% under a
+  50% cap counts `0.06`. An account a cap already excludes from the requests the window serves
+  counts zero: a 5h or 7d cap excludes it from every request, so its Fable term is zero too. The
+  cap values themselves are not exposed. This is a pool-wide
   aggregate, not a prediction of whether the next request will be admitted (routing also weighs
   availability, model, session affinity, and priority); for that question use the routing-aware
   worst case that `GET /api/oauth/usage` ([M14](m14-oauth-usage-endpoint.md)) reports. `null` only when
@@ -64,7 +70,10 @@ the Fable-scoped weekly window (`fable` / `7d_oi`):
   including turns on a reused connection; Codex has no Fable-scoped (`7d_oi`) signal, though
   another provider in a mixed pool may supply the aggregate Fable window.
 - `resets_at` — the earliest window reset (unix epoch seconds) reported by the accounts counted in
-  `remaining`: the soonest moment the aggregate can change. `null` when none of them reported one.
+  `remaining`, including when a cap holding an account's term at zero clears (a 5h cap zeroes its 7d
+  and Fable terms until the 5h window resets, or until that 5h observation expires five hours after
+  it was taken, whichever comes first — the deadline selection itself uses): the soonest moment the aggregate can
+  change. `null` when none of them reported one.
 
 Plus a pool-level `status` derived purely from availability booleans (no numbers): `exhausted` when
 every selectable (non-disabled) account is unavailable, `degraded` when any is near quota, else `ok`.

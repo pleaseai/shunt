@@ -459,6 +459,15 @@ pub struct AccountSnapshot {
     /// admin view (`model = None`) still sees it; only `available` is
     /// model-scoped.
     pub capped_fable: bool,
+    /// When the shared (5h/7d) cap exclusion clears, as selection computes it
+    /// ([`cap_exclusion`]'s `eligible_at` for a non-Fable request): every capping
+    /// window's reset or observation expiry, whichever comes first. `None` when
+    /// no shared cap applies or a capping window has neither. Not serialized.
+    #[serde(skip)]
+    pub(crate) cap_clears_at: Option<u64>,
+    /// The same for a Fable request, whose exclusion also counts the `7d_oi` cap.
+    #[serde(skip)]
+    pub(crate) cap_clears_at_fable: Option<u64>,
     /// Seconds until the account-wide cooldown expires, when active.
     pub cooldown_secs_remaining: Option<u64>,
     /// Seconds until the Fable-only cooldown expires, when active.
@@ -550,6 +559,8 @@ impl AccountSnapshot {
             near_quota: false,
             capped: false,
             capped_fable: false,
+            cap_clears_at: None,
+            cap_clears_at_fable: None,
             cooldown_secs_remaining: None,
             cooldown_fable_secs_remaining: None,
             priority: account.priority,
@@ -2448,6 +2459,10 @@ impl AccountPool {
                         near_quota: quota.near,
                         capped,
                         capped_fable,
+                        cap_clears_at: cap_exclusion(&health.quota, account, false, pool)
+                            .and_then(|exclusion| exclusion.eligible_at),
+                        cap_clears_at_fable: cap_exclusion(&health.quota, account, true, pool)
+                            .and_then(|exclusion| exclusion.eligible_at),
                         cooldown_secs_remaining,
                         cooldown_fable_secs_remaining,
                         priority: account.priority,
@@ -9552,6 +9567,46 @@ mod tests {
         assert_eq!(
             (none[2].capped, none[2].capped_fable, none[2].available),
             (false, false, true)
+        );
+    }
+
+    #[test]
+    fn snapshot_cap_clearing_time_folds_observation_expiry() {
+        // `expire_stale_quota` drops a capping observation at the end of its
+        // lifetime, so the cap clears then when no earlier reset is known:
+        // a reset-less 7d cap, and a Fable cap whose reset lies past it.
+        let pool = AccountPool::new();
+        let mut accts = vec![account("weekly"), account("fable")];
+        accts[0].max_utilization_7d = Some(0.5);
+        accts[1].max_utilization_fable = Some(0.5);
+        let observed = unix_now() - 100;
+        set_quota(&pool, "anthropic", &accts[0], |q| {
+            q.utilization_7d = Some(0.6);
+            q.observed_at_7d = Some(observed);
+        });
+        set_quota(&pool, "anthropic", &accts[1], |q| {
+            q.utilization_7d_oi = Some(0.6);
+            q.reset_7d_oi = Some(observed + 2 * WINDOW_7D_SECS);
+            q.observed_at_7d_oi = Some(observed);
+        });
+        {
+            let mut entries = pool.entries.lock().unwrap();
+            for acct in &accts {
+                entries
+                    .get_mut(&account_key("anthropic", acct))
+                    .unwrap()
+                    .observed = true;
+            }
+        }
+        let snapshot = pool.snapshot("anthropic", &accts, None, None);
+        let expiry = Some(observed + WINDOW_7D_SECS);
+        assert_eq!(
+            (snapshot[0].cap_clears_at, snapshot[0].cap_clears_at_fable),
+            (expiry, expiry)
+        );
+        assert_eq!(
+            (snapshot[1].cap_clears_at, snapshot[1].cap_clears_at_fable),
+            (None, expiry)
         );
     }
 

@@ -7,7 +7,7 @@ use crate::{
     server::AppState,
 };
 
-use super::{aggregate, aggregate_rows, get, ProviderRows};
+use super::{aggregate, aggregate_rows, get, representative_positions, ProviderRows};
 
 /// A seen account snapshot with the given per-window utilization; all other
 /// fields default to an available, non-disabled account.
@@ -24,6 +24,8 @@ fn snapshot(
         near_quota: false,
         capped: false,
         capped_fable: false,
+        cap_clears_at: None,
+        cap_clears_at_fable: None,
         cooldown_secs_remaining: None,
         cooldown_fable_secs_remaining: None,
         priority: 100,
@@ -82,6 +84,125 @@ fn aggregate_counts_exhausted_accounts_against_pool_capacity() {
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.1));
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(500));
     assert_eq!(body["pool"]["windows"]["7d"]["remaining"], json!(0.0));
+}
+
+#[test]
+fn aggregate_measures_headroom_up_to_each_accounts_cap() {
+    // Headroom stops at the window's hard cap, the point where selection
+    // excludes the account, not at 100%: 0.44 Fable under a 0.5 cap leaves
+    // 0.06, an account past its 0.9 weekly cap leaves 0, and an uncapped
+    // window still measures to 1.0.
+    let mut capped = snapshot("capped", Some(0.10), None, Some(0.96));
+    capped.max_utilization_7d = Some(0.9);
+    capped.utilization_7d_oi = Some(0.44);
+    capped.max_utilization_fable = Some(0.5);
+    let mut uncapped = snapshot("uncapped", Some(0.30), None, Some(0.20));
+    uncapped.utilization_7d_oi = Some(0.40);
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[capped, uncapped])])).unwrap();
+    let windows = &body["pool"]["windows"];
+    // 5h: no cap on either → (0.90 + 0.70) / 2.
+    assert_eq!(windows["5h"]["remaining"], json!(0.8));
+    // 7d: past its cap → 0, plus the uncapped 0.80.
+    assert_eq!(windows["7d"]["remaining"], json!(0.4));
+    // Fable: 0.06 under the cap, plus the uncapped 0.60.
+    assert_eq!(windows["fable"]["remaining"], json!(0.33));
+    assert_eq!(body["providers"]["anthropic"]["windows"], *windows);
+}
+
+#[test]
+fn aggregate_zeroes_headroom_an_excluding_cap_makes_unusable() {
+    // Past its 0.9 weekly cap, an account serves no request at all, so its
+    // 5h and Fable headroom count zero even though both windows are still
+    // under their own caps. A Fable-only cap excludes Fable requests only,
+    // so that account keeps its 5h and 7d headroom.
+    let mut week_capped = snapshot("week-capped", Some(0.0), None, Some(0.96));
+    week_capped.max_utilization_7d = Some(0.9);
+    week_capped.utilization_7d_oi = Some(0.62);
+    week_capped.max_utilization_fable = Some(0.9);
+    week_capped.capped = true;
+    let mut fable_capped = snapshot("fable-capped", Some(0.20), None, Some(0.40));
+    fable_capped.utilization_7d_oi = Some(0.55);
+    fable_capped.max_utilization_fable = Some(0.5);
+    fable_capped.capped_fable = true;
+    let body =
+        serde_json::to_value(aggregate(&[("anthropic", &[week_capped, fable_capped])])).unwrap();
+    let windows = &body["pool"]["windows"];
+    // 5h: week-capped 0, fable-capped 0.80.
+    assert_eq!(windows["5h"]["remaining"], json!(0.4));
+    // 7d: week-capped 0, fable-capped 0.60.
+    assert_eq!(windows["7d"]["remaining"], json!(0.3));
+    // Fable: both excluded from Fable requests. Only week-capped pins the
+    // exclusion (0.28 would show otherwise); fable-capped is past its own cap,
+    // so the clamp zeroes it either way — `capped_fable` derives from that
+    // same cap and utilization, so the flag and the clamp cannot disagree.
+    assert_eq!(windows["fable"]["remaining"], json!(0.0));
+}
+
+#[test]
+fn aggregate_resets_at_includes_when_a_cross_window_cap_clears() {
+    // A 5h-capped account adds nothing to 7d or Fable until its cap clears
+    // (the snapshot's `cap_exclusion` deadline, here the 5h reset), so that is
+    // when both aggregates can next change — even though each window's own
+    // reset is later.
+    let mut five_hour_capped = snapshot("5h-capped", Some(0.95), Some(100), Some(0.30));
+    five_hour_capped.max_utilization_5h = Some(0.9);
+    five_hour_capped.max_utilization_7d = Some(0.9);
+    five_hour_capped.reset_7d = Some(900);
+    five_hour_capped.utilization_7d_oi = Some(0.20);
+    five_hour_capped.reset_7d_oi = Some(800);
+    five_hour_capped.capped = true;
+    five_hour_capped.cap_clears_at = Some(100);
+    five_hour_capped.cap_clears_at_fable = Some(100);
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[five_hour_capped])])).unwrap();
+    let windows = &body["pool"]["windows"];
+    assert_eq!(windows["7d"]["remaining"], json!(0.0));
+    assert_eq!(windows["7d"]["resets_at"], json!(100));
+    assert_eq!(windows["fable"]["resets_at"], json!(100));
+    assert_eq!(windows["5h"]["resets_at"], json!(100));
+}
+
+#[test]
+fn aggregate_resets_at_keeps_an_excluded_accounts_own_reset() {
+    // A 7d-capped account is still excluded after its 5h window resets at
+    // 100, but the snapshot path expires that window's utilization then, so
+    // the account leaves the 5h mean (0.3 -> 0.6). That reset is the soonest
+    // change, not the 7d cap clearing at 900.
+    let mut week_capped = snapshot("7d-capped", Some(0.10), Some(100), Some(0.95));
+    week_capped.max_utilization_7d = Some(0.9);
+    week_capped.reset_7d = Some(900);
+    week_capped.capped = true;
+    let healthy = snapshot("healthy", Some(0.40), Some(500), Some(0.20));
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[week_capped, healthy])])).unwrap();
+    let five_hour = &body["pool"]["windows"]["5h"];
+    assert_eq!(five_hour["remaining"], json!(0.3));
+    assert_eq!(five_hour["resets_at"], json!(100));
+}
+
+#[test]
+fn window_representative_is_the_alias_selection_prefers() {
+    // Aliases of one identity can configure different caps, so the row the
+    // mean reads must be selection's representative (`collapse_representatives`:
+    // lowest priority, first-seen on a tie), not merely the first alias —
+    // otherwise an uncapped first alias would report headroom on an account
+    // selection already excludes under the preferred alias's 50% cap.
+    let first = AccountConfig {
+        name: "first".to_string(),
+        uuid: Some("shared-identity".to_string()),
+        priority: 100,
+        ..AccountConfig::default()
+    };
+    let preferred = AccountConfig {
+        name: "preferred".to_string(),
+        priority: 10,
+        max_utilization: Some(0.5),
+        ..first.clone()
+    };
+    let tied = AccountConfig {
+        name: "tied".to_string(),
+        ..preferred.clone()
+    };
+    let chosen = representative_positions(&[("anthropic", vec![first, preferred, tied])]);
+    assert_eq!(chosen, vec![std::collections::HashSet::from([1])]);
 }
 
 #[test]

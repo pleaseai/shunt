@@ -119,8 +119,9 @@ const providerLines = (
  * The whole `/shunt:usage` answer: the pool's three windows as bars, then the
  * same headroom per pooled provider, then what the numbers mean.
  *
- * The legend is not decoration — `remaining` is the mean *unused* fraction
- * across the pool's accounts, so a bare `62%` invites exactly the wrong
+ * The legend is not decoration — `remaining` is the mean fraction still
+ * *usable* across the pool's accounts (up to each account's `max_utilization`
+ * hard cap), so a bare `62%` invites exactly the wrong
  * reading ("62% burned"), and it is an aggregate rather than a prediction that
  * the next request is admitted.
  *
