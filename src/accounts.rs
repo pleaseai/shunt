@@ -876,16 +876,21 @@ impl AccountPool {
     /// Return account indices without opportunistic re-probing, plus the
     /// hard-cap verdict from the same pass that built the order.
     ///
-    /// Responses pools use this entry point when WebSocket transport is
-    /// enabled. An in-stream rate-limit error arrives as a normal event, so
+    /// The ChatGPT OAuth pool uses this entry point only on the WebSocket
+    /// branch of `forward_chatgpt_oauth`, taken when `codex_websocket_enabled`
+    /// holds for the provider. Its other pool paths select through
+    /// [`select_order_deferred_with_cap`](Self::select_order_deferred_with_cap).
+    /// An in-stream rate-limit error arrives as a normal event, so
     /// the pool does not rotate; the streaming path then calls `mark_healthy`,
     /// which clears the cooldown and, when the turn is treated as successful
     /// and the account already has a positive ramp allowance, doubles that
     /// allowance. That contamination predates re-probing, and this entry point
-    /// only removes re-probing as its new trigger while the deeper fix remains
-    /// deferred. The provider-labelled re-probe metric therefore counts only
-    /// inbound probes for providers with WebSocket enabled. Callers read the
-    /// verdict only when the order is empty; `None` means no selectable
+    /// only removes re-probing as its new trigger on that WebSocket branch
+    /// while the deeper fix remains deferred. For a provider with WebSocket
+    /// enabled, the provider-labelled re-probe metric therefore counts only
+    /// probes from the inbound Codex endpoint (`[server.codex_endpoint]`),
+    /// which still selects through the deferred entry point. Callers read
+    /// the verdict only when the order is empty; `None` means no selectable
     /// representative is capped.
     pub(crate) fn select_order_without_reprobe_with_cap(
         &self,
