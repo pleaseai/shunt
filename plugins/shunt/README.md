@@ -184,8 +184,10 @@ shell, a leading `~/` in an unquoted helper path is expanded to the home
 directory (`HOME`, else `USERPROFILE`) by the mod itself; a quoted `'~/…'` stays
 literal, as in a shell. The login belongs to the gateway the session talks to
 (`ANTHROPIC_BASE_URL`), so it is sent only when `SHUNT_BASE_URL` is unset or
-names that same gateway, and the helper is not even run otherwise; to read
-another gateway's pool, export `SHUNT_TOKEN` for it. If that helper fails — a non-zero exit, no output, or it
+spells that same base URL — compared as a string after trimming whitespace and
+trailing slashes, so `localhost` and `127.0.0.1` count as different — and the
+helper is not even run otherwise; to read another gateway's pool, export
+`SHUNT_TOKEN` for it. If that helper fails — a non-zero exit, no output, or it
 cannot be started — the band flags `shunt · ⚠ gateway login unavailable` and
 `/shunt:usage` says to run `shunt gateway login`, rather than silently showing
 the session's own limits.
