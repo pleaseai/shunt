@@ -72,18 +72,20 @@ jobs:
         working-directory: ui
         run: npm test
 
-      # The shunt mod answers /shunt:usage from TypeScript, not from the Rust
-      # binary, so its suite is a gate here rather than a local convenience.
-      # `claude plugin validate` (which checks the hooks module itself) needs a
-      # Claude Code binary and does not run here; the modules it cannot reach
-      # are the pure ones this suite covers.
+      # The shunt mod answers /shunt:usage and draws its usage band from
+      # TypeScript, not from the Rust binary, so its suite is a gate here
+      # rather than a local convenience. `claude plugin validate` and
+      # `claude plugin test` (which check the hooks module itself) need a
+      # Claude Code binary and do not run here; the modules they cannot reach
+      # here are the pure ones this suite covers.
       - name: Install shunt mod dependencies
         working-directory: plugins/shunt
         run: npm ci
 
-      # `hooks/register.ts` is left out of the typecheck: it is the only module
+      # `hooks/register.tsx` is left out of the typecheck: it is the only module
       # importing `claude-code`, whose types Claude Code generates locally via
       # /plugin-types and which does not exist here (see plugins/shunt/tsconfig.json).
+      # The engine suite, `tests/mod`, is left out for the same reason.
       - name: Typecheck shunt mod
         working-directory: plugins/shunt
         run: npm run typecheck

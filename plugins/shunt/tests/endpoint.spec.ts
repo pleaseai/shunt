@@ -152,4 +152,24 @@ describe('endpoint', () => {
 
     expect(headers).toEqual({ 'x-api-key': 'key' })
   })
+
+  test('the helper gateway login rides as a Bearer when nothing else is set', () => {
+    const { headers } = endpoint(
+      endpointOf({ anthropicBaseUrl: 'http://gateway', helperToken: 'login\n' }),
+    )
+
+    expect(headers).toEqual({ authorization: 'Bearer login' })
+  })
+
+  test('a credential in the environment wins over the helper', () => {
+    const { headers } = endpoint(
+      endpointOf({
+        anthropicBaseUrl: 'http://gateway',
+        anthropicApiKey: 'key',
+        helperToken: 'login',
+      }),
+    )
+
+    expect(headers).toEqual({ 'x-api-key': 'key' })
+  })
 })

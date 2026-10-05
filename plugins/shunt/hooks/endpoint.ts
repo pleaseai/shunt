@@ -10,6 +10,12 @@ export type Environment = {
   shuntToken?: string
   anthropicAuthToken?: string
   anthropicApiKey?: string
+  /**
+   * What shunt's own `apiKeyHelper` printed: the gateway login token of a
+   * `shunt gateway claude` session, which keeps no credential in the
+   * environment. Asked for only when none of the variables above holds one.
+   */
+  helperToken?: string
 }
 
 /**
@@ -44,7 +50,8 @@ const usageUrlOf = (base: string) => `${base.replace(/\/+$/, '')}${USAGE_PATH}`
  * The credential rides the header Claude Code itself uses for that variable —
  * `ANTHROPIC_AUTH_TOKEN` as a `Bearer`, `ANTHROPIC_API_KEY` as `x-api-key` —
  * so whichever shape the operator's `[server.auth]` matches on, it matches the
- * same way here. `SHUNT_TOKEN` overrides both and rides as a `Bearer`.
+ * same way here. `SHUNT_TOKEN` overrides both and rides as a `Bearer`, and the
+ * helper's gateway login token rides as a `Bearer` when nothing else is set.
  *
  * A credential that is set but blank is no credential: `$.env.get` reads an
  * exported-but-empty variable as `''`, so every candidate is normalized to
@@ -62,12 +69,15 @@ export function endpointOf(env: Environment): Resolved {
 
   const bearer = env.shuntToken?.trim() || env.anthropicAuthToken?.trim()
   const apiKey = env.anthropicApiKey?.trim()
+  const helper = env.helperToken?.trim()
 
   const headers: Record<string, string> | undefined = bearer
     ? { authorization: `Bearer ${bearer}` }
     : apiKey
       ? { 'x-api-key': apiKey }
-      : undefined
+      : helper
+        ? { authorization: `Bearer ${helper}` }
+        : undefined
 
   if (headers === undefined) {
     return { problem: NO_TOKEN_TEXT }

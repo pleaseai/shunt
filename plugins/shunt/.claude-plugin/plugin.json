@@ -3,7 +3,7 @@
   "name": "shunt",
   "displayName": "shunt · gateway",
   "version": "0.1.0",
-  "description": "A Claude Mod for the shunt gateway: /shunt:usage reads the shared account pool's remaining headroom and reset times from shunt's GET /usage, so you can see how close the pool is to throttling without the admin dashboard.",
+  "description": "A Claude Mod for the shunt gateway: a band above the prompt shows how much of each window is used and the time to reset — the shared account pool's, read from shunt's GET /usage, or the session's own Claude rate limits off shunt — and /shunt:usage prints the pool's full breakdown.",
   "author": {
     "name": "Minsu Lee",
     "email": "minsu.lee@pleaseai.dev",
@@ -12,5 +12,22 @@
   "homepage": "https://github.com/pleaseai/shunt",
   "repository": "https://github.com/pleaseai/shunt",
   "license": "MIT OR Apache-2.0",
-  "keywords": ["shunt", "llm-gateway", "usage", "quota", "mod", "function-hooks"]
+  "keywords": [
+    "shunt",
+    "llm-gateway",
+    "usage",
+    "quota",
+    "usage-band",
+    "mod",
+    "function-hooks"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "usageBand": {
+      "type": "boolean",
+      "title": "Usage band",
+      "description": "Show usage above the prompt: the shunt pool's, refreshed every minute and after each turn, or the session's own rate limits off shunt. Off, the mod polls nothing and /shunt:usage still answers.",
+      "default": true
+    }
+  }
 }

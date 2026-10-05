@@ -20,9 +20,10 @@ export const NO_BASE_URL_TEXT =
   '/shunt:usage again.'
 
 export const NO_TOKEN_TEXT =
-  'no client token to authenticate with — GET /usage requires ' +
-  '[server.auth], and none of SHUNT_TOKEN, ANTHROPIC_AUTH_TOKEN or ' +
-  'ANTHROPIC_API_KEY is set. Ask the gateway operator for a client token.'
+  'no credential to authenticate with — none of SHUNT_TOKEN, ' +
+  'ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY is set, and the apiKeyHelper ' +
+  'is not shunt gateway token. Log in with shunt gateway login, or ask the ' +
+  'gateway operator for a client token.'
 
 export const NOT_ENABLED_TEXT =
   'the gateway answered, but GET /usage is not enabled on it. Add an ' +
@@ -30,10 +31,11 @@ export const NOT_ENABLED_TEXT =
   'no keys, but it requires [server.auth] to be set as well.'
 
 export const REFUSED_TEXT =
-  'the gateway refused the client token this session is using. The first ' +
-  'of SHUNT_TOKEN, ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY that is set ' +
-  'is the one sent, and the rest are ignored — check that one against the ' +
-  "gateway's [server.auth]."
+  'the gateway refused the credential this session is using. The first ' +
+  'of SHUNT_TOKEN, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY and the ' +
+  'shunt gateway token helper that is set is the one sent, and the rest are ' +
+  "ignored — check that one against the gateway's [server.auth], or log in " +
+  'again with shunt gateway login.'
 
 export const HOOK_FAILED_TEXT =
   'could not read the pool usage — the hook that answers this command ' +
