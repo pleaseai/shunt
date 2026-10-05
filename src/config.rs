@@ -9217,6 +9217,9 @@ policy = { type = "target_selector", selector = "/target" }
         // `[server.gateway]` alone identifies the caller by gateway login, so
         // the pairing validates without `[server.auth]`. `validate()` resolves
         // the gateway too, so give it a signing secret and an approval user.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let suffix = format!("{}_usage", std::process::id());
         let secret_env = format!("SHUNT_USAGE_VALIDATE_GW_SECRET_{suffix}");
         let users_env = format!("SHUNT_USAGE_VALIDATE_GW_USERS_{suffix}");
