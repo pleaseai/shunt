@@ -1,0 +1,102 @@
+.please/docs/tracks/completed/select-order-cap-verdict-20261005/plan.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 1-127
+CHANGELOG.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 3-9
+.please/docs/tracks/completed/per-window-max-utilization-20261004/plan.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 199
+.please/docs/tracks/completed/select-order-cap-verdict-20261005/stakeholder-comm.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 1-21
+src/adapters/gemini/mod.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 210,463-467
+  s_dc30f1453d3aba::t_03dda9eafc0749 468-469
+src/oauth_usage/tests.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 28-29
+.release-please-manifest.json
+  s_dc30f1453d3aba::t_8248fe963ad3f5 2
+plugins/shunt/commands/usage.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 24-26,28
+site/src/content/docs/zh-cn/guides/claude-code-plugins.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 59
+src/usage.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 70-77,87-91,166-167,173-174,177-183,188,190-201,205-206,217-227,244-272,285-291,304-305,307,309-316
+.please/docs/tracks/tech-debt-tracker.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 15
+src/adapters/mod.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 96-98,101,103
+src/accounts.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 140,391,462-470,562-563,647-655,798-819,828-855,858-873,876-877,887-890,897-900,916-921,929-930,941,943,994,998,1012-1018,1033-1056,1147-1153,1186,1286,2462-2465,9451-9477,9573-9611
+  s_dc30f1453d3aba::t_dd05a7db471a94 9612
+site/src/content/docs/ko/guides/claude-code-plugins.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 59
+plugins/shunt/hooks/report.ts
+  s_dc30f1453d3aba::t_8248fe963ad3f5 16-17
+site/src/content/docs/zh-cn/reference/endpoints.md
+  s_dc30f1453d3aba::t_d6d1aadb9e266e 124
+src/auth/claude/usage.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 365-366
+.please/docs/tracks.jsonl
+  s_dc30f1453d3aba::t_8248fe963ad3f5 2
+Cargo.toml
+  s_dc30f1453d3aba::t_8248fe963ad3f5 10
+site/src/content/docs/guides/claude-code-plugins.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 59
+plugins/shunt/README.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 68,70-75
+site/src/content/docs/reference/configuration.md
+  s_dc30f1453d3aba::t_d6d1aadb9e266e 387
+.please/docs/tracks/completed/select-order-cap-verdict-20261005/spec.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 1-63
+src/adapters/anthropic/mod.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 193,691,788,931
+site/src/content/docs/ja/guides/claude-code-plugins.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 59
+.please/docs/review/rejected-findings.jsonl
+  s_dc30f1453d3aba::t_8248fe963ad3f5 98-100
+site/src/content/docs/ko/reference/endpoints.md
+  s_dc30f1453d3aba::t_d6d1aadb9e266e 129
+src/adapters/responses/pool.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 39,61-76,125-127,343,361,403,535,1023,1041,1056-1064,1066,1404,3963
+src/usage/tests.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 11,28-29,90-207
+  s_dc30f1453d3aba::t_83747ec031f9c4 208
+site/src/content/docs/ja/reference/endpoints.md
+  s_dc30f1453d3aba::t_d6d1aadb9e266e 131
+.please/docs/tracks/completed/select-order-cap-verdict-20261005/metadata.json
+  s_dc30f1453d3aba::t_8248fe963ad3f5 1-13
+site/src/content/docs/reference/endpoints.md
+  s_dc30f1453d3aba::t_d6d1aadb9e266e 165
+src/adapters/responses/mod.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 636,653
+src/adapters/responses/inbound.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 152,303
+docs/m12-client-usage-endpoint.md
+  s_dc30f1453d3aba::t_8248fe963ad3f5 73-81,91-94
+plugins/shunt/hooks/views.ts
+  s_dc30f1453d3aba::t_8248fe963ad3f5 122-124
+site/src/content/docs/ko/reference/configuration.md
+  s_dc30f1453d3aba::t_d6d1aadb9e266e 291
+tests/antigravity_multi_account.rs
+  s_dc30f1453d3aba::t_8248fe963ad3f5 546-644
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_dc30f1453d3aba::t_d6d1aadb9e266e 290
+site/src/content/docs/ja/reference/configuration.md
+  s_dc30f1453d3aba::t_d6d1aadb9e266e 290
+Cargo.lock
+  s_dc30f1453d3aba::t_a88ca08d2c8a49 3211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "48dd960ab5b078161d1f9d0f32ea2ed4b5766fa0",
+  "prompts": {},
+  "sessions": {
+    "s_dc30f1453d3aba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ee22080-e786-4110-8a41-9770b4fcf913",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
