@@ -7,7 +7,7 @@ use crate::{
     server::AppState,
 };
 
-use super::{aggregate, aggregate_rows, get, ProviderRows};
+use super::{aggregate, aggregate_rows, get, representative_positions, ProviderRows};
 
 /// A seen account snapshot with the given per-window utilization; all other
 /// fields default to an available, non-disabled account.
@@ -105,6 +105,33 @@ fn aggregate_measures_headroom_up_to_each_accounts_cap() {
     // Fable: 0.06 under the cap, plus the uncapped 0.60.
     assert_eq!(windows["fable"]["remaining"], json!(0.33));
     assert_eq!(body["providers"]["anthropic"]["windows"], *windows);
+}
+
+#[test]
+fn window_representative_is_the_alias_selection_prefers() {
+    // Aliases of one identity can configure different caps, so the row the
+    // mean reads must be selection's representative (`collapse_representatives`:
+    // lowest priority, first-seen on a tie), not merely the first alias —
+    // otherwise an uncapped first alias would report headroom on an account
+    // selection already excludes under the preferred alias's 50% cap.
+    let first = AccountConfig {
+        name: "first".to_string(),
+        uuid: Some("shared-identity".to_string()),
+        priority: 100,
+        ..AccountConfig::default()
+    };
+    let preferred = AccountConfig {
+        name: "preferred".to_string(),
+        priority: 10,
+        max_utilization: Some(0.5),
+        ..first.clone()
+    };
+    let tied = AccountConfig {
+        name: "tied".to_string(),
+        ..preferred.clone()
+    };
+    let chosen = representative_positions(&[("anthropic", vec![first, preferred, tied])]);
+    assert_eq!(chosen, vec![std::collections::HashSet::from([1])]);
 }
 
 #[test]

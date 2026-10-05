@@ -230,8 +230,13 @@ fn window_status<'a>(
 /// the store family and stable identity but not the provider name, so the same
 /// identity configured under two providers is one account too — hence one pass
 /// over all providers. An enabled alias wins over a disabled one so a disabled
-/// first alias does not hide an identity that still serves; order is otherwise
-/// first-seen. Only the window aggregates use this subset — `status` keeps
+/// first alias does not hide an identity that still serves, then the lowest
+/// `priority`, first-seen on a tie — the order `collapse_representatives` uses,
+/// so within one provider the window means read the hard caps selection
+/// actually enforces when aliases configure different ones. Across providers
+/// selection never compares aliases (each provider enforces its own), so the
+/// pool-wide pick there is the same ordering applied as a heuristic. Only the
+/// window aggregates use this subset — `status` keeps
 /// reading every row, so each alias's own threshold verdict still counts.
 fn representative_positions(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<HashSet<usize>> {
     let mut by_key: HashMap<AccountKey, (usize, usize)> = HashMap::new();
@@ -244,12 +249,19 @@ fn representative_positions(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<Hash
             match by_key.entry(account_key(provider, account)) {
                 Entry::Occupied(mut entry) => {
                     let (seen_provider, seen_index) = *entry.get();
-                    let seen_disabled = if seen_provider == provider_index {
-                        kept[seen_index].is_some_and(|seen| seen.disabled)
+                    let seen = if seen_provider == provider_index {
+                        kept[seen_index]
                     } else {
-                        chosen[seen_provider][seen_index].is_some_and(|seen| seen.disabled)
+                        chosen[seen_provider][seen_index]
                     };
-                    if seen_disabled && !account.disabled {
+                    // `collapse_representatives`' order, so the row whose
+                    // caps the mean reads is the alias selection enforces.
+                    let outranks = seen.is_some_and(|seen| {
+                        (seen.disabled && !account.disabled)
+                            || (seen.disabled == account.disabled
+                                && account.priority < seen.priority)
+                    });
+                    if outranks {
                         if seen_provider == provider_index {
                             kept[seen_index] = None;
                         } else {

@@ -21,8 +21,9 @@ Read the response as follows. `pool` is the aggregate across every pooled
 provider and `providers` is the same aggregate per configured provider. For
 each of the three windows — `5h` (rolling session), `7d` (shared weekly) and
 `fable` (the Fable-scoped weekly window) — `remaining` is the fraction of the
-pool's combined capacity still **unused**, so `0.62` means 62% of the headroom
-is left, not that 62% is spent; `null` means no account reported that window.
+pool's combined capacity still **usable** before any account's `max_utilization`
+hard cap excludes it, so `0.62` means 62% of the headroom is left, not that 62%
+is spent; `null` means no account reported that window.
 `resets_at` is unix epoch seconds, the earliest reset among the accounts
 counted. The figures are a shared pool-wide mean, not a prediction that the
 next request will be admitted.
