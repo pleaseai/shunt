@@ -1,0 +1,40 @@
+docs/bounded-shutdown.md
+  s_9f901e59727f87::t_a5d740ea0bedf3 49-51
+  s_9f901e59727f87::t_ad63a6dc22fdcc 44-48
+docs/gateway-spend-limits.md
+  s_9f901e59727f87::t_2067725aa6f0c4 120
+  s_9f901e59727f87::t_ea0715e02543df 144
+  s_9f901e59727f87::t_5798b662bb0acf 126
+.please/docs/product-specs/gateway/spend-limits.json
+  s_9f901e59727f87::t_b32df0927b62e1 114
+.please/docs/product-specs/gateway/spend-limits.md
+  s_9f901e59727f87::t_3681e45e2aa7c4 154,157,159,162
+.please/docs/product-specs/index.json
+  s_9f901e59727f87::t_485b4ce3dffabd 78
+.please/docs/tracks/completed/spend-enforcement-20261003/spec.md
+  s_9f901e59727f87::t_c2fca4a0566b49 45,77-78
+site/src/content/docs/ja/reference/configuration.md
+  s_9f901e59727f87::t_c16f8876c02e82 187
+site/src/content/docs/ko/reference/configuration.md
+  s_9f901e59727f87::t_8724223c9ce6d8 187
+site/src/content/docs/reference/configuration.md
+  s_9f901e59727f87::t_91ac0f01602451 248
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_9f901e59727f87::t_30c6ffffd4e967 187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fc25c989e5abc1e6bd3499922d6fa8e329044316",
+  "prompts": {},
+  "sessions": {
+    "s_9f901e59727f87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "321677c8-cff9-4c24-9b5d-93c0c797c39d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
