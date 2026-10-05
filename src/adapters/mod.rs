@@ -93,19 +93,14 @@ fn cap_exhausted_error(provider: &str, exhaustion: crate::accounts::CapExhaustio
 
 /// The cap-exhaustion error for a pool whose empty order is down to
 /// `max_utilization` caps, with the `capped` rotation metric recorded. `None`
-/// when no account is capped (a pause or outage keeps its own exit). Callers
-/// ask only when `select_order*` returned an empty order.
+/// when no account is capped (a pause or outage keeps its own exit). `cap` is
+/// the verdict from the `select_order*_with_cap` call that produced the empty
+/// order, so it cannot disagree with that order; callers read it only then.
 pub(crate) fn cap_exhausted(
-    state: &AppState,
     route: &Route,
-    accounts: &[crate::config::AccountConfig],
+    cap: Option<crate::accounts::CapExhaustion>,
 ) -> Option<AdapterError> {
-    let exhaustion = state.accounts.cap_exhaustion(
-        &route.provider,
-        accounts,
-        Some(route.upstream_model.as_str()),
-        state.config.server.pool.as_ref(),
-    )?;
+    let exhaustion = cap?;
     crate::metrics::record_pool_rotation(&route.provider, "capped");
     Some(cap_exhausted_error(&route.provider, exhaustion))
 }

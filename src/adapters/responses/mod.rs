@@ -633,7 +633,7 @@ pub(crate) async fn chain_attempt(
                     retry_after: None,
                 };
             }
-            let (order, reprobe) = state.accounts.select_order_deferred(
+            let (order, reprobe, cap) = state.accounts.select_order_deferred_with_cap(
                 &route.provider,
                 &accounts,
                 session_id.as_deref(),
@@ -650,6 +650,7 @@ pub(crate) async fn chain_attempt(
                 upstream_body: upstream_body.clone(),
                 accounts_config: std::sync::Arc::new(accounts),
                 order,
+                cap,
                 reprobe,
                 ramp_initial: state.config.storm_ramp_initial(),
                 record_metrics: false,

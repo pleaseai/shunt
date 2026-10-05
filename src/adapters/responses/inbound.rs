@@ -149,7 +149,7 @@ async fn forward_codex_passthrough(
     // translating outbound path: near-quota accounts rotate proactively and
     // available accounts order by burn-rate headroom (issue #195). The
     // passthrough body's model is a label only (no fable-scoped Codex window).
-    let (order, mut reprobe_reservation) = state.accounts.select_order_deferred(
+    let (order, mut reprobe_reservation, cap) = state.accounts.select_order_deferred_with_cap(
         &route.provider,
         &accounts_config,
         pool_key.as_deref(),
@@ -300,7 +300,7 @@ async fn forward_codex_passthrough(
     }
 
     if candidates == 0 {
-        if let Some(error) = crate::adapters::cap_exhausted(&state, &route, &accounts_config) {
+        if let Some(error) = crate::adapters::cap_exhausted(&route, cap) {
             return Err(error);
         }
     }
