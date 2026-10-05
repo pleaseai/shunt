@@ -30,8 +30,10 @@ next request will be admitted.
 
 A `404` means the gateway is running but `GET /usage` is not enabled: it needs
 an `[server.usage]` table in the gateway config, which in turn requires
-`[server.auth]` (client tokens) or `[server.gateway]` (gateway login). A `401` or `403` means the gateway refused this session's
-client token.
+`[server.auth]` (client tokens) or `[server.gateway]` (gateway login). A `401`
+or `403` means the gateway rejected the credential this session sent: a client
+token `[server.auth]` does not accept, or an expired or revoked gateway login
+(run `shunt gateway login` again).
 
 Enable the mod to get this answer instantly and without a tool call:
 

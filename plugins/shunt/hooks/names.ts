@@ -35,8 +35,9 @@ export const REFUSED_TEXT =
   'the gateway refused the credential this session is using. The first ' +
   'of SHUNT_TOKEN, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY and the ' +
   'shunt gateway token helper that is set is the one sent, and the rest are ' +
-  "ignored — check that one against the gateway's [server.auth], or log in " +
-  'again with shunt gateway login.'
+  'ignored. A client token must be one the gateway\'s [server.auth] accepts; ' +
+  'a gateway login may have expired or been revoked, so log in again with ' +
+  'shunt gateway login.'
 
 export const HOOK_FAILED_TEXT =
   'could not read the pool usage — the hook that answers this command ' +
