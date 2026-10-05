@@ -82,8 +82,10 @@ pub struct WindowStatus {
     /// that aggregate window.
     pub remaining: Option<f64>,
     /// Earliest reported reset time (unix epoch seconds) among the accounts
-    /// counted in `remaining` — the soonest moment the aggregate can change.
-    /// `None` when none of them reported one.
+    /// counted in `remaining`, including when a cap that zeroes an account's
+    /// term clears (the reset of the window holding it at its cap) — the
+    /// soonest moment the aggregate can change. `None` when none of them
+    /// reported one.
     pub resets_at: Option<u64>,
 }
 
@@ -159,22 +161,21 @@ fn pool_aggregate<'a>(
                 window_snapshots.clone(),
                 |s| s.utilization_5h,
                 |s| s.max_utilization_5h,
-                |s| s.capped,
+                CapScope::Shared,
                 |s| s.reset_5h,
             ),
             seven_day: window_status(
                 window_snapshots.clone(),
                 |s| s.utilization_7d,
                 |s| s.max_utilization_7d,
-                |s| s.capped,
+                CapScope::Shared,
                 |s| s.reset_7d,
             ),
             fable: window_status(
                 window_snapshots,
                 |s| s.utilization_7d_oi,
                 |s| s.max_utilization_fable,
-                // A shared 5h/7d cap also keeps Fable traffic off the account.
-                |s| s.any_cap(),
+                CapScope::Fable,
                 |s| s.reset_7d_oi,
             ),
         },
@@ -187,10 +188,11 @@ fn pool_aggregate<'a>(
 /// hard cap, `1.0` when uncapped), and the earliest reset any of them reported.
 /// The snapshot's cap is the one selection's `utilization >= cap` check reads,
 /// so an account's term reaches zero exactly when that check excludes it.
-/// `excluded` is the cap verdict for the requests this window serves — a shared
-/// 5h/7d cap excludes the account from every request, Fable ones included — and
-/// zeroes the term even when this window alone is still under its cap, since
-/// that headroom is not usable until the other window clears. A cap with no
+/// `scope` names the requests this window serves, and an account a cap excludes
+/// from them — a shared 5h/7d cap excludes it from every request, Fable ones
+/// included — counts zero even when this window alone is still under its cap,
+/// since that headroom is not usable until the blocking window clears. That
+/// clearing time joins `resets_at`, because the aggregate changes then too. A cap with no
 /// observed window behind it (the Fable cap on a Codex account, which reports
 /// no `7d_oi`) adds nothing. Not a guarantee about which account the next
 /// request will actually route to.
@@ -198,7 +200,7 @@ fn window_status<'a>(
     snapshots: impl Iterator<Item = &'a AccountSnapshot>,
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
     cap: impl Fn(&AccountSnapshot) -> Option<f64>,
-    excluded: impl Fn(&AccountSnapshot) -> bool,
+    scope: CapScope,
     reset: impl Fn(&AccountSnapshot) -> Option<u64>,
 ) -> WindowStatus {
     let mut reporting = 0usize;
@@ -209,7 +211,11 @@ fn window_status<'a>(
             continue;
         };
         reporting += 1;
-        if !excluded(snapshot) {
+        if scope.excludes(snapshot) {
+            if let Some(at) = scope.exclusion_clears_at(snapshot) {
+                earliest_reset = Some(earliest_reset.unwrap_or(at).min(at));
+            }
+        } else {
             let ceiling = cap(snapshot).unwrap_or(1.0);
             headroom_sum += (ceiling - used).clamp(0.0, 1.0);
         }
@@ -226,6 +232,57 @@ fn window_status<'a>(
     WindowStatus {
         remaining: Some(round4(headroom_sum / reporting as f64)),
         resets_at: earliest_reset,
+    }
+}
+
+/// The requests a window's headroom serves, for the hard-cap verdict that
+/// zeroes an account's term: the shared 5h/7d windows serve every request, the
+/// Fable window serves Fable requests, which the shared caps also govern.
+#[derive(Clone, Copy)]
+enum CapScope {
+    Shared,
+    Fable,
+}
+
+impl CapScope {
+    /// Whether selection excludes the account from this scope's requests.
+    fn excludes(self, snapshot: &AccountSnapshot) -> bool {
+        match self {
+            Self::Shared => snapshot.capped,
+            Self::Fable => snapshot.any_cap(),
+        }
+    }
+
+    /// When that exclusion clears: the latest reset among this scope's windows
+    /// at or past their cap (every one must clear), or `None` when one of them
+    /// reports no reset.
+    fn exclusion_clears_at(self, snapshot: &AccountSnapshot) -> Option<u64> {
+        let fable = (
+            snapshot.utilization_7d_oi,
+            snapshot.max_utilization_fable,
+            snapshot.reset_7d_oi,
+        );
+        let windows = [
+            Some((
+                snapshot.utilization_5h,
+                snapshot.max_utilization_5h,
+                snapshot.reset_5h,
+            )),
+            Some((
+                snapshot.utilization_7d,
+                snapshot.max_utilization_7d,
+                snapshot.reset_7d,
+            )),
+            matches!(self, Self::Fable).then_some(fable),
+        ];
+        let mut clears_at = None;
+        for (used, cap, reset) in windows.into_iter().flatten() {
+            if used.zip(cap).is_some_and(|(used, cap)| used >= cap) {
+                let reset = reset?;
+                clears_at = Some(clears_at.map_or(reset, |at: u64| at.max(reset)));
+            }
+        }
+        clears_at
     }
 }
 

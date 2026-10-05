@@ -137,6 +137,27 @@ fn aggregate_zeroes_headroom_an_excluding_cap_makes_unusable() {
 }
 
 #[test]
+fn aggregate_resets_at_includes_when_a_cross_window_cap_clears() {
+    // A 5h-capped account adds nothing to 7d or Fable until the 5h window
+    // resets, so that reset is when both aggregates can next change — even
+    // though each window's own reset is later. A window under its cap does
+    // not hold the exclusion, so its reset is not folded in.
+    let mut five_hour_capped = snapshot("5h-capped", Some(0.95), Some(100), Some(0.30));
+    five_hour_capped.max_utilization_5h = Some(0.9);
+    five_hour_capped.max_utilization_7d = Some(0.9);
+    five_hour_capped.reset_7d = Some(900);
+    five_hour_capped.utilization_7d_oi = Some(0.20);
+    five_hour_capped.reset_7d_oi = Some(800);
+    five_hour_capped.capped = true;
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[five_hour_capped])])).unwrap();
+    let windows = &body["pool"]["windows"];
+    assert_eq!(windows["7d"]["remaining"], json!(0.0));
+    assert_eq!(windows["7d"]["resets_at"], json!(100));
+    assert_eq!(windows["fable"]["resets_at"], json!(100));
+    assert_eq!(windows["5h"]["resets_at"], json!(100));
+}
+
+#[test]
 fn window_representative_is_the_alias_selection_prefers() {
     // Aliases of one identity can configure different caps, so the row the
     // mean reads must be selection's representative (`collapse_representatives`:
