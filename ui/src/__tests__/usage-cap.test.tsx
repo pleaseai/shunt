@@ -130,4 +130,12 @@ describe('the configured hard cap is shown beside the usage it limits', () => {
     // To 0.1%, as the usage bar shows it, not rounded to a whole percent.
     expect(cells[6]?.textContent).toBe('— · cap 87.5%');
   });
+
+  it('names the cap ahead of the reset in both tables', async () => {
+    const reset = Math.floor(Date.now() / 1000) + 3 * 3600;
+    await renderDashboard(poolWith({ utilization_5h: 0.3, reset_5h: reset, max_utilization_5h: 0.5 }));
+    expect(bar('5h').caption).toMatch(/^30% used · cap 50% · \d/);
+    const cells = rowOf(tbody('pool').getByText('pool-a')).querySelectorAll('td');
+    expect(cells[4]?.textContent).toMatch(/^30% · cap 50% · \d/);
+  });
 });
