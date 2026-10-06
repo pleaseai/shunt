@@ -1,6 +1,6 @@
 ---
 title: Claude Code 플러그인
-description: shunt의 Claude Code 플러그인 설치 — 풀 여유를 보여주는 /shunt:usage mod와, shunt가 우회시키는 모델을 위한 서브에이전트 번들.
+description: shunt의 Claude Code 플러그인 설치 — 프롬프트 위에 사용량을, /shunt:usage에 풀 여유를 보여주는 mod와, shunt가 우회시키는 모델을 위한 서브에이전트 번들.
 ---
 
 shunt는 자체 Claude Code 플러그인 마켓플레이스를 제공합니다. 한 번만 추가하세요:
@@ -9,7 +9,7 @@ shunt는 자체 Claude Code 플러그인 마켓플레이스를 제공합니다. 
 /plugin marketplace add pleaseai/shunt
 ```
 
-여기에는 두 종류의 플러그인이 있습니다. 하나는 **`shunt` mod** — 게이트웨이 자체의 풀 사용량을 보고하는 명령을 추가합니다. 다른 하나는 **프로바이더 번들** — shunt가 다른 프로바이더로 우회시키는 모델에서 실행되는 서브에이전트를 추가합니다.
+여기에는 두 종류의 플러그인이 있습니다. 하나는 **`shunt` mod** — 프롬프트 위 밴드에 사용량(shunt에서는 게이트웨이 풀, 그 밖에서는 세션 자체)을 보여주고, 명령으로 풀의 상세 내역을 보여줍니다. 다른 하나는 **프로바이더 번들** — shunt가 다른 프로바이더로 우회시키는 모델에서 실행되는 서브에이전트를 추가합니다.
 
 ## `shunt` mod: `/shunt:usage`
 
@@ -33,6 +33,26 @@ shunt: pool — degraded   http://127.0.0.1:3001
 ```
 
 mod가 명령에 직접 답하므로, 모델로는 아무것도 전송되지 않고 답변에 토큰이 들지 않습니다.
+
+### 사용량 밴드
+
+mod는 사용량을 프롬프트 위 밴드에도 계속 띄워 두므로, 따로 묻지 않아도 볼 수 있습니다. shunt 게이트웨이에서는 `shunt` 태그를 붙여 풀의 사용량을 보여줍니다:
+
+```
+shunt · 5H 5% ↻1h 41m · WK 46% ↻1d 7h · Fable 31% ↻1d 7h ⚠ anthropic degraded
+```
+
+각 수치는 해당 창을 **쓴 양**입니다. 명령이 여유로 보고하는 풀 전체 평균의 `1 - remaining`이며(아래 「수치 읽기」 참고), 그 뒤에 해당 창에서 가장 이른 리셋까지 남은 시간이 붙습니다. 남은 양이 아니라 쓴 양으로 세는 이유는, Claude Code 자체의 `/usage`나 shunt가 아닐 때의 밴드와 같은 방식으로 읽히게 하기 위해서입니다. 수치는 70% 이상이면 주황색, 90% 이상이면 빨간색입니다. 상태가 `ok`가 아닌 풀링 프로바이더는 끝에 표시하며, `degraded`는 주황색, `exhausted`와 `capped`는 빨간색입니다. 프로바이더 목록이 없으면 풀 자체의 상태를 표시합니다. 어떤 계정도 보고하지 않는 창은 생략합니다.
+
+shunt가 아닐 때는 태그 없이 세션 자체의 Claude rate limit을 보여줍니다. 게이트웨이가 설정되지 않은 세션, `GET /usage`에 404나 풀 보고가 아닌 응답을 주는 게이트웨이, 풀링하는 프로바이더가 없는 게이트웨이가 여기에 해당합니다:
+
+```
+5H 5% ↻1h 41m · WK 46% ↻1d 7h
+```
+
+shunt에서는 세션이 시작될 때, 그 뒤로 1분마다, 그리고 턴이 끝날 때마다 `GET /usage`를 읽습니다. 이때 세션 자체의 limit은 쓰지 않습니다. 마지막으로 응답한 풀 계정 하나의 값이기 때문입니다. 토큰 거부, 게이트웨이 연결 실패, 그 밖의 오류 상태는 shunt에서 생긴 장애이므로 다른 값으로 대체하지 않고 `shunt · ⚠ credential refused`처럼 표시합니다. 게이트웨이도 rate limit도 없으면(API 키로 Anthropic에 직접 보내는 경우) 밴드는 아무것도 그리지 않습니다.
+
+세션 동안만 숨기려면 밴드의 `[-]`(ctrl+x ctrl+a)로 접습니다. 아예 끄려면 `/config`에서 플러그인의 **Usage band** 옵션(`usageBand`)을 끄세요. 그러면 mod는 아무것도 폴링하지 않고, `/shunt:usage`는 그대로 답합니다.
 
 ### 수치 읽기
 
@@ -59,7 +79,7 @@ mod가 명령에 직접 답하므로, 모델로는 아무것도 전송되지 않
    export ANTHROPIC_AUTH_TOKEN=<your client token>
    ```
 
-2. 엔드포인트를 활성화하세요. `GET /usage`는 옵트인이며 [`[server.auth]`](/ko/guides/shared-gateway/)를 요구하므로, [구성](/ko/reference/configuration/)에 두 테이블이 모두 있어야 합니다:
+2. 엔드포인트를 활성화하세요. `GET /usage`는 옵트인이며, [구성](/ko/reference/configuration/)의 `[server.usage]` 테이블과 함께 [`[server.auth]`](/ko/guides/shared-gateway/)(클라이언트 토큰) 또는 `[server.gateway]`(gateway 로그인) 중 하나가 필요합니다. 클라이언트 토큰을 쓰는 경우:
 
    ```toml
    [server.auth]
@@ -74,13 +94,15 @@ mod가 명령에 직접 답하므로, 모델로는 아무것도 전송되지 않
    export SHUNT_CLIENT_TOKENS="claude-code:<your client token>"
    ```
 
+   `[server.gateway]`로 로그인을 발급하는 게이트웨이는 `[server.auth]` 대신 그 테이블로 `[server.usage]`를 켤 수 있습니다. 그러면 `shunt gateway claude`로 시작한 세션은 클라이언트 토큰이 필요 없고, mod가 그 세션의 gateway 로그인으로 인증합니다(아래 참고).
+
 3. 함수 훅을 활성화한 채로 Claude Code를 실행하세요 — 이 기능은 얼리 액세스입니다:
 
    ```bash
    CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude
    ```
 
-3단계 없이도 명령 자체는 존재하지만, 직접 답하는 대신 모델에게 도구 호출로 엔드포인트를 읽도록 요청하는 방식으로 폴백합니다.
+3단계 없이는 밴드가 없고, 명령 자체는 존재하지만 직접 답하는 대신 모델에게 도구 호출로 엔드포인트를 읽도록 요청하는 방식으로 폴백합니다.
 
 ### 무엇을 읽는가
 
@@ -95,6 +117,8 @@ mod는 환경 변수 다섯 개를 읽고 아무것도 쓰지 않습니다. 기�
 | `ANTHROPIC_API_KEY` | Claude Code가 보내는 그대로 `x-api-key`로 전송 |
 
 `SHUNT_BASE_URL`은 트래픽을 다른 게이트웨이로 라우팅하면서 어느 한 게이트웨이의 풀을 읽을 수 있게 해 주는 수단입니다.
+
+`shunt gateway claude`로 시작한 세션은 위 변수에 credential이 없습니다. launcher가 `ANTHROPIC_AUTH_TOKEN`과 `ANTHROPIC_API_KEY`를 지우고, 대신 `apiKeyHelper`를 `shunt gateway token`으로 연결하기 때문입니다. 그래서 표의 변수가 하나도 없으면 mod는 합쳐진 Claude Code 설정을 읽고, `apiKeyHelper`가 shunt 자체의 `shunt gateway token`(이름만 쓰든 경로로 쓰든)이면 셸 없이 직접 실행해 출력된 gateway 로그인 토큰을 `Authorization: Bearer`로 보냅니다. 셸이 실행되지 않으므로 따옴표 없는 helper 경로 앞머리의 `~/`는 mod가 직접 홈 디렉터리로 바꿉니다. 이 토큰은 5분 동안 재사용하고, 재사용한 토큰을 게이트웨이가 거부하면 helper를 한 번 더 실행합니다. gateway 로그인은 `SHUNT_BASE_URL`이 설정되지 않았거나 `ANTHROPIC_BASE_URL`과 같은 base URL일 때만 전송됩니다. 앞뒤 공백과 끝의 슬래시만 무시하고 문자열로 비교하므로 `localhost`와 `127.0.0.1`은 서로 다른 것으로 봅니다. 다른 게이트웨이의 풀을 읽으려면 그 게이트웨이용 `SHUNT_TOKEN`을 export하세요. helper가 실패하면(0이 아닌 종료 코드, 출력 없음, 실행 불가) 밴드는 세션 자체의 한도를 조용히 보여 주는 대신 `shunt · ⚠ gateway login unavailable`로 표시하고, `/shunt:usage`는 `shunt gateway login`을 실행하라고 안내합니다. launcher는 `SHUNT_TOKEN`을 지우지 않습니다. 셸에서 상속된 값이 있으면 helper보다 먼저 쓰이므로, gateway 로그인을 쓰려면 unset하세요. 그 밖의 `apiKeyHelper`는 실행하지 않으므로, 그런 세션에서는 대신 `SHUNT_TOKEN`을 export하세요. 게이트웨이는 `GET /usage`에서 `[server.auth]` 클라이언트 토큰과 함께 gateway 로그인도 받습니다.
 
 ### 왜 `/usage`가 아니라 `/shunt:usage`인가
 

@@ -1,6 +1,6 @@
 ---
 title: Claude Code 插件
-description: 安装 shunt 的 Claude Code 插件 —— 显示池余量的 /shunt:usage mod,以及为 shunt 分流的模型准备的子 agent 套件。
+description: 安装 shunt 的 Claude Code 插件 —— 在提示符上方显示用量、在 /shunt:usage 中显示池余量的 mod,以及为 shunt 分流的模型准备的子 agent 套件。
 ---
 
 shunt 自带一个 Claude Code 插件市场。只需添加一次:
@@ -9,7 +9,7 @@ shunt 自带一个 Claude Code 插件市场。只需添加一次:
 /plugin marketplace add pleaseai/shunt
 ```
 
-那里有两类插件。一类是 **`shunt` mod** —— 它添加一条命令,报告网关自身的池使用量。另一类是 **提供方套件** —— 它们添加运行在 shunt 分流到其他提供方的模型上的子 agent。
+那里有两类插件。一类是 **`shunt` mod** —— 它在提示符上方的横栏中显示用量(在 shunt 上是网关池的,否则是会话自身的),并用一条命令显示池的详细情况。另一类是 **提供方套件** —— 它们添加运行在 shunt 分流到其他提供方的模型上的子 agent。
 
 ## `shunt` mod: `/shunt:usage`
 
@@ -33,6 +33,26 @@ shunt: pool — degraded   http://127.0.0.1:3001
 ```
 
 该 mod 自己回答这条命令,因此不会向模型发送任何内容,答案也不消耗 token。
+
+### 用量横栏
+
+该 mod 还会把用量常驻在提示符上方的横栏中,无需询问即可看到。在 shunt 网关上,它带着 `shunt` 标签显示池的用量:
+
+```
+shunt · 5H 5% ↻1h 41m · WK 46% ↻1d 7h · Fable 31% ↻1d 7h ⚠ anthropic degraded
+```
+
+每个数字都是该窗口的**已用量**,即命令作为余量报告的池级平均值的 `1 - remaining`(见下文「读懂这些数字」),后面跟着距该窗口最早一次重置的剩余时间。之所以按已用量而不是剩余量计,是为了与 Claude Code 自带的 `/usage` 以及不在 shunt 上时的横栏读法一致。数字达到 70% 时变为黄色,达到 90% 时变为红色。状态不是 `ok` 的池化提供方会显示在末尾:`degraded` 为黄色,`exhausted` 与 `capped` 为红色;没有提供方列表时则显示池本身的状态。没有任何账户报告的窗口会被省略。
+
+不在 shunt 上时,横栏改为不带标签地显示会话自身的 Claude 速率限制。这包括未设置网关的会话、对 `GET /usage` 返回 404 或返回非池报告内容的网关,以及没有池化任何提供方的网关:
+
+```
+5H 5% ↻1h 41m · WK 46% ↻1d 7h
+```
+
+在 shunt 上,横栏在会话开始时、此后每分钟一次、以及每轮结束后读取 `GET /usage`。此时不使用会话自身的限制,因为那只是最后一次应答的某个池账户的数值。token 被拒绝、网关无法访问或其他错误状态都属于 shunt 上的故障,因此不会被其他数值替代,而是显示为 `shunt · ⚠ credential refused`。既没有网关也没有速率限制时(用 API key 直接请求 Anthropic),横栏什么都不画。
+
+只想在本次会话中隐藏,可用横栏的 `[-]`(ctrl+x ctrl+a)折叠。要彻底关闭,在 `/config` 中把插件的 **Usage band** 选项(`usageBand`)关掉:此后 mod 不再轮询,`/shunt:usage` 照常作答。
 
 ### 读懂这些数字
 
@@ -59,7 +79,7 @@ shunt: pool — degraded   http://127.0.0.1:3001
    export ANTHROPIC_AUTH_TOKEN=<your client token>
    ```
 
-2. 启用该端点。`GET /usage` 是选择性开启的,并且需要 [`[server.auth]`](/zh-cn/guides/shared-gateway/),因此你的 [配置](/zh-cn/reference/configuration/) 中两个表都必须存在:
+2. 启用该端点。`GET /usage` 是选择性开启的;在你的 [配置](/zh-cn/reference/configuration/) 中,除 `[server.usage]` 表外,还需要 [`[server.auth]`](/zh-cn/guides/shared-gateway/)(客户端令牌)或 `[server.gateway]`(网关登录)二者之一。使用客户端令牌时:
 
    ```toml
    [server.auth]
@@ -74,13 +94,15 @@ shunt: pool — degraded   http://127.0.0.1:3001
    export SHUNT_CLIENT_TOKENS="claude-code:<your client token>"
    ```
 
+   通过 `[server.gateway]` 签发登录的网关,可以用该表代替 `[server.auth]` 来启用 `[server.usage]`。这样一来,用 `shunt gateway claude` 启动的会话无需客户端令牌,mod 会用该会话的网关登录进行认证(见下文)。
+
 3. 在启用 function hooks 的情况下运行 Claude Code —— 该功能处于早期访问阶段:
 
    ```bash
    CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude
    ```
 
-没有第 3 步时命令依然存在,但会回退为请模型用一次工具调用去读该端点,而不是直接作答。
+没有第 3 步时没有横栏,命令依然存在,但会回退为请模型用一次工具调用去读该端点,而不是直接作答。
 
 ### 它读取什么
 
@@ -95,6 +117,8 @@ shunt: pool — degraded   http://127.0.0.1:3001
 | `ANTHROPIC_API_KEY` | 按 Claude Code 发送它的方式,以 `x-api-key` 发送 |
 
 正是 `SHUNT_BASE_URL` 让你可以在把流量路由经由另一个网关的同时,读取某一个网关的池。
+
+用 `shunt gateway claude` 启动的会话在上述变量中没有凭据:启动器会清除 `ANTHROPIC_AUTH_TOKEN` 和 `ANTHROPIC_API_KEY`,改为把 `apiKeyHelper` 接到 `shunt gateway token`。因此当表中的变量都未设置时,mod 会读取合并后的 Claude Code 设置;如果 `apiKeyHelper` 是 shunt 自己的 `shunt gateway token`(无论只写名字还是带路径),就不经 shell 直接运行它,并把它打印的网关登录 token 作为 `Authorization: Bearer` 发送。由于不经 shell,未加引号的 helper 路径开头的 `~/` 会由 mod 自己展开为主目录。该 token 会复用 5 分钟;网关拒绝复用的 token 时,会再运行一次 helper。网关登录仅在 `SHUNT_BASE_URL` 未设置或与 `ANTHROPIC_BASE_URL` 是同一个 base URL 时才会发送(只忽略首尾空白和末尾斜杠后按字符串比较,因此 `localhost` 与 `127.0.0.1` 视为不同);要读取另一个网关的池,请为它 export `SHUNT_TOKEN`。helper 失败时(退出码非零、无输出或无法启动),状态栏会标出 `shunt · ⚠ gateway login unavailable`,`/shunt:usage` 会提示运行 `shunt gateway login`,而不是悄悄显示会话自身的限额。启动器不会清除 `SHUNT_TOKEN`:从 shell 继承来的值仍优先于 helper,想使用网关登录就请 unset 它。其他任何 `apiKeyHelper` 都不会被运行,这类会话请改为 export `SHUNT_TOKEN`。网关在 `GET /usage` 上除了 `[server.auth]` 客户端 token,也接受网关登录。
 
 ### 为什么是 `/shunt:usage` 而不是 `/usage`
 

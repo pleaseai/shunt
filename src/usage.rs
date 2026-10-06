@@ -3,17 +3,19 @@
 //!
 //! Exposes a **sanitized, aggregated** view of the shared account pool's quota
 //! state — per-window remaining headroom and reset time — so a non-admin client
-//! (a `[server.auth]` token holder) can anticipate throttling without the admin
-//! surface. Unlike `GET /admin/api/pool`, it never reveals account identities,
+//! (a `[server.auth]` token holder or a `[server.gateway]` login) can
+//! anticipate throttling without the admin surface. Unlike
+//! `GET /admin/api/pool`, it never reveals account identities,
 //! counts, priorities, disabled flags, thresholds, or burn-rate headroom: the
 //! response carries only aggregate numbers derived across the pool, plus the
 //! same aggregate computed per pooled provider (keyed by the provider's config
 //! name) so a client that routes to one provider can read that provider's
 //! headroom instead of the blended pool-wide figure.
 //!
-//! The endpoint requires `[server.auth]` (a non-admin caller must be
-//! identifiable); the pairing is enforced at config validation, and the handler
-//! fails closed if inbound auth is somehow absent.
+//! The endpoint requires `[server.auth]` or `[server.gateway]` (a non-admin
+//! caller must be identifiable, by client token or gateway login); the pairing
+//! is enforced at config validation, and the handler fails closed if neither is
+//! somehow configured.
 
 use axum::{
     extract::State,
@@ -381,36 +383,67 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // Snapshot the live config so this response reflects the latest reload
     // (matches discovery.rs / admin routes).
     let state = state.refreshed();
-    // `[server.usage]` requires `[server.auth]` at config validation, so inbound
-    // auth is present in practice; fail closed rather than serve pool telemetry
-    // unauthenticated if it somehow is not.
-    let Some(auth) = state.inbound_auth.clone() else {
+    // `[server.usage]` requires `[server.auth]` or `[server.gateway]` at config
+    // validation, so a validator is present in practice; fail closed rather
+    // than serve pool telemetry unauthenticated if neither somehow is.
+    if state.inbound_auth.is_none() && state.gateway_auth.is_none() {
         return ShuntError::new(
             StatusCode::UNAUTHORIZED,
             "authentication_error",
-            "usage endpoint requires client authentication, but no client tokens are configured",
+            "usage endpoint requires client authentication, but neither client tokens nor gateway login are configured",
         )
         .into_response();
-    };
-    let client = match gate::authenticate(&auth, &state.inbound_jwks, &headers, gate::Slots::Client)
-        .await
+    }
+    // Check the gateway login bearer first: it is a cheap local signature
+    // check, and a gateway JWT presented as `Authorization: Bearer` would
+    // otherwise reach the `[server.auth]` JWT issuer path, where a JWKS outage
+    // (`Outcome::Unavailable` → 503) must not lock out a valid gateway login.
+    if state
+        .gateway_auth
+        .as_ref()
+        .and_then(|auth| auth.authenticate_bearer(&headers))
+        .is_some()
     {
-        gate::Outcome::Authenticated { client, .. } => client,
-        gate::Outcome::Unavailable => {
-            tracing::warn!("GET /usage: cannot verify credential, JWT issuer key set unreachable");
-            return gate::unavailable_response();
+        tracing::info!("inbound gateway login authenticated for GET /usage");
+    } else {
+        let rejected = || {
+            // Name only the credentials this gateway actually accepts.
+            let message = match (&state.inbound_auth, state.gateway_auth.is_some()) {
+                (Some(auth), true) => format!(
+                    "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) or a gateway login (`shunt gateway login`) to read pool usage; ask the operator for one",
+                    auth.header()
+                ),
+                (Some(auth), false) => format!(
+                    "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) to read pool usage; ask the operator for one",
+                    auth.header()
+                ),
+                (None, _) => "missing or invalid credential: this gateway requires a gateway login (`shunt gateway login`) to read pool usage".to_string(),
+            };
+            ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+                .into_response()
+        };
+        let Some(auth) = state.inbound_auth.clone() else {
+            tracing::warn!("inbound auth failed for GET /usage: missing or invalid gateway login");
+            return rejected();
+        };
+        match gate::authenticate(&auth, &state.inbound_jwks, &headers, gate::Slots::Client).await {
+            gate::Outcome::Authenticated { client, .. } => {
+                tracing::info!(client = %client, "inbound client authenticated for GET /usage");
+            }
+            gate::Outcome::Unavailable => {
+                tracing::warn!(
+                    "GET /usage: cannot verify credential, JWT issuer key set unreachable"
+                );
+                return gate::unavailable_response();
+            }
+            gate::Outcome::Rejected => {
+                tracing::warn!(
+                    "inbound auth failed for GET /usage: missing or invalid client token or gateway login"
+                );
+                return rejected();
+            }
         }
-        gate::Outcome::Rejected => {
-            tracing::warn!("inbound auth failed for GET /usage: missing or invalid client token");
-            let message = format!(
-                "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) to read pool usage; ask the operator for one",
-                auth.header()
-            );
-            return ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-                .into_response();
-        }
-    };
-    tracing::info!(client = %client, "inbound client authenticated for GET /usage");
+    }
 
     let mut resolved_by_provider: Vec<(&str, Vec<AccountConfig>)> = Vec::new();
     for (name, provider) in &state.config.providers {
