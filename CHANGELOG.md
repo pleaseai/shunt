@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.55.0](https://github.com/pleaseai/shunt/compare/v0.54.1...v0.55.0) (2026-10-07)
+
+
+### Features
+
+* **plugins:** usage band for the shunt mod, with gateway login on GET /usage ([#746](https://github.com/pleaseai/shunt/issues/746)) ([532f5c7](https://github.com/pleaseai/shunt/commit/532f5c7b4e9ec01d02c7509a26f0e829acb92780))
+
 ## [0.54.1](https://github.com/pleaseai/shunt/compare/v0.54.0...v0.54.1) (2026-10-05)
 
 
