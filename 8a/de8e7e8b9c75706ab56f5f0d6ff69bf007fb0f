@@ -1,0 +1,22 @@
+docs/m6-xai-provider.md
+  s_e82fb45b0e894a::t_26bf5cae0fb6e9 135
+  s_e82fb45b0e894a::t_da843616c82865 209-213
+src/adapters/responses/request.rs
+  s_e82fb45b0e894a::t_26bf5cae0fb6e9 31-35,37,1318
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8ade8e7e8b9c75706ab56f5f0d6ff69bf007fb0f",
+  "prompts": {},
+  "sessions": {
+    "s_e82fb45b0e894a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f3af430-6aa5-485d-814e-41530c622911",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <minsu.lee@pleaseai.dev>"
+    }
+  }
+}
