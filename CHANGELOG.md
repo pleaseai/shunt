@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.55.1](https://github.com/pleaseai/shunt/compare/v0.55.0...v0.55.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **grok:** bump x-grok-client-version to 1.0.46 ([#759](https://github.com/pleaseai/shunt/issues/759)) ([ffeed16](https://github.com/pleaseai/shunt/commit/ffeed163ab5c7ad9b457a77afc245b9886f04863)), closes [#755](https://github.com/pleaseai/shunt/issues/755)
+
 ## [0.55.0](https://github.com/pleaseai/shunt/compare/v0.54.1...v0.55.0) (2026-10-07)
 
 
