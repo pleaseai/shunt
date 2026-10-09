@@ -29,7 +29,7 @@ pub(crate) const CODEX_CLIENT_VERSION: &str = "0.159.3";
 /// answers as if the caller were an unentitled API client. Sent only with the
 /// `XaiOauth` (subscription bearer) credential.
 const GROK_CLIENT_IDENTIFIER: &str = "grok-shell";
-const GROK_CLIENT_VERSION: &str = "0.2.93";
+const GROK_CLIENT_VERSION: &str = "1.0.46";
 
 /// Upper bound on the `upstream_model` slug interpolated into the routing hint.
 /// Shares the value of `observability::MAX_MODEL_TAG_LEN`, which bounds this
@@ -1310,7 +1310,7 @@ mod tests {
         );
         assert_eq!(
             request.headers().get("x-grok-client-version").unwrap(),
-            "0.2.93"
+            "1.0.46"
         );
         assert_eq!(
             request.headers().get("accept").unwrap(),

@@ -132,7 +132,7 @@ only on the subscription proxy.
 
 **Grok-CLI identity headers.** The subscription OAuth path (`Credential::XaiOauth`) additionally
 sends `x-xai-token-auth: xai-grok-cli`, `x-grok-client-identifier: grok-shell`,
-`x-grok-client-version: 0.2.93`, and `accept: text/event-stream` — the CLI proxy
+`x-grok-client-version: 1.0.46`, and `accept: text/event-stream` — the CLI proxy
 (`cli-chat-proxy.grok.com`) gates on them and otherwise answers as if the caller were an
 unentitled API client. The API-key `xai` path sends the bearer only. Neither sends `OpenAI-Beta`.
 
@@ -206,5 +206,8 @@ reject it.
   surfacing as a 402/403 even for active standard subscribers. shunt keeps both paths so an
   un-entitled account can fall back to `XAI_API_KEY`. If the CLI proxy proves to honor all tiers,
   this note can be relaxed.
-- **`grok_client_version` pinning.** `0.2.93` is hardcoded (mirrors the reference Grok CLI). If the
-  proxy starts rejecting stale client versions, make it configurable like the base_url.
+- **`grok_client_version` pinning.** shunt pins `1.0.46`, matching an observed stable Grok CLI
+  release. The proxy rejected the previous `0.2.93` identity with HTTP 426, requiring at least
+  `1.0.13` ([#755](https://github.com/pleaseai/shunt/issues/755)). Updating the locally installed
+  Grok CLI does not change shunt's HTTP identity; the pin must be updated in shunt. A configurable
+  override remains a possible follow-up; this fix adds no config keys.
