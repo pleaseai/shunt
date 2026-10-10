@@ -1598,7 +1598,7 @@ pub(super) async fn resolve_or_cooldown(
     account: &AccountConfig,
 ) -> Option<Credential> {
     if account.store_family == Some(accounts::StoreFamily::Xai) {
-        return resolve_xai_or_cooldown(state, route, account).await;
+        return resolve_xai_or_cooldown(state, route, account).await.ok();
     }
     match resolve_chatgpt_account(account, &state.http_client).await {
         Ok(credential) => Some(credential),
@@ -1632,14 +1632,16 @@ pub(super) async fn resolve_or_cooldown(
 /// resolve through [`auth::resolve_xai_account`], and on failure cool the
 /// account down for 5 minutes and rotate — the Kimi pool's treatment
 /// (`adapters::anthropic::forward_kimi_oauth`). The xAI store reports no
-/// terminal/transient split, so no `needs_relogin` mark is set.
-async fn resolve_xai_or_cooldown(
+/// terminal/transient split, so no `needs_relogin` mark is set. The routed
+/// inbound Codex endpoint (`inbound_routed`) skips accounts the same way, and
+/// relays the last error when no account resolves.
+pub(super) async fn resolve_xai_or_cooldown(
     state: &AppState,
     route: &Route,
     account: &AccountConfig,
-) -> Option<Credential> {
+) -> Result<Credential, AdapterError> {
     match auth::resolve_xai_account(account, &state.http_client).await {
-        Ok(credential) => Some(credential),
+        Ok(credential) => Ok(credential),
         Err(error) => {
             state.accounts.cooldown(
                 &route.provider,
@@ -1653,7 +1655,7 @@ async fn resolve_xai_or_cooldown(
                 error = %error.message,
                 "failed to resolve xAI OAuth account"
             );
-            None
+            Err(error)
         }
     }
 }

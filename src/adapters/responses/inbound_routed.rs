@@ -87,13 +87,15 @@ pub(crate) async fn forward_codex_routed(
 }
 
 /// The credential for a route to an `xai_oauth` provider whose account pool is
-/// non-empty: the first account in pool selection order, which honors the
-/// provider's configured `account`/`accounts` scope, `priority`, `disabled`,
-/// and the admin pause. `None` for any other provider, or for an empty xAI
-/// pool, where `resolve_credential`'s single-account file applies — the same
-/// rule as the outbound pool (docs/m18-xai-multi-account.md), mirroring
-/// `adapters::gemini::forward`'s empty-pool fallback. One account and one send:
-/// this path still never rotates or cools an account down.
+/// non-empty: the first account in pool selection order whose credential
+/// loads. The order honors the provider's configured `account`/`accounts`
+/// scope, `priority`, `disabled`, and the admin pause; an account whose
+/// credential fails to load is cooled down and skipped, as on the outbound
+/// pool. `None` for any other provider, or for an empty xAI pool, where
+/// `resolve_credential`'s single-account file applies — the same rule as the
+/// outbound pool (docs/m18-xai-multi-account.md), mirroring
+/// `adapters::gemini::forward`'s empty-pool fallback. One send: a request that
+/// fails upstream is not retried on another account.
 async fn routed_xai_pool_credential(
     state: &AppState,
     route: &Route,
@@ -116,16 +118,20 @@ async fn routed_xai_pool_credential(
         Some(route.upstream_model.as_str()),
         state.config.server.pool.as_ref(),
     );
-    let Some(&index) = order.first() else {
-        return Err(own_error(format!(
-            "provider '{}' has {} account(s) but none are selectable",
-            route.provider,
-            accounts.len()
-        )));
-    };
-    crate::auth::resolve_xai_account(&accounts[index], &state.http_client)
-        .await
-        .map(Some)
+    // An empty order relays this; otherwise the last account's own resolution
+    // error, which names the cause (a missing file, an unset `token_env`).
+    let mut last_error = own_error(format!(
+        "provider '{}' has {} account(s) but none are selectable",
+        route.provider,
+        accounts.len()
+    ));
+    for index in order {
+        match super::pool::resolve_xai_or_cooldown(state, route, &accounts[index]).await {
+            Ok(credential) => return Ok(Some(credential)),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
 }
 
 /// Compose the routed upstream request: the allowlisted header set, the
@@ -405,6 +411,48 @@ mod tests {
             panic!("expected the scoped xAI pool account");
         };
         assert_eq!(access_token, token_b);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// One broken login must not blackhole the route: an account whose
+    /// credential cannot be loaded is cooled down and the next account serves.
+    #[tokio::test]
+    async fn an_xai_route_skips_an_account_whose_login_cannot_be_loaded() {
+        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let dir = fresh_accounts_dir("skip");
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        let token_b = xai_token("b");
+        crate::auth::xai::store::store_oauth_tokens("a", &xai_token("a"), "refresh", None).unwrap();
+        crate::auth::xai::store::store_oauth_tokens("b", &token_b, "refresh", None).unwrap();
+        // `a` still scans as an account, but its file no longer loads.
+        std::fs::write(dir.join("a.json"), "not json").unwrap();
+
+        let state = AppState::new(xai_config(), reqwest::Client::new()).unwrap();
+        let Ok(Some(Credential::XaiOauth { access_token })) =
+            routed_xai_pool_credential(&state, &route("openai"), None).await
+        else {
+            panic!("expected the next xAI pool account");
+        };
+        assert_eq!(access_token, token_b);
+
+        // `a` is cooled down, so selection no longer leads with it; a cooling
+        // account stays in the order only as a last resort.
+        let accounts = state
+            .config
+            .provider("openai")
+            .unwrap()
+            .resolve_pool_accounts()
+            .await
+            .unwrap();
+        let (order, _) = state
+            .accounts
+            .select_order_with_cap("openai", &accounts, None, None, None);
+        let names: Vec<&str> = order
+            .iter()
+            .map(|&index| accounts[index].name.as_str())
+            .collect();
+        assert_eq!(names, ["b", "a"]);
 
         let _ = std::fs::remove_dir_all(dir);
     }

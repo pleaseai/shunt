@@ -213,9 +213,12 @@ has not been done yet.
 A route from `[[server.codex_endpoint.routes]]` to an `xai_oauth` provider resolves its credential
 as follows:
 
-- **Non-empty pool.** The route uses the first account in pool selection order. That order honors
-  the provider's scope, `priority`, `disabled`, and the admin pause. The request is sent once. There
-  is no rotation and no cooldown.
+- **Non-empty pool.** The route uses the first account in pool selection order whose credential
+  loads. That order honors the provider's scope, `priority`, `disabled`, and the admin pause. An
+  account whose credential fails to load (a missing or corrupt file, a refused refresh) is cooled
+  down for 5 minutes and skipped, as on the outbound pool, so one dead login cannot block the route.
+  The request is then sent once: an upstream failure is relayed, not retried on another account.
+  The pool's `max_utilization` cap exit is not wired here, because xAI caps stay inert (§12).
 - **Empty pool.** The route uses `~/.shunt/xai-auth.json`, as before (§3).
 
 Errors on this endpoint keep the OpenAI Responses error shape, because `src/codex_endpoint.rs`
@@ -269,7 +272,8 @@ Operator-relevant limits in this version:
   as with Kimi.
 - No quota-aware selection and no `max_utilization` caps. The polled billing buckets (§11) are
   display-only, and the caps stay inert.
-- No rotation, failover, or cooldown on the routed inbound Codex endpoint (§9).
+- No retry after an upstream failure on the routed inbound Codex endpoint (§9); only an account
+  whose credential fails to load is skipped there.
 - No model discovery for `xai_oauth` (`src/discovery/upstream.rs` returns nothing).
 - No WebSocket transport.
 - No change to the `xai_oauth` https and host guard (§5).
