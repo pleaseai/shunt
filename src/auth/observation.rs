@@ -22,7 +22,9 @@ const KIMI_USAGE_URL: &str = "https://api.kimi.com/coding/v1/usages";
 const CURSOR_USAGE_URL: &str = "https://cursor.com/api/usage-summary";
 const CURSOR_USER_URL: &str = "https://cursor.com/api/auth/me";
 const CURSOR_APP_ACCESS_TOKEN_KEY: &str = "cursorAuth/accessToken";
-const GROK_API_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
+/// The Grok CLI proxy, where a SuperGrok subscription's billing lives. Shared
+/// with the usage poller, which reads each pooled xAI account's quota here.
+pub(crate) const GROK_API_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 const GROK_CLIENT_MODE: &str = "cli";
 const ANTIGRAVITY_STATUS_PATH: &str = "/exa.language_server_pb.LanguageServerService/GetUserStatus";
 const OBSERVATION_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -792,7 +794,7 @@ pub(crate) async fn fetch_grok_quota(
     fetch_grok_quota_from(client, access_token, GROK_API_BASE_URL).await
 }
 
-async fn fetch_grok_quota_from(
+pub(crate) async fn fetch_grok_quota_from(
     client: &reqwest::Client,
     access_token: &str,
     base_url: &str,

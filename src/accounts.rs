@@ -1584,18 +1584,18 @@ impl AccountPool {
         self.mark_dirty();
     }
 
-    /// Apply one successfully polled Antigravity `retrieveUserQuotaSummary` response.
-    /// Google's response is a full authoritative snapshot on every call, so the
-    /// buckets wholesale replace whatever the previous tick recorded — no
-    /// partial-window reconciliation like Claude's per-window
+    /// Apply one successfully polled set of named quota buckets: Antigravity's
+    /// `retrieveUserQuotaSummary`, or the Grok CLI proxy's billing for an xAI
+    /// account. Each response is a full authoritative snapshot on every call,
+    /// so the buckets wholesale replace whatever the previous tick recorded —
+    /// no partial-window reconciliation like Claude's per-window
     /// overwrite-if-present or Codex's clear-flags dance.
     ///
     /// Display-only on purpose: this leaves `health.quota` (5h/7d/aggregate
-    /// status) untouched and records no utilization metric, so Antigravity
-    /// pool selection/rotation behavior is unchanged (it already ignores quota
-    /// for this family) — matching the `/admin/observed` display-only
-    /// precedent.
-    pub fn note_antigravity_usage(
+    /// status) untouched and records no utilization metric, so pool
+    /// selection/rotation behavior is unchanged (both families already ignore
+    /// quota) — matching the `/admin/observed` display-only precedent.
+    pub fn note_quota_buckets(
         &self,
         provider: &str,
         account: &AccountConfig,
@@ -8778,7 +8778,7 @@ mod tests {
         let sibling = account("agy-sibling");
         pool.sync_enabled_accounts(provider, &[target.clone(), sibling.clone()]);
 
-        pool.note_antigravity_usage(
+        pool.note_quota_buckets(
             provider,
             &target,
             vec![
@@ -8812,7 +8812,7 @@ mod tests {
 
         // A second poll fully replaces the first bucket list — Google's
         // response is authoritative each call, so nothing merges.
-        pool.note_antigravity_usage(
+        pool.note_quota_buckets(
             provider,
             &target,
             vec![QuotaBucketSnapshot {

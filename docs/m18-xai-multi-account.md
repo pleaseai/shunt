@@ -242,6 +242,14 @@ All read-only:
 - `GET /admin/api/pool` lists `grok` with its accounts.
 - `PATCH /admin/api/pool/{provider}/accounts/{account_ref}` sets the account's `paused` flag.
 - `GET /usage` includes xAI accounts in its report.
+- With `[server.pool] usage_refresh_seconds` set, the usage poller reads each pooled account's
+  billing from the Grok CLI proxy (`GET /billing?format=credits`, the call the observed `grok` row
+  already makes) with that account's own bearer, refreshing it first if stale. The credit total and
+  each product's usage (for example "Grok Build") become the account's dashboard usage bars, reset
+  at the billing period end. They are display-only, like Antigravity's (m17): selection, cooldown,
+  and caps ignore them. Only the buckets are stored, never the name or email `/user` returns. A
+  `token_env` account is skipped as static, and the legacy single-account file has no pool row to
+  show them on.
 
 There are no provisioning routes. Add and remove accounts with the CLI (`shunt login xai --name`,
 or by deleting the account file), as with Kimi (m15 §9).
@@ -253,7 +261,8 @@ Operator-relevant limits in this version:
 - No forced refresh and no same-account retry on an upstream `401`.
 - No `needs_relogin` mark on the dashboard. A dead account is cooled down for 5 minutes and retried,
   as with Kimi.
-- No quota windows, no out-of-band usage polling, and no `max_utilization` caps. The caps stay inert.
+- No quota-aware selection and no `max_utilization` caps. The polled billing buckets (§11) are
+  display-only, and the caps stay inert.
 - No rotation, failover, or cooldown on the routed inbound Codex endpoint (§9).
 - No model discovery for `xai_oauth` (`src/discovery/upstream.rs` returns nothing).
 - No WebSocket transport.

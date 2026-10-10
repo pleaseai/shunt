@@ -141,6 +141,8 @@ priority = 200          # 可选:越小越优先(默认 100)
 
 shunt 会把一个会话(`x-claude-code-session-id`)固定在同一个账户上,其余情况则轮询分配。当某个账户返回 `401`、`402`、`429` 或 `5xx`,或其 token 无法刷新时,shunt 会让该账户冷却,并把请求重试到下一个账户上。其他任何 `4xx`(包括 `403`)都会原样返回:`403` 可能是内容政策拒绝,若把它重发给每个账户,可能导致所有账户都被标记。提供服务的账户会在 `x-shunt-account` 响应头中注明;若是流式回复,则在回复开始之前的 `account` 事件中注明。
 
+设置 [`[server.pool] usage_refresh_seconds`](/zh-cn/reference/configuration/#serverpool可选) 后,shunt 还会读取每个具名账户的 Grok 用量(积分总量,以及 Grok Build 等各产品用量),并在管理仪表盘上显示为该账户的用量条。这些用量条仅供显示,不会改变由哪个账户处理请求。
+
 <Aside type="caution" title="单账户文件会让位">
 
 `~/.shunt/xai-auth.json`(来自不带 `--name` 的 `shunt login xai`)只在账户池为空时才会被使用。一旦存在命名账户,shunt 就不再读取它。若要把该登录保留在池中,请先停止 shunt,然后把文件移入存储;格式相同:

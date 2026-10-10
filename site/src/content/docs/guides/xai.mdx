@@ -152,6 +152,11 @@ a `403` can be a content-policy refusal, and re-sending it to every account coul
 flagged. The serving account is named in the `x-shunt-account` response header, or in an
 `account` event before a streamed reply.
 
+With [`[server.pool] usage_refresh_seconds`](/reference/configuration/#serverpool-optional) set,
+shunt also reads each named account's Grok usage, the credit total and per-product usage such as
+Grok Build, and shows it as that account's usage bars on the admin dashboard. The bars are for
+display only: they do not change which account serves a request.
+
 <Aside type="caution" title="The single-account file steps aside">
 
 `~/.shunt/xai-auth.json` (from `shunt login xai` without `--name`) is used only while the pool is
