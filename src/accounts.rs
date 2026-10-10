@@ -29,6 +29,7 @@ pub enum StoreFamily {
     Chatgpt,
     Kimi,
     Antigravity,
+    Xai,
 }
 
 /// Stable physical-account identity used by every runtime state map.
@@ -2946,7 +2947,9 @@ pub(crate) fn account_key(upstream: &str, account: &AccountConfig) -> AccountKey
         // Claude. Kimi is matched before the Claude fallback because it would
         // otherwise be keyed as a Claude account and could collide with a
         // real Claude account of the same name — note `kimi-code`, the
-        // preset's own name, does *not* contain `codex`.
+        // preset's own name, does *not* contain `codex`. An unstamped account on
+        // the built-in xAI `grok` provider lands on Claude here; every xAI caller
+        // goes through `resolve_pool_accounts`, which stamps `StoreFamily::Xai`.
         let lower = upstream.to_lowercase();
         if lower.contains("codex") || lower.contains("chatgpt") {
             StoreFamily::Chatgpt
@@ -3827,6 +3830,32 @@ pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverActio
         return FailoverAction::Rotate;
     }
     FailoverAction::Relay
+}
+
+/// Classify an xAI subscription OAuth (Grok CLI proxy) upstream response for
+/// account-pool failover. Takes the same `(status, headers)` shape as
+/// [`classify_codex`], which it extends: 401 and 402 rotate too.
+///
+/// - 401: `XaiAuthStore` reads expiry from the access token's JWT `exp` and
+///   has no forced-refresh entry point, so — like the Kimi pool — a rejected
+///   bearer cools down and rotates instead of a same-account refresh retry.
+/// - 402: a payment/entitlement refusal is account-specific and persistent,
+///   the Kimi membership case ([`classify_kimi`]).
+/// - 403 relays, as in every other classifier. xAI's documented tier gate
+///   surfaces at token refresh, where a failed credential resolution already
+///   cools the account down and rotates; an inference 403 can be a
+///   content-policy refusal, and re-sending it to every pool account could
+///   get all of them flagged.
+///
+/// Never returns `RefreshRetry` or `PauseSame`.
+pub fn classify_xai(status: StatusCode, headers: &HeaderMap) -> FailoverAction {
+    if matches!(
+        status,
+        StatusCode::UNAUTHORIZED | StatusCode::PAYMENT_REQUIRED
+    ) {
+        return FailoverAction::Rotate;
+    }
+    classify_codex(status, headers)
 }
 
 /// How long a Codex pool account stays skipped for one model after the
@@ -5089,6 +5118,86 @@ mod tests {
             rotation_reason(StatusCode::BAD_GATEWAY, &HeaderMap::new()),
             "server_error"
         );
+    }
+
+    #[test]
+    fn classify_xai_rotates_auth_membership_quota_and_server_errors() {
+        let headers = HeaderMap::new();
+        assert_eq!(
+            classify_xai(StatusCode::OK, &headers),
+            FailoverAction::Relay
+        );
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::PAYMENT_REQUIRED,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert_eq!(
+                classify_xai(status, &headers),
+                FailoverAction::Rotate,
+                "{status} must rotate"
+            );
+        }
+        // 403 relays: an inference 403 can be a content-policy refusal, and
+        // the tier gate is handled at token refresh instead.
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ] {
+            assert_eq!(
+                classify_xai(status, &headers),
+                FailoverAction::Relay,
+                "{status} must relay"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_xai_never_asks_for_a_refresh_retry_or_a_pause() {
+        for code in 100..=599 {
+            let Ok(status) = StatusCode::from_u16(code) else {
+                continue;
+            };
+            let action = classify_xai(status, &HeaderMap::new());
+            assert!(
+                !matches!(
+                    action,
+                    FailoverAction::RefreshRetry | FailoverAction::PauseSame
+                ),
+                "{code} returned {action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_classifier_relays_a_403() {
+        let headers = HeaderMap::new();
+        for (name, action) in [
+            ("classify", classify(StatusCode::FORBIDDEN, &headers)),
+            (
+                "classify_codex",
+                classify_codex(StatusCode::FORBIDDEN, &headers),
+            ),
+            (
+                "classify_kimi",
+                classify_kimi(StatusCode::FORBIDDEN, &headers),
+            ),
+            (
+                "classify_antigravity",
+                classify_antigravity(StatusCode::FORBIDDEN, &headers),
+            ),
+            (
+                "classify_xai",
+                classify_xai(StatusCode::FORBIDDEN, &headers),
+            ),
+        ] {
+            assert_eq!(action, FailoverAction::Relay, "{name} must relay a 403");
+        }
     }
 
     #[test]

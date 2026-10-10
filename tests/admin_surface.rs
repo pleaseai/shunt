@@ -539,6 +539,7 @@ async fn admin_oidc_discovery_builds_authorization_redirect() {
 
 #[tokio::test]
 async fn admin_routes_are_absent_without_the_block() {
+    let _env = common::env_lock().await;
     if !can_bind_loopback() {
         return;
     }
@@ -1207,6 +1208,40 @@ async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
         .expect("kimi_oauth provider is present in the pool listing");
     assert_eq!(section["auth"], "kimi_oauth");
     assert_eq!(section["accounts"][0]["name"], "kimi-primary");
+}
+
+#[tokio::test]
+async fn admin_pool_lists_xai_oauth_accounts_read_only() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_XAI_POOL", "ops:xai-pool-secret");
+    let mut config = admin_config("SHUNT_TEST_ADMIN_XAI_POOL");
+    let grok = config.providers.get_mut("grok").unwrap();
+    grok.accounts = vec![AccountConfig {
+        name: "xai-primary".to_string(),
+        token_env: Some("SHUNT_TEST_ADMIN_XAI_TOKEN".to_string()),
+        ..Default::default()
+    }];
+    vars.set("SHUNT_TEST_ADMIN_XAI_TOKEN", "xai-access-token");
+    let gateway = start(config).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/api/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "xai-pool-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+    let section = providers
+        .iter()
+        .find(|provider| provider["provider"] == "grok")
+        .expect("xai_oauth provider is present in the pool listing");
+    assert_eq!(section["auth"], "xai_oauth");
+    assert_eq!(section["accounts"][0]["name"], "xai-primary");
 }
 
 /// The admin routing view must be byte-identical to the proxy's `/routes`.

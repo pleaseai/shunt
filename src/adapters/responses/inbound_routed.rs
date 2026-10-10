@@ -21,10 +21,12 @@
 //! slot) cannot silently start reaching a third party because nobody remembered
 //! to add it to a denylist.
 //!
-//! There is no pool and no failover here: one credential, one attempt, and the
-//! upstream response — 200, 429, or 5xx — relayed verbatim with its own
-//! `retry-after`, so the Codex CLI backs off against the third party's real
-//! signal instead of a rotation shunt invented.
+//! There is no failover here: one credential, one attempt, and the upstream
+//! response — 200, 429, or 5xx — relayed verbatim with its own `retry-after`, so
+//! the Codex CLI backs off against the third party's real signal instead of a
+//! rotation shunt invented. An `xai_oauth` route with named accounts takes that
+//! one credential from the first account in pool selection order; it never
+//! rotates or cools an account down.
 
 use axum::{
     body::Bytes,
@@ -37,11 +39,13 @@ use axum::{
 use crate::{
     adapters::AdapterError,
     auth::{resolve_credential, slots::ShuntCredentials, Credential},
+    config::AuthMode,
     routing::Route,
     server::AppState,
 };
 
 use super::{
+    error::own_error,
     inbound::{apply_credential, relay_passthrough, send_error},
     request::{grok_identity_headers, responses_url, session_affinity_headers},
 };
@@ -59,7 +63,11 @@ pub(crate) async fn forward_codex_routed(
     body: Bytes,
     session_id: Option<String>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
-    let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
+    let credential = match routed_xai_pool_credential(&state, &route, session_id.as_deref()).await?
+    {
+        Some(credential) => credential,
+        None => resolve_credential(&state.config, &route, &state.http_client).await?,
+    };
     let request = routed_request(
         &state,
         &route,
@@ -76,6 +84,48 @@ pub(crate) async fn forward_codex_routed(
 
     let status = upstream.status();
     Ok((status, relay_passthrough(upstream)))
+}
+
+/// The credential for a route to an `xai_oauth` provider whose account pool is
+/// non-empty: the first account in pool selection order, which honors the
+/// provider's configured `account`/`accounts` scope, `priority`, `disabled`,
+/// and the admin pause. `None` for any other provider, or for an empty xAI
+/// pool, where `resolve_credential`'s single-account file applies — the same
+/// rule as the outbound pool (docs/m18-xai-multi-account.md), mirroring
+/// `adapters::gemini::forward`'s empty-pool fallback. One account and one send:
+/// this path still never rotates or cools an account down.
+async fn routed_xai_pool_credential(
+    state: &AppState,
+    route: &Route,
+    session_id: Option<&str>,
+) -> Result<Option<Credential>, AdapterError> {
+    let Some(provider) = state.config.provider(&route.provider) else {
+        return Ok(None);
+    };
+    if provider.auth != AuthMode::XaiOauth {
+        return Ok(None);
+    }
+    let accounts = provider.resolve_pool_accounts().await.map_err(own_error)?;
+    if accounts.is_empty() {
+        return Ok(None);
+    }
+    let (order, _cap) = state.accounts.select_order_with_cap(
+        &route.provider,
+        &accounts,
+        session_id,
+        Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
+    );
+    let Some(&index) = order.first() else {
+        return Err(own_error(format!(
+            "provider '{}' has {} account(s) but none are selectable",
+            route.provider,
+            accounts.len()
+        )));
+    };
+    crate::auth::resolve_xai_account(&accounts[index], &state.http_client)
+        .await
+        .map(Some)
 }
 
 /// Compose the routed upstream request: the allowlisted header set, the
@@ -294,6 +344,115 @@ mod tests {
         );
         // Grok-flavored, so the OpenAI-only beta header stays off.
         assert!(headers.get("openai-beta").is_none());
+    }
+
+    /// A route's config with the `openai` provider re-pointed at the Grok
+    /// subscription host as an `xai_oauth` provider, the shape the routed xAI
+    /// selection needs.
+    fn xai_config() -> Config {
+        let mut config = Config::default();
+        let provider = config.providers.get_mut("openai").unwrap();
+        provider.base_url = "https://cli-chat-proxy.grok.com/v1".to_string();
+        provider.auth = crate::config::AuthMode::XaiOauth;
+        config
+    }
+
+    /// A far-future JWT-shaped access token, as T6's `xai_token` builds: the
+    /// xAI store reads `exp` from the payload.
+    fn xai_token(tag: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let payload = serde_json::json!({ "exp": 4_000_000_000u64, "sub": tag });
+        format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+        )
+    }
+
+    fn fresh_accounts_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "shunt-routed-xai-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[tokio::test]
+    async fn an_xai_route_with_named_accounts_uses_the_first_selected_account() {
+        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let dir = fresh_accounts_dir("first");
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        let (token_a, token_b) = (xai_token("a"), xai_token("b"));
+        crate::auth::xai::store::store_oauth_tokens("a", &token_a, "refresh", None).unwrap();
+        crate::auth::xai::store::store_oauth_tokens("b", &token_b, "refresh", None).unwrap();
+
+        let state = AppState::new(xai_config(), reqwest::Client::new()).unwrap();
+        let Ok(Some(Credential::XaiOauth { access_token })) =
+            routed_xai_pool_credential(&state, &route("openai"), None).await
+        else {
+            panic!("expected the first xAI pool account");
+        };
+        assert_eq!(access_token, token_a);
+
+        let mut config = xai_config();
+        config.providers.get_mut("openai").unwrap().account_scope = vec!["b".into()];
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let Ok(Some(Credential::XaiOauth { access_token })) =
+            routed_xai_pool_credential(&state, &route("openai"), None).await
+        else {
+            panic!("expected the scoped xAI pool account");
+        };
+        assert_eq!(access_token, token_b);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_xai_route_with_an_empty_store_falls_back_to_the_single_account_file() {
+        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let dir = fresh_accounts_dir("empty");
+        // The directory is never created, so the store is empty.
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+
+        let state = AppState::new(xai_config(), reqwest::Client::new()).unwrap();
+        let credential = routed_xai_pool_credential(&state, &route("openai"), None).await;
+        assert!(matches!(credential, Ok(None)));
+    }
+
+    #[tokio::test]
+    async fn a_non_xai_route_never_consults_the_xai_store() {
+        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let dir = fresh_accounts_dir("non-xai");
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        crate::auth::xai::store::store_oauth_tokens("a", &xai_token("a"), "refresh", None).unwrap();
+
+        // The default `openai` provider authenticates with an api key.
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+        let credential = routed_xai_pool_credential(&state, &route("openai"), None).await;
+        assert!(matches!(credential, Ok(None)));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_xai_route_whose_accounts_are_all_disabled_is_a_gateway_error() {
+        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let dir = fresh_accounts_dir("disabled");
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+
+        let mut config = xai_config();
+        config.providers.get_mut("openai").unwrap().accounts = vec![crate::config::AccountConfig {
+            name: "off".into(),
+            disabled: true,
+            ..Default::default()
+        }];
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let Err(error) = routed_xai_pool_credential(&state, &route("openai"), None).await else {
+            panic!("expected a gateway error for an unselectable pool");
+        };
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[test]

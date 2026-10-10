@@ -1,6 +1,8 @@
 //! Codex/ChatGPT OAuth account-pool failover (M10): try each account in turn,
 //! websocket-first when enabled with an HTTP fallback per account, classifying
 //! each raw upstream status to decide relay / rotate / refresh-and-retry.
+//! The same loop serves the xAI pool (`StoreFamily::Xai`, docs/m18), with
+//! per-family resolution and classification.
 
 use std::{
     path::PathBuf,
@@ -207,7 +209,7 @@ pub(super) async fn forward_chatgpt_oauth_stream(
         compact: compact.clone(),
         delegation: delegation.clone(),
         upstream_body: upstream_body.clone(),
-        auth: AuthMode::ChatgptOauth,
+        auth: provider_auth(&state, &route),
         codex_quota_account: None,
     };
     let events = pool_or_single_events(
@@ -350,7 +352,7 @@ pub(super) fn pool_or_single_events(
                         Box::pin(pool_events_stream(PoolStreamContext {
                             state,
                             route,
-                            auth: AuthMode::ChatgptOauth,
+                            auth: single.auth,
                             session_id,
                             window_key,
                             compact,
@@ -593,8 +595,7 @@ pub(super) fn pool_events_stream(
                                             false,
                                             LazyEnvelope::Ready(
                                                 adapter_error_envelope(transport_error(
-                                                    "all Codex OAuth accounts failed before receiving an upstream response"
-                                                        .to_string(),
+                                                    no_upstream_response_message(auth).to_string(),
                                                 ))
                                                 .await,
                                             ),
@@ -1030,7 +1031,7 @@ pub(super) async fn forward_chatgpt_oauth(
         let events = pool_events_stream(PoolStreamContext {
             state: state.clone(),
             route: route.clone(),
-            auth: AuthMode::ChatgptOauth,
+            auth: provider_auth(&state, &route),
             session_id,
             window_key: pool_key.clone(),
             compact: compact.clone(),
@@ -1071,7 +1072,7 @@ pub(super) async fn forward_chatgpt_oauth(
             state.config.server.pool.as_ref(),
         )
     };
-    let auth = AuthMode::ChatgptOauth;
+    let auth = provider_auth(&state, &route);
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
@@ -1431,9 +1432,29 @@ async fn exhausted_error(
             let clock = idle.map(|idle| (idle, tokio::time::Instant::now()));
             mapped_upstream_error_within(status, upstream, auth, clock).await
         }
-        None => transport_error(
-            "all Codex OAuth accounts failed before receiving an upstream response".to_string(),
-        ),
+        None => transport_error(no_upstream_response_message(auth).to_string()),
+    }
+}
+
+/// The pooled provider's auth mode — `chatgpt_oauth`, or `xai_oauth` since the
+/// xAI pool rides this loop (docs/m18-xai-multi-account.md) — read the way
+/// `forward` reads it. It only picks gateway-owned error wording
+/// ([`mapped_upstream_error`], [`no_upstream_response_message`]); credential
+/// resolution and classification key on each account's `store_family`.
+fn provider_auth(state: &AppState, route: &Route) -> AuthMode {
+    state
+        .config
+        .provider(&route.provider)
+        .map(|provider| provider.auth)
+        .unwrap_or(AuthMode::ChatgptOauth)
+}
+
+/// The gateway-owned message when every pool account failed before any
+/// upstream response, named for the pool's family.
+pub(super) fn no_upstream_response_message(auth: AuthMode) -> &'static str {
+    match auth {
+        AuthMode::XaiOauth => "all xAI OAuth accounts failed before receiving an upstream response",
+        _ => "all Codex OAuth accounts failed before receiving an upstream response",
     }
 }
 
@@ -1576,6 +1597,9 @@ pub(super) async fn resolve_or_cooldown(
     route: &Route,
     account: &AccountConfig,
 ) -> Option<Credential> {
+    if account.store_family == Some(accounts::StoreFamily::Xai) {
+        return resolve_xai_or_cooldown(state, route, account).await;
+    }
     match resolve_chatgpt_account(account, &state.http_client).await {
         Ok(credential) => Some(credential),
         Err(error) => {
@@ -1598,6 +1622,36 @@ pub(super) async fn resolve_or_cooldown(
                 error = %error.detail,
                 terminal = error.is_terminal(),
                 "failed to resolve ChatGPT OAuth account"
+            );
+            None
+        }
+    }
+}
+
+/// [`resolve_or_cooldown`] for an xAI pool account (`StoreFamily::Xai`):
+/// resolve through [`auth::resolve_xai_account`], and on failure cool the
+/// account down for 5 minutes and rotate — the Kimi pool's treatment
+/// (`adapters::anthropic::forward_kimi_oauth`). The xAI store reports no
+/// terminal/transient split, so no `needs_relogin` mark is set.
+async fn resolve_xai_or_cooldown(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+) -> Option<Credential> {
+    match auth::resolve_xai_account(account, &state.http_client).await {
+        Ok(credential) => Some(credential),
+        Err(error) => {
+            state.accounts.cooldown(
+                &route.provider,
+                account,
+                Duration::from_secs(5 * 60),
+                "auth",
+            );
+            tracing::warn!(
+                provider = %route.provider,
+                account = %account.name,
+                error = %error.message,
+                "failed to resolve xAI OAuth account"
             );
             None
         }
@@ -1890,6 +1944,9 @@ pub(super) async fn classify_first(
     clock: Option<(Duration, tokio::time::Instant)>,
     verbatim: bool,
 ) -> Result<FirstOutcome, AdapterError> {
+    if account.store_family == Some(accounts::StoreFamily::Xai) {
+        return Ok(classify_first_xai(state, route, account, upstream));
+    }
     let status = upstream.status();
     match accounts::classify_codex(status, upstream.headers()) {
         FailoverAction::Relay => {
@@ -1919,6 +1976,38 @@ pub(super) async fn classify_first(
         }
         FailoverAction::RefreshRetry => Ok(FirstOutcome::NeedRefresh(upstream)),
         FailoverAction::PauseSame => unreachable!("classify_codex never returns PauseSame"),
+    }
+}
+
+/// [`classify_first`] for an xAI pool account: the same cooldown-and-rotate
+/// bookkeeping, classified with [`accounts::classify_xai`] and without the
+/// Codex-only 400 model-refusal read, so a relayed 4xx keeps its body unread.
+/// `classify_xai` never asks for a refresh retry; the defensive arms rotate.
+fn classify_first_xai(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    upstream: reqwest::Response,
+) -> FirstOutcome {
+    let status = upstream.status();
+    match accounts::classify_xai(status, upstream.headers()) {
+        FailoverAction::Relay => FirstOutcome::Relay(upstream),
+        FailoverAction::Rotate | FailoverAction::RefreshRetry | FailoverAction::PauseSame => {
+            let cooldown = rotate_cooldown(status, upstream.headers());
+            state.accounts.cooldown(
+                &route.provider,
+                account,
+                cooldown,
+                accounts::rotation_reason(status, upstream.headers()),
+            );
+            tracing::warn!(
+                provider = %route.provider,
+                account = %account.name,
+                status = %status,
+                "xAI pool account failed over; cooling down and rotating to the next account"
+            );
+            FirstOutcome::Rotate(upstream)
+        }
     }
 }
 
@@ -4313,3 +4402,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "pool_xai_tests.rs"]
+mod xai_tests;

@@ -175,7 +175,9 @@ narrower path:
   never runs on the async executor.
 - **One credential, no pool, no failover.** shunt resolves the routed provider's single credential
   (`api_key` from its `api_key_env`, or an OAuth bearer) and sends exactly one request. There is no
-  account rotation to fall back to.
+  account rotation to fall back to. For an `xai_oauth` route whose account pool is non-empty, that
+  credential is the first account in pool selection order (the provider's `account`/`accounts`
+  scope honored); an empty pool uses `~/.shunt/xai-auth.json` ([M18](m18-xai-multi-account.md)).
 - **Verbatim relay.** The upstream response is relayed unchanged — status, body, and headers,
   including `retry-after` on a 429 — so the Codex CLI backs off against the third party's real
   signal instead of a rotation shunt invented. A 429 or 5xx is *not* a failover trigger here.

@@ -1182,6 +1182,7 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 | AuthMode::ChatgptOauth
                 | AuthMode::KimiOauth
                 | AuthMode::AntigravityOauth
+                | AuthMode::XaiOauth
         ) {
             continue;
         }
@@ -1230,6 +1231,9 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 )
                 .await
             }
+            // xAI resolves through the shared per-family helper rather than another
+            // copy of the call above.
+            AuthMode::XaiOauth => provider.resolve_pool_accounts().await,
             _ => unreachable!("provider auth filtered above"),
         };
         let resolved = match resolved {
@@ -1432,6 +1436,7 @@ async fn patch_pool_account(
             )
             .await
         }
+        AuthMode::XaiOauth => provider_cfg.resolve_pool_accounts().await,
         _ => return bad_request("provider does not use a managed pool"),
     };
     let accounts = match resolved {

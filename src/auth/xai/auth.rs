@@ -79,7 +79,11 @@ impl XaiAuthStore {
     }
 
     #[cfg(test)]
-    fn with_token_url(path: PathBuf, client: reqwest::Client, token_url: String) -> Self {
+    pub(crate) fn with_token_url(
+        path: PathBuf,
+        client: reqwest::Client,
+        token_url: String,
+    ) -> Self {
         Self {
             path,
             client,
@@ -211,6 +215,27 @@ fn parse_tokens(value: &Value) -> Option<TokenSet> {
     })
 }
 
+/// The credential-file JSON: `{"tokens": {...}, "last_refresh": "<ISO8601>"}`.
+/// Shared by the legacy single-account file ([`write_tokens`]) and the named
+/// account store ([`super::store::store_oauth_tokens`]), so [`XaiAuthStore`]
+/// reads and refreshes either one.
+pub(crate) fn tokens_value(
+    access_token: &str,
+    refresh_token: &str,
+    id_token: Option<&str>,
+) -> Value {
+    let mut tokens = serde_json::Map::new();
+    tokens.insert("access_token".to_string(), json!(access_token));
+    tokens.insert("refresh_token".to_string(), json!(refresh_token));
+    if let Some(id_token) = id_token {
+        tokens.insert("id_token".to_string(), json!(id_token));
+    }
+    json!({
+        "tokens": Value::Object(tokens),
+        "last_refresh": format_iso8601(SystemTime::now()),
+    })
+}
+
 /// Write the credential file: `{"tokens": {...}, "last_refresh": "<ISO8601>"}`.
 /// Creates the parent directory, writes atomically (temp + rename), `0600`.
 pub(crate) fn write_tokens(
@@ -224,17 +249,7 @@ pub(crate) fn write_tokens(
             fs::create_dir_all(parent)?;
         }
     }
-    let mut tokens = serde_json::Map::new();
-    tokens.insert("access_token".to_string(), json!(access_token));
-    tokens.insert("refresh_token".to_string(), json!(refresh_token));
-    if let Some(id_token) = id_token {
-        tokens.insert("id_token".to_string(), json!(id_token));
-    }
-    let value = json!({
-        "tokens": Value::Object(tokens),
-        "last_refresh": format_iso8601(SystemTime::now()),
-    });
-    write_auth_file_atomic(path, &value)
+    write_auth_file_atomic(path, &tokens_value(access_token, refresh_token, id_token))
 }
 
 pub(crate) fn parse_token_response(value: &Value) -> Option<TokenResponse> {
@@ -272,7 +287,14 @@ pub(crate) async fn refresh_tokens(
         ])
         .send()
         .await
-        .map_err(|_| auth_error("failed to refresh xAI auth; run shunt login xai"))?;
+        // A refused redirect must be distinguishable from a transport failure.
+        .map_err(|error| {
+            if error.is_redirect() {
+                auth_error("xAI token refresh redirect refused; run shunt login xai")
+            } else {
+                auth_error("failed to refresh xAI auth; run shunt login xai")
+            }
+        })?;
     let status = response.status();
     if !status.is_success() {
         tracing::warn!(%status, "xAI token refresh failed");
@@ -577,5 +599,106 @@ mod tests {
         // A 403 refresh surfaces an authentication error (the distinct tier-gate
         // wording is asserted on refresh_error_message above).
         assert!(refresh_tokens(&client, &token_url, "r").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_refreshes_of_two_accounts_write_only_their_own_files() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn jwt_for(sub: &str) -> String {
+            let payload = json!({ "exp": future_exp(), "sub": sub });
+            format!(
+                "x.{}.y",
+                URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+            )
+        }
+
+        // xAI consumes a refresh token on use: each account's grant must be
+        // redeemed exactly once, and each rotated pair must land in its own file.
+        let server = MockServer::start().await;
+        let access_a = jwt_for("a");
+        let access_b = jwt_for("b");
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("refresh_token=refresh-a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": access_a,
+                "refresh_token": "refresh-a2"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("refresh_token=refresh-b"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": access_b,
+                "refresh_token": "refresh-b2"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let file_a = temp_path("pair-a");
+        let file_b = temp_path("pair-b");
+        write_tokens(&file_a, &jwt(0), "refresh-a", None).unwrap();
+        write_tokens(&file_b, &jwt(0), "refresh-b", None).unwrap();
+        let token_url = format!("{}/token", server.uri());
+        let store_a =
+            XaiAuthStore::with_token_url(file_a.clone(), reqwest::Client::new(), token_url.clone());
+        let store_b =
+            XaiAuthStore::with_token_url(file_b.clone(), reqwest::Client::new(), token_url);
+
+        let (a, b) = tokio::join!(store_a.get_valid(), store_b.get_valid());
+        assert_eq!(a.unwrap().access_token, access_a);
+        assert_eq!(b.unwrap().access_token, access_b);
+        let stored_a = parse_tokens(&read_auth_value(&file_a).unwrap()).unwrap();
+        let stored_b = parse_tokens(&read_auth_value(&file_b).unwrap()).unwrap();
+        assert_eq!(stored_a.refresh_token, "refresh-a2");
+        assert_eq!(stored_b.refresh_token, "refresh-b2");
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(file_a.parent().unwrap());
+        let _ = std::fs::remove_dir_all(file_b.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn plain_client_follows_the_307_so_the_refusal_test_can_tell_clients_apart() {
+        use axum::body::to_bytes;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Control for the pooled-account redirect test in `auth/mod.rs`: with a
+        // client that follows redirects, the 307 hop is attempted and fails at
+        // DNS (`.invalid` never resolves). That failure is a transport error,
+        // not a refused redirect, so the body must not carry the refusal text.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", "http://refresh-thief.invalid/token"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let file = temp_path("plain-redirect");
+        write_tokens(&file, &jwt(0), "old-refresh", None).unwrap();
+        let store = XaiAuthStore::with_token_url(
+            file.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let error = store.get_valid().await.unwrap_err();
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(!body.contains("redirect refused"), "got: {body}");
+        assert!(body.contains("failed to refresh xAI auth"), "got: {body}");
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 }

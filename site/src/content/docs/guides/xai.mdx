@@ -51,7 +51,7 @@ rejects, keeps tools as function tools) is selected two ways: by an **`api.x.ai`
 | Aspect | `grok` (subscription) | `xai` (API key) |
 | :-- | :-- | :-- |
 | Endpoint | `cli-chat-proxy.grok.com/v1/responses` | `api.x.ai/v1/responses` |
-| Auth | Grok CLI OAuth from `~/.shunt/xai-auth.json`, auto-refreshed | `Bearer $XAI_API_KEY` |
+| Auth | Grok CLI OAuth from `~/.shunt/xai-auth.json`, or a pool of named logins under `~/.shunt/accounts/xai/`, auto-refreshed | `Bearer $XAI_API_KEY` |
 | Identity headers | Grok CLI headers (`x-xai-token-auth`, `x-grok-client-identifier`, `x-grok-client-version`) so the proxy honors the subscription | none |
 
 
@@ -86,7 +86,8 @@ omits a rotated token, shunt tells you to run `shunt login xai` again.
 
 <Aside type="note" title="A different auth-file location">
 
-Override the path with `$SHUNT_XAI_AUTH_FILE` for CI, a sandbox, or a second account:
+Override the path with `$SHUNT_XAI_AUTH_FILE` for CI or a sandbox. For a second account, use a named
+login — see *Several SuperGrok accounts* below.
 
 ```bash
 export SHUNT_XAI_AUTH_FILE=/etc/shunt/xai-auth.json
@@ -117,6 +118,54 @@ model = "grok-4.6"
 provider = "grok"
 # upstream_model = "grok-4.6"   # optional: forward a different slug upstream
 ```
+
+## Several SuperGrok accounts
+
+shunt can pool several SuperGrok logins behind the `grok` provider and fail over between them, the
+way it pools Claude, Codex, and Kimi accounts. Log each one in under its own name:
+
+```bash
+shunt login xai --name main
+shunt login xai --name backup
+```
+
+Each login is saved to **`~/.shunt/accounts/xai/<name>.json`** (`0600`, in a `0700` directory;
+override the directory with `$SHUNT_XAI_ACCOUNTS_DIR`). With no further config, `grok` uses every
+account in that directory. To pick some, list them on the provider:
+
+```toml
+[[providers.grok.accounts]]
+name = "main"
+
+[[providers.grok.accounts]]
+name = "backup"
+priority = 200          # optional: lower is preferred (default 100)
+```
+
+In an `[[upstreams]]` config, name them in the auth map instead:
+`auth = { mode = "xai_oauth", accounts = ["main", "backup"] }` (or `account = "main"` for one).
+
+shunt keeps a session (`x-claude-code-session-id`) on one account and round-robins otherwise. When
+an account answers `401`, `402`, `429`, or `5xx`, or its token cannot be refreshed, shunt cools it
+down and retries the request on the next one. Any other `4xx`, including `403`, is returned as is:
+a `403` can be a content-policy refusal, and re-sending it to every account could get all of them
+flagged. The serving account is named in the `x-shunt-account` response header, or in an
+`account` event before a streamed reply.
+
+<Aside type="caution" title="The single-account file steps aside">
+
+`~/.shunt/xai-auth.json` (from `shunt login xai` without `--name`) is used only while the pool is
+empty. Once a named account exists, shunt stops reading it. To keep that login in the pool, stop
+shunt and move the file into the store; the format is the same:
+
+```bash
+mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<name>.json
+```
+
+Do not copy it. xAI rotates the refresh token on every refresh, so two files holding one login
+invalidate each other.
+
+</Aside>
 
 ## Path B — xAI developer API (`xai`)
 
@@ -269,8 +318,10 @@ only the mapped model's inference is answered by your SuperGrok subscription.
 | `run shunt login xai` on startup | No `~/.shunt/xai-auth.json` (or wrong `$SHUNT_XAI_AUTH_FILE`). Run `shunt login xai`. |
 | `xAI refresh response missing refresh_token; run shunt login xai` | The stored refresh token was consumed/rotated away. Log in again. |
 | `402 … personal-team-blocked:spending-limit` / *"need a Grok subscription"* | On the **`xai`** (developer API) path without API credits. Add credits at [console.x.ai](https://console.x.ai/), or route to **`grok`** to use your subscription. |
-| `403 … not authorized for API access` (subscription tier gate) | On the **`grok`** path your subscription tier doesn't include API access — **re-logging in won't help**. Set `XAI_API_KEY` and use the `xai` path, or upgrade at [x.ai/grok](https://x.ai/grok). |
+| `403 … not authorized for API access` (subscription tier gate) | On the **`grok`** path your subscription tier doesn't include API access — **re-logging in won't help**. Set `XAI_API_KEY` and use the `xai` path, or upgrade at [x.ai/grok](https://x.ai/grok). With several accounts, a tier gate that shows up when shunt refreshes an account's token cools that account down, and shunt moves to the next one. A `403` on a request is returned as is, because it can also be a content-policy refusal. |
 | `refusing to send a subscription token off-origin` (from `shunt check`) | An `xai_oauth` provider's `base_url` host isn't `x.ai`/`grok.com`, isn't HTTPS, or isn't `kind = "responses"`. Fix the block. |
+| `all upstreams failed (N attempted)` with named xAI accounts | Every pooled account failed before any upstream answered: each one failed to load or refresh its credential, or hit a transport error or timeout. For a credential failure, run `shunt login xai --name <account>` again, or check the files under `~/.shunt/accounts/xai/`. If an account did answer with `401`, `429`, or `5xx`, shunt relays that last answer instead of this message. A `402` from every account reaches the client as `502`. |
+| `xAI account scope references missing store account "<name>"` | `account`/`accounts` names an account with no file in the store. Log it in with `shunt login xai --name <name>` or fix the name. |
 | `400` when effort is set | That Grok slug rejects `reasoning.effort`. Remove `effort` from the provider/route for it. |
 | `model <slug> is not enabled for this account` | Unentitled slug — confirm the slug against xAI's catalog. |
 | Web search returns nothing | Not supported on Grok routes; shunt drops the tool. Use a `codex`/`openai` route. |

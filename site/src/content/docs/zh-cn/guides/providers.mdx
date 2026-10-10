@@ -20,7 +20,7 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 | [`openai`](/zh-cn/providers/openai/) | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
 | [`codex`](/zh-cn/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` —— 复用 `~/.codex/auth.json` |
 | [`xai`](/zh-cn/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` —— xAI 开发者 API |
-| [`grok`](/zh-cn/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅 |
+| [`grok`](/zh-cn/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅,或汇集 `~/.shunt/accounts/xai/` 下的命名登录(`shunt login xai --name`) |
 | [`cursor`](/zh-cn/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` —— 复用 `~/.gemini/oauth_creds.json` |
 | [`antigravity`](/zh-cn/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` —— 复用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |
@@ -186,6 +186,8 @@ ChatGPT 账户的 Codex 后端**拒绝** `gpt-*-codex` slug —— 它只接受�
 **SuperGrok / X Premium+** 订阅(`shunt login xai`,无按 token 计费),而
 **`xai`** 用一个 `XAI_API_KEY` 对接计量的开发者 API。订阅 bearer 和 API 密钥
 **不可**互换 —— 各自只对其自己的提供方有效。
+
+要汇集多个 SuperGrok 账户,请用 `shunt login xai --name <name>` 分别登录每个账户。
 
 完整设置 —— 登录、两个提供方块、模型 slug、选择性启用的力度旋钮,以及
 授权方面的坑 —— 见专门的 [xAI / Grok 指南](/zh-cn/guides/xai/)。

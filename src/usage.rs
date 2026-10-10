@@ -449,7 +449,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     for (name, provider) in &state.config.providers {
         if !matches!(
             provider.auth,
-            AuthMode::ClaudeOauth | AuthMode::ChatgptOauth | AuthMode::KimiOauth
+            AuthMode::ClaudeOauth
+                | AuthMode::ChatgptOauth
+                | AuthMode::KimiOauth
+                | AuthMode::XaiOauth
         ) {
             continue;
         }
@@ -487,6 +490,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 )
                 .await
             }
+            AuthMode::XaiOauth => provider.resolve_pool_accounts().await,
             _ => unreachable!("provider auth filtered above"),
         };
         let resolved = match resolved {
