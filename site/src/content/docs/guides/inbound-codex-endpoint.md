@@ -25,6 +25,16 @@ Startup validation rejects an unknown `provider` or one that doesn't use `auth =
 
 The opt-in also makes Codex CLI model discovery parseable. `GET /models` and `GET /backend-api/codex/models` return the valid fallback `{"models":[]}`. On the shared `GET /v1/models` path, a `client_version` query field selects that Codex shape even when Anthropic-looking headers are present; without it, the existing Anthropic discovery response is unchanged. These requests pass the normal model-discovery auth gate, and shunt deliberately avoids fabricating incomplete Codex model rows.
 
+## Web search
+
+The Codex CLI's built-in web search tool (`web.run`) posts to `{base_url}/alpha/search` — the same base URL it appends `/responses` to. shunt registers that path for each base-URL form:
+
+- `POST /backend-api/codex/alpha/search`
+- `POST /alpha/search`
+- `POST /v1/alpha/search`
+
+A search uses the same `[server.auth]` policy and the same ChatGPT/Codex account pool (session-sticky selection, failover, refresh) as a Responses turn, and relays the request and the reply verbatim to the backend's `/codex/alpha/search`. It always goes to `[server.codex_endpoint].provider`: a search is not a model turn, so `[[server.codex_endpoint.routes]]` does not apply. The routes accept `POST` only — the tool has no WebSocket form.
+
 ## Client analytics sink
 
 The Codex CLI also posts product analytics to the base URL. shunt accepts both paths the CLI can produce:

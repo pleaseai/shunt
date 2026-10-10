@@ -25,6 +25,16 @@ shunt run
 
 このオプトインにより、Codex CLI のモデル検出も解析可能になります。`GET /models` と `GET /backend-api/codex/models` は有効なフォールバック `{"models":[]}` を返します。共有の `GET /v1/models` パスでは、`client_version` クエリフィールドが Anthropic 風のヘッダーより優先され、Codex 形式を選択します。このフィールドがなければ、既存の Anthropic 検出レスポンスは変わりません。これらのリクエストは通常のモデル検出認証ゲートを通り、shunt は不完全な Codex モデル行を生成しません。
 
+## Web 検索
+
+Codex CLI の組み込み Web 検索ツール（`web.run`）は、`/responses` を付けるのと同じ base URL の `{base_url}/alpha/search` へ POST します。shunt は base URL の各形式についてこのパスを登録します。
+
+- `POST /backend-api/codex/alpha/search`
+- `POST /alpha/search`
+- `POST /v1/alpha/search`
+
+検索は Responses のターンと同じ `[server.auth]` ポリシーと同じ ChatGPT/Codex アカウントプール（セッション固定の選択、フェイルオーバー、リフレッシュ）を使い、リクエストとレスポンスをバックエンドの `/codex/alpha/search` へそのまま中継します。検索はモデルのターンではないため `[[server.codex_endpoint.routes]]` は適用されず、常に `[server.codex_endpoint].provider` へ送られます。これらのルートは `POST` のみを受け付けます。このツールには WebSocket 形式がありません。
+
 ## クライアント analytics のシンク
 
 Codex CLI は base URL へプロダクト analytics も POST します。shunt は CLI が生成しうる両方のパスを受け付けます。
