@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::{accounts::StoreFamily, config::AccountConfig};
 
 pub mod file_lock;
+pub(crate) mod refresh_lock;
 
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 

@@ -110,11 +110,14 @@ VPS / SSH / Docker / CI where an inbound `127.0.0.1` port isn't reachable from t
 `get_valid()`:
 1. Read the credential file fresh; decode the access-token `exp`.
 2. If `now < exp − 5min`: return the access token.
-3. Else take the process-wide **refresh lock** (`tokio::sync::Mutex` single-flight — xAI
-   rotates the refresh token, so a losing concurrent refresh would replay a consumed token),
-   then **re-read** and re-check: a waiter finds the winner's rotated pair and returns it.
+3. Else take the credential file's **refresh lock** (a `tokio::sync::Mutex` single-flight keyed
+   by the file's canonical path — xAI rotates the refresh token, so a losing concurrent refresh
+   of the same file would replay a consumed token), then **re-read** and re-check: a waiter
+   finds the winner's rotated pair and returns it. Other credential files (pooled accounts,
+   docs/m18-xai-multi-account.md) have their own locks.
 4. Else **refresh** under the lock (`grant_type=refresh_token`, `client_id`,
-   `refresh_token`), write the rotated pair back atomically, return the new access token.
+   `refresh_token`, bounded at 30 seconds), write the rotated pair back atomically, return the
+   new access token.
    Cross-process races are out of scope — shunt owns the file and one gateway process is
    the norm.
 

@@ -192,10 +192,14 @@ has not been done yet.
 
 - **Per-file store.** Each account gets its own `XaiAuthStore` over its own file. A write only
   reaches the path its store was built with, so two accounts cannot overwrite each other's tokens.
-- **Single-flight lock.** One process-wide lock serializes refreshes. A waiter re-reads its own
-  file after the lock is released. Refreshes on different accounts therefore run one at a time.
-  Refreshes are rare (the JWT `exp` with a 5-minute buffer), so this trade-off is accepted. A stalled
-  refresh blocks every account until the HTTP client times out.
+- **Single-flight lock, one per file.** Refreshes of the same credential file are serialized; a
+  waiter re-reads the file after the lock is released and finds the rotated pair. The lock is keyed
+  by the canonicalized path (`auth::shared::refresh_lock`, shared with the Codex store), so
+  refreshes on different accounts run in parallel and a stalled refresh on one account never holds
+  up the next.
+- **Bounded refresh.** The refresh client sets no timeout, so the store caps one refresh round trip
+  at 30 seconds (`REFRESH_TIMEOUT`). A token endpoint that never answers fails the refresh, releases
+  the lock, and the pool cools the account down and fails over.
 - **Detached task.** The refresh and the rotated-pair writeback run in a detached task that owns the
   lock, so the write completes even if the caller is cancelled.
 - **Pool resolution does not take `AccountPool::refresh_lock`**, matching the Codex pool.
@@ -266,5 +270,3 @@ Deferred to the maintainer (see the design review in
   refresh failure from a transient one.
 - **Legacy `xai_oauth` client hardening (Q4).** The single-account `resolve_credential` arm still uses
   the gateway client. `token_refresh_client()` also does not refuse cross-origin HTTPS redirects.
-- **Global refresh lock (Q5).** Per-account locks would stop one stalled refresh from blocking every
-  account.

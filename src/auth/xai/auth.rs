@@ -11,13 +11,14 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use serde_json::{json, Value};
 
 use crate::adapters::AdapterError;
 use crate::auth::auth_error;
+use crate::auth::shared::refresh_lock::{normalized_auth_path, refresh_lock_for};
 use crate::auth::shared::{format_iso8601, is_token_valid_at, write_auth_file_atomic};
 
 /// Public Grok-CLI OAuth client (no secret). xAI's auth server only allows this
@@ -43,14 +44,16 @@ pub struct XaiAuthStore {
     path: PathBuf,
     client: reqwest::Client,
     token_url: String,
+    refresh_timeout: Duration,
 }
 
-/// In-process single-flight for the refresh path. xAI rotates the refresh
-/// token on every refresh, so of two concurrent refreshes the loser would
-/// replay an already-consumed token and fail. The winner refreshes under this
-/// lock; waiters re-read the file and find the fresh pair. Cross-process races
-/// are out of scope — shunt owns the file and one gateway process is the norm.
-static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Upper bound on one refresh round trip to xAI's token endpoint. The refresh
+/// holds its credential file's single-flight lock, and a pooled request waits
+/// on that refresh before it can fail over, so a token endpoint that accepts
+/// the connection and never answers would otherwise hang the request with no
+/// limit (the refresh client sets none). A healthy refresh is one small form
+/// POST, so this only ever trips on a stalled endpoint.
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Tokens as stored on disk under the `tokens` object.
 #[derive(Debug, Clone)]
@@ -75,6 +78,7 @@ impl XaiAuthStore {
             path,
             client,
             token_url: TOKEN_URL.to_string(),
+            refresh_timeout: REFRESH_TIMEOUT,
         }
     }
 
@@ -88,7 +92,14 @@ impl XaiAuthStore {
             path,
             client,
             token_url,
+            refresh_timeout: REFRESH_TIMEOUT,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_refresh_timeout(mut self, refresh_timeout: Duration) -> Self {
+        self.refresh_timeout = refresh_timeout;
+        self
     }
 
     /// Return a valid access token, refreshing (and persisting the rotated
@@ -101,10 +112,21 @@ impl XaiAuthStore {
             });
         }
 
-        // Single-flight the refresh: a concurrent caller that already holds the
-        // lock is refreshing right now, so once we acquire it, re-read — the
-        // rotated pair it wrote is what we must use, not our stale one.
-        let refreshing = REFRESH_LOCK.lock().await;
+        // Single-flight the refresh per credential file: xAI rotates the refresh
+        // token on every refresh, so of two concurrent refreshes of one file the
+        // loser would replay a consumed token. A concurrent caller that already
+        // holds this file's lock is refreshing right now, so once we acquire it,
+        // re-read — the rotated pair it wrote is what we must use, not our stale
+        // one. Other accounts' files have their own locks, so a refresh stalled
+        // on one pooled account never holds up the next. Cross-process races are
+        // out of scope — shunt owns the file and one gateway process is the norm.
+        let lock_path = {
+            let path = self.path.clone();
+            tokio::task::spawn_blocking(move || normalized_auth_path(path))
+                .await
+                .map_err(|error| auth_error(format!("xAI auth path task failed: {error}")))?
+        };
+        let refreshing = refresh_lock_for(&lock_path).lock_owned().await;
         let tokens = self.read_tokens_off_thread().await?;
         if is_token_valid_at(&tokens.access_token, SystemTime::now()) {
             return Ok(XaiCred {
@@ -121,9 +143,19 @@ impl XaiAuthStore {
         let client = self.client.clone();
         let token_url = self.token_url.clone();
         let path = self.path.clone();
+        let refresh_timeout = self.refresh_timeout;
         let handle = tokio::spawn(async move {
             let _refreshing = refreshing; // held until the write below completes
-            let refreshed = refresh_tokens(&client, &token_url, &tokens.refresh_token).await?;
+                                          // Bounded so a token endpoint that never answers releases the lock
+                                          // and fails this account over instead of hanging the request.
+            let refreshed = tokio::time::timeout(
+                refresh_timeout,
+                refresh_tokens(&client, &token_url, &tokens.refresh_token),
+            )
+            .await
+            .map_err(|_| {
+                auth_error("xAI token refresh timed out; the token endpoint did not answer")
+            })??;
             // xAI rotates the refresh token on every refresh and consumes the old
             // one. A success that omits refresh_token would leave the consumed
             // token on disk and break the next refresh, so treat it as an invalid
@@ -699,6 +731,113 @@ mod tests {
         assert!(!body.contains("redirect refused"), "got: {body}");
         assert!(body.contains("failed to refresh xAI auth"), "got: {body}");
         server.verify().await;
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// Wait until `server` has received a request whose body contains `needle`,
+    /// so a test knows a refresh is in flight before it races a second one.
+    async fn wait_for_request(server: &wiremock::MockServer, needle: &str) {
+        for _ in 0..200 {
+            let received = server.received_requests().await.unwrap_or_default();
+            if received
+                .iter()
+                .any(|request| String::from_utf8_lossy(&request.body).contains(needle))
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("no request containing {needle:?} reached the mock token endpoint");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_refresh_does_not_block_another_accounts_refresh() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Pooled accounts fail over to each other, so one account's refresh
+        // hanging at the token endpoint must not hold up a different account's
+        // refresh: the single-flight lock is per credential file, not global.
+        let server = MockServer::start().await;
+        let access_b = jwt(future_exp());
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("refresh_token=stalled-a"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("refresh_token=refresh-b"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": access_b,
+                "refresh_token": "refresh-b2"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let file_a = temp_path("stalled-a");
+        let file_b = temp_path("unblocked-b");
+        write_tokens(&file_a, &jwt(0), "stalled-a", None).unwrap();
+        write_tokens(&file_b, &jwt(0), "refresh-b", None).unwrap();
+        let token_url = format!("{}/token", server.uri());
+        let store_a =
+            XaiAuthStore::with_token_url(file_a.clone(), reqwest::Client::new(), token_url.clone());
+        let store_b =
+            XaiAuthStore::with_token_url(file_b.clone(), reqwest::Client::new(), token_url);
+
+        let stalled = tokio::spawn(async move { store_a.get_valid().await });
+        wait_for_request(&server, "refresh_token=stalled-a").await;
+
+        let b = tokio::time::timeout(std::time::Duration::from_secs(5), store_b.get_valid())
+            .await
+            .expect("account b's refresh waited on account a's stalled refresh");
+        assert_eq!(b.unwrap().access_token, access_b);
+        stalled.abort();
+        let _ = std::fs::remove_dir_all(file_a.parent().unwrap());
+        let _ = std::fs::remove_dir_all(file_b.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_never_answers_times_out_and_frees_its_lock() {
+        use axum::body::to_bytes;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // The refresh client sets no timeout, so the store bounds the round
+        // trip itself: a token endpoint that accepts the connection and never
+        // answers must fail the refresh and release the file's lock, so the
+        // pool can cool the account down and fail over.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+
+        let file = temp_path("never-answers");
+        write_tokens(&file, &jwt(0), "never-answered", None).unwrap();
+        let store = XaiAuthStore::with_token_url(
+            file.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        )
+        .with_refresh_timeout(std::time::Duration::from_millis(200));
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), store.get_valid())
+            .await
+            .expect("the refresh hung past its time limit");
+        let bytes = to_bytes(first.unwrap_err().response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(body.contains("timed out"), "got: {body}");
+
+        let second = tokio::time::timeout(std::time::Duration::from_secs(5), store.get_valid())
+            .await
+            .expect("the timed-out refresh kept holding its lock");
+        assert!(second.is_err());
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 }
