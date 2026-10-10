@@ -250,6 +250,12 @@ All read-only:
   and caps ignore them. Only the buckets are stored, never the name or email `/user` returns. A
   `token_env` account is skipped as static, and the legacy single-account file has no pool row to
   show them on.
+- `GET /admin/api/accounts/xai` lists each store account's name and xAI user id, the `sub` claim of
+  its stored access token, never the token. The observed `grok` row carries the Grok CLI login's
+  user id as its `uuid`, so the dashboard folds that login into the pooled account of the same user
+  instead of listing it twice, as it does for Codex. The id is decoded without signature
+  verification and only matches dashboard rows; the pool identity stays the account's file name
+  (§2).
 
 There are no provisioning routes. Add and remove accounts with the CLI (`shunt login xai --name`,
 or by deleting the account file), as with Kimi (m15 §9).
@@ -266,7 +272,6 @@ Operator-relevant limits in this version:
 - No rotation, failover, or cooldown on the routed inbound Codex endpoint (§9).
 - No model discovery for `xai_oauth` (`src/discovery/upstream.rs` returns nothing).
 - No WebSocket transport.
-- No Grok CLI observation lane (`src/auth/observation.rs`).
 - No change to the `xai_oauth` https and host guard (§5).
 - Some `tracing` messages in the shared pool loop still say "ChatGPT OAuth". This is cosmetic.
 

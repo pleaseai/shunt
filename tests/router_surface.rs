@@ -88,7 +88,7 @@ const BASE_PATHS: [(&str, &str); 7] = [
 /// method sets are unchanged by the move — the same handlers are registered at
 /// new paths — and `every_registered_method_set_matches_the_inventory` proves it
 /// against the live router rather than taking it on trust.
-const ADMIN_PATHS: [(&str, &str); 24] = [
+const ADMIN_PATHS: [(&str, &str); 25] = [
     ("/admin", "GET,HEAD"),
     // The same handler under the spelling a browser or proxy produces by
     // appending a slash. A `{*path}` segment cannot match the empty string, so
@@ -119,6 +119,8 @@ const ADMIN_PATHS: [(&str, &str); 24] = [
     ("/admin/api/accounts/antigravity/{name}/complete", "POST"),
     ("/admin/api/accounts/antigravity/{name}/refresh", "POST"),
     ("/admin/api/accounts/antigravity/{name}", "DELETE"),
+    // Read-only: xAI accounts are added with the CLI, so there is no `POST`.
+    ("/admin/api/accounts/xai", "GET,HEAD"),
 ];
 
 /// The five routes `--features ui` adds inside the `/admin` mount, spelled as
@@ -694,7 +696,7 @@ fn the_source_scan_finds_every_literal_registration() {
         .iter()
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
-    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 24 admin
+    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 25 admin
     // (`/admin/api/pool` merges its `PATCH` onto the existing `.route(` call,
     // so only the new `/admin/api/pool/{provider}/accounts/{account_ref}` literal
     // adds one) plus the 5 UI routes, 7 gateway (its 3 OTLP paths come from
@@ -702,8 +704,8 @@ fn the_source_scan_finds_every_literal_registration() {
     // this scan reads source text, and `#[cfg(feature = "ui")]` does not
     // remove the `.route("…"` literals from it.
     assert_eq!(
-        found, 47,
-        "the literal-path scan found {found} registrations, not 47; either a route was added or \
+        found, 48,
+        "the literal-path scan found {found} registrations, not 48; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }

@@ -10,6 +10,7 @@ import type {
   ObservedAccount,
   PoolProvider,
   StatusSource,
+  XaiStoreAccount,
 } from '../types';
 
 /** A minimal stand-in for `Response` — only what `api.ts` actually reads. */
@@ -58,6 +59,7 @@ export interface Fixtures {
   accounts?: ClaudeStoreAccount[];
   codexAccounts?: CodexStoreAccount[];
   antigravityAccounts?: AntigravityStoreAccount[];
+  xaiAccounts?: XaiStoreAccount[];
   status?: StatusSource[];
 }
 
@@ -81,6 +83,7 @@ function defaultRoutes(fixtures: Fixtures): Routes {
     'GET /admin/api/accounts/codex': () => reply({ accounts: fixtures.codexAccounts ?? [] }),
     'GET /admin/api/accounts/antigravity': () =>
       reply({ accounts: fixtures.antigravityAccounts ?? [] }),
+    'GET /admin/api/accounts/xai': () => reply({ accounts: fixtures.xaiAccounts ?? [] }),
     'GET /admin/api/status': () => reply({ sources: fixtures.status ?? [] }),
   };
 }

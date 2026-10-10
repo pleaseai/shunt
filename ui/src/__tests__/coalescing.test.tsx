@@ -133,6 +133,55 @@ describe('folding managed accounts and local observations into one row', () => {
   });
 
   /**
+   * The Grok CLI login and a pooled xAI account are routinely the same xAI
+   * user; the observed row carries that user id as its `uuid` and the xAI store
+   * exposes it as `account_id`. One subscription, one row.
+   */
+  it('coalesces a Grok CLI observation into the xai_oauth account with the same user id', async () => {
+    await renderDashboard({
+      observed: [
+        {
+          provider: 'grok',
+          source: 'local credential file',
+          identity: 'Grok · Grok Pro',
+          detail: null,
+          state: 'available',
+          signal: 'quota',
+          uuid: 'xai-user-1',
+        },
+      ],
+      xaiAccounts: [{ name: 'personal', account_id: 'xai-user-1' }],
+      pool: poolWith('xai_oauth', 'grok', { name: 'personal' }),
+    });
+
+    expect(observed().getByText('personal')).toBeInTheDocument();
+    expect(observed().queryByText('Grok · Grok Pro')).toBeNull();
+  });
+
+  /** An xAI store id must never be applied to a ChatGPT login of the same name. */
+  it('does not apply an xAI store id to a chatgpt_oauth account', async () => {
+    await renderDashboard({
+      observed: [
+        {
+          provider: 'grok',
+          source: 'local credential file',
+          identity: 'Grok · Grok Pro',
+          detail: null,
+          state: 'available',
+          signal: 'quota',
+          uuid: 'xai-user-1',
+        },
+      ],
+      xaiAccounts: [{ name: 'pool-a', account_id: 'xai-user-1' }],
+      pool: poolWith('chatgpt_oauth', 'codex', {}),
+    });
+
+    // Two rows: the xAI id was never matched against a ChatGPT login.
+    expect(observed().getByText('pool-a')).toBeInTheDocument();
+    expect(observed().getByText('Grok · Grok Pro')).toBeInTheDocument();
+  });
+
+  /**
    * The visible label, the `data-state` the stylesheet colours from, and the
    * remediation note are three renderings of one decision. Deriving them
    * separately is what produced a "Needs login" label beside a green dot with no

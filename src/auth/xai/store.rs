@@ -7,7 +7,10 @@
 //! reads and refreshes either one. Named logins never write the legacy file,
 //! and the legacy login never writes here.
 
-use std::{io, path::PathBuf};
+use std::{fs, io, path::PathBuf};
+
+use serde::Serialize;
+use serde_json::Value;
 
 use crate::auth::shared;
 use crate::config::AccountConfig;
@@ -31,6 +34,48 @@ pub fn account_path(name: &str) -> PathBuf {
 /// file name as its pool identity — the Kimi and Antigravity stores' rule.
 pub fn scan_accounts() -> io::Result<Vec<AccountConfig>> {
     shared::scan_account_dir(&default_accounts_dir(), |_path| None)
+}
+
+/// Token-free metadata for one store-managed xAI account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct XaiAccountMeta {
+    pub name: String,
+    /// The stored access token's xAI user id ([`super::auth::jwt_user_id`]).
+    /// Display matching only; the pool identity stays the file name above.
+    pub account_id: Option<String>,
+}
+
+/// List store-managed xAI accounts with token-free metadata in name order. A
+/// file that cannot be read or parsed is omitted and logged without token
+/// material.
+pub fn list_account_meta() -> io::Result<Vec<XaiAccountMeta>> {
+    Ok(scan_accounts()?
+        .into_iter()
+        .filter_map(|account| account_meta(&account.name))
+        .collect())
+}
+
+fn account_meta(name: &str) -> Option<XaiAccountMeta> {
+    let bytes = match fs::read(account_path(name)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(account = %name, %error, "admin: failed to read xAI account file; omitting from dashboard");
+            return None;
+        }
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        tracing::warn!(account = %name, "admin: xAI account file is not valid JSON; omitting from dashboard");
+        return None;
+    };
+    let account_id = value
+        .pointer("/tokens/access_token")
+        .and_then(Value::as_str)
+        .and_then(super::auth::jwt_user_id);
+    Some(XaiAccountMeta {
+        name: name.to_string(),
+        account_id,
+    })
 }
 
 /// Store a freshly issued xAI device-flow login as a named account, in the
@@ -202,6 +247,40 @@ mod tests {
         assert_eq!(names, ["alpha", "zeta"]);
         assert!(accounts.iter().all(|account| account.uuid.is_none()));
         assert!(accounts.iter().all(|account| account.store_entry));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn account_meta_lists_each_accounts_xai_user_id_and_no_token() {
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let dir = temp_dir("meta");
+        let _env = shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+
+        let with_user = format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&json!({"exp": 4_000_000_000_u64, "sub": "xai-user-b"}))
+                    .unwrap()
+            )
+        );
+        store_oauth_tokens("beta", &with_user, "refresh", None).unwrap();
+        store_oauth_tokens("alpha", &jwt(4_000_000_000), "refresh", None).unwrap();
+        fs::write(dir.join("broken.json"), "not json").unwrap();
+
+        assert_eq!(
+            list_account_meta().unwrap(),
+            [
+                XaiAccountMeta {
+                    name: "alpha".to_string(),
+                    account_id: None,
+                },
+                XaiAccountMeta {
+                    name: "beta".to_string(),
+                    account_id: Some("xai-user-b".to_string()),
+                },
+            ]
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

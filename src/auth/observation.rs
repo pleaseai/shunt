@@ -937,8 +937,8 @@ fn parse_grok_cli(value: &Value, now: SystemTime) -> Option<ObservedCredential> 
         detail: email,
         source: ObservedSource::File,
         valid: is_token_valid_at(&access_token, now),
+        account_id: crate::auth::xai::auth::jwt_user_id(&access_token),
         access_token,
-        account_id: None,
     })
 }
 
@@ -1316,6 +1316,20 @@ mod tests {
         assert_eq!(observed.detail.as_deref(), Some("Max plan"));
         assert_eq!(observed.access_token, "access");
         assert!(observed.valid);
+    }
+
+    /// The Grok CLI login and a pooled xAI account are routinely the same xAI
+    /// user. The token's `sub` claim is that user id; carrying it as the
+    /// observation's account id is what lets the dashboard show one row.
+    #[test]
+    fn grok_cli_login_carries_the_xai_user_id_from_its_token() {
+        let value = json!({"https://auth.x.ai::client": {
+            "key": jwt(json!({"exp": 2_000, "sub": "xai-user-1"})),
+            "auth_mode": "oidc"
+        }});
+        let observed = parse_grok_cli(&value, UNIX_EPOCH + Duration::from_secs(1_000)).unwrap();
+
+        assert_eq!(observed.account_id.as_deref(), Some("xai-user-1"));
     }
 
     #[test]

@@ -6,6 +6,7 @@ import type {
   ObservedAccount,
   PoolAccount,
   PoolProvider,
+  XaiStoreAccount,
 } from './types';
 
 /**
@@ -114,8 +115,9 @@ function managedRow(provider: string, account: PoolAccount): AccountRow {
     utilization_7d_oi: account.utilization_7d_oi,
     reset_7d_oi: account.reset_7d_oi,
     // Antigravity pool accounts carry grouped Gemini / Claude+GPT quota windows
-    // from the pool's own `retrieveUserQuotaSummary` poll; they have no local-observation
-    // counterpart, so there is nothing to fold in `foldObservation`.
+    // from the pool's own `retrieveUserQuotaSummary` poll, and xAI pool accounts
+    // carry Grok billing buckets from the pool's billing poll. `foldObservation`
+    // leaves these alone; `UsageCell` reads them ahead of an observation's.
     quota_buckets: account.quota_buckets,
   };
 }
@@ -187,6 +189,21 @@ function accountIdsByCodexName(
 }
 
 /**
+ * The xAI user id each xAI store account is known by, keyed by account name.
+ * Sourced from `/admin/api/accounts/xai`; the observed Grok CLI row carries the
+ * same id as its `uuid`, so the two can be matched the way Codex rows are.
+ */
+function accountIdsByXaiName(
+  xaiAccounts: { accounts?: XaiStoreAccount[] } | null,
+): Map<string, string> {
+  const ids = new Map<string, string>();
+  for (const account of xaiAccounts?.accounts ?? []) {
+    if (account.account_id) ids.set(account.name, account.account_id);
+  }
+  return ids;
+}
+
+/**
  * Fold managed pool accounts and read-only observations into one row set per
  * provider.
  *
@@ -205,9 +222,11 @@ export function accountGroups(
   pool: { providers?: PoolProvider[] } | null,
   accounts: { accounts?: ClaudeStoreAccount[] } | null,
   codexAccounts: { accounts?: CodexStoreAccount[] } | null = null,
+  xaiAccounts: { accounts?: XaiStoreAccount[] } | null = null,
 ): Map<string, AccountRow[]> {
   const uuidByName = uuidsByAccountName(accounts);
   const accountIdByCodexName = accountIdsByCodexName(codexAccounts);
+  const accountIdByXaiName = accountIdsByXaiName(xaiAccounts);
 
   const groups = new Map<string, AccountRow[]>();
   const groupFor = (provider: string): AccountRow[] => {
@@ -236,7 +255,9 @@ export function accountGroups(
           ? uuidByName.get(account.name)
           : table.auth === 'chatgpt_oauth'
             ? accountIdByCodexName.get(account.name)
-            : undefined;
+            : table.auth === 'xai_oauth'
+              ? accountIdByXaiName.get(account.name)
+              : undefined;
       if (uuid) byUuid.set(uuid, row);
     }
   }

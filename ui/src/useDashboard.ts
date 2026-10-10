@@ -12,6 +12,7 @@ import type {
   PoolData,
   PoolProvider,
   StatusSource,
+  XaiStoreAccount,
 } from './types';
 
 export type Loadable<T> =
@@ -80,10 +81,11 @@ export function useDashboard(): Dashboard {
     // and neither may discard the observations themselves. `readJson` reports a
     // failure rather than throwing, which is what keeps that true through
     // `Promise.all`.
-    const [pool, accounts, codexAccounts] = await Promise.all([
+    const [pool, accounts, codexAccounts, xaiAccounts] = await Promise.all([
       readJson<{ providers?: PoolProvider[] }>(`${API}/pool`, ''),
       readJson<{ accounts?: ClaudeStoreAccount[] }>(`${API}/accounts`, ''),
       readJson<{ accounts?: CodexStoreAccount[] }>(`${API}/accounts/codex`, ''),
+      readJson<{ accounts?: XaiStoreAccount[] }>(`${API}/accounts/xai`, ''),
     ]);
 
     return {
@@ -93,6 +95,7 @@ export function useDashboard(): Dashboard {
         pool.ok ? pool.data : null,
         accounts.ok ? accounts.data : null,
         codexAccounts.ok ? codexAccounts.data : null,
+        xaiAccounts.ok ? xaiAccounts.data : null,
       ),
     };
   }, [hideObserved]);

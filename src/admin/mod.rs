@@ -30,6 +30,7 @@ mod oidc;
 mod plan;
 #[cfg(feature = "ui")]
 mod ui;
+mod xai;
 
 use std::{collections::HashSet, io, sync::Arc, time::Duration};
 
@@ -288,6 +289,7 @@ pub fn admin_router() -> Router<AppState> {
             "/admin/api/accounts/codex",
             get(codex::list_codex_accounts).post(codex::add_codex_account),
         )
+        .route("/admin/api/accounts/xai", get(xai::list_xai_accounts))
         .route(
             "/admin/api/accounts/codex/{name}/complete",
             post(codex::complete_codex_account),
@@ -1123,6 +1125,11 @@ async fn build_grok_observed_row(
             "provider": provider,
             "identity": snapshot.account_label,
             "detail": snapshot.detail.or(observed.detail),
+            // The xAI user id, so the dashboard can fold this observation into
+            // the pooled xAI account of the same user instead of listing one
+            // account twice. `GET /admin/api/accounts/xai` already returns the
+            // same id to the same caller.
+            "uuid": observed.account_id,
             "source": source,
             "ownership": "observed",
             "signal": "quota",
@@ -1135,6 +1142,7 @@ async fn build_grok_observed_row(
                 "provider": provider,
                 "identity": observed.identity,
                 "detail": observed.detail,
+                "uuid": observed.account_id,
                 "source": source,
                 "ownership": "observed",
                 "signal": "quota",

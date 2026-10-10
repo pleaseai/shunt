@@ -155,7 +155,9 @@ flagged. The serving account is named in the `x-shunt-account` response header, 
 With [`[server.pool] usage_refresh_seconds`](/reference/configuration/#serverpool-optional) set,
 shunt also reads each named account's Grok usage, the credit total and per-product usage such as
 Grok Build, and shows it as that account's usage bars on the admin dashboard. The bars are for
-display only: they do not change which account serves a request.
+display only: they do not change which account serves a request. When your Grok CLI login
+(`~/.grok/auth.json`) belongs to the same xAI user as a named account, the dashboard shows the two
+as one row under the account's name.
 
 <Aside type="caution" title="The single-account file steps aside">
 

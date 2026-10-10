@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use crate::adapters::AdapterError;
 use crate::auth::auth_error;
 use crate::auth::shared::refresh_lock::{normalized_auth_path, refresh_lock_for};
-use crate::auth::shared::{format_iso8601, is_token_valid_at, write_auth_file_atomic};
+use crate::auth::shared::{format_iso8601, is_token_valid_at, jwt_claims, write_auth_file_atomic};
 
 /// Public Grok-CLI OAuth client (no secret). xAI's auth server only allows this
 /// allowlisted client for the device-code flow. Source: Hermes / OpenCode.
@@ -245,6 +245,18 @@ fn parse_tokens(value: &Value) -> Option<TokenSet> {
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned),
     })
+}
+
+/// The xAI user id (the `sub` claim) of an access token. Decoded without
+/// signature verification, so it serves display matching only (the dashboard
+/// folding a Grok CLI login into the pooled account of the same user) and is
+/// never a pool identity.
+pub fn jwt_user_id(token: &str) -> Option<String> {
+    jwt_claims(token)?
+        .get("sub")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 /// The credential-file JSON: `{"tokens": {...}, "last_refresh": "<ISO8601>"}`.
