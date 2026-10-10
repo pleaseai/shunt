@@ -249,7 +249,9 @@ All read-only:
   billing from the Grok CLI proxy (`GET /billing?format=credits`, the call the observed `grok` row
   already makes) with that account's own bearer, refreshing it first if stale. The credit total and
   each product's usage (for example "Grok Build") become the account's dashboard usage bars, reset
-  at the billing period end. They are display-only, like Antigravity's (m17): selection, cooldown,
+  at the billing period end. xAI omits a zero-valued field, so a reported period with no credit
+  total shows as 0% used; a product with no figure gets no bar. They are display-only, like
+  Antigravity's (m17): selection, cooldown,
   and caps ignore them. Only the buckets are stored, never the name or email `/user` returns. A
   `token_env` account is skipped as static, and the legacy single-account file has no pool row to
   show them on.

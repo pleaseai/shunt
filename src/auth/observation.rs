@@ -842,7 +842,14 @@ fn grok_quota_snapshot(
 ) -> GrokQuotaSnapshot {
     let reset_time = billing.billing_period_end;
     let mut buckets = Vec::new();
-    if let Some(used_percent) = billing.credit_usage_percent {
+    // xAI drops a zero-valued field: an account that has used nothing this
+    // period gets no `creditUsagePercent` at all, as an untouched product gets
+    // no `usagePercent` (see `GrokProductUsage`). With the period itself
+    // reported, a missing total is 0% used, not unknown.
+    let credit_used = billing
+        .credit_usage_percent
+        .or_else(|| reset_time.as_ref().map(|_| 0.0));
+    if let Some(used_percent) = credit_used {
         buckets.push(QuotaBucket {
             label: "Credits".to_string(),
             remaining: Some((1.0 - used_percent / 100.0).clamp(0.0, 1.0)),
@@ -1583,6 +1590,30 @@ mod tests {
         assert_eq!(snapshot.buckets[1].label, "Grok code");
         assert_eq!(snapshot.buckets[1].remaining, Some(0.6));
         assert_eq!(snapshot.buckets[2].remaining, Some(0.9));
+    }
+
+    /// xAI omits a zero-valued field, so an account that has used nothing this
+    /// period gets no credit total at all. With the period reported, that reads
+    /// as 0% used rather than as no usage data.
+    #[test]
+    fn a_reported_period_without_a_credit_total_is_zero_percent_used() {
+        let billing: GrokBillingConfig = serde_json::from_value(json!({
+            "billingPeriodEnd": "2026-10-15T13:21:11Z",
+            "isUnifiedBillingUser": true
+        }))
+        .unwrap();
+        let snapshot = grok_quota_snapshot(billing, None);
+        assert_eq!(snapshot.buckets.len(), 1);
+        assert_eq!(snapshot.buckets[0].label, "Credits");
+        assert_eq!(snapshot.buckets[0].remaining, Some(1.0));
+        assert_eq!(
+            snapshot.buckets[0].reset_time.as_deref(),
+            Some("2026-10-15T13:21:11Z")
+        );
+
+        // Without a period there is nothing to anchor a bar to.
+        let billing: GrokBillingConfig = serde_json::from_value(json!({})).unwrap();
+        assert!(grok_quota_snapshot(billing, None).buckets.is_empty());
     }
 
     #[tokio::test]
