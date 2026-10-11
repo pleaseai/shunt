@@ -1995,6 +1995,12 @@ fn classify_first_xai(
     match accounts::classify_xai(status, upstream.headers()) {
         FailoverAction::Relay => FirstOutcome::Relay(upstream),
         FailoverAction::Rotate | FailoverAction::RefreshRetry | FailoverAction::PauseSame => {
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                // A token is only sent while unexpired, so a 401 means xAI
+                // revoked it early: refresh on this account's next use rather
+                // than resend it every cooldown until its `exp`.
+                auth::force_xai_refresh(account);
+            }
             let cooldown = rotate_cooldown(status, upstream.headers());
             state.accounts.cooldown(
                 &route.provider,

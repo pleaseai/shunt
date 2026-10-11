@@ -303,6 +303,12 @@ async fn xai_pool_rotates_off_a_401_without_a_same_account_refresh_retry() {
         snapshot[0].cooldown_secs_remaining.is_some(),
         "the 401 account is cooled down"
     );
+    // xAI rejected a token that has not expired, so the account's next use
+    // refreshes it instead of resending it until its `exp`.
+    let path_a = PathBuf::from(a.credentials.as_deref().unwrap());
+    assert!(crate::auth::xai::auth::force_refresh_pending(&path_a));
+    let path_b = dir.join("xai-b.json");
+    assert!(!crate::auth::xai::auth::force_refresh_pending(&path_b));
     let _ = std::fs::remove_dir_all(dir);
 }
 

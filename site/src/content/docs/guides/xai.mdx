@@ -147,7 +147,8 @@ In an `[[upstreams]]` config, name them in the auth map instead:
 
 shunt keeps a session (`x-claude-code-session-id`) on one account and round-robins otherwise. When
 an account answers `401`, `402`, `429`, or `5xx`, or its token cannot be refreshed, shunt cools it
-down and retries the request on the next one. Any other `4xx`, including `403`, is returned as is:
+down and retries the request on the next one. After a `401`, shunt also refreshes that account's
+token before using it again. Any other `4xx`, including `403`, is returned as is:
 a `403` can be a content-policy refusal, and re-sending it to every account could get all of them
 flagged. The serving account is named in the `x-shunt-account` response header, or in an
 `account` event before a streamed reply.

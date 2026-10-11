@@ -9,8 +9,10 @@
 //! [`super::login`]) and owned solely by shunt.
 
 use std::{
+    collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
+    sync::{LazyLock, Mutex as StdMutex, PoisonError},
     time::{Duration, SystemTime},
 };
 
@@ -61,6 +63,36 @@ pub(crate) const DEFAULT_LOGIN_COMMAND: &str = "shunt login xai";
 /// limit (the refresh client sets none). A healthy refresh is one small form
 /// POST, so this only ever trips on a stalled endpoint.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Credential files whose current access token xAI rejected (an upstream 401)
+/// before its JWT `exp`. The next [`XaiAuthStore::get_valid`] for such a file
+/// refreshes instead of handing that token out again until it expires; a
+/// successful refresh clears the mark, and a failed one leaves it set.
+/// Process-local, like the refresh locks.
+static FORCED_REFRESH: LazyLock<StdMutex<HashSet<PathBuf>>> = LazyLock::new(Default::default);
+
+/// Make the next `get_valid` for `path` refresh even an unexpired token.
+pub(crate) fn force_refresh_next(path: &Path) {
+    FORCED_REFRESH
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(path.to_path_buf());
+}
+
+/// Whether `path` is marked by [`force_refresh_next`].
+pub(crate) fn force_refresh_pending(path: &Path) -> bool {
+    FORCED_REFRESH
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(path)
+}
+
+fn clear_forced_refresh(path: &Path) {
+    FORCED_REFRESH
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(path);
+}
 
 /// Tokens as stored on disk under the `tokens` object.
 #[derive(Debug, Clone)]
@@ -118,10 +150,13 @@ impl XaiAuthStore {
     }
 
     /// Return a valid access token, refreshing (and persisting the rotated
-    /// refresh token) when the stored one is within the 5-minute expiry buffer.
+    /// refresh token) when the stored one is within the 5-minute expiry buffer
+    /// or xAI already rejected it ([`force_refresh_next`]).
     pub async fn get_valid(&self) -> Result<XaiCred, AdapterError> {
         let tokens = self.read_tokens_off_thread().await?;
-        if is_token_valid_at(&tokens.access_token, SystemTime::now()) {
+        if !force_refresh_pending(&self.path)
+            && is_token_valid_at(&tokens.access_token, SystemTime::now())
+        {
             return Ok(XaiCred {
                 access_token: tokens.access_token,
             });
@@ -143,7 +178,11 @@ impl XaiAuthStore {
         };
         let refreshing = refresh_lock_for(&lock_path).lock_owned().await;
         let tokens = self.read_tokens_off_thread().await?;
-        if is_token_valid_at(&tokens.access_token, SystemTime::now()) {
+        // Re-checked under the lock: a caller that refreshed while we waited
+        // has already cleared a forced refresh, so its rotated token is reused.
+        if !force_refresh_pending(&self.path)
+            && is_token_valid_at(&tokens.access_token, SystemTime::now())
+        {
             return Ok(XaiCred {
                 access_token: tokens.access_token,
             });
@@ -183,13 +222,14 @@ impl XaiAuthStore {
             };
             let id_token = refreshed.id_token.as_deref().or(tokens.id_token.as_deref());
             write_tokens_off_thread(
-                path,
+                path.clone(),
                 refreshed.access_token.clone(),
                 refresh_token.to_string(),
                 id_token.map(ToOwned::to_owned),
             )
             .await
             .map_err(|error| auth_error(format!("failed to update xAI auth file: {error}")))?;
+            clear_forced_refresh(&path);
             tracing::info!("refreshed xAI OAuth access token");
             Ok::<String, AdapterError>(refreshed.access_token)
         });
@@ -621,6 +661,48 @@ mod tests {
         // consumed token; the file holds the rotated refresh token.
         let stored = parse_tokens(&read_auth_value(&file).unwrap()).unwrap();
         assert_eq!(stored.refresh_token, "rotated-refresh");
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// xAI can reject a token before its `exp` (an upstream 401). Once that
+    /// file is marked, the next `get_valid` refreshes instead of handing the
+    /// rejected token out again, and a successful refresh clears the mark.
+    #[tokio::test]
+    async fn a_forced_refresh_replaces_a_token_that_has_not_expired() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let fresh = jwt(future_exp() + 60);
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": fresh,
+                "refresh_token": "rotated-refresh",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let file = temp_path("forced");
+        let rejected = jwt(future_exp());
+        write_tokens(&file, &rejected, "old-refresh", None).unwrap();
+        let store = XaiAuthStore::with_token_url(
+            file.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+        // Unmarked, the unexpired token is used as is.
+        assert_eq!(store.get_valid().await.unwrap().access_token, rejected);
+
+        force_refresh_next(&file);
+        assert_eq!(store.get_valid().await.unwrap().access_token, fresh);
+        // The mark is cleared: the refreshed token is reused without a second
+        // refresh (the mock expects exactly one).
+        assert!(!force_refresh_pending(&file));
+        assert_eq!(store.get_valid().await.unwrap().access_token, fresh);
+
         server.verify().await;
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }

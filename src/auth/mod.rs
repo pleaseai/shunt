@@ -416,12 +416,13 @@ pub async fn resolve_xai_account(
             .ok_or_else(|| auth_error(format!("{token_env} is not set")))?;
         return Ok(Credential::XaiOauth { access_token });
     }
-    let store = match account.credentials.as_deref() {
-        Some(path) => pooled_xai_store(PathBuf::from(path)),
-        // The bare `shunt login xai` writes the single-account file, which a
-        // non-empty pool ignores, so a store account's errors name its own login.
-        None => pooled_xai_store(xai::store::account_path(&account.name))
-            .with_login_command(format!("shunt login xai --name {}", account.name)),
+    let store = pooled_xai_store(xai_account_file(account));
+    // The bare `shunt login xai` writes the single-account file, which a
+    // non-empty pool ignores, so a store account's errors name its own login.
+    let store = if account.credentials.is_none() {
+        store.with_login_command(format!("shunt login xai --name {}", account.name))
+    } else {
+        store
     };
     store
         .get_valid()
@@ -429,6 +430,26 @@ pub async fn resolve_xai_account(
         .map(|credential| Credential::XaiOauth {
             access_token: credential.access_token,
         })
+}
+
+/// The credential file a pooled xAI account reads: its explicit
+/// `credentials` path, else its named file in the account store.
+fn xai_account_file(account: &crate::config::AccountConfig) -> PathBuf {
+    account
+        .credentials
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| xai::store::account_path(&account.name))
+}
+
+/// Mark a pooled xAI account whose token xAI rejected (an upstream 401) so its
+/// next [`resolve_xai_account`] refreshes instead of resending that token
+/// until its JWT `exp`. A `token_env` token is static and has nothing to
+/// refresh.
+pub fn force_xai_refresh(account: &crate::config::AccountConfig) {
+    if account.token_env.is_none() {
+        xai::auth::force_refresh_next(&xai_account_file(account));
+    }
 }
 
 /// Resolve one ChatGPT (Codex) OAuth account for the account pool. Unlike

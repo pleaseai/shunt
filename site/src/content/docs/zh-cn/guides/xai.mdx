@@ -139,7 +139,7 @@ priority = 200          # 可选:越小越优先(默认 100)
 
 在 `[[upstreams]]` 配置中,请改为在 auth 映射里指定账户:`auth = { mode = "xai_oauth", accounts = ["main", "backup"] }`(只用一个账户则写 `account = "main"`)。
 
-shunt 会把一个会话(`x-claude-code-session-id`)固定在同一个账户上,其余情况则轮询分配。当某个账户返回 `401`、`402`、`429` 或 `5xx`,或其 token 无法刷新时,shunt 会让该账户冷却,并把请求重试到下一个账户上。其他任何 `4xx`(包括 `403`)都会原样返回:`403` 可能是内容政策拒绝,若把它重发给每个账户,可能导致所有账户都被标记。提供服务的账户会在 `x-shunt-account` 响应头中注明;若是流式回复,则在回复开始之前的 `account` 事件中注明。
+shunt 会把一个会话(`x-claude-code-session-id`)固定在同一个账户上,其余情况则轮询分配。当某个账户返回 `401`、`402`、`429` 或 `5xx`,或其 token 无法刷新时,shunt 会让该账户冷却,并把请求重试到下一个账户上。返回 `401` 后,shunt 还会在再次使用该账户之前刷新其 token。其他任何 `4xx`(包括 `403`)都会原样返回:`403` 可能是内容政策拒绝,若把它重发给每个账户,可能导致所有账户都被标记。提供服务的账户会在 `x-shunt-account` 响应头中注明;若是流式回复,则在回复开始之前的 `account` 事件中注明。
 
 设置 [`[server.pool] usage_refresh_seconds`](/zh-cn/reference/configuration/#serverpool可选) 后,shunt 还会读取每个具名账户的 Grok 用量(积分总量,以及 Grok Build 等各产品用量),并在管理仪表盘上显示为该账户的用量条。这些用量条仅供显示,不会改变由哪个账户处理请求。如果你的 Grok CLI 登录(`~/.grok/auth.json`)与某个具名账户属于同一个 xAI 用户,仪表盘会把两者合并为一行,显示在该账户名下。
 

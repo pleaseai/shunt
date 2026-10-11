@@ -158,7 +158,7 @@ shared `rotation_reason`.
 | Outcome | Pool action | Cooldown | Rotation reason |
 | :-- | :-- | :-- | :-- |
 | `2xx` | Mark healthy and relay. | — | — |
-| `401` | Cool down and rotate. No same-account refresh retry. | 30 s | `auth` |
+| `401` | Cool down and rotate, and mark the account's file so its next use refreshes the token even before its `exp`. No same-account retry. | 30 s | `auth` |
 | `402` | Cool down and rotate. | 30 s | `membership` |
 | `403` | Relay the mapped xAI error and `mark_healthy(false)`. No rotation. | — | — |
 | `429` | Cool down and rotate. | `retry-after`, clamped to 1–3600 s; default 60 s | `rate_limit` |
@@ -273,7 +273,8 @@ or by deleting the account file), as with Kimi (m15 §9).
 
 Operator-relevant limits in this version:
 
-- No forced refresh and no same-account retry on an upstream `401`.
+- No same-account retry on an upstream `401`. The account's next use refreshes its token (§7),
+  and the mark is process-local, so a restart forgets it until the next `401`.
 - No `needs_relogin` mark on the dashboard. A dead account is cooled down for 5 minutes and retried,
   as with Kimi.
 - No quota-aware selection and no `max_utilization` caps. The polled billing buckets (§11) are
