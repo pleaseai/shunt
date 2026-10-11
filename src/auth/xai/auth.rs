@@ -45,7 +45,14 @@ pub struct XaiAuthStore {
     client: reqwest::Client,
     token_url: String,
     refresh_timeout: Duration,
+    /// The command that rewrites this store's file, named in every
+    /// "log in again" error ([`DEFAULT_LOGIN_COMMAND`] unless set).
+    login_command: String,
 }
+
+/// The login that writes the single-account file. A named pool account is
+/// re-logged in with `--name` instead (see `auth::resolve_xai_account`).
+pub(crate) const DEFAULT_LOGIN_COMMAND: &str = "shunt login xai";
 
 /// Upper bound on one refresh round trip to xAI's token endpoint. The refresh
 /// holds its credential file's single-flight lock, and a pooled request waits
@@ -79,7 +86,14 @@ impl XaiAuthStore {
             client,
             token_url: TOKEN_URL.to_string(),
             refresh_timeout: REFRESH_TIMEOUT,
+            login_command: DEFAULT_LOGIN_COMMAND.to_string(),
         }
+    }
+
+    /// Name `command` in this store's "log in again" errors.
+    pub(crate) fn with_login_command(mut self, command: String) -> Self {
+        self.login_command = command;
+        self
     }
 
     #[cfg(test)]
@@ -93,6 +107,7 @@ impl XaiAuthStore {
             client,
             token_url,
             refresh_timeout: REFRESH_TIMEOUT,
+            login_command: DEFAULT_LOGIN_COMMAND.to_string(),
         }
     }
 
@@ -144,13 +159,14 @@ impl XaiAuthStore {
         let token_url = self.token_url.clone();
         let path = self.path.clone();
         let refresh_timeout = self.refresh_timeout;
+        let login_command = self.login_command.clone();
         let handle = tokio::spawn(async move {
             let _refreshing = refreshing; // held until the write below completes
                                           // Bounded so a token endpoint that never answers releases the lock
                                           // and fails this account over instead of hanging the request.
             let refreshed = tokio::time::timeout(
                 refresh_timeout,
-                refresh_tokens(&client, &token_url, &tokens.refresh_token),
+                refresh_tokens(&client, &token_url, &tokens.refresh_token, &login_command),
             )
             .await
             .map_err(|_| {
@@ -161,9 +177,9 @@ impl XaiAuthStore {
             // token on disk and break the next refresh, so treat it as an invalid
             // response instead of persisting a broken pair.
             let Some(refresh_token) = refreshed.refresh_token.as_deref() else {
-                return Err(auth_error(
-                    "xAI refresh response missing refresh_token; run shunt login xai",
-                ));
+                return Err(auth_error(format!(
+                    "xAI refresh response missing refresh_token; run {login_command}"
+                )));
             };
             let id_token = refreshed.id_token.as_deref().or(tokens.id_token.as_deref());
             write_tokens_off_thread(
@@ -184,10 +200,15 @@ impl XaiAuthStore {
     }
 
     fn read_tokens(&self) -> Result<TokenSet, AdapterError> {
-        let value = read_auth_value(&self.path)
-            .map_err(|error| auth_error(read_error_message(&self.path, &error)))?;
-        parse_tokens(&value)
-            .ok_or_else(|| auth_error("xAI auth tokens missing; run shunt login xai"))
+        let value = read_auth_value(&self.path).map_err(|error| {
+            auth_error(read_error_message(&self.path, &error, &self.login_command))
+        })?;
+        parse_tokens(&value).ok_or_else(|| {
+            auth_error(format!(
+                "xAI auth tokens missing; run {}",
+                self.login_command
+            ))
+        })
     }
 
     /// Read + parse the credential file on the blocking thread pool so the
@@ -218,12 +239,12 @@ async fn write_tokens_off_thread(
 /// User-facing message for a failed credential-file read. A missing file means
 /// "log in"; anything else (EACCES, corrupt JSON) names the real cause so the
 /// operator isn't misdirected into a re-login that can't help.
-fn read_error_message(path: &Path, error: &io::Error) -> String {
+fn read_error_message(path: &Path, error: &io::Error, login_command: &str) -> String {
     if error.kind() == io::ErrorKind::NotFound {
-        "xAI auth not found; run shunt login xai".to_string()
+        format!("xAI auth not found; run {login_command}")
     } else {
         format!(
-            "xAI auth file {} unreadable: {error}; fix the file or run shunt login xai",
+            "xAI auth file {} unreadable: {error}; fix the file or run {login_command}",
             path.display()
         )
     }
@@ -316,11 +337,16 @@ pub(crate) fn parse_token_response(value: &Value) -> Option<TokenResponse> {
     })
 }
 
+/// Refresh the token pair. `login_command` is named in every "log in again"
+/// error (see [`XaiAuthStore::with_login_command`]).
 pub(crate) async fn refresh_tokens(
     client: &reqwest::Client,
     token_url: &str,
     refresh_token: &str,
+    login_command: &str,
 ) -> Result<TokenResponse, AdapterError> {
+    let invalid_response =
+        || auth_error(format!("invalid xAI refresh response; run {login_command}"));
     let response = client
         .post(token_url)
         .header("accept", "application/json")
@@ -334,34 +360,34 @@ pub(crate) async fn refresh_tokens(
         // A refused redirect must be distinguishable from a transport failure.
         .map_err(|error| {
             if error.is_redirect() {
-                auth_error("xAI token refresh redirect refused; run shunt login xai")
+                auth_error(format!(
+                    "xAI token refresh redirect refused; run {login_command}"
+                ))
             } else {
-                auth_error("failed to refresh xAI auth; run shunt login xai")
+                auth_error(format!("failed to refresh xAI auth; run {login_command}"))
             }
         })?;
     let status = response.status();
     if !status.is_success() {
         tracing::warn!(%status, "xAI token refresh failed");
-        return Err(refresh_status_error(status));
+        return Err(refresh_status_error(status, login_command));
     }
-    let text = response
-        .text()
-        .await
-        .map_err(|_| auth_error("invalid xAI refresh response; run shunt login xai"))?;
-    let value = serde_json::from_str::<Value>(&text)
-        .map_err(|_| auth_error("invalid xAI refresh response; run shunt login xai"))?;
-    parse_token_response(&value)
-        .ok_or_else(|| auth_error("invalid xAI refresh response; run shunt login xai"))
+    let text = response.text().await.map_err(|_| invalid_response())?;
+    let value = serde_json::from_str::<Value>(&text).map_err(|_| invalid_response())?;
+    parse_token_response(&value).ok_or_else(invalid_response)
 }
 
-pub(crate) fn refresh_status_error(status: reqwest::StatusCode) -> AdapterError {
-    auth_error(refresh_error_message(status))
+pub(crate) fn refresh_status_error(
+    status: reqwest::StatusCode,
+    login_command: &str,
+) -> AdapterError {
+    auth_error(refresh_error_message(status, login_command))
 }
 
 /// Map a non-2xx refresh status to a distinct client-facing message. A 403 is a
 /// subscription-tier/entitlement gate (re-login won't help — point at the
 /// API-key path); 400/401 is a consumed/invalid grant (re-login).
-pub(crate) fn refresh_error_message(status: reqwest::StatusCode) -> String {
+pub(crate) fn refresh_error_message(status: reqwest::StatusCode, login_command: &str) -> String {
     if status == reqwest::StatusCode::FORBIDDEN {
         "xAI OAuth account is not authorized for API access (subscription tier gate); \
          re-logging in will not help — set XAI_API_KEY and use the api-key path, \
@@ -370,9 +396,9 @@ pub(crate) fn refresh_error_message(status: reqwest::StatusCode) -> String {
     } else if status == reqwest::StatusCode::BAD_REQUEST
         || status == reqwest::StatusCode::UNAUTHORIZED
     {
-        "xAI token refresh rejected (invalid_grant); run shunt login xai".to_string()
+        format!("xAI token refresh rejected (invalid_grant); run {login_command}")
     } else {
-        format!("xAI token refresh failed (HTTP {status}); run shunt login xai")
+        format!("xAI token refresh failed (HTTP {status}); run {login_command}")
     }
 }
 
@@ -476,14 +502,14 @@ mod tests {
     fn read_errors_distinguish_missing_file_from_unreadable() {
         let missing = io::Error::new(io::ErrorKind::NotFound, "no such file");
         assert_eq!(
-            read_error_message(Path::new("/tmp/x.json"), &missing),
+            read_error_message(Path::new("/tmp/x.json"), &missing, DEFAULT_LOGIN_COMMAND),
             "xAI auth not found; run shunt login xai"
         );
 
         // EACCES / corrupt JSON name the real cause instead of claiming the
         // file doesn't exist and misdirecting the operator into a re-login.
         let denied = io::Error::new(io::ErrorKind::PermissionDenied, "permission denied");
-        let message = read_error_message(Path::new("/tmp/x.json"), &denied);
+        let message = read_error_message(Path::new("/tmp/x.json"), &denied, DEFAULT_LOGIN_COMMAND);
         assert!(message.contains("/tmp/x.json"));
         assert!(message.contains("permission denied"));
         assert!(!message.contains("not found"));
@@ -492,20 +518,26 @@ mod tests {
     #[test]
     fn refresh_status_errors_are_distinct() {
         // 403 = tier gate: must NOT tell the user to re-login; points at the key.
-        let tier = refresh_error_message(reqwest::StatusCode::FORBIDDEN);
+        let tier = refresh_error_message(reqwest::StatusCode::FORBIDDEN, DEFAULT_LOGIN_COMMAND);
         assert!(tier.contains("tier gate"));
         assert!(tier.contains("XAI_API_KEY"));
         assert!(!tier.contains("run shunt login xai"));
 
         // 400/401 = invalid grant: tell the user to log in again.
         assert!(
-            refresh_error_message(reqwest::StatusCode::BAD_REQUEST).contains("run shunt login xai")
+            refresh_error_message(reqwest::StatusCode::BAD_REQUEST, DEFAULT_LOGIN_COMMAND)
+                .contains("run shunt login xai")
         );
-        assert!(refresh_error_message(reqwest::StatusCode::UNAUTHORIZED)
-            .contains("run shunt login xai"));
+        assert!(
+            refresh_error_message(reqwest::StatusCode::UNAUTHORIZED, DEFAULT_LOGIN_COMMAND)
+                .contains("run shunt login xai")
+        );
 
         // Any other status falls back to the generic HTTP-code message.
-        let other = refresh_error_message(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+        let other = refresh_error_message(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            DEFAULT_LOGIN_COMMAND,
+        );
         assert!(other.contains("500"));
         assert!(other.contains("run shunt login xai"));
         assert!(!other.contains("tier gate"));
@@ -530,7 +562,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let token_url = format!("{}/token", server.uri());
-        let refreshed = refresh_tokens(&client, &token_url, "old-refresh")
+        let refreshed = refresh_tokens(&client, &token_url, "old-refresh", DEFAULT_LOGIN_COMMAND)
             .await
             .unwrap();
         assert_eq!(refreshed.refresh_token.as_deref(), Some("rotated-refresh"));
@@ -642,7 +674,11 @@ mod tests {
         let token_url = format!("{}/token", server.uri());
         // A 403 refresh surfaces an authentication error (the distinct tier-gate
         // wording is asserted on refresh_error_message above).
-        assert!(refresh_tokens(&client, &token_url, "r").await.is_err());
+        assert!(
+            refresh_tokens(&client, &token_url, "r", DEFAULT_LOGIN_COMMAND)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

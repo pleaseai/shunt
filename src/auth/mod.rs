@@ -416,12 +416,13 @@ pub async fn resolve_xai_account(
             .ok_or_else(|| auth_error(format!("{token_env} is not set")))?;
         return Ok(Credential::XaiOauth { access_token });
     }
-    let path = account
-        .credentials
-        .as_deref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| xai::store::account_path(&account.name));
-    let store = pooled_xai_store(path);
+    let store = match account.credentials.as_deref() {
+        Some(path) => pooled_xai_store(PathBuf::from(path)),
+        // The bare `shunt login xai` writes the single-account file, which a
+        // non-empty pool ignores, so a store account's errors name its own login.
+        None => pooled_xai_store(xai::store::account_path(&account.name))
+            .with_login_command(format!("shunt login xai --name {}", account.name)),
+    };
     store
         .get_valid()
         .await
@@ -1063,9 +1064,16 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(resolve_xai_account(&account, &reqwest::Client::new())
+        let Err(error) = resolve_xai_account(&account, &reqwest::Client::new()).await else {
+            panic!("a missing account file must fail resolution");
+        };
+        // The bare `shunt login xai` writes the single-account file, which a
+        // non-empty pool ignores, so the hint must name this account.
+        let bytes = axum::body::to_bytes(error.response.into_body(), usize::MAX)
             .await
-            .is_err());
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(body.contains("run shunt login xai --name main"), "{body}");
     }
 
     /// Build a fake ChatGPT access token carrying the `chatgpt_account_id`

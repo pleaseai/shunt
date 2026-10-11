@@ -58,6 +58,10 @@ shapes cannot drift.
   to add an account.
 - **Legacy login.** Plain `shunt login xai` never writes a named file, and `--name` never writes
   `~/.shunt/xai-auth.json`.
+- **Re-login hints.** A store account's credential errors (missing file, refused refresh) name
+  `shunt login xai --name <name>`, since the plain login cannot fix it. An account with an explicit
+  `credentials` path keeps the plain hint. An upstream `401` cannot tell which login answered, so
+  its message names both.
 
 ## 3. Legacy file rule
 
