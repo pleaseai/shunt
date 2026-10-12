@@ -1,18 +1,15 @@
+mod common;
 mod openai_chat_support;
 
 use std::{
     io::ErrorKind,
     net::SocketAddr,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        OnceLock,
-    },
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use shunt::{config::Config, server};
-use tokio::sync::Mutex;
 use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
@@ -20,37 +17,7 @@ use wiremock::{
 
 use openai_chat_support::*;
 
-struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<std::ffi::OsString>,
-}
-
-impl EnvVarGuard {
-    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-        let previous = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(previous) => std::env::set_var(self.key, previous),
-            None => std::env::remove_var(self.key),
-        }
-    }
-}
-
-static OPENAI_CHAT_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static OPENAI_CHAT_ENV_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-async fn lock_openai_chat_env() -> tokio::sync::MutexGuard<'static, ()> {
-    OPENAI_CHAT_ENV_LOCK
-        .get_or_init(|| Mutex::const_new(()))
-        .lock()
-        .await
-}
 
 fn can_bind_loopback() -> bool {
     match std::net::TcpListener::bind("127.0.0.1:0") {
@@ -132,9 +99,8 @@ async fn openai_chat_tracer_unary_happy_path() {
     if !can_bind_loopback() {
         return;
     }
-    let _env_lock = lock_openai_chat_env().await;
     let api_key_env = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY");
-    let _key = EnvVarGuard::set(api_key_env, "fixture-openai-key");
+    let _key = common::set_env(&[(api_key_env, "fixture-openai-key")]).await;
 
     let backend = MockServer::start().await;
     Mock::given(method("POST"))
@@ -202,11 +168,13 @@ async fn openai_chat_tracer_unary_isolation() {
     if !can_bind_loopback() {
         return;
     }
-    let _env_lock = lock_openai_chat_env().await;
     let api_key_env_a = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY_A");
     let api_key_env_b = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY_B");
-    let _key_a = EnvVarGuard::set(api_key_env_a, "fixture-key-a");
-    let _key_b = EnvVarGuard::set(api_key_env_b, "fixture-key-b");
+    let _keys = common::set_env(&[
+        (api_key_env_a, "fixture-key-a"),
+        (api_key_env_b, "fixture-key-b"),
+    ])
+    .await;
 
     let backend = MockServer::start().await;
     Mock::given(method("POST"))
@@ -289,8 +257,6 @@ async fn openai_chat_tracer_unary_non_api_key_auth_rejected() {
     if !can_bind_loopback() {
         return;
     }
-    let _env_lock = lock_openai_chat_env().await;
-
     let mut value = serde_json::to_value(Config::default()).unwrap();
     value["providers"]["openai-chat-test"] = json!({
         "kind": "openai_chat",
@@ -319,9 +285,8 @@ async fn openai_chat_tracer_streaming_relay() {
     if !can_bind_loopback() {
         return;
     }
-    let _env_lock = lock_openai_chat_env().await;
     let api_key_env = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY");
-    let _key = EnvVarGuard::set(api_key_env, "fixture-openai-key");
+    let _key = common::set_env(&[(api_key_env, "fixture-openai-key")]).await;
 
     let backend = MockServer::start().await;
     Mock::given(method("POST"))
@@ -387,9 +352,8 @@ async fn openai_chat_tracer_streaming_eof_failclosed() {
     if !can_bind_loopback() {
         return;
     }
-    let _env_lock = lock_openai_chat_env().await;
     let api_key_env = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY");
-    let _key = EnvVarGuard::set(api_key_env, "fixture-openai-key");
+    let _key = common::set_env(&[(api_key_env, "fixture-openai-key")]).await;
 
     let backend = MockServer::start().await;
     Mock::given(method("POST"))
@@ -428,9 +392,8 @@ async fn openai_chat_tracer_streaming_duplicate_terminal() {
     if !can_bind_loopback() {
         return;
     }
-    let _env_lock = lock_openai_chat_env().await;
     let api_key_env = unique_env_name("SHUNT_OPENAI_CHAT_CONFORMANCE_KEY");
-    let _key = EnvVarGuard::set(api_key_env, "fixture-openai-key");
+    let _key = common::set_env(&[(api_key_env, "fixture-openai-key")]).await;
 
     let backend = MockServer::start().await;
     Mock::given(method("POST"))

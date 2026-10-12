@@ -1,23 +1,18 @@
+mod common;
 #[allow(dead_code)]
 mod openai_chat_support;
 
 use std::{
     io::ErrorKind,
     net::SocketAddr,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        OnceLock,
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use shunt::{config::Config, server};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::Mutex,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
@@ -27,37 +22,7 @@ use openai_chat_support::{
     anthropic_request, anthropic_streaming_request, chat_delta, collect_sse_events,
 };
 
-struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<std::ffi::OsString>,
-}
-
-impl EnvVarGuard {
-    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-        let previous = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(previous) => std::env::set_var(self.key, previous),
-            None => std::env::remove_var(self.key),
-        }
-    }
-}
-
-static EDGE_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static EDGE_ENV_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-async fn lock_env() -> tokio::sync::MutexGuard<'static, ()> {
-    EDGE_ENV_LOCK
-        .get_or_init(|| Mutex::const_new(()))
-        .lock()
-        .await
-}
 
 fn can_bind_loopback() -> bool {
     match std::net::TcpListener::bind("127.0.0.1:0") {
@@ -157,9 +122,8 @@ async fn comment_after_done_still_completes() {
     if !can_bind_loopback() {
         return;
     }
-    let _env_lock = lock_env().await;
     let api_key_env = unique_env_name("SHUNT_OPENAI_CHAT_EDGE_KEY");
-    let _key = EnvVarGuard::set(api_key_env, "fixture-openai-key");
+    let _key = common::set_env(&[(api_key_env, "fixture-openai-key")]).await;
 
     let backend = MockServer::start().await;
     let body = ResponseTemplate::new(200)
@@ -206,9 +170,8 @@ async fn open_body_after_done_completes_on_the_drain() {
     if !can_bind_loopback() {
         return;
     }
-    let _env_lock = lock_env().await;
     let api_key_env = unique_env_name("SHUNT_OPENAI_CHAT_EDGE_KEY");
-    let _key = EnvVarGuard::set(api_key_env, "fixture-openai-key");
+    let _key = common::set_env(&[(api_key_env, "fixture-openai-key")]).await;
     let payload = format!(
         "data: {}\n\ndata: [DONE]\n\n",
         chat_delta(json!({"content": "held"}), Some("stop"))
@@ -250,9 +213,8 @@ async fn huge_json_error_message_is_truncated() {
     if !can_bind_loopback() {
         return;
     }
-    let _env_lock = lock_env().await;
     let api_key_env = unique_env_name("SHUNT_OPENAI_CHAT_EDGE_KEY");
-    let _key = EnvVarGuard::set(api_key_env, "fixture-openai-key");
+    let _key = common::set_env(&[(api_key_env, "fixture-openai-key")]).await;
     let backend = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
