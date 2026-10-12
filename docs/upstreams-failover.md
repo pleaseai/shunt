@@ -127,8 +127,13 @@ strict per-provider auth objects.
   structured output, or explicit reasoning effort). The primary is always
   kept. A trailing `[1m]`/`[1M]` context hint is not such a feature: it is
   stripped before route matching and before forwarding, so no upstream has to
-  serve it. Exclusions are logged and counted as `capability_excluded`; they
-  are not remembered as best failures.
+  serve it. Structured output means `output_config.format.type = "json_schema"`.
+  OpenAI and ChatGPT Responses flavors stay eligible when that format carries
+  an object `schema`, because translation copies it into `text.format`; a
+  schema-less `json_schema` is not translated, and xAI and Grok reject the
+  `text` object, so those Responses routes are excluded. Exclusions are
+  logged and counted as `capability_excluded`; they are not remembered as
+  best failures.
 - The `antigravity_cli` tools rule mirrors `reject_caller_tools`.
   `tool_choice: none` keeps the fallback even when `tools` is present;
   `tool_choice` of `any` or `tool` excludes it even when `tools` is absent;
@@ -142,7 +147,9 @@ strict per-provider auth objects.
   router or prefill drive replaces is filtered after that replacement, on
   the chain that will be dispatched. When the chain will not be rewritten,
   filtering also runs before inbound-auth admission so a dropped fallback
-  cannot widen the gate.
+  cannot widen the gate. A gated capture and a judge dispatch resolve their
+  own chain and do not re-enter `forward`, so each filters that chain before
+  `run_chain` or the committed stream.
 
 ## 3. Failover loop (proxy) — reference contract
 
