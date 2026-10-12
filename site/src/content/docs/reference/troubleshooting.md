@@ -36,3 +36,7 @@ description: Common shunt errors and how to fix them.
 | `503 overloaded_error` on a shared gateway | The gateway is at its inbound concurrency cap and shed the request instead of queueing it (body message `too many requests are already in flight`, with `Retry-After: 1`). This is shunt's own admission control, not an upstream 503 — an upstream one is relayed with the provider's own message. Retry after the delay, reduce parallel load, or raise [`max_concurrent_requests`](/guides/shared-gateway/#inbound-concurrency-limit) and restart (the limit is fixed at startup). |
 
 For the full gateway troubleshooting table, see [Connect Claude Code to an LLM gateway](https://code.claude.com/docs/en/llm-gateway-connect#troubleshoot-gateway-errors).
+
+## Temporary HTTP/1.1 trial
+
+The local trial build isolates Claude subscription OAuth requests (pooled and passthrough, including retries) in an HTTP/1.1-only client. API-key Anthropic, Kimi, Grok, Codex, token refresh, and quota polling are unchanged. TLS verification and streaming remain enabled. This is not a proven fix for live transport failures; no config key is added, and installation or restart requires separate approval.
