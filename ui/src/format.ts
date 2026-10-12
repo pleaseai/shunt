@@ -35,6 +35,19 @@ export function pctReset(value: number | null | undefined, resetSecs: number | n
   return resetSecs ? `${pct(value)} · ${untilShort(resetSecs)}` : pct(value);
 }
 
+/** [`pctReset`] with the window's configured hard cap before the reset, shown even before the window is observed. */
+export function pctResetCap(
+  value: number | null | undefined,
+  resetSecs: number | null | undefined,
+  cap: number | null | undefined,
+): string {
+  // One decimal, and ahead of the reset, matching `UsageBar`'s caption, so a cap
+  // reads the same in both tables.
+  const withCap =
+    cap === null || cap === undefined ? pct(value) : `${pct(value)} · cap ${Math.round(cap * 1000) / 10}%`;
+  return resetSecs ? `${withCap} · ${untilShort(resetSecs)}` : withCap;
+}
+
 export function when(ms: number | null | undefined): string {
   return ms ? new Date(ms).toLocaleString() : '—';
 }

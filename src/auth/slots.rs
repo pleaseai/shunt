@@ -36,6 +36,11 @@
 //!   raw, plus the `Authorization: Bearer` payload.
 //! - [`crate::auth::inbound::InboundAuth::authenticate_client`] — that header
 //!   raw, plus the `Authorization: Bearer` payload, plus `x-api-key` raw.
+//! - [`crate::auth::gate::authenticate`] — the `Authorization: Bearer`
+//!   payload verified as a `[[server.auth.jwt]]` JWT, after the three
+//!   static-token entry points above. Its strip mirror is
+//!   [`InboundAuth::is_jwt_credential`], which matches by the token's
+//!   unverified `iss` in either shared slot.
 //! - [`crate::gateway::GatewayAuth::authenticate_bearer`] — the
 //!   `Authorization: Bearer` payload; `authenticate_token` the bare value,
 //!   reached in production only through that bearer path and through
@@ -45,8 +50,9 @@
 //!   `[server.admin]` credential (`write_keys`, `read_keys`, and the legacy
 //!   `tokens_env`/`tokens_file` pairs alike).
 //! - `crate::admin::authenticate` — falls back to `session_cookie`, which
-//!   accepts a **write-tier** `shunt_admin_session` out of the `cookie` header
-//!   when no credential header matched. This is why `cookie` is in
+//!   accepts a `shunt_admin_session` out of the `cookie` header when no
+//!   credential header matched, at **whatever tier minted it** — a `read_keys`
+//!   login mints a read-tier session, so the slot is not write-only. This is why `cookie` is in
 //!   [`RESERVED_SLOTS`]; it was missing from the first version of this
 //!   enumeration and two of the three forward sites relayed it.
 //!
@@ -58,8 +64,8 @@
 //! ### Non-header accept channels (not a forwarding risk)
 //!
 //! shunt also accepts values it minted, or admin credentials, out of **form
-//! bodies and query strings**: `admin::login_submit` (a write-tier admin
-//! credential in a form field, via `authenticate_login_token`),
+//! bodies and query strings**: `admin::login_submit` (an admin credential of
+//! either tier in a form field, via `login_access`),
 //! `gateway::oauth`, `gateway::device`, `gateway::idp`, `admin::oidc`, and
 //! `auth::callback`. None of them can leak the way a header can, and the reason
 //! is structural rather than a rule anyone has to remember: no forward site
@@ -151,8 +157,9 @@ pub(crate) const SHARED_SLOTS: [&str; 2] = [AUTHORIZATION, API_KEY];
 /// unlike the `x-shunt-*` names it *is* a standard header a caller might expect
 /// to reach an upstream. Two facts make removing the whole header correct.
 /// First, it is an accept slot: `admin::authenticate` falls back to
-/// `session_cookie`, which reads a write-tier `shunt_admin_session` out of
-/// `cookie`, and two of the three forward sites relay the header verbatim.
+/// `session_cookie`, which reads a `shunt_admin_session` out of `cookie` at
+/// whatever tier minted it, and two of the three forward sites relay the header
+/// verbatim.
 /// Second, shunt keeps no cookie jar — `Cargo.toml` builds reqwest **without**
 /// the `cookies` feature and nothing in `src/` constructs a `cookie_store` or
 /// `cookie_provider` — so shunt never participates in upstream edge or affinity

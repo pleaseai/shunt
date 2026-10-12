@@ -10,12 +10,15 @@ describe('dashboard layout', () => {
    * provisioning tool that happened to show numbers.
    */
   it('leads with usage and keeps pool management collapsed behind a disclosure', async () => {
-    await renderDashboard();
+    await renderDashboard({}, {}, { expandPool: false });
 
     const usage = screen.getByRole('heading', { name: 'Accounts and usage' });
-    const disclosure = screen.getByText('Manage pool accounts').closest('details');
+    const disclosure = screen.getByText('Manage pool accounts').closest('[data-pool-management]');
     expect(disclosure).not.toBeNull();
-    expect(disclosure).not.toHaveAttribute('open');
+    expect(screen.getByRole('button', { name: /Manage pool accounts/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
 
     // Ordering, read off the document rather than off the source: the usage
     // heading precedes the disclosure, and every management section is inside
@@ -30,7 +33,9 @@ describe('dashboard layout', () => {
       'Codex accounts',
       'Managed pool health',
     ]) {
-      expect(within(disclosure as HTMLElement).getByRole('heading', { name: heading })).toBeInTheDocument();
+      expect(
+        within(disclosure as HTMLElement).getByRole('heading', { name: heading, hidden: true }),
+      ).toBeInTheDocument();
     }
 
     // The pool table is titled by what it is, not by a name that competes with

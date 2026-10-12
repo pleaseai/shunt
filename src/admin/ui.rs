@@ -81,14 +81,19 @@ pub(super) async fn asset(Path(path): Path<String>) -> Response {
 
 /// The SPA shell's Content-Security-Policy.
 ///
-/// Tighter than the server-rendered pages' policy
-/// (`super::html_body_with_form_action`), and deliberately so: those pages
-/// inline their script and style, so their policy has to allow
-/// `'unsafe-inline'`. Vite emits the bundle as an external module script and an
-/// external stylesheet under `/admin/assets/`, with nothing inline, so `'self'`
-/// is enough for both — verified against the emitted `ui/dist/index.html`, not
-/// assumed. `form-action 'none'` because the shell posts no forms; the
-/// server-rendered login flow that does is a different response.
+/// Neither policy is uniformly tighter than the login page's
+/// (`super::html_body_with_form_action`); each is as narrow as its own page
+/// allows, directive by directive.
+///
+/// `script-src`/`connect-src` are `'self'` here and `'none'` there, because
+/// this shell is the page that runs a script and calls `/admin/api/*`. They are
+/// `'self'` rather than `'unsafe-inline'` because Vite emits the bundle as an
+/// external module script and an external stylesheet under `/admin/assets/`,
+/// with nothing inline — verified against the emitted `ui/dist/index.html`, not
+/// assumed. That is also why `style-src` is `'self'` here while the login page
+/// still needs `'unsafe-inline'` for its inlined `<style>`. `form-action` is
+/// `'none'` because the shell posts no forms; the server-rendered login flow
+/// that does is a different response.
 const SHELL_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
 connect-src 'self'; img-src 'self'; form-action 'none'; base-uri 'none'; \
 frame-ancestors 'none'";

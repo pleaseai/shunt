@@ -3,7 +3,7 @@ import type { ReactElement } from 'react';
 import { accountStatus } from '../accounts';
 import { API, mutate } from '../api';
 import { when } from '../format';
-import { useSession } from '../session';
+import { useCanWrite, useSession } from '../session';
 import type { ClaudeStoreAccount } from '../types';
 import type { Loadable } from '../useDashboard';
 
@@ -24,6 +24,10 @@ export function ClaudeAccounts({
   onMessage,
 }: ClaudeAccountsProps): ReactElement {
   const { csrf, expiryBufferMs } = useSession();
+  const canWrite = useCanWrite();
+  // The actions column goes away entirely for a read session rather than
+  // standing empty, so the placeholder spans have to follow it.
+  const columns = canWrite ? 5 : 4;
 
   async function remove(name: string): Promise<void> {
     if (!window.confirm(`Remove account '${name}'? This deletes its stored token file.`)) return;
@@ -76,25 +80,25 @@ export function ClaudeAccounts({
               <th>Kind</th>
               <th>Status</th>
               <th>UUID</th>
-              <th />
+              {canWrite ? <th /> : null}
             </tr>
           </thead>
           <tbody id="accounts">
             {accounts.status === 'loading' ? (
               <tr>
-                <td colSpan={5} className="muted">
+                <td colSpan={columns} className="muted">
                   Loading…
                 </td>
               </tr>
             ) : null}
             {accounts.status === 'error' ? (
               <tr>
-                <td colSpan={5}>{accounts.message}</td>
+                <td colSpan={columns}>{accounts.message}</td>
               </tr>
             ) : null}
             {accounts.status === 'ready' && !accounts.data.length ? (
               <tr>
-                <td colSpan={5} className="muted">
+                <td colSpan={columns} className="muted">
                   No store accounts yet
                 </td>
               </tr>
@@ -119,35 +123,37 @@ export function ClaudeAccounts({
                         <small className="status-note">{info.note}</small>
                       </td>
                       <td className="mono">{account.uuid || '—'}</td>
-                      <td className="row-actions">
-                        {/* Only an imported login carries a refresh grant; a
-                            setup-token account has nothing to probe (the
-                            endpoint refuses it), so it gets no button. */}
-                        {account.kind === 'imported' ? (
+                      {canWrite ? (
+                        <td className="row-actions">
+                          {/* Only an imported login carries a refresh grant; a
+                              setup-token account has nothing to probe (the
+                              endpoint refuses it), so it gets no button. */}
+                          {account.kind === 'imported' ? (
+                            <button
+                              type="button"
+                              className="secondary compact"
+                              title="Exercise this account's refresh grant now and report whether the login is still alive"
+                              onClick={() => void refresh(account.name)}
+                            >
+                              Refresh
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className="secondary compact"
-                            title="Exercise this account's refresh grant now and report whether the login is still alive"
-                            onClick={() => void refresh(account.name)}
+                            onClick={() => onRelogin(account.name, account.kind)}
                           >
-                            Refresh
+                            Re-login
                           </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="secondary compact"
-                          onClick={() => onRelogin(account.name, account.kind)}
-                        >
-                          Re-login
-                        </button>
-                        <button
-                          type="button"
-                          className="danger"
-                          onClick={() => void remove(account.name)}
-                        >
-                          Remove
-                        </button>
-                      </td>
+                          <button
+                            type="button"
+                            className="danger"
+                            onClick={() => void remove(account.name)}
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      ) : null}
                     </tr>
                   );
                 })

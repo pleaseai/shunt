@@ -91,12 +91,17 @@ pub fn is_retryable_status(status: StatusCode) -> bool {
 /// A failure to obtain an upstream response. Implemented per adapter error type
 /// so the driver can decide, without knowing the concrete error, whether the
 /// failure is a transient transport problem worth retrying.
-pub trait RetryableError {
+pub trait RetryableError: std::fmt::Display {
     /// `true` for a connection-level transport failure (connect/reset/timeout)
     /// that occurred before any response body existed; `false` for a
     /// deterministic error (bad request build, decode) an identical retry
     /// cannot fix.
     fn is_transient(&self) -> bool;
+
+    /// A URL-free rendering for logs. No default: every error type must
+    /// decide for itself, so a wrapper whose `Display` embeds a URL cannot
+    /// inherit an unsafe rendering silently.
+    fn log_message(&self) -> String;
 }
 
 /// Controls whether a response status may be retried.
@@ -116,6 +121,21 @@ impl RetrySafety {
 }
 
 impl RetryableError for reqwest::Error {
+    fn log_message(&self) -> String {
+        // The Display embeds the request URL ("error sending request for url
+        // (…)"), a configured endpoint that must not reach logs, and the
+        // error is not `Clone`, so the log carries the failure kind instead
+        // of the diagnostic. The client-visible envelopes keep the full
+        // redacted text (`without_url` at the adapter sites).
+        if self.is_timeout() {
+            "transport error (timeout)".to_string()
+        } else if self.is_connect() {
+            "transport error (connect)".to_string()
+        } else {
+            "transport error".to_string()
+        }
+    }
+
     fn is_transient(&self) -> bool {
         // A `.send()` future resolves once response headers arrive, so any error
         // it yields is pre-body. Retry the clearly transient kinds; a
@@ -233,7 +253,9 @@ where
                 };
                 tracing::warn!(
                     provider = %provider,
-                    error = %error,
+                    // Redacted: the raw diagnostic embeds the configured
+                    // upstream URL, which must not reach retry logs.
+                    error = %error.log_message(),
                     attempt = retries + 1,
                     max_retries = policy.max_retries,
                     delay_ms = delay.as_millis(),
@@ -296,7 +318,10 @@ fn log_terminal_outcome<E: RetryableError + std::fmt::Display>(
         Err(error) if error.is_transient() => {
             tracing::warn!(
                 provider = %provider,
-                error = %error,
+                // Redacted: the raw diagnostic embeds the configured upstream
+                // URL, which must not reach retry logs (see the redaction
+                // convention in `adapters::responses::early_stream`).
+                error = %error.log_message(),
                 max_retries = policy.max_retries,
                 "giving up after exhausting retries: upstream transport error persists"
             );
@@ -449,13 +474,63 @@ mod tests {
     }
 
     #[test]
+    fn fractional_retry_after_rounds_up_before_budget_check() {
+        let policy = policy();
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "0.1".parse().unwrap());
+        assert!(matches!(
+            next_backoff(&policy, 0, Some(&headers)),
+            Backoff::Sleep(delay) if delay == Duration::from_secs(1)
+        ));
+        headers.insert("retry-after", "3600".parse().unwrap());
+        assert!(matches!(
+            next_backoff(&policy, 0, Some(&headers)),
+            Backoff::ExceedsBudget
+        ));
+    }
+
+    #[test]
+    fn retry_after_beyond_one_hour_is_not_shortened() {
+        let policy = RetryPolicy {
+            max_retries: 1,
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(7200),
+            multiplier: 2.0,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "7200".parse().unwrap());
+        assert!(matches!(
+            next_backoff(&policy, 0, Some(&headers)),
+            Backoff::Sleep(delay) if delay == Duration::from_secs(7200)
+        ));
+
+        let policy = RetryPolicy {
+            max_backoff: Duration::from_secs(3600),
+            ..policy
+        };
+        assert!(matches!(
+            next_backoff(&policy, 0, Some(&headers)),
+            Backoff::ExceedsBudget
+        ));
+    }
+
+    #[test]
     fn cursor_error_transient_classification_follows_status() {
         // A transient status is retried; a request error is not. Uses the same
         // status set as HTTP responses, exercised here via a stand-in impl.
         struct Stub(u16);
+        impl std::fmt::Display for Stub {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(formatter, "stub-{}", self.0)
+            }
+        }
         impl RetryableError for Stub {
             fn is_transient(&self) -> bool {
                 is_retryable_status(StatusCode::from_u16(self.0).unwrap())
+            }
+
+            fn log_message(&self) -> String {
+                self.to_string()
             }
         }
         assert!(Stub(503).is_transient());
@@ -512,6 +587,10 @@ mod tests {
     impl RetryableError for StubError {
         fn is_transient(&self) -> bool {
             self.transient
+        }
+
+        fn log_message(&self) -> String {
+            self.to_string()
         }
     }
 

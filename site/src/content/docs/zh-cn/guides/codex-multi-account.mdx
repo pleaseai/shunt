@@ -113,6 +113,7 @@ Codex 没有可配置的显式 `uuid` 字段。作为替代,shunt 对每个账�
 - 不带该头部时:每个提供方有自己的轮询计数器。
 - 成功的响应会记录 `x-codex-primary-*` 与 `x-codex-secondary-*` 头部中的用量。shunt 按 `window-minutes` 映射每一组:约 300 分钟归入 5h,约 10080 分钟归入 7d,其他窗口被忽略。即使某组的 `x-codex-*-reset-at` 头部为空,shunt 仍会记录该位置对应的窗口组及其用量;没有重置时,用量会从自身观测时间起在一个窗口长度后过期。Codex 没有 `7d_oi` 的对应项。
 - 记录的用量会参与选择,与 [Anthropic 账户池](/zh-cn/guides/anthropic-multi-account/)完全一致:达到或超过其阈值(内置的 `0.98`,或 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选)/按账户的软阈值)的粘性账户会主动让位给余量最大的账户,`burn_rate_avoidance` 以及优先级/余量排序同样适用。`x-codex-rate-limit-reached-type` 的值仅被记录用于展示。
+- 硬上限(账户上的 `max_utilization*`,`[server.pool]` 中的 `default_max_utilization*`)在 5 小时或周使用率达到或超过上限期间,会把账户移出选择,而不是像软阈值那样只重新排序。Codex 没有 `7d_oi` 窗口,因此 Fable 上限的键在这里不起作用。当上限使得没有可选账户时,shunt 返回网关自身生成的 `429`(在入站 Codex 端点上为 OpenAI 错误形态),它会推进 `[[upstreams]]` 故障转移链。对于已提交(已发送 HTTP `200`)的流式请求,若后面的上游都无法处理,客户端收到的是流内的终止 SSE `error` 事件,而不是 HTTP `429`,也没有 `retry-after`。参见[硬上限](/zh-cn/guides/anthropic-multi-account/#硬上限max_utilization)。
 - 设置了 `[server.pool] ramp_initial_concurrency` 时,一个 slow-start 准入门控会保护刚刚选中的账户,使其在故障转移之后不被瞬间冲垮;参见 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选)。
 - 设置 `[server.pool]` 后,一个没有其他观测信号的陈旧近配额账户会每隔 `reprobe_seconds`(默认 900 秒,`0` 则禁用)被机会性地提升并预留在选择顺序最前面,让实际请求刷新其配额;参见 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选)。admission 或凭据解析失败会取消预留,首次 HTTP 发送开始时才提交重新探测时间并增加 `shunt.pool.reprobes`。这条路径在非 WebSocket outbound 选择和可选的 inbound Codex HTTP 端点中,充当下文用量轮询器关闭或两次轮询之间的后备手段。启用 WebSocket 的提供方不会在 outbound Responses 池创建预留,并会抑制这种重新探测,因为流内 rate-limit 事件无法安全轮换;可选的 inbound 端点仍会探测,因此该提供方的计数器只统计 inbound 探测。已配置的轮询器只为 imported 且可刷新的账户提供提前恢复;没有轮询器或账户不符合资格时,被排除的 outbound 标记会一直保留到基于观测时间的窗口寿命上限到期。新鲜度使用 5h、共享 7d、Fable 7d_oi 与 aggregate status 四个观测时间戳。
 - 成功的响应会清除该账户的冷却。
@@ -125,6 +126,7 @@ Codex 没有可配置的显式 `uuid` 字段。作为替代,shunt 对每个账�
 | 上游返回 429 | 按数值 `retry-after`,钳制到 1–3600 秒,默认 60 秒 |
 | `token_env` 账户返回 401 | 5 分钟 |
 | `credentials`/存储账户返回 401,且刷新失败或重试仍为 401 | 5 分钟 |
+| 400 模型拒绝(见下文) | 1 小时,仅针对该账户上的该模型 |
 
 ## 用量轮询器
 
@@ -144,9 +146,10 @@ Codex 没有可配置的显式 `uuid` 字段。作为替代,shunt 对每个账�
 | 使用 `token_env` 时的 401 | 无法刷新:冷却 5 分钟并轮换。 |
 | 5xx 或传输失败 | 冷却 30 秒并轮换。 |
 | 凭据解析失败 | 冷却 5 分钟并轮换。 |
-| 其他状态(例如 `400`) | 直接中继,不做故障转移;并把该账户标记为健康。 |
+| `detail`、`error.message` 或 `message` 中包含 `model is not supported` 的 400(不区分大小写) | 后端尚未为该 ChatGPT 账户开放该模型(按账户的灰度门控,可能在几小时内变化),其他账户可能可以处理。轮换,并**只对该账户上的该模型**冷却 1 小时:该账户继续服务其他模型,不会被标记为健康,仪表盘上也不显示冷却。若所有账户都拒绝,则原样中继带有拒绝消息的 400。仅适用于 HTTP 传输:在 WebSocket 传输(见下文)中,拒绝以流内错误的形式到达,因此不轮换、直接中继。 |
+| 其他状态(例如其他任何 `400`) | 直接中继,不做故障转移;并把该账户标记为健康。 |
 
-分类发生在响应体开始流式传输之前,因此流中途的失败绝不会被重放。 这也包括在 `200 OK` 流上到达的、code 为 `rate_limit_exceeded` 的后端 `error` / `response.failed` 事件:非流式客户端会收到带 `rate_limit_error` 信封的 HTTP `429`,而流式客户端保持 `200`,并以 SSE `error` 事件的形式内联收到同一个信封。两种情况下该回合都不会被重放,账户也**不会**被冷却或轮换 —— 上表中的 429 行只在上游 HTTP 响应状态本身为 429 时适用。如果池在收到至少一个上游响应之后耗尽了尝试,shunt 会基于最后那个响应构造并中继一个**经过转换**的 Anthropic 风格错误信封 —— 状态码(例如 `429`)保留,但响应体被重新塑形,而不是逐字中继。这与 Anthropic 账户池正好相反,后者会逐字节中继最后一个上游响应。如果所有账户都在收到任何上游响应之前失败,普通的 Anthropic Messages 路由(`/v1/messages`)会返回一个网关自身的 `502 api_error`,内容为 `all upstreams failed (N attempted)`。单独的 `[server.codex_endpoint]` 入站路径不受影响,并保留 `all Codex OAuth accounts failed before receiving an upstream response`。
+分类发生在响应体开始流式传输之前,因此流中途的失败绝不会被重放。 这也包括在 `200 OK` 流上到达的、code 为 `rate_limit_exceeded`、`slow_down` 或 `flex_unavailable` 的后端 `error` / `response.failed` 事件:非流式客户端会收到带 `rate_limit_error` 信封的 HTTP `429`,而流式客户端保持 `200`,并以 SSE `error` 事件的形式内联收到同一个信封。两种情况下该回合都不会被重放,账户也**不会**被冷却或轮换 —— 上表中的 429 行只在上游 HTTP 响应状态本身为 429 时适用。如果池在收到至少一个上游响应之后耗尽了尝试,shunt 会基于最后那个响应构造并中继一个**经过转换**的 Anthropic 风格错误信封 —— 状态码(例如 `429`)保留,但响应体被重新塑形,而不是逐字中继。这与 Anthropic 账户池正好相反,后者会逐字节中继最后一个上游响应。如果所有账户都在收到任何上游响应之前失败,普通的 Anthropic Messages 路由(`/v1/messages`)会返回一个网关自身的 `502 api_error`,内容为 `all upstreams failed (N attempted)`。单独的 `[server.codex_endpoint]` 入站路径不受影响,并保留 `all Codex OAuth accounts failed before receiving an upstream response`。
 
 ## 请求与响应的改动
 
@@ -159,13 +162,13 @@ originator: codex_cli_rs
 OpenAI-Beta: responses=experimental
 ```
 
-经过池的响应会标识账户:
+经过池的响应会标识账户 —— 非流式响应和 WebSocket 流式响应带 `x-shunt-account` 响应头部,早期提交的 HTTP 流式响应则在中继内容之前带 `event: account` SSE 帧(已提交的 `200` 头部无法等待获胜账户):
 
 ```http
 x-shunt-account: backup
 ```
 
-在共享网关上请使用中性的账户名 —— 该头部会把配置的标签暴露给收到响应的每个已授权客户端。池耗尽后那次经过转换的错误中继会省略 `x-shunt-account`。
+在共享网关上请使用中性的账户名 —— 该头部和该帧会把配置的标签暴露给收到响应的每个已授权客户端。池耗尽后那次经过转换的错误中继会省略该标注。
 
 ### WebSocket 传输
 

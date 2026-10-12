@@ -149,6 +149,40 @@ describe('a store mutation re-reads the grouped table too', () => {
   });
 });
 
+describe('pool pause identity', () => {
+  it('targets duplicate display names by account_ref', async () => {
+    const user = userEvent.setup();
+    const api = await renderDashboard(
+      {
+        pool: [
+          {
+            provider: 'anthropic',
+            auth: 'claude_oauth',
+            accounts: [
+              { name: 'same-name', account_ref: 'acct_first' },
+              { name: 'same-name', account_ref: 'acct_second' },
+            ],
+          },
+        ],
+      },
+      {
+        'PATCH /admin/api/pool/anthropic/accounts/acct_second': () => reply({ ok: true }),
+      },
+    );
+
+    const names = tbody('pool').getAllByText('same-name');
+    const secondRow = rowOf(names[1]);
+    await user.click(within(secondRow).getByRole('button', { name: 'Pause' }));
+
+    expect(
+      api.callsTo('PATCH', '/admin/api/pool/anthropic/accounts/acct_second'),
+    ).toHaveLength(1);
+    expect(
+      api.callsTo('PATCH', '/admin/api/pool/anthropic/accounts/acct_first'),
+    ).toHaveLength(0);
+  });
+});
+
 describe('the session bootstrap', () => {
   /**
    * The shell is served to anyone — it carries no operator data — so an

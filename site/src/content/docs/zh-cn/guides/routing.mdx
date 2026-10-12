@@ -1,0 +1,221 @@
+---
+title: 路由概览
+description: 让一个对外 model id 逐请求挑选目的地 —— 所有路由器共有的形态、如何选择路由器类型,以及裁判调用和被扣住回合的规则。
+---
+
+`[[models]]` 条目通常只指定一个目的地。**路由器**让一个对外 id 自己做决定:条目带一张
+`[models.router]` 表,由表中的 `type` 键挑选路由算法,再由算法为每个请求挑选目的地。被委派
+的工作还可以通过 [`[models.subagents]`](/zh-cn/guides/subagents/) 覆盖层去往另一个目标。
+
+该功能需要显式启用,默认完全不生效。两张表都不配置,shunt 的路由与以前完全一致:只看请求的
+`model` id,别无其他。
+
+## 共同的形态
+
+每个路由器都是一条 `[[models]]` 条目加一张 `[models.router]` 表:
+
+```toml
+[[models]]
+id = "claude-auto"                     # 要出现在 /model 中必须以 claude/anthropic 开头
+display_name = "Auto (stage router)"
+
+[models.router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+**目标都是普通的公开模型 id。** 路由器的输出会重新进入 shunt 常规的路由阶梯,因此每个目标
+都保留自己的故障转移链、账户池、适配器、`effort` 和 `service_tier`,并且无需额外代码就出现
+在 `/v1/models` 发现结果中。目标本身若也是路由器则属启动错误,所以解析**在结构上**就是
+一跳,而不是靠深度计数器。
+
+**客户端看到的仍是它请求的那个 id。** 被选中的目标只随 `upstream_model` 上行,除此之外不
+出现在任何地方。响应报告的是被请求的 id,所以 Claude Code 的 `/model` 显示和 `--resume`
+模型恢复都照常工作。决策改由两个响应头报告 —— `x-gateway-routed-model`(路由器选中的目标)
+和 `x-gateway-route-source`(选中它的原因)—— 这对每种路由器类型都成立;
+[阶段路由器指南](/zh-cn/guides/stage-router/#客户端看到什么)逐一介绍了它们。
+
+**没有路由器表就什么都不变。** 没有 `[models.router]` 表时,路由器分支只是对一个现有部署并
+不具备的配置字段做一次 `Option` 检查。路由路径上没有任何变化,而且无论带路由器的条目声明了
+哪个 `type`,这次检查的代价都一样。
+
+同一条目不能同时声明 `[models.router]` 和 `[models.upstream_model]`。每个键、默认值和校验
+规则都在[配置参考](/zh-cn/reference/configuration/#modelsrouter可选)中。
+
+## 选择路由器类型
+
+| 路由器 | 适用场景 | 声明方式 | 会发起裁判调用吗? | 提供前会扣住回合吗? | 指南 |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| `auto` | 想用上游预设的阶段路由器,且不做任何调优 | `type = "auto"` | 不会 —— 预设不带裁判 | 不会 | [下文](#auto) |
+| `stage_router` | 希望由最近的 tool-result 历史逐轮挑选强力档位或高效档位 | `type = "stage_router"` | 只有配置了可选的 `[models.router.classifier]` 时才会,且只在信号无法定夺的轮次 | 不会 | [阶段路由器](/zh-cn/guides/stage-router/) |
+| `llm_classifier`,capability | 希望由裁判根据任务的解决概率在强目标与弱目标之间挑选 | `type = "llm_classifier"`、`mode = "capability"` | 会,按 `classify_trigger` 允许的频率 | 不会 | [LLM 分类器](/zh-cn/guides/llm-classifier/) |
+| `llm_classifier`,custom | 希望由你自己的提示词和 schema 在两个或更多模型分组之间挑选 | `type = "llm_classifier"`、`mode = "custom"` | 会,按 `classify_trigger` 允许的频率 | 不会 | [LLM 分类器](/zh-cn/guides/llm-classifier/#mode--custom) |
+| `llm_classifier`,escalation | 希望每个会话从弱目标开始,当裁判持续发现已完成的工作陷入困境时锁定到强目标 | `type = "llm_classifier"`、`mode = "escalation"` | 会,锁定之前的每一轮 | 会,锁定之前 | [升级路由](/zh-cn/guides/escalation/) |
+| `composite` | 希望由裁判决定阶段路由器回落到哪个档位,而不动它的信号评分 | `type = "composite"` | 会,按 `user_turn` 或 `new_session` | 不会 | [组合路由](/zh-cn/guides/composite/) |
+| `advisor` | 希望由一个执行模型提供每一轮,再由更强的审阅模型批准或打回它的收尾回合 | `type = "advisor"` | 会 —— 每次审阅都是一次,每个会话最多 `max_reviews` 次 | 会,只要会话还有审阅预算 | [advisor 门控](/zh-cn/guides/advisor/) |
+| `[models.subagents]` 覆盖层 | 希望被委派的工作去往与父会话不同的目标 | `[models.subagents]`,`type = "passthrough"` 或 `type = "llm_classifier"` | 只有 `llm_classifier` 形态会,每对 (会话, agent) 一次 | 不会 | [子 agent 路由](/zh-cn/guides/subagents/) |
+| `random` | 希望按权重在多个目标之间分流 —— 金丝雀发布 | `type = "random"` | 不会 | 不会 | [下文](#random) |
+| `noop` | 希望不花一个 token 就冒烟测试客户端接线 | `type = "noop"` | 不会 | 不会 | [下文](#noop) |
+| `prefill_router` | 希望由学习型分类器给最近一轮用户消息打分(需要从源码构建) | `type = "prefill_router"` | 不会 —— 模型在本进程内运行 | 不会 | [下文](#prefill_router) |
+
+上游 Switchyard 有两种路由类型在 shunt 中没有对应。`plan_execute` 没有实现。上游的
+`passthrough` 路由类型 —— 一个目标、不做路由决策 —— 在这里也不是一种路由器类型:没有
+`[models.router]` 表的普通 `[[models]]` 条目本身就是固定模型的情形,而上游的“带 subagents
+的 passthrough”在这里恰好就是这样一个带 [`[models.subagents]`](/zh-cn/guides/subagents/)
+覆盖层的条目。
+
+`GET /routes` 会在 `routers` 中列出每个已配置的路由器,附带它的 `algorithm` 与 `targets`;
+配置了裁判的路由器还会把它列在 `judges` 里。`shunt.router.decisions` 对每种路由器类型的
+决策计数。
+
+## `auto`
+
+上游的阶段路由器预设:`picker = "efficient_first"` 与 `confidence_threshold = 0.5`,其余
+阶段键全部取 shunt 的默认值。除 `type` 外它只接受两个目标。要设置其他任何阶段键 —— 包括
+裁判 —— 请改用 [`type = "stage_router"`](/zh-cn/guides/stage-router/)。
+
+```toml
+[models.router]
+type = "auto"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+## `random`
+
+在两个或更多目标之间按权重分流,用于金丝雀发布。默认情况下,一个 Claude Code 会话会固定
+落在同一路上。
+
+```toml
+[models.router]
+type = "random"
+targets = ["claude-sonnet-4-6", "gpt-5.6-terra"]
+weights = [9, 1]
+```
+
+在 `affinity = "session"`(默认)下,这一路是把 `sha256(seed ‖ model ‖ 会话 id)` 映射到
+权重区间得到的。不保存任何状态,因此重启后仍是同一路,加载同一份配置的多个副本之间也完全
+一致;代价是改动 `seed`、`targets` 或 `weights` 都可能让它换一路。没有发送
+`x-claude-code-session-id` 的请求不会共用同一路,而是为该请求单独做一次按权重的抽取,所以
+对不发送会话 id 的客户端,90/10 的分流仍然是 90/10。在 `affinity = "request"` 下每个请求都
+抽取,设置 `seed` 后抽取序列可复现。
+
+会话亲和是**粘性,不是访问控制。** 会话 id 由客户端给出,所以不断换 id 重试的调用方可以把
+自己导向想要的那一路 —— 但这并不能守住什么,因为每个目标都是同一个调用方可以直接点名请求
+的公开模型 id。访问控制是 managed model 策略的职责。
+
+没有请求体的接口 —— `GET /routes`、`/v1/models` 发现和 `shunt check` —— 报告第一个权重为正
+的目标。由会话 id 定下的回合报告路由来源 `random_session`;按权重抽取的回合报告 `random`。
+
+## `noop`
+
+完全不调用上游就作答:用调用方自己的模式合成一条空的终止助手消息。对 `stream: true` 是一段
+合法的 SSE 序列(`message_start`、带 `stop_reason: "end_turn"` 的 `message_delta`、
+`message_stop`),否则是一个 Message JSON 对象。`count_tokens` 返回 `input_tokens: 0`。这条
+路由和其他路由一样要经过鉴权,所以它不是一个免鉴权的口子 —— 它是客户端接线的冒烟测试,不花
+一个 token 就能验证整条入站链路。它只接受 `type` 一个键。
+
+## `prefill_router`
+
+学习型路由器:上游自己的分类器给最近一轮文本用户消息打分,再从条目的目标中挑一个;它在本
+进程内跑自己的模型,而不是向上游发一次裁判调用。只有开启 **`prefill-router` cargo feature**
+构建出来的二进制才有它,而这个 feature 默认关闭,发布二进制和 Homebrew formula 里都没有;
+没有该 feature 的二进制无法加载写了这个 type 的配置,并会给出说明原因的错误。运行时还需要
+能 import `torch`、`transformers`、`numpy` 和 `accelerate` 的 Python,以及一个由你提供的
+路由检查点。
+
+键、前置条件、准入规则和路由来源见
+[配置参考](/zh-cn/reference/configuration/#type--prefill_router);为什么把这个 crate 放在
+feature 后面引入,见 [Switchyard 集成](/zh-cn/guides/switchyard/#学习型-prefill-路由器)。
+
+## 裁判调用
+
+**裁判**是被问到一个回合该去哪里、或已完成的工作够不够好的模型。它只被询问,从不提供:它
+从不回答客户端。有五种形态会发起裁判调用 —— `stage_router` 的
+[`[models.router.classifier]`](/zh-cn/guides/stage-router/#裁判回退)、三种模式下的
+[`llm_classifier`](/zh-cn/guides/llm-classifier/)、[`composite`](/zh-cn/guides/composite/)、
+[`advisor`](/zh-cn/guides/advisor/)(每次审阅都是一次),以及 classifier 形态的
+[`[models.subagents]`](/zh-cn/guides/subagents/)。其他类型都不发起。
+
+裁判能把准确率赚回来 —— 那正是上游“分类器辅助”配置所测到的实质组成部分 —— 代价是延迟,
+以及裁判目标自己的账号池配额。下面这些规则对每一个裁判都成立:
+
+- **它使用自己那条路由的凭证,而非调用方的。** 保留的 `x-shunt-*` 槽位以及 `cookie`、
+  `authorization`、`x-api-key`、`anthropic-beta` 都会在调用发出前被剥离。因此解析到
+  **passthrough** 上游的裁判目标属于启动错误:passthrough 的含义是*转发调用方自己的凭证*,
+  而被剥离的恰恰就是这份凭证。`auth = "none"` 可以接受 —— 前面没有任何鉴权的本地或自托管
+  裁判是受支持的。调用消耗的是该目标自己的账号池配额,所以请给裁判单独配一条 `[[models]]`
+  条目。
+- **准入在先。** 只有请求通过准入之后才会咨询裁判。在可能咨询裁判的回合上,入站鉴权覆盖的
+  范围是被请求的 id,加上该条目可能指定的每一个目标和裁判,并且各自连整条故障转移链一起
+  计入;因此给一个应答目标全是 passthrough 的条目加上会注入凭证的裁判,就会让这些回合开始
+  要求客户端凭证。鉴权失败或被策略拒绝的请求一次裁判调用都不会发出。
+- **`classify_trigger` 决定这笔代价付得多勤**(对接受它的类型而言):每轮都判定
+  (`every_request`),每当有新的人类用户回合时判定一次、并在其间的工具调用中沿用该结论
+  (`user_turn`),或整个会话只判定一次(`new_session`)。
+- **每次调用都有上限。** 六个键 —— `judge_timeout_ms`、`judge_max_response_bytes`、
+  `max_judge_calls` 和三个 `gated_*` 键 —— 为条目发起的每一次内部调用设定上限,越过上限会
+  取消对应的上游调用。`max_judge_calls` 限制每对 (会话, agent) 的裁判调用次数,在调用发出时
+  扣减,因此并发回合也无法超出;重放已保留结论的回合不发起调用,也永远不会被拒绝。见
+  [每次调用的上限](/zh-cn/reference/configuration/#每次调用的上限)。
+- **裁判失败时回到算法自己的默认目标**,而不是让请求失败 —— 超时、`400`、响应过大或无法
+  解析的结论、预算耗尽都一样 —— 每个需要判定的回合,裁判调用恰好只有一次。各类型的默认目标
+  写在各自的页面上。裁决已完成回合的两种类型则改为交付该回合:escalation 交付弱档回合,
+  [`advisor`](/zh-cn/guides/advisor/) 交付执行模型的回合;但条目设置了 `fail_open = false`
+  时,advisor 会以 `502` 让请求失败。
+- **`count_tokens` 探测从不咨询裁判。** 它由会话已经持有的目标作答(如果有的话);否则由
+  什么作答,各类型的页面有说明。
+
+每一次调用都会带着它的结果记入 `shunt.router.judge_calls`。
+
+## 被扣住的回合
+
+上面这些形态都是在回合运行之前决定它去哪里。另有两种是在运行之后才决定:
+[`mode = "escalation"`](/zh-cn/guides/escalation/) 让裁判对弱目标已完成的回合作出裁决,
+[`advisor`](/zh-cn/guides/advisor/) 让更强的审阅模型批准执行模型的收尾回合,或把它打回重做。
+
+两者裁决的都是已经存在的回合,所以 shunt 会把它扣住。**被扣住**(gated)的回合 —— 锁定前
+escalation 的弱目标回合,或者会话仍有审阅预算时 advisor 的执行模型回合 —— 会先生成、缓冲、
+裁决,然后才回放给客户端。这是 shunt“不缓冲流”这条规则唯一的例外,而且只覆盖这两种条目
+门控的回合。这些条目上的其他回合,以及其他所有路由上的所有回合,都和以前完全一样地流式返回。
+
+正是因为把回合扣住,上游的设计才能留在 shunt 的 post-2xx 不重放规则之内。回放开始之前不会
+提交任何响应头,所以被丢弃的回合 —— 无论是被强目标取代,还是被 REDO 打回 —— 客户端从未
+见过。
+
+**保持调用方的模式。** `stream: true` 调用方的被扣住调用是流式的:SSE 帧一到就保留下来,
+如果这一轮要提供,就逐字节回放。`stream: false` 调用方收到的是一个已完成回合的单条 JSON
+消息。Anthropic 适配器以非流式方式发出这次调用;OpenAI Responses 适配器则不论哪种风格,
+每个回合都以流式方式请求上游,再在同样的上限内把这条流拼装成一条消息。据报告 ChatGPT/Codex
+后端会拒绝非流式请求,而标准 OpenAI Platform 接受它,在那里流式只是为了保持单一代码路径的
+选择。门控改变的只是回答*何时*发出,从不改变它的形态。回放出来的 `message_start.model` 是
+路由器自己的 id,而不是执行模型的 id,Anthropic 执行模型和 OpenAI Responses 执行模型都是
+如此,所以 Claude Code 的 `/model` 显示和 `--resume` 看到的都是它请求的那个 id。
+
+**只提供完整的回合。** 被扣住的回合只有在出现终止标记之后才可以提供:流式调用上是
+`message_stop`,非流式调用上是一个能解析成单条消息的完整响应体。被截断的 `200` 永远不会被
+回放。和实时流一样,回合在 `message_stop` 帧处结束:之后到达的内容不会回放,之后连接断开或
+一直保持打开也不会截断这个回合。被扣住的回合走目标的有序故障转移链,三个 `gated_*`
+[每次调用的上限](/zh-cn/reference/configuration/#每次调用的上限)限制被扣住的回合可以多大、
+可以空闲多久、可以持续多久。
+
+**代价。** 这些代价是你按条目选择承担的:
+
+- 在被扣住的回合上,整轮完成并得到裁决之前客户端什么也收不到,所以首个 token 的时间变成了
+  最后一个 token 的时间。
+- escalation 在锁定前的每一轮都要调用一次裁判;发生锁定的那一轮还要为被丢弃的弱目标调用
+  付费。
+- 被丢弃的弱目标回合或执行模型回合同样已经消耗了上游配额。它是客户端自己的回答请求,所以在
+  `shunt.requests` 中计为 `caller="client"`。
+
+被扣住的回合报告的路由来源,以及被扣住的回合、它的上游或它的裁判失败时会怎样,都列在
+[配置参考](/zh-cn/reference/configuration/#被扣住的回合escalation-与-advisor)中。
+
+## 设计记录
+
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md)
+记录了阶段路由器,包括刻意排除的部分;
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)
+记录了 `[models.router]` 判别键和其余算法。每种算法来自哪里,以及上游的基准对它说明了什么、
+没说明什么,见 [Switchyard 集成](/zh-cn/guides/switchyard/)。

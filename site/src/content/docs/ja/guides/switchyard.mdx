@@ -1,0 +1,200 @@
+---
+title: Switchyard 統合
+description: shunt のステージルーターのスコアラーは NVIDIA の Switchyard プロジェクト由来です。shunt が取り込んだもの、置いてきたもの、公開されたベンチマーク結果、そして統合のコスト。
+---
+
+shunt の[ステージルーター](/ja/guides/stage-router/)は独自のスコアリングを発明して
+いません。[NVIDIA-NeMo/Switchyard][sy] のルーティングライブラリ
+[`switchyard-libsy`][libsy] に依存しています — 「各 LLM 呼び出しを、それでも仕事を
+こなせるもっとも安価なモデルへルーティングする」を掲げるプロジェクトです。
+
+このページは統合の記録です。shunt が Switchyard のどの部分を使い、どの部分を意図的に
+使わないのか、公開されている数値が実際に何を測ったものなのか、そして依存にどれだけの
+コストがかかったのか。各アルゴリズムが 1 ターンをどう判定するかは、そのアルゴリズムの
+ページにあります — [ルーティングの概要](/ja/guides/routing/)から始めてください。
+
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
+[sy]: https://github.com/NVIDIA-NeMo/Switchyard
+
+## shunt が取り込んだもの
+
+Switchyard はゲートウェイ一式を提供します。プロキシサーバー、プロバイダー中立の
+プロトコル、リクエスト／レスポンス変換、LLM ジャッジ分類器、エスカレーション、
+サブエージェントルーティング。shunt はすでにゲートウェイなので、スコアラーと、オプトイン
+のテーブルの背後にあるジャッジ系のアルゴリズム、その境界でだけ使う翻訳コーデックを取り込み、
+サーバーは置いてきます。
+
+| Switchyard コンポーネント | shunt では |
+| :-- | :-- |
+| `switchyard-libsy` ステージスコアラー | **使用** — アップストリーム `main` のレビュー済みリビジョンに固定 |
+| `switchyard-protocol` | libsy の依存として入るのみ。shunt は `Request` を組み立てない |
+| `switchyard-translation` | **ルーティング境界でのみ使用** — ジャッジのリクエストとその応答における中立 ⇄ Anthropic の変換。Anthropic → Responses のワイヤ変換は引き続き shunt 自身の `src/model/responses_request.rs` |
+| `switchyard-server` | **不使用** — shunt 自身がサーバー |
+| LLM 分類器／ジャッジ | **エントリ単位のオプトイン** — `stage_router` の [`[models.router.classifier]`](/ja/guides/stage-router/#ジャッジのフォールバック)。シグナルが決着させられなかったターンでのみ呼ばれる。加えて、ジャッジを使う [`llm_classifier`](/ja/guides/llm-classifier/) と [`composite`](/ja/guides/composite/) の type。[ジャッジ呼び出し](/ja/guides/routing/#ジャッジ呼び出し)を参照 |
+| エスカレーションルーティング | **エントリ単位のオプトイン** — [`mode = "escalation"`](/ja/guides/escalation/)。ジャッジが判断するまで効率側のターンを留め置くので、強力なターゲットへの切り替えはヘッダーを送る前に起きる。[留め置くターン](/ja/guides/routing/#留め置くターン)を参照 |
+| ハンドオフノート | **使用** — [`[models.router.handoff_notes]`](/ja/guides/stage-router/#引き継ぐモデルに理由を伝える) |
+| アドバイザーゲート | **エントリ単位のオプトイン** — [`type = "advisor"`](/ja/guides/advisor/)。レビューが終わるまで実行モデルのターンを留め置く |
+| サブエージェントルーティング | **使用** — [`[models.subagents]`](/ja/guides/subagents/) |
+
+結合点は関数呼び出し 1 つだけです。shunt はパース済みの Anthropic Messages ボディから
+libsy の `ToolSignals` 構造体を直接埋め、`pick_tier` を呼びます。その構造体の全
+フィールドが `pub` なので、あいだに変換層は入りません。
+
+依存は crates.io のリリースではなく、アップストリーム `main` の**不変リビジョンに
+張った git ピン**で、`branch` キーを持たず `rev` だけを持ちます — shunt の
+`tungstenite` ピン 2 つと同じ形です。したがってバージョンを上げる行為はレビューされた
+diff であり、無関係な `cargo update` にできることではありません。`0.2.0` が唯一の公開
+リリースで、`main` はすでに乖離しています。ステージスコアリングより先のアルゴリズム —
+advisor gate、composite ルーティング、サブエージェントルーティング、tool semantics、
+handoff note — は `main` にしかありません。API を確認するときは、レジストリのソース
+でも動き続ける GitHub のデフォルトブランチでもなく、cargo が解決したチェックアウトを
+読んでください。
+
+### 学習済みプリフィルルーター
+
+アップストリームからもうひとつ、条件つきで取り込んでいるものがあります。直近のユーザー
+ターンを採点してターゲットを選ぶ学習済み分類器 `prefill_router` です。これは既定で無効な
+**`prefill-router` カーゴフィーチャー**を有効にしてビルドしたバイナリでのみ使えます。
+
+理由はそのクレートの中身です。アップストリームの `crates/prefill-router` は PyO3 で
+Python を埋め込むため、ビルドは libpython をリンクし、実行には `torch`、`transformers`、
+`numpy`、`accelerate` を import できる環境と、ディスク上のルーターチェックポイントが必要
+です。アップストリームも同じ理由でカーゴフィーチャーの後ろに置いています。shunt の
+リリースワークフローはこのフィーチャーを有効にしないので、**ビルド済みのリリース
+バイナリにも Homebrew formula にも入っていません。** ソースから
+`cargo build --release --features prefill-router` でビルドするのが唯一の方法で、
+フィーチャーのないバイナリはこの type を指定した設定をロードできず、そのことを伝える
+エラーを出します。
+
+キー、前提条件、ルートソースは設定リファレンスの
+[`type = "prefill_router"`](/ja/reference/configuration/#type--prefill_router) を
+参照してください。
+
+## ベンチマーク結果
+
+以下は**アップストリーム Switchyard の**数値であり、shunt のものではありません。
+shunt は Terminal-Bench を実行しておらず、次の節はその結果がどこまで引き継がれるかに
+ついてです。
+
+Terminal-Bench 2.1、Opus 4.8 ベースライン比:
+
+| 構成 | 正解率 | 総コスト | ベースライン比 |
+| :-- | --: | --: | :-- |
+| Opus 4.8 ベースライン | 76.0% | $98.06 | — |
+| エスカレーションルーティング | 75.7% | $85.00 | 正解率の 99.6%、13.3% 安い |
+| **ステージルーティング** | **72.7%** | **$68.19** | **正解率の 95.7%、30.5% 安い** |
+| ケイパビリティルーティング | 71.2% | $79.32 | 正解率の 93.7%、19.1% 安い |
+| Kimi K2.6 単体 | 55.8% | $76.28 | |
+| GLM 5.2 単体 | 52.4% | $16.47 | |
+| DeepSeek V4 Pro 単体 | 48.7% | $96.92 | |
+| Ultra 3 単体 | 39.0% | $29.66 | |
+
+shunt が実装している行であるステージルーティングは、3 つのルーティング構成のなかで
+もっとも安く、ベースラインの解決率の 95.7% を保っています。下 4 行がこの数値を
+面白くする対照群です。ルーターより高くついたものも含め、**あらゆる**固定モデル単体が
+56% を下回っています。
+
+`0.5` というデフォルトを生んだ信頼度しきい値のキャリブレーションは、Terminal-Bench
+ではなく SWE-Bench Pro Python-75 から導かれた別作業です。
+
+### 出典と留保
+
+- これらの数値はアップストリーム自身の [Benchmark Provenance][provenance] 表で公開
+  された **v0.2.0** の Terminal-Bench 2.1 結果であり、その表はさらに
+  [Route AI Agent Workloads Across Models with NVIDIA NeMo Switchyard][blog]
+  （NVIDIA、2026 年 8 月 11 日）を出典として挙げています。ブログ記事自体にこの表は
+  載っていないので、数値を突き合わせるならブログではなく README を見てください。
+- それらの実行は **NVIDIA 内部の推論エンドポイント**を使っており、別のサービング
+  スタックでは絶対的な解決率が変わりうるとアップストリーム自身が述べています。
+- アップストリームがチェックインしているプロファイルは*エスカレーション*のみです
+  (`benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml`)。72.7% の
+  ステージルーティング行の背後にあった正確なティアの組は公開されていないため、shunt で
+  設定しうる特定のモデルペアについての主張として読まないでください。
+- この表にレイテンシやリクエストあたりのルーティングオーバーヘッドの数値は付いて
+  いません。アップストリームはその問いを自身の soak テストのドキュメントに委ねています。
+
+[provenance]: https://github.com/NVIDIA-NeMo/Switchyard#benchmark-provenance
+[blog]: https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/
+
+### shunt に引き継がれるもの、引き継がれないもの
+
+スコアラーは同じコードです。その周りはすべて shunt のものなので、上の表は shunt 自身の
+結果ではなく、*このアプローチが*割に合うという証拠として読んでください。
+
+| | アップストリームのベンチマーク | shunt |
+| :-- | :-- | :-- |
+| スコアリングの中核 | `switchyard-libsy` | 同じクレート、同じ定数 |
+| シグナル抽出 | アップストリームのプロバイダー中立な抽出 | shunt 独自、Anthropic Messages ブロックから |
+| `tests_passed` / `repeated_failure` | スコアラーが利用可能 | 常に `false` — 一度も埋められない |
+| `compacted` | スコアラーが利用可能 | `x-claude-code-context-compacted` から埋められ、セッションのピンにラッチされる |
+| 曖昧なターンのジャッジ | 任意で利用可能 | 既定ではオフで、ピッカーのデフォルトへ fall-open。エントリ単位で [`[models.router.classifier]`](/ja/guides/stage-router/#ジャッジのフォールバック) によりオプトイン |
+| ターンをまたぐティアの安定性 | ターンごとに独立採点 | 非対称ヒステリシス付きのセッションピン留め |
+| ワークロード | Terminal-Bench 2.1 のタスク | Claude Code のセッション |
+
+このうち 2 つは逆向きに働きます。shunt は `tests_passed` と `repeated_failure` を
+埋めないため、libsy の繰り返し失敗による昇格が落ちます — ベンチマークより厳密に
+シグナルが少ない状態です。どちらも、このエクストラクタが持たない根拠、すなわちツール
+結果の*テキスト*を必要とします。ワイヤー自体は
+そのテキストを運びます — `tool_result` ブロックには `content` フィールドがあります —
+が、エクストラクタは意図的にそれを読みません。自由記述の結果テキストからこれらの
+シグナルを判定することは内容パターンのヒューリスティックを意味し、構造的な代理指標は
+テスト実行と同じくらい `ls` にも発火してしまうからです。`compacted` はこの仲間では
+ありません。トランスクリプトではなくリクエストヘッダーから来るので、libsy の
+コンパクションオーバーライドはここでも発火します（[ステージルーター](/ja/guides/stage-router/)
+を参照）。その一方で shunt の
+ヒステリシスは、ベンチマークハーネスが決して払わないコスト、すなわち Claude Code
+セッションでティアを毎ターン切り替える高さがあるからこそ存在します
+（[下りが上りより難しい理由](/ja/guides/stage-router/#下りが上りより難しい理由)を参照）。
+
+## アルゴリズムの解説がある場所
+
+Switchyard はプロバイダー中立なので、ティア切り替えの値段を付ける必要がありません。
+shunt は Claude Code ゲートウェイなのでその必要があり、取り込んだコードの上に shunt が
+加えるものの多くはその違いから生まれています。それぞれの部分は、それが属するアルゴリズムの
+ページにあります。
+
+- **ステージスコアラー** — シグナル、ディメンション、スコア、判定、そして shunt の
+  Claude Code ツール語彙、非対称ヒステリシス、セッションのピン留め — は
+  [ステージルーター](/ja/guides/stage-router/)にあります。
+- **すべてのルーターに共通するもの** — 普通のモデル id としてのターゲット、クライアントが
+  見る id、ジャッジ呼び出し、留め置くターン — は
+  [ルーティングの概要](/ja/guides/routing/)にあります。
+- **ジャッジを使う type** にはそれぞれページがあります。
+  [LLM 分類器](/ja/guides/llm-classifier/)、[エスカレーション](/ja/guides/escalation/)、
+  [advisor ゲート](/ja/guides/advisor/)、[コンポジット](/ja/guides/composite/)です。
+- **委譲された作業**と、shunt がアップストリームの `claude_lineage` ヘッダーとは違う方法で
+  「委譲された」を読むことは、[サブエージェントルーティング](/ja/guides/subagents/)に
+  あります。
+
+## 統合のコスト
+
+依存を最初に採用した際に、`0.2.0` を相手に見積もりではなく実測した値です。
+
+| | |
+| :-- | :-- |
+| リリースバイナリ | **+115,376 バイト（+0.31%）** |
+| `Cargo.lock` のパッケージ | **+33**（412 → 445） |
+| うち未使用 | 約 26。shunt が呼ばない分類器パスのための `jsonschema` ツリー |
+| 実際にリンクされるか | `jsonschema` ツリーはリンクされ**ません** — ビルド済みバイナリに `jsonschema` 文字列 0 件、`num-bigint` シンボル 0 件 |
+| 移植という代替案 | 137 行 |
+
+決め手はバイナリの結果でした。リンカが分類器ツリーをまるごと落とすので、クレートに
+依存するコストは 0.3% 程度です。137 行の移植は、ピンが陳腐化した場合の出口として
+記録に残っています。
+
+そのリリースから `main` ピンへ移った際に増えたパッケージは**ゼロ**でした — ロックは
+445 のままです。向こうで libsy が新たに直接依存する `http`、`regex`、`uuid` は、すでに
+shunt のツリーにありました。リンクされるかどうかの結果も新しいピンでそのままです。
+リリースバイナリの `jsonschema` 文字列は 0 件、`num-bigint` シンボルも 0 件です。
+
+ジャッジの境界のために `switchyard-translation` を取り込んだことで、ロックのエントリは
+3 つ増えました。クレイト本体と `async-stream`、`async-stream-impl` です。
+`switchyard-protocol` は libsy 自身の依存としてすでにツリーにありました。
+
+## クレジット
+
+`switchyard-libsy` は Apache-2.0、© NVIDIA Corporation です。shunt はそのステージ
+スコアラーを未改変で使用しています。断った各機能とその理由を含む shunt 側の設計記録は
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md)
+であり、リリースではなくアップストリーム `main` をピンした判断は
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)です。

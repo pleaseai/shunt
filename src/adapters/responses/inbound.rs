@@ -17,6 +17,7 @@ use axum::{
 };
 
 use crate::{
+    accounts::CountAttempt,
     adapters::AdapterError,
     auth::{self, resolve_credential, slots::ShuntCredentials, Credential},
     config::AccountConfig,
@@ -148,7 +149,7 @@ async fn forward_codex_passthrough(
     // translating outbound path: near-quota accounts rotate proactively and
     // available accounts order by burn-rate headroom (issue #195). The
     // passthrough body's model is a label only (no fable-scoped Codex window).
-    let (order, mut reprobe_reservation) = state.accounts.select_order_deferred(
+    let (order, mut reprobe_reservation, cap) = state.accounts.select_order_deferred_with_cap(
         &route.provider,
         &accounts_config,
         pool_key.as_deref(),
@@ -183,6 +184,7 @@ async fn forward_codex_passthrough(
             &passthrough_headers,
             &body,
         )
+        .count_attempt(&state.accounts, &route.provider, account)
         .await
         {
             Ok(response) => response,
@@ -207,7 +209,7 @@ async fn forward_codex_passthrough(
         state
             .accounts
             .note_codex_quota(&route.provider, account, upstream.headers());
-        match classify_first(&state, &route, account, upstream) {
+        match classify_first(&state, &route, account, upstream, None, true).await? {
             // Success or a non-failover 4xx (e.g. 400): the account is fine, so
             // relay the upstream response verbatim — a passthrough client expects
             // the raw Responses body, error or not — and never rotate.
@@ -248,6 +250,7 @@ async fn forward_codex_passthrough(
                     &passthrough_headers,
                     &body,
                 )
+                .count_attempt(&state.accounts, &route.provider, account)
                 .await
                 {
                     Ok(response) => response,
@@ -272,7 +275,7 @@ async fn forward_codex_passthrough(
                 state
                     .accounts
                     .note_codex_quota(&route.provider, account, retry.headers());
-                match classify_retry(&state, &route, account, retry) {
+                match classify_retry(&state, &route, account, retry, None, true).await? {
                     RetryOutcome::Relay(retry) => {
                         let retry_status = retry.status();
                         state.accounts.mark_healthy(
@@ -296,6 +299,11 @@ async fn forward_codex_passthrough(
         }
     }
 
+    if candidates == 0 {
+        if let Some(error) = crate::adapters::cap_exhausted(&route, cap) {
+            return Err(error);
+        }
+    }
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     match last_response {
         // Passthrough: relay the last upstream response verbatim (status + body),

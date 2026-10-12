@@ -1,0 +1,178 @@
+---
+title: Switchyard 集成
+description: shunt 阶段路由器背后的评分器来自 NVIDIA 的 Switchyard 项目。shunt 引入了什么、舍弃了什么、已公开的基准结果,以及集成的代价。
+---
+
+shunt 的[阶段路由器](/zh-cn/guides/stage-router/)并没有自造评分逻辑,而是依赖
+[NVIDIA-NeMo/Switchyard][sy] 的路由库 [`switchyard-libsy`][libsy] —— 该项目的目标
+是"把每次 LLM 调用路由到仍然能把活干完的最便宜的模型"。
+
+本页是集成记录:shunt 用了 Switchyard 的哪一部分、刻意没用哪些部分、公开数字实际
+测的是什么,以及这个依赖的代价。每种算法如何判定一个回合,放在该算法自己的页面上 —— 从
+[路由概览](/zh-cn/guides/routing/)开始。
+
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
+[sy]: https://github.com/NVIDIA-NeMo/Switchyard
+
+## shunt 引入了什么
+
+Switchyard 提供的是整套网关:代理服务器、provider 中立的协议、请求/响应翻译、
+LLM 裁判分类器、升级路由、子代理路由。shunt 本身就是网关,所以只取评分器、可选表背后
+的各种裁判类算法,以及仅在该边界使用的翻译编解码器,服务器本身留下。
+
+| Switchyard 组件 | 在 shunt 中 |
+| :-- | :-- |
+| `switchyard-libsy` 阶段评分器 | **使用** —— 固定在上游 `main` 的一个经过审阅的修订 |
+| `switchyard-protocol` | 作为 libsy 自身的依赖引入;shunt 不构造 `Request` |
+| `switchyard-translation` | **仅用于路由边界** —— 裁判请求及其回复上的中立 ⇄ Anthropic 转换。Anthropic → Responses 的线上转换仍由 shunt 自己的 `src/model/responses_request.rs` 负责 |
+| `switchyard-server` | **不使用** —— shunt 自己就是服务器 |
+| LLM 分类器 / 裁判 | **按条目可选启用** —— `stage_router` 上的 [`[models.router.classifier]`](/zh-cn/guides/stage-router/#裁判回退),只在信号无法定夺的轮次被咨询,另有需要裁判的 [`llm_classifier`](/zh-cn/guides/llm-classifier/) 与 [`composite`](/zh-cn/guides/composite/) 类型;见[裁判调用](/zh-cn/guides/routing/#裁判调用) |
+| 升级路由 | **按条目可选启用** —— [`mode = "escalation"`](/zh-cn/guides/escalation/)。弱目标的回合会被扣住直到裁判作出裁决,所以切换到强目标发生在发送任何响应头之前;见[被扣住的回合](/zh-cn/guides/routing/#被扣住的回合) |
+| 交接备注 | **使用** —— [`[models.router.handoff_notes]`](/zh-cn/guides/stage-router/#告诉接手的模型为什么) |
+| 顾问门 | **按条目可选启用** —— [`type = "advisor"`](/zh-cn/guides/advisor/),执行模型的回合会被扣住直到审阅结束 |
+| 子代理路由 | **使用** —— [`[models.subagents]`](/zh-cn/guides/subagents/) |
+
+整个耦合就是一次函数调用。shunt 从解析后的 Anthropic Messages 报文直接填充 libsy 的
+`ToolSignals` 结构体并调用 `pick_tier`;该结构体的每个字段都是 `pub`,中间不需要
+任何翻译层。
+
+这个依赖不是 crates.io 上的发布版,而是钉在上游 `main` 某个**不可变修订上的 git
+pin**,只写 `rev`、不写 `branch` —— 与 shunt 的两个 `tungstenite` pin 形式相同。
+因此升级它是一次经过审阅的 diff,而不是一次无关的 `cargo update` 能顺手做掉的事。
+`0.2.0` 是唯一的已发布版本,而 `main` 已经与它分叉:阶段评分之外的算法 —— advisor
+gate、composite 路由、子代理路由、tool semantics、handoff note —— 只存在于 `main`。
+核对 API 时请读 cargo 解析出的那份 checkout,既不是 registry 源码,也不是会移动的
+GitHub 默认分支。
+
+### 学习型 prefill 路由器
+
+从上游还引入了一块,但条件不同:给最近一轮用户消息打分再挑目标的学习型分类器
+`prefill_router`。只有开启默认关闭的 **`prefill-router` cargo feature** 构建出来的二进制
+才有它。
+
+原因在于这个 crate 本身。上游的 `crates/prefill-router` 通过 PyO3 内嵌 Python,所以构建会
+链接 libpython,运行时需要能 import `torch`、`transformers`、`numpy`、`accelerate` 的环境,
+以及磁盘上的一个路由检查点。上游也是出于同样的理由把它放在一个 cargo feature 后面。shunt 的
+发布流程从不开启这个 feature,因此**预编译的发布二进制和 Homebrew formula 里都没有它。**
+从源码 `cargo build --release --features prefill-router` 是拿到它的唯一办法;没有该 feature
+的二进制无法加载写了这个 type 的配置,并会给出说明原因的错误。
+
+键、前置条件和路由来源见配置参考中的
+[`type = "prefill_router"`](/zh-cn/reference/configuration/#type--prefill_router)。
+
+## 基准结果
+
+以下是**上游 Switchyard 的**数字,不是 shunt 的。shunt 没有跑过 Terminal-Bench,
+紧接着的一节讨论这些结果有多少能迁移过来。
+
+Terminal-Bench 2.1,对比 Opus 4.8 基线:
+
+| 配置 | 准确率 | 总成本 | 相对基线 |
+| :-- | --: | --: | :-- |
+| Opus 4.8 基线 | 76.0% | $98.06 | — |
+| 升级路由 | 75.7% | $85.00 | 准确率的 99.6%,便宜 13.3% |
+| **阶段路由** | **72.7%** | **$68.19** | **准确率的 95.7%,便宜 30.5%** |
+| 能力路由 | 71.2% | $79.32 | 准确率的 93.7%,便宜 19.1% |
+| 仅 Kimi K2.6 | 55.8% | $76.28 | |
+| 仅 GLM 5.2 | 52.4% | $16.47 | |
+| 仅 DeepSeek V4 Pro | 48.7% | $96.92 | |
+| 仅 Ultra 3 | 39.0% | $29.66 | |
+
+shunt 实现的正是阶段路由这一行:三种路由配置中最便宜,同时保住了基线解决率的
+95.7%。下面四行才是让这个数字有意义的对照组 —— 每一个固定单模型,包括比路由器还贵
+的那些,都落在 56% 以下。
+
+产生 `0.5` 默认值的置信度阈值标定,是另一项独立工作,来自 SWE-Bench Pro Python-75,
+而非 Terminal-Bench。
+
+### 出处与保留
+
+- 这些数字是上游自己的 [Benchmark Provenance][provenance] 表中公布的 **v0.2.0**
+  Terminal-Bench 2.1 结果,而该表又把出处标为
+  [Route AI Agent Workloads Across Models with NVIDIA NeMo Switchyard][blog]
+  (NVIDIA,2026 年 8 月 11 日)。博客正文本身并没有登出这张表,所以要核对某个数字时
+  应看 README 而不是博客。
+- 那些运行使用了 **NVIDIA 内部推理端点**,上游明确表示在别的服务栈上绝对解决率可能
+  变化。
+- 上游只签入了*升级*这一份配置
+  (`benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml`)。72.7% 那行
+  阶段路由背后确切的层级模型对并未公开,因此不要把它读作对你在 shunt 中配置的某个
+  特定模型对的承诺。
+- 该表未随附任何延迟或单请求路由开销数字;上游把这个问题交给了它自己的 soak 测试
+  文档。
+
+[provenance]: https://github.com/NVIDIA-NeMo/Switchyard#benchmark-provenance
+[blog]: https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/
+
+### 哪些能迁移到 shunt,哪些不能
+
+评分器是同一份代码,外面的一切都是 shunt 的。所以请把上游那张表读作*这套思路*划算
+的证据,而不是 shunt 自己的成绩。
+
+| | 上游基准 | shunt |
+| :-- | :-- | :-- |
+| 评分内核 | `switchyard-libsy` | 同一 crate,同样的常量 |
+| 信号提取 | 上游的 provider 中立实现 | shunt 自己的实现,取自 Anthropic Messages 块 |
+| `tests_passed` / `repeated_failure` | 评分器可用 | 恒为 `false` —— 从不填充 |
+| `compacted` | 评分器可用 | 由 `x-claude-code-context-compacted` 填充,并闩存到会话固定上 |
+| 模糊回合上的裁判 | 可选启用 | 默认关闭,fall-open 到选择器默认层;可按条目用 [`[models.router.classifier]`](/zh-cn/guides/stage-router/#裁判回退) 选择启用 |
+| 跨回合的层级稳定性 | 每回合独立评分 | 带非对称迟滞的会话固定 |
+| 负载 | Terminal-Bench 2.1 任务 | Claude Code 会话 |
+
+其中两项作用方向相反。shunt 不填充 `tests_passed` 与 `repeated_failure`,因此丢掉了
+libsy 的重复失败升级 —— 信号严格少于基准当时所有。这两项都需要本提取器并不具备的证据:
+工具结果的*文本*。线格式本身是携带这段文本的 —— `tool_result` 块有一个 `content`
+字段 —— 但提取器有意不去读它:从自由格式的结果文本判定这些信号意味着内容模式启发式,
+而结构性的替代指标对 `ls` 的发火会和对一次测试运行一样容易。`compacted` 不属于这一组:
+它来自请求头而不是对话记录,所以 libsy 的压缩覆盖在这里是会触发的,参见
+[阶段路由器](/zh-cn/guides/stage-router/)。
+与之相对,shunt 的迟滞机制之所以存在,正是因为在 Claude Code 会话里逐回合翻转层级要
+付出基准测试框架从不承担的代价(见[为什么下行比上行更难](/zh-cn/guides/stage-router/#为什么下行比上行更难))。
+
+## 算法写在哪里
+
+Switchyard 是 provider 中立的,不必为一次层级切换定价。shunt 是 Claude Code 网关,必须定价,
+而 shunt 在引入的代码之上额外提供的大部分东西都源自这个差别。每一部分都放在它所属算法的
+页面上:
+
+- **阶段评分器** —— 信号、维度、评分和判定,加上 shunt 的 Claude Code 工具词汇、非对称迟滞
+  和会话固定 —— 见[阶段路由器](/zh-cn/guides/stage-router/)。
+- **所有路由器共有的部分** —— 目标就是普通的模型 id、客户端看到的 id、裁判调用和被扣住的
+  回合 —— 见[路由概览](/zh-cn/guides/routing/)。
+- **需要裁判的各个类型** 各有一页:[LLM 分类器](/zh-cn/guides/llm-classifier/)、
+  [升级路由](/zh-cn/guides/escalation/)、[advisor 门控](/zh-cn/guides/advisor/)和
+  [组合路由](/zh-cn/guides/composite/)。
+- **被委派的工作**,以及 shunt 对“被委派”的判读与上游 `claude_lineage` 头部有何不同,见
+  [子 agent 路由](/zh-cn/guides/subagents/)。
+
+## 集成的代价
+
+这些是首次采用该依赖时针对 `0.2.0` 实测的数字,不是估算。
+
+| | |
+| :-- | :-- |
+| Release 二进制 | **+115,376 字节(+0.31%)** |
+| `Cargo.lock` 包数 | **+33**(412 → 445) |
+| 其中未使用 | 约 26 个,属于 shunt 从不调用的分类器路径所需的 `jsonschema` 依赖树 |
+| 是否真的被链接 | `jsonschema` 树**没有**被链接 —— 构建出的二进制里 `jsonschema` 字符串 0 处、`num-bigint` 符号 0 个 |
+| 移植这一备选 | 137 行 |
+
+做出决定的是二进制结果:链接器会整棵丢掉分类器依赖树,所以依赖这个 crate 的代价约为
+千分之三。那 137 行的移植方案留在记录里,作为这个 pin 日后陈旧时的退路。
+
+从那个发布版移到 `main` pin **没有新增任何包** —— 锁文件仍是 445,因为 libsy 在那边
+新增的直接依赖(`http`、`regex`、`uuid`)早已在 shunt 的依赖树里。是否被链接的结论在
+新 pin 上同样成立:release 二进制里 `jsonschema` 字符串仍是 0 处,`num-bigint` 符号
+仍是 0 个。
+
+为裁判边界引入 `switchyard-translation` 让锁文件多出三条:crate 本身,加上
+`async-stream` 和 `async-stream-impl`。`switchyard-protocol` 作为 libsy 自身的依赖,
+本来就已经在依赖树里。
+
+## 署名
+
+`switchyard-libsy` 采用 Apache-2.0 许可,© NVIDIA Corporation。shunt 未加修改地使用
+其阶段评分器。shunt 这一侧的设计记录 —— 包括每一项被拒绝的能力及其理由 —— 是
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md);
+而选择固定上游 `main` 而非发布版的决定,记录在
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)。

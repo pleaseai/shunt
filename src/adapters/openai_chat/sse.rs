@@ -62,7 +62,13 @@ impl Decoder {
                 let mut frame = std::mem::take(&mut self.buffer);
                 frame.truncate(frame_len);
                 if self.done {
-                    return Err(self.fail("OpenAI Chat SSE frame arrived after [DONE]"));
+                    // A comment or empty frame carries no payload. Data after
+                    // `[DONE]` — including a second `[DONE]` — fails closed.
+                    return match parse_frame(&frame) {
+                        Ok(None) => Ok((offset + 1, None)),
+                        Ok(Some(_)) => Err(self.fail("OpenAI Chat SSE frame arrived after [DONE]")),
+                        Err(error) => Err(self.fail(error)),
+                    };
                 }
                 let item = match parse_frame(&frame) {
                     Ok(Some(Item::Done)) => {
@@ -81,6 +87,10 @@ impl Decoder {
             }
         }
         Ok((chunk.len(), None))
+    }
+
+    pub(super) fn buffered_is_ignorable(&self) -> bool {
+        self.buffer.iter().all(u8::is_ascii_whitespace)
     }
 
     pub(super) fn finish(&mut self) -> Result<(), String> {

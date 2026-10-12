@@ -1,5 +1,6 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
+import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 
 // `base` is what makes the emitted asset URLs `/admin/assets/...`: the bundle is
@@ -8,7 +9,7 @@ import react from '@vitejs/plugin-react';
 // changing this base without changing that route breaks every asset link.
 export default defineConfig({
   base: '/admin/',
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   build: {
     outDir: 'dist',
     emptyOutDir: true,

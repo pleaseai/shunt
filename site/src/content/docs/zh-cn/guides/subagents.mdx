@@ -1,0 +1,132 @@
+---
+title: 子 agent 路由
+description: 把被委派的工作 —— Task 子 agent、hook agent、workflow 子 agent —— 送到与父会话不同的目标,可以按固定映射,也可以由裁判决定。
+---
+
+`[models.subagents]` 覆盖层把**被委派的工作**送到另一个目标,而父会话仍去自己的目的地。
+请求这个 id 的 `Task` 子 agent、hook agent 或 workflow 子 agent 会被分流到覆盖层的目标;
+父会话自己的回合从不读这张表,解析该条目的方式和没有这张表时完全一致。
+
+覆盖层可以加在任意 `[[models]]` 条目上:带 `[models.upstream_model]` 映射的条目、带
+`[models.router]` 表的条目,或者没有映射、经由 `[[routes]]` 解析的 id。这张表放在条目上
+而不是放进路由器表里,是因为直接指定目的地的条目根本没有路由器表 —— Switchyard 的“带
+subagents 的 passthrough”在这里恰好就是这样一个条目。
+
+它有两种形态:
+
+| `type` | 子任务的目标来自 |
+| :-- | :-- |
+| `passthrough` | 与其 agent 类型对应的 `by_type`,否则是 `target` —— 不调用裁判,不保存状态 |
+| `llm_classifier` | 读过被委派任务的裁判,每对 (会话, agent) 一次 |
+
+## 什么算被委派的工作
+
+上游只凭它自己的 `claude_lineage` 头部。shunt 先读 `x-claude-code-request-class`,只有在
+该类别没有被发送时才回退到 agent id:
+
+| 请求 | 走覆盖层吗? |
+| :-- | :-- |
+| `x-claude-code-request-class: subagent` 或 `workflow` | 走 |
+| `x-claude-code-request-class: main`,即使带着 agent id | 不走 —— 主会话流量 |
+| `x-claude-code-request-class: compaction` 或 `auxiliary` | 不走 —— 框架自身的维护 |
+| 没有类别头部,且带有非空的 `x-claude-code-agent-id` | 走 |
+
+无论提示头部的开关如何,Claude Code 在每个被委派的回合上都会发送 `x-claude-code-agent-id`。
+类别头部和 agent 类型头部则受开关控制:在 shunt 后面,只有客户端设置了
+`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` 时才会发送(参见
+[客户端环境变量](/zh-cn/reference/client-environment/))。因此在默认部署下,每个 `Task`
+子 agent 都走 `target`,要用上 `by_type` 就需要这个变量。
+
+## `passthrough` 形态
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+被委派的一轮去往与它的 `x-claude-code-agent-type` 相匹配的 `by_type` 条目;`by_type` 没有
+为它的 agent 类型指定模型时去 `target` —— 没有发送 agent 类型头部时,所有被委派的回合也都
+去 `target`。
+
+**`by_type` 的键** 就是头部的字面值,精确匹配,大小写也算在内。内置 agent 的 id 原样传输
+—— `Explore`、`Plan`、`general-purpose`、`claude` 和 `fork`(客户端只在
+`CLAUDE_CODE_FORK_SUBAGENT=1` 下才提供它)。来自 `.claude/agents/` 的项目 agent 会以
+`custom` 到达,它自己的名字从不发送,所以 `custom` 是它唯一能匹配上的键。`teammate` 是
+客户端对 Agent Teams 成员使用的字面取值,目前尚未在网络上观察到。
+
+**不保存状态**。目标只由配置和请求的头部决定:没有会话固定、没有存储、不调用裁判。在带
+路由器的 id 上,子任务在路由器运行之前就被分流走,所以子任务的回合从不按转录内容评分、
+从不被固定,也从不触碰或推进父级的固定项与 dwell。
+
+## `llm_classifier` 形态
+
+不再指定一个固定目标,而是由裁判读过被委派的任务之后,点名由哪个分组来处理。这里只有
+`mode = "custom"`,各个键就是 [LLM 分类器](/zh-cn/guides/llm-classifier/#mode--custom)
+页面介绍的 `custom` 模式的键。
+
+```toml
+[models.subagents]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+classify_trigger = "new_session"
+max_output_tokens = 64
+prompt = """
+为这项被委派的任务恰好挑选一个目标。
+
+- 代码评审、批评、审计、正确性分析,选 "capable"。
+- 实现、调研、讲解以及其他被委派的工作,选 "efficient"。
+
+只返回符合响应 schema 的 JSON。
+"""
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+有三条规则与 `[models.router]` 形态不同:
+
+- **`classify_trigger` 默认是 `new_session`**,并且 `user_turn` 会被拒绝。被委派的子任务
+  就是一件事,所以目标只挑一次、之后一直沿用;按用户回合反复判定,只会为一个不可能改变的
+  决定持续消耗裁判调用。
+- **`message_hash_fallback` 必须是 `false`。** 这里的分类本就按 (会话, agent) 取键,改用
+  第一条消息的哈希,会把同一个会话下两个不同的子任务绑到同一份判定上。
+- **父会话从不被分类。** 什么算被委派的工作,与 `passthrough` 形态完全一致。因此父会话的
+  回合、带 agent id 的 `main` 回合,以及 `compaction` 和 `auxiliary` 这两个类别,都像这张表
+  不存在一样解析该条目,也不会发出裁判调用。
+
+六个[每次调用的上限](/zh-cn/reference/configuration/#每次调用的上限)放在这张表上,因为发起
+调用的正是它。裁判受与别处相同的约束 —— 一跳、不能是 passthrough 路由,并且调用方的凭证
+槽位一个都不会随行(见[裁判调用](/zh-cn/guides/routing/#裁判调用))。由于被委派的回合可能
+去问裁判,这类回合的入站鉴权也会把覆盖层的目标和裁判一并纳入 —— 无法通过鉴权的被委派回合
+会被拒绝,且一次裁判调用都不会发出。`count_tokens` 探测同样不会发出裁判调用:该子任务有
+(会话, agent) 分配时就由该分配作答,否则由 `default_target` 分组的第一个模型作答。
+
+## 客户端看到什么
+
+被分流的一轮会带上 `x-gateway-routed-model`(目标)和 `x-gateway-route-source` —— 命中
+`by_type` 时是 `subagent_type`,回退到 `target` 时是 `subagent` —— 并以
+`algorithm = "subagents"` 计入 `shunt.router.decisions`。`llm_classifier` 形式则报告
+classifier 自己的来源:裁判完成分类的那一轮是 `llm-classifier`,该子 agent 之后重放这一
+分配的轮次是 `classifier_retained`,没有结论定夺这一轮时是 `classifier_fail_open`(见
+[LLM Classifier](/zh-cn/guides/llm-classifier/#客户端看到什么))。
+
+没有请求的接口什么都解析不出来:`/v1/models` 发现和 `shunt check` 根本不带任何按模型的
+目的地信息,`GET /routes` 也只在父级自身存在 `[[routes]]`/`[models.router]` 条目时才把它
+列出来(交给 `server.default_provider` 解析的 id 在两个数组里都不会出现)。这三个接口都不会
+解析出覆盖层分流到的目标,覆盖层自身也从不出现在 `routers` 数组里。
+
+目标规则、校验错误以及每个键都在[配置参考](/zh-cn/reference/configuration/#modelssubagents可选)中。

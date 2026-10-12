@@ -1,11 +1,5 @@
-//! Anthropic response contract for OpenAI Chat Completions.
-//!
-//! One semantic machine serves both output modes (unary JSON and streamed SSE
-//! frames) so the two cannot drift: the machine -- never the transport -- owns
-//! the terminal decision, so a stream cut by EOF, a duplicate "[DONE]", or
-//! residual bytes after the framing terminal can never synthesize a success
-//! the provider did not declare. Text-only for this slice; tools, reasoning,
-//! and multi-choice expansion belong to later plans (13-02/13-03).
+//! One semantic machine serves unary JSON and streamed SSE. It owns the
+//! terminal decision, so EOF or bytes after `[DONE]` cannot invent a success.
 
 use serde_json::{json, Value};
 
@@ -53,8 +47,7 @@ struct CheckedChunk {
     retained_bytes: usize,
 }
 
-/// State machine over OpenAI Chat chunks (SSE frames or a full completion
-/// object) that emits Anthropic SSE events and the final Anthropic response.
+/// Chat chunks in, Anthropic SSE events and the final message out.
 pub struct OpenAiChatSseMachine {
     model: String,
     message_id: String,
@@ -89,8 +82,7 @@ impl OpenAiChatSseMachine {
         }
     }
 
-    /// Construct a machine for incremental relay: streamed text is forwarded
-    /// as deltas and never retained as a second complete response copy.
+    /// Streamed text is forwarded as deltas and not retained a second time.
     pub fn new_streaming_for_upstream(model: impl Into<String>) -> Self {
         let mut machine = Self::new_for_upstream(model);
         machine.accumulate_content = false;
@@ -101,18 +93,14 @@ impl OpenAiChatSseMachine {
         self.started
     }
 
-    /// Validate one Chat Completions chunk (or whole completion) and atomically
-    /// apply its semantic meaning.
+    /// Validate one chunk or completion and apply it atomically.
     pub fn process_chunk_checked(
         &mut self,
         chunk: &Value,
     ) -> Result<Vec<SseEvent>, OpenAiChatSemanticError> {
         match self.terminal {
             TerminalState::Open => {}
-            // With stream_options.include_usage the official stream appends a
-            // usage-only chunk (empty choices) after the finish_reason chunk
-            // and before [DONE]. Accept exactly that shape; content, a second
-            // finish, or any other payload after finish_reason fails closed.
+            // Official streams append one usage chunk after finish_reason.
             TerminalState::SuccessPending => return self.process_trailing_usage_chunk(chunk),
             _ => {
                 self.terminal = TerminalState::ProtocolFailed;
@@ -177,6 +165,20 @@ impl OpenAiChatSseMachine {
         &mut self,
         chunk: &Value,
     ) -> Result<Vec<SseEvent>, OpenAiChatSemanticError> {
+        match self.read_trailing_usage(chunk) {
+            Ok(events) => Ok(events),
+            Err(error) => {
+                // A later close must not treat a bad trailer as a successful stop.
+                self.terminal = TerminalState::ProtocolFailed;
+                Err(error)
+            }
+        }
+    }
+
+    fn read_trailing_usage(
+        &mut self,
+        chunk: &Value,
+    ) -> Result<Vec<SseEvent>, OpenAiChatSemanticError> {
         let chunk = chunk.as_object().ok_or_else(|| {
             OpenAiChatSemanticError::protocol("OpenAI Chat chunk must be an object")
         })?;
@@ -204,12 +206,19 @@ impl OpenAiChatSseMachine {
             OpenAiChatSemanticError::protocol("OpenAI Chat choices must be an array")
         })?;
         if !choices.is_empty() {
-            self.terminal = TerminalState::ProtocolFailed;
             return Err(OpenAiChatSemanticError::protocol(
                 "OpenAI Chat usage trailer choices must be empty",
             ));
         }
-        let (input_tokens, output_tokens) = validate_usage(chunk.get("usage"))?;
+        let usage = chunk
+            .get("usage")
+            .filter(|usage| !usage.is_null())
+            .ok_or_else(|| {
+                OpenAiChatSemanticError::protocol(
+                    "OpenAI Chat usage trailer must contain a usage object",
+                )
+            })?;
+        let (input_tokens, output_tokens) = validate_usage(Some(usage))?;
         if let Some(tokens) = input_tokens {
             self.input_tokens = tokens;
         }
@@ -268,7 +277,11 @@ impl OpenAiChatSseMachine {
                         let mapped = match reason {
                             "stop" => "end_turn",
                             "length" => "max_tokens",
-                            "content_filter" => "end_turn",
+                            "content_filter" => {
+                                return Err(OpenAiChatSemanticError::protocol(
+                                    "OpenAI Chat finish_reason content_filter",
+                                ))
+                            }
                             other => {
                                 return Err(OpenAiChatSemanticError::protocol(format!(
                                     "unsupported OpenAI Chat finish_reason {other}"
@@ -395,10 +408,7 @@ impl OpenAiChatSseMachine {
         }
     }
 
-    /// The transport -- EOF or the "[DONE]" framing marker -- may only *close*
-    /// a provider-declared success. Without a preceding accepted
-    /// finish_reason this fails closed, so an upstream cut mid-stream can
-    /// never become a synthesized success.
+    /// EOF or `[DONE]` may only close a provider-declared success.
     pub fn transport_close_checked(&mut self) -> Result<Vec<SseEvent>, OpenAiChatSemanticError> {
         if self.terminal != TerminalState::SuccessPending {
             self.terminal = TerminalState::ProtocolFailed;

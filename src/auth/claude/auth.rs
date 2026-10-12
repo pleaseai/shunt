@@ -30,6 +30,13 @@ pub(crate) const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub(crate) const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 pub(crate) const SCOPE: &str =
     "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+/// The User-Agent Claude Code presents to the OAuth endpoints. `platform.claude.com`
+/// sits behind Cloudflare, which refuses a request that carries no browser-like
+/// signature with HTTP 403 and error 1010 (`browser_signature_banned`). The
+/// redirect-hardened token client sets no default User-Agent, so the refresh POST
+/// must present this explicitly or the refresh is rejected before it reaches the
+/// token endpoint and the pool reports only a generic `authentication failed`.
+pub(crate) const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/2.1.274 (external, cli)";
 /// Also served to the admin dashboard over `GET /admin/api/session`, so its
 /// Status column applies the same deadline `Tokens::is_valid_at` does rather
 /// than a copy of it (`admin::session_bootstrap`; `ui/src/accounts.ts`).
@@ -382,6 +389,7 @@ async fn refresh(
     let response = crate::auth::shared::token_refresh_client()
         .post(token_url)
         .header("content-type", "application/json")
+        .header("user-agent", CLAUDE_CLI_USER_AGENT)
         .body(serde_json::to_string(&body)?)
         .send()
         .await?;

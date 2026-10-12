@@ -78,6 +78,7 @@ fn admin_config(tokens_env: &str) -> AdminConfig {
         }],
         session_ttl_secs: 3600,
         pending_ttl_secs: 600,
+        hide_observed: false,
         oidc: None,
     }
 }

@@ -26,8 +26,8 @@ use serde::Serialize;
 
 use crate::{
     accounts::AccountSnapshot, auth::claude::store as claude_store,
-    auth::claude::usage::FABLE_SCOPE_DISPLAY_NAME, auth::shared::format_iso8601, config::AuthMode,
-    error::ShuntError, server::AppState,
+    auth::claude::usage::FABLE_SCOPE_DISPLAY_NAME, auth::gate, auth::shared::format_iso8601,
+    config::AuthMode, error::ShuntError, server::AppState,
 };
 
 /// Representative Fable model id used to take the Fable-scoped availability
@@ -102,9 +102,12 @@ fn to_percent_and_reset(utilization: f64, reset: Option<u64>) -> (f64, Option<St
 /// 1. Filter to non-disabled accounts reporting a finite utilization for this
 ///    window.
 /// 2. Prefer the `available` subset (not disabled, not cooling, not near
-///    quota); fall back to the full filtered set when none are available —
-///    mirrors `select_order`'s real behavior of still routing to a
-///    near-quota/cooling account when nothing else is left.
+///    quota, not capped); when none are available, fall back to the filtered
+///    accounts that are not capped for this bar's scope — `select_order` still
+///    routes to a near-quota/cooling account when nothing else is left, but
+///    never to a `max_utilization`-capped one. Only when every filtered account
+///    is capped is the full filtered set used (a bar with no routable account
+///    still reports its worst case rather than vanishing).
 /// 3. Within whichever set step 2 selected, take the accounts at the lowest
 ///    `priority` value present (the most-preferred tier `select_order` tries
 ///    first).
@@ -116,6 +119,18 @@ fn routing_aware_window(
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
     reset: impl Fn(&AccountSnapshot) -> Option<u64>,
 ) -> Option<(f64, Option<u64>)> {
+    routing_aware_window_for(snapshots, utilization, reset, |s| s.capped)
+}
+
+/// [`routing_aware_window`] with the cap flag that governs the bar's scope
+/// (`capped` for the shared windows, `any_cap()` for the Fable bar, since a
+/// shared-window cap also keeps Fable traffic off the account).
+fn routing_aware_window_for(
+    snapshots: &[AccountSnapshot],
+    utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
+    reset: impl Fn(&AccountSnapshot) -> Option<u64>,
+    is_capped: impl Fn(&AccountSnapshot) -> bool,
+) -> Option<(f64, Option<u64>)> {
     let candidates: Vec<&AccountSnapshot> = snapshots
         .iter()
         .filter(|s| !s.disabled)
@@ -123,10 +138,19 @@ fn routing_aware_window(
         .collect();
     let usable: Vec<&AccountSnapshot> =
         candidates.iter().copied().filter(|s| s.available).collect();
-    let pool = if usable.is_empty() {
-        candidates
-    } else {
+    let pool = if !usable.is_empty() {
         usable
+    } else {
+        let routable: Vec<&AccountSnapshot> = candidates
+            .iter()
+            .copied()
+            .filter(|s| !is_capped(s))
+            .collect();
+        if routable.is_empty() {
+            candidates
+        } else {
+            routable
+        }
     };
     let min_priority = pool.iter().map(|s| s.priority).min()?;
     pool.into_iter()
@@ -169,7 +193,13 @@ pub(crate) fn to_wire(
 ) -> OauthUsageWire {
     let five_hour = window_wire(snapshots, |s| s.utilization_5h, |s| s.reset_5h);
     let seven_day = window_wire(snapshots, |s| s.utilization_7d, |s| s.reset_7d);
-    let fable = routing_aware_window(fable_snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi);
+    let fable = routing_aware_window_for(
+        fable_snapshots,
+        |s| s.utilization_7d_oi,
+        |s| s.reset_7d_oi,
+        // A shared-window cap also keeps Fable traffic off the account.
+        |s| s.any_cap(),
+    );
     let limits = match fable {
         Some((used, resets_at)) => {
             let (percent, resets_at) = to_percent_and_reset(used, resets_at);
@@ -211,15 +241,27 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         // subscription login — so there is no unverifiable-Anthropic-bearer
         // caller to accommodate here, and accepting bare presence would let any
         // remote caller scrape pool quota telemetry with a fabricated header.
-        let static_client = state
-            .inbound_auth
-            .as_ref()
-            .and_then(|auth| auth.authenticate_client(&headers));
+        let inbound = match &state.inbound_auth {
+            Some(auth) => {
+                gate::authenticate(auth, &state.inbound_jwks, &headers, gate::Slots::Client).await
+            }
+            None => gate::Outcome::Rejected,
+        };
+        if inbound == gate::Outcome::Unavailable {
+            tracing::warn!(
+                "GET /api/oauth/usage: cannot verify credential, JWT issuer key set unreachable"
+            );
+            return gate::unavailable_response();
+        }
+        let inbound_client = match &inbound {
+            gate::Outcome::Authenticated { client, .. } => Some(client.as_str()),
+            _ => None,
+        };
         let gateway_client = state
             .gateway_auth
             .as_ref()
             .and_then(|auth| auth.authenticate_bearer(&headers));
-        if static_client.is_none() && gateway_client.is_none() {
+        if inbound_client.is_none() && gateway_client.is_none() {
             tracing::warn!(
                 "inbound auth failed for GET /api/oauth/usage: missing or invalid credential on a non-loopback bind"
             );
@@ -230,7 +272,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             )
             .into_response();
         }
-        match static_client {
+        match inbound_client {
             Some(client) => {
                 tracing::info!(client = %client, "inbound client authenticated for GET /api/oauth/usage")
             }

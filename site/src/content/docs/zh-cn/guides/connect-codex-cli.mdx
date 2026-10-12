@@ -49,7 +49,7 @@ Codex CLI 会把 `/responses` 追加到它使用的任何 base URL 之后(Codex 
 | `openai_base_url = ".../v1"` | `POST /v1/responses` |
 | `chatgpt_base_url = ".../backend-api/codex"` | `POST /backend-api/codex/responses` |
 
-**推荐 —— 自定义模型提供方。**配合 `requires_openai_auth = false`,从 CLI 的视角看它是免认证的,因此
+**推荐 —— 自定义模型提供方**。配合 `requires_openai_auth = false`,从 CLI 的视角看它是免认证的,因此
 **完全不需要本地的 `codex login`** —— 账户由 shunt 提供 —— 而且两种呈递 shunt token 的方式(步骤 3)
 它都支持:
 
@@ -90,16 +90,16 @@ ChatGPT token,而 shunt 无法把它当作客户端 token 接受 —— 因此**
 `Incorrect API key` 失败。只有配置键才会同时重定向 HTTP 与 WebSocket 两条路径。(`chatgpt_base_url`、
 `model_provider` 和 `experimental_realtime_ws_base_url` 同理:它们都是用户级 `~/.codex/config.toml`
 的键 —— CLI 会忽略项目本地 `.codex/config.toml` 中的它们,而且没有等效的环境变量。)使用
-`openai_base_url` 时,CLI 仍会先*尝试* WebSocket;shunt 没有 `wss` 路由,因此 CLI 会自行回退到 HTTP。
-上面的自定义 `model_provider` 连这一次往返都省了 —— `supports_websockets` 默认关闭,所以它直接走 HTTP。
+`openai_base_url` 时,CLI 会先*尝试* WebSocket,shunt 会在同一个 Responses 路径上接受这次升级。
+上面的自定义 `model_provider` 的 `supports_websockets` 默认关闭,所以它直接走 HTTP。
 
 </Aside>
 
 
 
 CLI 自己本地的 `~/.codex/auth.json` 登录**与哪个账户来应答无关** —— 每个请求都从 shunt 的池中取用一个
-账户。回环的 `base_url` 可以保持纯 `http://`;远程场景请使用 `https://`。**不要**在 shunt 提供方上设置
-`supports_websockets = true` —— 这个端点只走 HTTP/SSE(见下文)。
+账户。回环的 `base_url` 可以保持纯 `http://`;远程场景请使用 `https://`。在 shunt 提供方上设置
+`supports_websockets = true` 是可选的 —— 这个端点同时支持 HTTP/SSE 与 WebSocket(见下文)。
 
 
 
@@ -197,8 +197,8 @@ name = "backup"     # each declared name must be provisioned above; an unprovisi
 ```
 
 选择是**会话粘性**的:Codex CLI 自己的 `session-id` 请求头部决定账户的 key,因此一段对话只要账户保持
-健康就一直留在同一个账户上,随后才会故障转移(429 → 轮换,401 → 刷新并重试,5xx → 冷却并轮换)。成功
-的池化响应会带上 `x-shunt-account: <name>` 头部。在启用了 [`[server.auth]`](/zh-cn/reference/configuration/)
+健康就一直留在同一个账户上,随后才会故障转移(429 → 轮换,401 → 刷新并重试,5xx → 冷却并轮换)。
+此端点上成功的池化响应会带 `x-shunt-account: <name>` 头部 —— 流式响应也不例外,因为入站透传只在获胜上游响应之后才提交(出站 Responses 池的早期提交 HTTP 流式响应则改用 `event: account` 帧标注账户,见 Codex 多账户指南)。在启用了 [`[server.auth]`](/zh-cn/reference/configuration/)
 的共享网关上,粘性 key 按已认证的客户端隔离,因此恰好发送相同 `session-id` 的不同客户端会使用不同的
 粘性 key —— 从而避免跨客户端的粘性 key 碰撞。(这些 key 是不同的;两个不同的 key 仍可能哈希到同一个
 账户。)
@@ -235,8 +235,8 @@ slug —— 它会以 `400` **拒绝** `gpt-*-codex` 这类 slug(例如 `gpt-5.2
 model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
 ```
 
-当前有权限的 slug 是 `gpt-5.6-sol` / `-terra` / `-luna` 以及 `gpt-5.5` / `gpt-5.4` /
-`gpt-5.4-mini` / `gpt-5.2` —— 较早的账户可能只有靠前的那些。权威列表见
+当前有权限的 slug 是 `gpt-6-astra` / `-sol` / `-luna`、`gpt-5.6-sol` / `-terra` / `-luna` 以及
+`gpt-5.5` / `gpt-5.4` —— 较早的账户可能只有靠前的那些。权威列表见
 [ChatGPT / Codex → 将一个模型路由到 `codex`](/zh-cn/guides/codex/#3-将一个模型路由到-codex)。请求一个你的
 订阅所不具备的模型时,失败方式与直连 `chatgpt.com` 完全一致。
 
@@ -246,8 +246,9 @@ model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
 
 ## 6. 验证
 
-针对这三条路由中的任意一条发起一个原始 Responses 请求,应当被逐字中继,并(在池化时)返回一个
-`x-shunt-account` 头部:
+针对这三条路由中的任意一条发起一个原始 Responses 请求,应当被逐字中继;当一个池化账户获胜时,响应
+会带一个指明该账户的 `x-shunt-account` 头部 —— 入站透传只在获胜上游响应之后才提交,因此该头部指明的
+是实际处理该请求的账户:
 
 ```bash
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
@@ -256,8 +257,8 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -d '{"model":"gpt-5.6-sol","input":"say hi","stream":true}'
 ```
 
-- 返回 `200`,带 `content-type: text/event-stream` 和 `x-shunt-account:` 头部 ⇒ 池已服务该请求,且 SSE
-  被原样中继。
+- 返回 `200`,带 `content-type: text/event-stream` 和标注池账户名的 `x-shunt-account:` 头部 ⇒ 池已服务
+  该请求,且 SSE 被原样中继。
 - 返回 `401 authentication_error` ⇒ `x-shunt-token` 缺失或无效(步骤 3)。
 - 返回指明模型的 `400` ⇒ 该账户对这个 slug 没有权限(步骤 5)。
 
@@ -265,9 +266,9 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
 这条路径与 `/v1/messages` 路径的差异,见[入站 Codex 端点](/zh-cn/guides/inbound-codex-endpoint/);已注册的
 路由见 [HTTP 端点](/zh-cn/reference/endpoints/)。
 
-## 仅 HTTP/SSE
+## HTTP/SSE 与 WebSocket
 
-即使目标提供方设置了 `websocket = true`,这个端点也始终使用 HTTP 传输,因此请在 Codex CLI 的 shunt
-提供方上保持 `supports_websockets` 关闭(其默认值)。实验性的
-[Codex WebSocket v2 传输](https://github.com/pleaseai/shunt/blob/main/docs/m11-inbound-codex-endpoint.md)
-不在这个端点的范围内,已作为后续工作跟踪。
+这个端点在同样的三个 Responses 路径上同时接受 HTTP `POST` 请求和 WebSocket `GET` 升级,因此 Codex CLI
+的 shunt 提供方上的 `supports_websockets` 既可以保持关闭(其默认值,只走 HTTP),也可以设为 `true`。
+两种传输都不依赖目标提供方的 `websocket = true`,那个设置控制的是 shunt 自己的出站传输。套接字的行为见
+[WebSocket 传输](/zh-cn/guides/inbound-codex-endpoint/#websocket-传输)。

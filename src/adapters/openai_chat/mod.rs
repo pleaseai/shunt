@@ -27,6 +27,8 @@ use crate::{
 use self::sse::{Decoder as OpenAiChatSseDecoder, Item as OpenAiChatSseItem};
 
 const MAX_OPENAI_CHAT_UNARY_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+/// Bound on how long a still-open body may sit after a valid `[DONE]`.
+const POST_TERMINAL_DRAIN: Duration = Duration::from_millis(250);
 
 /// Generation POSTs are non-idempotent and reachable in one send: never
 /// re-dispatch after the request could have reached the upstream, and never
@@ -44,8 +46,9 @@ impl Adapter for OpenAiChatAdapter {
         uri: &'a Uri,
         headers: &'a HeaderMap,
         body: RequestBody,
+        bounds: crate::adapters::ResponseBounds,
     ) -> AdapterFuture<'a> {
-        Box::pin(async move { forward(state, route, uri, headers, body).await })
+        Box::pin(async move { forward(state, route, uri, headers, body, bounds).await })
     }
 }
 
@@ -87,7 +90,7 @@ fn map_openai_chat_error(status: StatusCode, body: &str) -> AdapterError {
                 .or_else(|| value.get("message"))
         })
         .and_then(Value::as_str)
-        .map(str::to_owned)
+        .map(truncate_error_message)
         .unwrap_or_else(|| truncate_error_message(body));
     let error_type = match status {
         StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
@@ -138,36 +141,27 @@ fn append_protocol_error(message: impl Into<String>, output: &mut Vec<u8>) {
     );
 }
 
-async fn collect_unary_response(
-    response: reqwest::Response,
-    max_bytes: usize,
-) -> Result<Vec<u8>, AdapterError> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > max_bytes as u64)
-    {
-        return Err(local_openai_chat_error(format!(
-            "OpenAI Chat response exceeded {max_bytes} bytes"
-        )));
-    }
-    let mut stream = response.bytes_stream();
-    let mut body = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| {
+/// The call's cap when one is set, otherwise this adapter's own ceiling. A
+/// caller's cap is never tightened: a larger operator bound must not be
+/// reported as if the adapter's ceiling had been the caller's.
+fn unary_cap(bounds: crate::adapters::ResponseBounds) -> Option<usize> {
+    Some(
+        bounds
+            .max_bytes
+            .unwrap_or(MAX_OPENAI_CHAT_UNARY_RESPONSE_BYTES),
+    )
+}
+
+fn map_body_error(error: crate::adapters::UpstreamBodyError) -> AdapterError {
+    match error {
+        crate::adapters::UpstreamBodyError::Transport(error) => {
             local_openai_chat_error(format!("failed to read OpenAI Chat response body: {error}"))
-        })?;
-        let new_len = body
-            .len()
-            .checked_add(chunk.len())
-            .ok_or_else(|| local_openai_chat_error("OpenAI Chat response size overflow"))?;
-        if new_len > max_bytes {
-            return Err(local_openai_chat_error(format!(
-                "OpenAI Chat response exceeded {max_bytes} bytes"
-            )));
         }
-        body.extend_from_slice(&chunk);
+        crate::adapters::UpstreamBodyError::TooLarge(too_large) => {
+            crate::adapters::too_large_error(too_large)
+        }
+        crate::adapters::UpstreamBodyError::Idle(idle) => crate::adapters::idle_error(idle),
     }
-    Ok(body)
 }
 
 async fn forward(
@@ -176,6 +170,7 @@ async fn forward(
     _uri: &Uri,
     _headers: &HeaderMap,
     body: RequestBody,
+    bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, Response<Body>), AdapterError> {
     let provider = state
         .config
@@ -259,17 +254,23 @@ async fn forward(
 
     let status = response.status();
     if !status.is_success() {
-        let body = collect_unary_response(response, MAX_OPENAI_CHAT_UNARY_RESPONSE_BYTES).await?;
+        let body = crate::adapters::collect_upstream_body(response, unary_cap(bounds), bounds.idle)
+            .await
+            .map_err(map_body_error)?;
         let body_text = std::str::from_utf8(&body)
             .map_err(|_| local_openai_chat_error("invalid UTF-8 in OpenAI Chat error response"))?;
         return Err(map_openai_chat_error(status, body_text));
     }
 
     if is_streaming {
+        // Relayed onward without retention; a collector downstream applies the
+        // caller's cap. Idle bounds cover whole-body reads, not this relay.
         stream_sse_response(state, route, response).await
     } else {
         let full_body =
-            collect_unary_response(response, MAX_OPENAI_CHAT_UNARY_RESPONSE_BYTES).await?;
+            crate::adapters::collect_upstream_body(response, unary_cap(bounds), bounds.idle)
+                .await
+                .map_err(map_body_error)?;
         let parsed = serde_json::from_slice::<Value>(&full_body).map_err(|error| {
             local_openai_chat_error(format!("invalid JSON from OpenAI Chat backend: {error}"))
         })?;
@@ -322,8 +323,17 @@ async fn stream_sse_response(
             false,
             None::<Bytes>,
             None::<Bytes>,
+            None::<tokio::time::Instant>,
         ),
-        |(mut bytes, mut decoder, mut machine, finished, mut pending, deferred_terminal)| {
+        |(
+            mut bytes,
+            mut decoder,
+            mut machine,
+            finished,
+            mut pending,
+            mut deferred_terminal,
+            mut drain_deadline,
+        )| {
             async move {
                 if finished {
                     return None;
@@ -337,7 +347,7 @@ async fn stream_sse_response(
                                 append_protocol_error(error, &mut output);
                                 return Some((
                                     Ok::<_, std::convert::Infallible>(Bytes::from(output)),
-                                    (bytes, decoder, machine, true, None, None),
+                                    (bytes, decoder, machine, true, None, None, None),
                                 ));
                             }
                         };
@@ -371,15 +381,14 @@ async fn stream_sse_response(
                         if is_done && !terminal {
                             unreachable!("[DONE] completion must be terminal");
                         }
-                        // [DONE] is the provider's authoritative stream
-                        // boundary. Return the terminal immediately so a
-                        // backend that leaves the HTTP body open cannot hang
-                        // the client indefinitely.
+                        // Hold the successful terminal and keep reading. A
+                        // duplicate `[DONE]` or any later frame fails in the
+                        // decoder; a body left open ends at the drain budget.
                         if is_done && terminal && result_succeeded {
-                            return Some((
-                                Ok(Bytes::from(output)),
-                                (bytes, decoder, machine, true, None, None),
-                            ));
+                            deferred_terminal = Some(Bytes::from(output));
+                            drain_deadline =
+                                Some(tokio::time::Instant::now() + POST_TERMINAL_DRAIN);
+                            continue;
                         }
                         if !output.is_empty() {
                             return Some((
@@ -391,13 +400,38 @@ async fn stream_sse_response(
                                     terminal,
                                     pending,
                                     deferred_terminal,
+                                    drain_deadline,
                                 ),
                             ));
                         }
                         continue;
                     }
 
-                    match bytes.next().await {
+                    let next = if let Some(deadline) = drain_deadline {
+                        match tokio::time::timeout_at(deadline, bytes.next()).await {
+                            Ok(item) => item,
+                            Err(_) => {
+                                let mut output = Vec::new();
+                                if decoder.buffered_is_ignorable() {
+                                    if let Some(terminal) = deferred_terminal {
+                                        output.extend_from_slice(&terminal);
+                                    }
+                                } else {
+                                    append_protocol_error(
+                                        "OpenAI Chat stream stayed open with a post-terminal payload",
+                                        &mut output,
+                                    );
+                                }
+                                return Some((
+                                    Ok(Bytes::from(output)),
+                                    (bytes, decoder, machine, true, None, None, None),
+                                ));
+                            }
+                        }
+                    } else {
+                        bytes.next().await
+                    };
+                    match next {
                         Some(Ok(chunk)) => {
                             pending = Some(chunk);
                         }
@@ -409,7 +443,7 @@ async fn stream_sse_response(
                             );
                             return Some((
                                 Ok(Bytes::from(output)),
-                                (bytes, decoder, machine, true, None, None),
+                                (bytes, decoder, machine, true, None, None, None),
                             ));
                         }
                         None => {
@@ -432,7 +466,7 @@ async fn stream_sse_response(
                             }
                             return Some((
                                 Ok(Bytes::from(output)),
-                                (bytes, decoder, machine, true, None, None),
+                                (bytes, decoder, machine, true, None, None, None),
                             ));
                         }
                     }
@@ -458,3 +492,6 @@ async fn stream_sse_response(
 
     Ok((StatusCode::OK, response_res))
 }
+
+#[cfg(test)]
+mod tests;

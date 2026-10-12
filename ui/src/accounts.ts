@@ -2,6 +2,7 @@ import { titleCase, when } from './format';
 import type {
   AccountRow,
   ClaudeStoreAccount,
+  CodexStoreAccount,
   ObservedAccount,
   PoolAccount,
   PoolProvider,
@@ -85,8 +86,11 @@ function managedState(account: PoolAccount): string {
   if (account.disabled) return 'disabled';
   if (account.needs_relogin) return 'needs-relogin';
   if (!account.has_state) return 'unseen';
+  // A hard cap lasts until its window resets, so it outranks the short cooldown.
+  if (account.capped) return 'capped';
   if (account.cooldown_secs_remaining) return 'cooling';
   if (account.near_quota) return 'near-quota';
+  if (account.capped_fable) return 'capped-fable';
   if (account.cooldown_fable_secs_remaining) return 'cooling-fable';
   return 'available';
 }
@@ -109,6 +113,10 @@ function managedRow(provider: string, account: PoolAccount): AccountRow {
     reset_7d: account.reset_7d,
     utilization_7d_oi: account.utilization_7d_oi,
     reset_7d_oi: account.reset_7d_oi,
+    // Antigravity pool accounts carry grouped Gemini / Claude+GPT quota windows
+    // from the pool's own `retrieveUserQuotaSummary` poll; they have no local-observation
+    // counterpart, so there is nothing to fold in `foldObservation`.
+    quota_buckets: account.quota_buckets,
   };
 }
 
@@ -164,6 +172,21 @@ function uuidsByAccountName(accounts: { accounts?: ClaudeStoreAccount[] } | null
 }
 
 /**
+ * The ChatGPT account id each Codex store account is known by, keyed by account
+ * name. Sourced from `/admin/api/accounts/codex`; the observed Codex row carries
+ * the same id as its `uuid`, so the two can be matched the way Claude rows are.
+ */
+function accountIdsByCodexName(
+  codexAccounts: { accounts?: CodexStoreAccount[] } | null,
+): Map<string, string> {
+  const ids = new Map<string, string>();
+  for (const account of codexAccounts?.accounts ?? []) {
+    if (account.account_id) ids.set(account.name, account.account_id);
+  }
+  return ids;
+}
+
+/**
  * Fold managed pool accounts and read-only observations into one row set per
  * provider.
  *
@@ -181,8 +204,10 @@ export function accountGroups(
   observed: ObservedAccount[],
   pool: { providers?: PoolProvider[] } | null,
   accounts: { accounts?: ClaudeStoreAccount[] } | null,
+  codexAccounts: { accounts?: CodexStoreAccount[] } | null = null,
 ): Map<string, AccountRow[]> {
   const uuidByName = uuidsByAccountName(accounts);
+  const accountIdByCodexName = accountIdsByCodexName(codexAccounts);
 
   const groups = new Map<string, AccountRow[]>();
   const groupFor = (provider: string): AccountRow[] => {
@@ -199,14 +224,19 @@ export function accountGroups(
     for (const account of table.accounts ?? []) {
       const row = managedRow(provider, account);
       groupFor(provider).push(row);
-      // `uuidByName` is sourced from the Claude account store only, so only
-      // `claude_oauth` accounts may be matched against it. Gate on the account's
-      // actual auth kind (`table.auth`), not the provider's display name or
-      // group key: a provider table can be named anything, so a `chatgpt_oauth`
-      // provider named "claude" would otherwise still get Claude uuids applied,
-      // and a `claude_oauth` provider under a custom name would otherwise never
-      // get them.
-      const uuid = table.auth === 'claude_oauth' ? uuidByName.get(account.name) : undefined;
+      // Each identity table is sourced from one account store, so it may only
+      // be matched against accounts of that store's auth kind. Gate on the
+      // account's actual auth kind (`table.auth`), not the provider's display
+      // name or group key: a provider table can be named anything, so a
+      // `chatgpt_oauth` provider named "claude" would otherwise still get
+      // Claude uuids applied, and a `claude_oauth` provider under a custom
+      // name would otherwise never get them.
+      const uuid =
+        table.auth === 'claude_oauth'
+          ? uuidByName.get(account.name)
+          : table.auth === 'chatgpt_oauth'
+            ? accountIdByCodexName.get(account.name)
+            : undefined;
       if (uuid) byUuid.set(uuid, row);
     }
   }
@@ -243,6 +273,8 @@ export function effectiveState(row: AccountRow): string {
   if (
     row.state === 'disabled' ||
     row.state === 'needs-relogin' ||
+    row.state === 'capped' ||
+    row.state === 'capped-fable' ||
     row.state === 'cooling' ||
     row.state === 'near-quota' ||
     row.state === 'cooling-fable'
@@ -273,6 +305,10 @@ export function rowStatusText(state: string): string {
       return 'Connected';
     case 'disabled':
       return 'Disabled';
+    case 'capped':
+      return 'Capped';
+    case 'capped-fable':
+      return 'Capped (Fable)';
     case 'cooling':
       return 'Cooling';
     case 'cooling-fable':

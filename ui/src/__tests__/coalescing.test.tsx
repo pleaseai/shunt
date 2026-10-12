@@ -84,6 +84,55 @@ describe('folding managed accounts and local observations into one row', () => {
   });
 
   /**
+   * The Codex CLI login and a managed Codex account are routinely the same
+   * ChatGPT account; the observed row carries that account id as its `uuid`
+   * and the Codex store exposes it as `account_id`. One subscription, one row.
+   */
+  it('coalesces a Codex observation into the chatgpt_oauth account with the same id', async () => {
+    await renderDashboard({
+      observed: [
+        {
+          provider: 'codex',
+          source: 'local credential file',
+          identity: 'ChatGPT · Pro',
+          detail: 'f•••@example.com',
+          state: 'waiting-for-traffic',
+          signal: 'response-derived',
+          uuid: 'chatgpt-account-id',
+        },
+      ],
+      codexAccounts: [{ name: 'codex-a', account_id: 'chatgpt-account-id' }],
+      pool: poolWith('chatgpt_oauth', 'codex', { name: 'codex-a' }),
+    });
+
+    expect(observed().getByText('codex-a')).toBeInTheDocument();
+    expect(observed().queryByText('ChatGPT · Pro')).toBeNull();
+  });
+
+  /** A Codex store id must never be applied to a Claude login of the same name. */
+  it('does not apply a Codex store id to a claude_oauth account', async () => {
+    await renderDashboard({
+      observed: [
+        {
+          provider: 'codex',
+          source: 'local credential file',
+          identity: 'ChatGPT · Pro',
+          detail: null,
+          state: 'waiting-for-traffic',
+          signal: 'response-derived',
+          uuid: 'chatgpt-account-id',
+        },
+      ],
+      codexAccounts: [{ name: 'pool-a', account_id: 'chatgpt-account-id' }],
+      pool: poolWith('claude_oauth', 'anthropic', {}),
+    });
+
+    // Two rows: the Codex id was never matched against a Claude login.
+    expect(observed().getByText('pool-a')).toBeInTheDocument();
+    expect(observed().getByText('ChatGPT · Pro')).toBeInTheDocument();
+  });
+
+  /**
    * The visible label, the `data-state` the stylesheet colours from, and the
    * remediation note are three renderings of one decision. Deriving them
    * separately is what produced a "Needs login" label beside a green dot with no
@@ -113,6 +162,8 @@ describe('folding managed accounts and local observations into one row', () => {
   it.each([
     ['disabled', { disabled: true }, 'Disabled'],
     ['needs_relogin', { needs_relogin: true }, 'Needs re-login'],
+    ['capped', { capped: true }, 'Capped'],
+    ['capped_fable', { capped_fable: true }, 'Capped (Fable)'],
     ['cooling', { cooldown_secs_remaining: 600 }, 'Cooling'],
     ['near_quota', { near_quota: true }, 'Near quota'],
     ['fable cooldown', { cooldown_fable_secs_remaining: 600 }, 'Cooling (Fable)'],
@@ -165,5 +216,29 @@ describe('folding managed accounts and local observations into one row', () => {
     expect(status.querySelector('.status-note')).toHaveTextContent(
       'retries in 10m · Fable retries in 30m',
     );
+  });
+
+  /** A hard cap lasts until the window resets, so it outranks a short cooldown. */
+  it('reports a capped account as capped even while it is cooling down', async () => {
+    await renderDashboard({
+      accounts: [],
+      pool: poolWith('claude_oauth', 'anthropic', { capped: true, cooldown_secs_remaining: 600 }),
+    });
+    const status = statusOf('pool-a');
+    expect(status).toHaveAttribute('data-state', 'capped');
+    expect(status).toHaveTextContent('Capped');
+    expect(status).not.toHaveTextContent('Cooling');
+  });
+
+  /** The Fable cap is reported above the Fable cooldown. */
+  it('reports a fable cap above the fable cooldown', async () => {
+    await renderDashboard({
+      accounts: [],
+      pool: poolWith('claude_oauth', 'anthropic', {
+        capped_fable: true,
+        cooldown_fable_secs_remaining: 600,
+      }),
+    });
+    expect(statusOf('pool-a')).toHaveAttribute('data-state', 'capped-fable');
   });
 });

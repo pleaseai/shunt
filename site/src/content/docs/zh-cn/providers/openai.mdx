@@ -104,6 +104,25 @@ Responses 转换支持一个按提供方或按路由的推理力度旋钮
 需要 `tool_search = true` 来选择加入。在这里设置 `tool_search = false` 可强制改用文本
 垫片。见 [工具搜索](/zh-cn/guides/codex/#工具搜索)。
 
+## 停止序列
+
+Responses API **没有 `stop` 参数** —— Chat Completions 有,Responses 没有 —— 所以客户端的 Anthropic
+`stop_sequences` 无法转发给上游。shunt 改为在 Responses 转换中于网关侧模拟它,适用于所有 Responses
+提供方和所有传输方式(HTTP 与 WebSocket、流式与非流式):
+
+- 助手文本会在任一停止序列首次出现处被截断,其后的文本不会到达客户端;
+- 该轮以 `stop_reason: "stop_sequence"` 结束,`stop_sequence` 写明命中的那个字符串,与原生 Anthropic
+  上游的上报方式完全一致;
+- 命中时会中止上游请求,而不是任其继续 —— 这适用于流式 HTTP 和两条 WebSocket 路径。非流式 HTTP
+  是例外:它会先把整个响应体读完再做转换,因此截断行为与其他路径一致,但上游会一直跑到结束。
+  上游在命中到中止之间生成的 token 仍由上游计费 —— 对停止序列通常服务的那种短回复来说可以忽略
+  不计。
+
+有一点需要留意:停止会让该轮在上游的 `response.completed` 用量被采纳之前就结束,因此 shunt 改用
+自己的本地输入估算值,并报告 `output_tokens: 0` —— 流式轮次放在 `message_delta.usage` 里,非流式
+轮次放在响应的 `usage` 里。该估算值需要提供方开启 `count_tokens = "tiktoken"`;若未开启,被停止
+的轮次会报告 `input_tokens: 0`。
+
 ## 校验
 
 ```bash

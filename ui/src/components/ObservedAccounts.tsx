@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { effectiveState, rowStatusText } from '../accounts';
 import { untilShort } from '../format';
 import { ProviderName, providerLabel } from '../providers';
+import { useSession } from '../session';
 import type { AccountRow, QuotaBucket } from '../types';
 import type { Loadable } from '../useDashboard';
 import { UsageBar } from './UsageBar';
@@ -18,6 +19,10 @@ function statusNote(row: AccountRow, state: string): string | null {
       return 'Current login could not read quota';
     case 'needs-relogin':
       return 'Re-add this account to sign in again';
+    case 'capped':
+      return 'Hard cap reached · clears when the window resets';
+    case 'capped-fable':
+      return 'Fable hard cap reached · other models still served';
     default:
       break;
   }
@@ -63,8 +68,29 @@ function emptyUsageText(state: string): string {
   return 'No usage reported yet';
 }
 
+/**
+ * Whether the pool excludes the account at this window's cap: the server's own
+ * verdict (`capped` for 5h/7d, `capped_fable` for Fable), narrowed to the window
+ * by the pool's own utilization. Never the row's folded value, which
+ * `foldObservation` may have replaced with a client observation the pool has not
+ * recorded -- the bar would then read as excluded while selection still uses the
+ * account, or the other way round.
+ */
+function atCap(
+  scope: boolean | undefined,
+  utilization: number | null | undefined,
+  cap: number | null | undefined,
+): boolean {
+  return Boolean(scope) && utilization != null && cap != null && utilization >= cap;
+}
+
 function UsageCell({ row, state }: { row: AccountRow; state: string }): ReactElement {
-  const buckets = (row.observed?.quota_buckets ?? []).filter(
+  // Quota buckets, when present, replace the window bars: the pool's buckets
+  // (Antigravity) ahead of an observation's. The 5h/7d/Fable windows below
+  // work the other way round: `foldObservation` replaces the pool's value with
+  // the client's for every window the client reported, so a bar can show a
+  // value the pool's cap check never read (hence `atCap`).
+  const buckets = (row.quota_buckets ?? row.observed?.quota_buckets ?? []).filter(
     (bucket) => bucket.remaining !== null && bucket.remaining !== undefined,
   );
   if (buckets.length) {
@@ -81,21 +107,42 @@ function UsageCell({ row, state }: { row: AccountRow; state: string }): ReactEle
       </td>
     );
   }
-  const windows: [string, number | null | undefined, number | null | undefined][] = [
-    ['5h', row.utilization_5h, row.reset_5h],
-    ['Week', row.utilization_7d, row.reset_7d],
-    ['Fable', row.utilization_7d_oi, row.reset_7d_oi],
+  const managed = row.managed;
+  const windows: [string, number | null | undefined, number | null | undefined, number | null | undefined, boolean][] = [
+    [
+      '5h',
+      row.utilization_5h,
+      row.reset_5h,
+      managed?.max_utilization_5h,
+      atCap(managed?.capped, managed?.utilization_5h, managed?.max_utilization_5h),
+    ],
+    [
+      'Week',
+      row.utilization_7d,
+      row.reset_7d,
+      managed?.max_utilization_7d,
+      atCap(managed?.capped, managed?.utilization_7d, managed?.max_utilization_7d),
+    ],
+    [
+      'Fable',
+      row.utilization_7d_oi,
+      row.reset_7d_oi,
+      managed?.max_utilization_fable,
+      atCap(managed?.capped_fable, managed?.utilization_7d_oi, managed?.max_utilization_fable),
+    ],
   ];
   const present = windows.filter(([, value]) => value !== null && value !== undefined);
   return (
     <td className="usage-lines">
       {present.length ? (
-        present.map(([label, value, reset]) => (
+        present.map(([label, value, reset, cap, capped]) => (
           <UsageBar
             key={label}
             label={label}
             remaining={1 - (value as number)}
             resetTime={reset ? new Date(reset * 1000).toISOString() : null}
+            cap={cap}
+            atCap={capped}
           />
         ))
       ) : (
@@ -156,15 +203,27 @@ export function ObservedAccounts({
 }: {
   observed: Loadable<Map<string, AccountRow[]>>;
 }): ReactElement {
+  // `[server.admin] hide_observed`: the gateway reads no provider login on its
+  // host, so the table holds managed pool accounts alone. It stays rather than
+  // disappearing -- their usage is what a remote operator opens the page for --
+  // but copy that sends the reader to a provider CLI would be wrong here.
+  const { hideObserved } = useSession();
   return (
     <>
       <h2>Accounts and usage</h2>
-      <p className="muted">
-        Read-only signals from provider clients on this machine.{' '}
-        <strong>Waiting for traffic</strong> means GPT has not returned quota headers to this shunt
-        yet; <strong>Needs login</strong> means the provider-owned access token expired and must be
-        renewed by that provider client.
-      </p>
+      {hideObserved ? (
+        <p className="muted">
+          Managed pool accounts only. This gateway is configured not to read provider logins on
+          its host (<code>hide_observed</code>).
+        </p>
+      ) : (
+        <p className="muted">
+          Read-only signals from provider clients on this machine.{' '}
+          <strong>Waiting for traffic</strong> means GPT has not returned quota headers to this
+          shunt yet; <strong>Needs login</strong> means the provider-owned access token expired and
+          must be renewed by that provider client.
+        </p>
+      )}
       <div className="card overflow">
         <table id="observed-table">
           <thead>
@@ -185,7 +244,9 @@ export function ObservedAccounts({
                   if (!total) {
                     return (
                       <Message muted>
-                        No supported local provider login found. Sign in with a provider CLI.
+                        {hideObserved
+                          ? 'No managed pool accounts yet.'
+                          : 'No supported local provider login found. Sign in with a provider CLI.'}
                       </Message>
                     );
                   }

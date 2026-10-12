@@ -22,11 +22,12 @@ npm run test:watch
 
 | Path | What lives there |
 | :-- | :-- |
-| `src/App.tsx` | Fetches `GET /admin/api/session` — the CSRF token and the refresh buffer — then renders the dashboard |
+| `src/App.tsx` | Fetches `GET /admin/api/session` — the CSRF token, the refresh buffer, and the session's access tier — then renders the dashboard |
 | `src/Dashboard.tsx` | Page layout: usage first, pool management behind a disclosure |
 | `src/accounts.ts` | Folding managed pool accounts and local observations into one row set, and the single effective state each row renders from |
 | `src/useDashboard.ts` | The four reloadable reads, each sequenced so an older response cannot repaint over a newer one, plus the one-shot `[server.status]` read |
 | `src/useProvisioningFlow.ts` | One add-account form's start → authorize → complete flow, and the two guards that keep a superseded request from writing its result back |
+| `src/session.ts` | The bootstrapped session as context, and `useCanWrite` — the one place the access tier is interpreted |
 | `src/components/` | The tables and the two add-account forms |
 | `src/__tests__/` | The behavioral suite |
 

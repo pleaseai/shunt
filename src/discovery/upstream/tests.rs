@@ -10,6 +10,7 @@ use wiremock::{
 use crate::{
     auth::{
         inbound::{is_consumed_by_shunt, InboundAuth},
+        inbound_jwt::JwtIssuerRule,
         slots::ShuntCredentials,
     },
     config::{AccountConfig, AdminKey, AdminKeyring, ApiKeyHeader, AuthMode, ProviderKind, Secret},
@@ -269,6 +270,92 @@ async fn a_gateway_jwt_is_not_forwarded_in_the_api_key_slot() {
     // is the non-vacuity control for an *unconsumed* `x-api-key`.
     assert!(models.is_none());
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+const JWT_ISSUER: &str = "https://idp.example";
+
+/// A `[server.auth]` gate with one `[[server.auth.jwt]]` issuer.
+fn inbound_auth_with_jwt() -> InboundAuth {
+    inbound_auth("gateway-token").with_jwt(vec![JwtIssuerRule {
+        issuer: JWT_ISSUER.to_string(),
+        jwks_url: None,
+        audience: vec!["shunt-clients".to_string()],
+        algorithms: vec![jsonwebtoken::Algorithm::RS256],
+        authorized_parties: vec!["shunt-clients".to_string()],
+        allowed_domains: vec!["example.com".to_string()],
+        allowed_emails: Vec::new(),
+        clock_skew_seconds: 0,
+        max_token_age_seconds: 3600,
+    }])
+}
+
+/// A JWT naming `issuer`, with a placeholder signature. The strip never
+/// verifies, so a token that could not authenticate anyone is the stronger
+/// fixture: it proves an unverifiable IdP token is still withheld.
+fn idp_jwt(issuer: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","kid":"k1"}"#);
+    let payload =
+        URL_SAFE_NO_PAD.encode(json!({"iss": issuer, "email": "dev@example.com"}).to_string());
+    format!("{header}.{payload}.sig")
+}
+
+#[tokio::test]
+async fn an_inbound_jwt_is_not_forwarded_in_either_credential_slot() {
+    // An `apiKeyHelper` sends its value in *both* `Authorization` and
+    // `x-api-key`, and it is the only delivery mechanism that refreshes the
+    // short-lived tokens this credential is designed around. The gate accepts a
+    // JWT only in the bearer slot, so stripping the bearer alone would still
+    // relay the identity token beside it.
+    let server = MockServer::start().await;
+    mount_models_ok(&server, single_model_page("claude-opus-5")).await;
+    let state = state_for(&server.uri(), AuthMode::Passthrough);
+    let auth = inbound_auth_with_jwt();
+    let token = idp_jwt(JWT_ISSUER);
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+    headers.insert("x-api-key", token.parse().unwrap());
+
+    let models = fetch(
+        &state,
+        &headers,
+        ShuntCredentials::for_test(None, Some(&auth), None),
+    )
+    .await;
+
+    // The mock is mounted, so a forwarded credential would have produced a
+    // model.
+    assert!(models.is_none());
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_jwt_from_an_unconfigured_issuer_still_reaches_a_passthrough_upstream() {
+    // Non-vacuity control for the test above: the same shape from an issuer no
+    // `[[server.auth.jwt]]` entry names may be the caller's own upstream
+    // credential, so it is forwarded — the strip keys on the issuer, not on
+    // "looks like a JWT".
+    let server = MockServer::start().await;
+    let token = idp_jwt("https://someone-else.example");
+    mount_models_ok_with_headers(
+        &server,
+        &[("x-api-key", token.as_str())],
+        single_model_page("claude-opus-5"),
+    )
+    .await;
+    let state = state_for(&server.uri(), AuthMode::Passthrough);
+    let auth = inbound_auth_with_jwt();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", token.parse().unwrap());
+
+    let models = fetch(
+        &state,
+        &headers,
+        ShuntCredentials::for_test(None, Some(&auth), None),
+    )
+    .await;
+
+    assert_eq!(models.unwrap().len(), 1);
 }
 
 #[tokio::test]

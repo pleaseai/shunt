@@ -1,0 +1,6 @@
+{
+  "description": "/shunt:usage, answered from the gateway's GET /usage, and the usage band above the prompt: the pool's per-window usage and reset times on shunt, the session's own rate limits otherwise",
+  "modules": [
+    "./register.tsx"
+  ]
+}

@@ -132,7 +132,7 @@ only on the subscription proxy.
 
 **Grok-CLI identity headers.** The subscription OAuth path (`Credential::XaiOauth`) additionally
 sends `x-xai-token-auth: xai-grok-cli`, `x-grok-client-identifier: grok-shell`,
-`x-grok-client-version: 0.2.93`, and `accept: text/event-stream` — the CLI proxy
+`x-grok-client-version: 1.0.46`, and `accept: text/event-stream` — the CLI proxy
 (`cli-chat-proxy.grok.com`) gates on them and otherwise answers as if the caller were an
 unentitled API client. The API-key `xai` path sends the bearer only. Neither sends `OpenAI-Beta`.
 
@@ -142,17 +142,16 @@ unentitled API client. The API-key `xai` path sends the bearer only. Neither sen
 | `store` | `false` | `false` | `false` |
 | `service_tier` | sent when configured (see codex-configuration.md §9) | sent when configured (see codex-configuration.md §9) | never sent (xAI 400s on it) |
 | `reasoning` | always `{effort, summary:auto}` | always `{effort, summary:auto}` | **only when effort explicitly chosen** (route/provider config or per-request `output_config.effort`), and `{effort}` **without** `summary` |
-| `text.verbosity` | sent | sent | **omitted** (xAI rejects the `text` object) |
+| `text.verbosity` | only with a requested `json_schema` format (judge path) | only with a requested `json_schema` format (judge path) | **omitted** (xAI rejects the `text` object) |
 | `max_output_tokens` | sent | dropped | sent |
-| `include: [reasoning.encrypted_content]` | when thinking enabled | when thinking enabled | when thinking enabled |
+| `include: [reasoning.encrypted_content]` | when thinking enabled | always | when thinking enabled |
 
 The reasoning gate is the key quirk: several grok models (`grok-4*`, `grok-3`, `grok-code-fast`,
 `grok-4.20-0309-*`) **400 on `reasoning.effort`** even though they reason natively. Rather than a
 hardcoded model list (AGENTS.md forbids it), shunt keeps the dial **opt-in**: send `reasoning`
 only when an effort was explicitly chosen — configured for the route or provider in `shunt.toml`,
 or sent per-request via `output_config.effort`. Derived defaults (thinking flag, model suffix)
-stay off. Encrypted-reasoning
-replay (`include`) stays gated on the client's extended-thinking flag, exactly like the codex path.
+stay off. Encrypted-reasoning replay (`include`) stays gated on the client's extended-thinking flag on the openai/xai flavors; the ChatGPT/Codex flavor sends it unconditionally, matching codex (see docs/notes/chatgpt-prompt-cache.md).
 
 Live note (2026-07, re-verified 2026-08 on `grok-4.6`): `grok-4.6` and `grok-4.5` on the CLI proxy
 **accept** `reasoning.effort` (HTTP 200 with a configured `effort = "high"` route), so they are not
@@ -189,8 +188,7 @@ reject it.
 - **Developer API hosted tools.** The Grok CLI proxy is verified to accept hosted `web_search`;
   `api.x.ai` is not, so the API-key `xai` flavor continues to drop it pending a live probe with an
   `XAI_API_KEY`. Related hosted tools such as `x_search` remain out of scope.
-- **`text.verbosity`.** Dropped for xai because Hermes never sends it and xAI is reported to
-  reject the `text` object. If a future grok build accepts it, this is a safe place to re-enable.
+- **`text.verbosity`.** Dropped for xai because Hermes never sends it and xAI is reported to reject the `text` object. If a future grok build accepts it, this is a safe place to re-enable. Since 2026-09-27 the openai/chatgpt flavors send `text` only with a requested `json_schema` format (the judge path), matching codex.
 - **Refresh skew.** shunt uses the shared 5-minute buffer. Hermes uses an adaptive skew (up to
   1h for long-lived SuperGrok tokens, tightened for ~15-min device-code JWTs) to avoid burning
   single-use refresh tokens on every call. If device-code tokens prove very short-lived in
@@ -208,5 +206,8 @@ reject it.
   surfacing as a 402/403 even for active standard subscribers. shunt keeps both paths so an
   un-entitled account can fall back to `XAI_API_KEY`. If the CLI proxy proves to honor all tiers,
   this note can be relaxed.
-- **`grok_client_version` pinning.** `0.2.93` is hardcoded (mirrors the reference Grok CLI). If the
-  proxy starts rejecting stale client versions, make it configurable like the base_url.
+- **`GROK_CLIENT_VERSION` pinning.** `1.0.46` is hardcoded in `src/adapters/responses/request.rs`
+  (the `latest` dist-tag of the official `@xai-official/grok` npm package). The proxy rejects a
+  stale client version with `426 Upgrade Required`: the original `0.2.93` pin broke once the floor
+  rose to `1.0.13` (issue #755). Bump the constant when the floor moves again. If bumps become
+  frequent, make it configurable like the base_url.

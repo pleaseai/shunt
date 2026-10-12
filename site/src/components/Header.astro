@@ -5,7 +5,6 @@ import { LinkButton } from "./ui/link-button";
 import { ThemeToggle } from "./ui/theme-toggle";
 import { SearchTrigger } from "./ui/search";
 import { config } from "virtual:nimbus/config";
-import { getSidebarSections } from "@cloudflare/nimbus-docs";
 import {
   buildLocaleSidebar,
   localizedPath,
@@ -14,35 +13,38 @@ import {
 } from "@/lib/i18n";
 
 interface Props {
-  collection?: string;
-  entryId?: string;
   showSidebar?: boolean;
   locale?: Locale;
   showLanguageSwitcher?: boolean;
 }
 
 const {
-  collection,
   showSidebar = true,
   locale = "",
   showLanguageSwitcher = true,
 } = Astro.props;
 const currentSlug = Astro.url.pathname.replace(/\/$/, "") || "/";
-const sections = locale === ""
-  ? await getSidebarSections(currentSlug, { collection })
-  : buildLocaleSidebar(locale, currentSlug).flatMap((item) => {
-      if (item.type !== "group") return [];
-      const firstLink = item.children.find((child) => child.type === "link");
-      return firstLink
-        ? [{
-            label: item.label,
-            href: firstLink.href,
-            isActive: item.children.some(
-              (child) => child.type === "link" && child.isCurrent,
-            ),
-          }]
-        : [];
-    });
+// Nimbus' own getSidebarSections only surfaces groups carrying a `_prefix`,
+// which it sets exclusively for `autogenerate: { collection }` items — this
+// site configures its sidebar item by item, so that helper returns nothing.
+// Derive the strip from NAVIGATION instead, in every locale including English,
+// and keep standalone top-level links (Changelog) as sections of their own.
+const sections = buildLocaleSidebar(locale, currentSlug).flatMap((item) => {
+  if (item.type === "link") {
+    return [{ label: item.label, href: item.href, isActive: item.isCurrent }];
+  }
+  if (item.type !== "group") return [];
+  const firstLink = item.children.find((child) => child.type === "link");
+  return firstLink
+    ? [{
+        label: item.label,
+        href: firstLink.href,
+        isActive: item.children.some(
+          (child) => child.type === "link" && child.isCurrent,
+        ),
+      }]
+    : [];
+});
 const showSections = sections.length >= 2;
 const localeLinks = (Object.keys(LOCALES) as Locale[]).map((targetLocale) => ({
   ...LOCALES[targetLocale],

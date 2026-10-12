@@ -22,7 +22,7 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 Startup **fails closed** if `[server.auth]` is present but the env var is unset or malformed. Requests to mapped models and `GET /v1/models` without a valid token get a 401 `authentication_error`. Both gates accept the client token in any standard Anthropic credential slot — the configured header (default `x-shunt-token`), `Authorization: Bearer`, or `x-api-key`, in that priority when several carry valid tokens. `GET /routes`, `GET|HEAD /`, `GET /health`, and passthrough models stay open. `GET /routes` remains unauthenticated because it is a shunt-native endpoint exposing routing metadata (the configured provider/upstream-model mapping), never credentials, which live only in provider config and are never read by that handler.
 
-On gated routes the accepted credential headers are always stripped before forwarding (shunt injects its own provider credential there), matching is constant-time, and token values are never logged (client *names* are, per request). On a passthrough route shunt injects nothing, so the caller's own credential is forwarded as presented — except per slot: `Authorization` and `x-api-key` are each cleared when that slot's own value is one of shunt's own inbound credentials (an accepted client token, a `[server.gateway]` JWT, or a `[server.admin]` credential — the admin surface accepts one in `x-api-key` beside its own header), so a credential accepted at the gate is never relayed upstream while a genuine upstream credential in the other slot keeps flowing. Each slot is judged over **every** value it carries, not just the first, and a slot holding a shunt credential in any position is dropped whole — so if you send the same header twice with a genuine credential in one value and a shunt one in the other, both go. The `cookie` header is removed outright on every forward, because the admin surface accepts a write-tier session cookie there and shunt keeps no cookie jar of its own — a benign cookie you send is dropped along with it.
+On gated routes the accepted credential headers are always stripped before forwarding (shunt injects its own provider credential there), matching is constant-time, and token values are never logged (client *names* are, per request). On a passthrough route shunt injects nothing, so the caller's own credential is forwarded as presented — except per slot: `Authorization` and `x-api-key` are each cleared when that slot's own value is one of shunt's own inbound credentials (an accepted client token, a `[server.gateway]` JWT, or a `[server.admin]` credential — the admin surface accepts one in `x-api-key` beside its own header), so a credential accepted at the gate is never relayed upstream while a genuine upstream credential in the other slot keeps flowing. Each slot is judged over **every** value it carries, not just the first, and a slot holding a shunt credential in any position is dropped whole — so if you send the same header twice with a genuine credential in one value and a shunt one in the other, both go. The `cookie` header is removed outright on every forward, because the admin surface accepts a session cookie there and shunt keeps no cookie jar of its own — a benign cookie you send is dropped along with it.
 
 Client side, pick by what the gateway serves:
 
@@ -49,6 +49,36 @@ This is application-layer identification only — transport encryption still com
 
 
 If you also enable the opt-in [admin web surface](/guides/admin-remote-provisioning/), protect it with a separate admin token and expose it only through HTTPS or a trusted tunnel.
+
+## Verifying JWTs from your own identity provider
+
+If your organization already runs an identity provider, `[[server.auth.jwt]]` lets shunt accept its tokens instead of a shared secret — per-user identity without shunt becoming an auth server. It **verifies only**: no login flow, no session store, no signing secret. Compared with [gateway login](/guides/gateway-login/), the client is still configured with just a base URL and a bearer, so it does not enter Claude Code's gateway provider mode or lose the features that mode disables.
+
+```toml
+[server.auth]
+# No static tokens needed once an issuer is configured.
+tokens_env = "SHUNT_CLIENT_TOKENS"
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<client id you created for shunt>"]
+email_domains = ["example.com"]
+```
+
+Each caller sends the token exactly where they would send a static one:
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="<the JWT your IdP issued>"   # sent as Authorization: Bearer
+```
+
+A JWT is accepted **only** in `Authorization: Bearer` — the configured header and `x-api-key` still take static tokens only. Both kinds can be configured at once; the static token is checked first.
+
+Two things to get right when you set this up:
+
+- **Give shunt its own audience.** Create a client id dedicated to shunt and list it in `audience`, so a token minted for some other application in the same tenant does not authenticate here.
+- **Issue short-lived tokens.** shunt keeps no revocation state, so a token works until it expires. `max_token_age_seconds` (default `3600`) rejects anything minted with a longer lifetime — lower it and have your IdP mint minutes-scale tokens if you want tighter revocation.
+
+Startup fails closed on a misconfigured entry, including one that carries an `audience` but no `email_domains`/`allowed_emails` rule. If JWT authentication returns `503` with an `api_error` body (not the `overloaded_error` that capacity shedding below returns), shunt could not fetch the issuer's key set — check the issuer URL and network reachability, not the credential. Full key list in the [configuration reference](/reference/configuration/#serverauthjwt-optional).
 
 ## SSE keepalive pings
 

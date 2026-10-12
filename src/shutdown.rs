@@ -5,17 +5,26 @@
 //! shutdown and the immediate-exit path terminate them explicitly. Extracted
 //! from `main.rs` to keep that file focused (see `src/AGENTS.md`).
 
-use std::future::Future;
+use std::{
+    future::{Future, IntoFuture},
+    time::Duration,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DrainOutcome {
+    Drained,
+    TimedOut,
+}
 
 /// Waits for SIGTERM or ctrl-c (SIGINT) and logs which one fired. Passed to
 /// `axum::serve(...).with_graceful_shutdown(...)` in `serve` (main.rs) so
 /// `brew services stop shunt` — which launchd stops with SIGTERM — drains
 /// in-flight requests instead of dropping them.
 ///
-/// The drain has no deadline (an open SSE stream holds the process for as long
-/// as its client keeps reading), so before returning this arms a watcher that
-/// turns a second signal into an immediate exit, preserving the operator's
-/// usual "press ctrl-c again" escape hatch. The [`SignalListener`]s are
+/// The caller begins its configured deadline when the notification channel is
+/// sent below. Before returning this also arms a watcher that turns a second
+/// signal into an immediate exit, preserving the operator's usual "press
+/// ctrl-c again" escape hatch. The [`SignalListener`]s are
 /// created once, here, and reused for both waits by moving them into the
 /// watcher: tokio delivers each signal through a process-wide channel with no
 /// queue, so a signal landing between the first wait's receiver being dropped
@@ -24,8 +33,33 @@ use std::future::Future;
 /// listener keeps the subscription continuously live and consumes signals
 /// sequentially, so this closes that gap without double-counting the signal
 /// that ends the first wait.
-pub(crate) async fn shutdown_signal() {
-    shutdown_signal_inner(None).await;
+pub(crate) async fn shutdown_signal(drain_started: tokio::sync::oneshot::Sender<()>) {
+    shutdown_signal_inner(None, Some(drain_started)).await;
+}
+
+/// Awaits a server normally until the first-signal notification, then gives
+/// its graceful drain one absolute budget. Returning `TimedOut` drops the
+/// still-pinned server future before the caller returns from `run`, after which
+/// Tokio runtime teardown cancels remaining connection and background tasks.
+pub(crate) async fn await_bounded_drain<F, E>(
+    server: F,
+    drain_started: tokio::sync::oneshot::Receiver<()>,
+    deadline: Duration,
+) -> Result<DrainOutcome, E>
+where
+    F: IntoFuture<Output = Result<(), E>>,
+{
+    let server = server.into_future();
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => return result.map(|()| DrainOutcome::Drained),
+        _ = drain_started => {}
+    }
+
+    match tokio::time::timeout(deadline, &mut server).await {
+        Ok(result) => result.map(|()| DrainOutcome::Drained),
+        Err(_) => Ok(DrainOutcome::TimedOut),
+    }
 }
 
 /// Does the actual work of [`shutdown_signal`], with an optional readiness
@@ -37,7 +71,10 @@ pub(crate) async fn shutdown_signal() {
 /// `yield_now()`), so it can't raise its signal before a listener exists to
 /// receive it. Named apart from [`shutdown_signal`] to avoid reading as the
 /// unrelated `run` in `main.rs`.
-async fn shutdown_signal_inner(ready: Option<tokio::sync::oneshot::Sender<()>>) {
+async fn shutdown_signal_inner(
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+    drain_started: Option<tokio::sync::oneshot::Sender<()>>,
+) {
     let mut sigterm = SignalListener::sigterm();
     let mut ctrl_c = SignalListener::ctrl_c();
     if let Some(ready) = ready {
@@ -54,6 +91,9 @@ async fn shutdown_signal_inner(ready: Option<tokio::sync::oneshot::Sender<()>>) 
         async move { select_shutdown_trigger(sigterm.recv(), ctrl_c.recv()).await },
         |signal| force_exit(signal),
     );
+    if let Some(drain_started) = drain_started {
+        let _ = drain_started.send(());
+    }
 }
 
 /// Runs `on_signal` on a detached task once `next_signal` resolves. Split out
@@ -193,6 +233,89 @@ impl SignalListener {
 mod tests {
     use super::*;
 
+    struct PendingUntilDropped(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    impl Future for PendingUntilDropped {
+        type Output = Result<(), ()>;
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl Drop for PendingUntilDropped {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_drain_completes_cleanly_after_notification() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (complete_tx, complete_rx) = tokio::sync::oneshot::channel();
+        let server = async move {
+            complete_rx.await.expect("completion sender remains live");
+            Ok::<(), ()>(())
+        };
+        started_tx.send(()).expect("drain receiver remains live");
+        complete_tx.send(()).expect("server receiver remains live");
+
+        assert_eq!(
+            await_bounded_drain(server, started_rx, Duration::from_secs(1)).await,
+            Ok(DrainOutcome::Drained)
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_drain_timeout_drops_pending_work_and_its_lease() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        started_tx.send(()).expect("drain receiver remains live");
+
+        assert_eq!(
+            await_bounded_drain(
+                PendingUntilDropped(dropped.clone()),
+                started_rx,
+                Duration::from_millis(10),
+            )
+            .await,
+            Ok(DrainOutcome::TimedOut)
+        );
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "timing out must drop the server future and its owned leases"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_deadline_does_not_start_before_notification() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let waiter = tokio::spawn(await_bounded_drain(
+            std::future::pending::<Result<(), ()>>(),
+            started_rx,
+            Duration::from_millis(10),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !waiter.is_finished(),
+            "deadline must not be an uptime limit"
+        );
+        started_tx.send(()).expect("drain receiver remains live");
+        assert_eq!(
+            waiter.await.expect("bounded drain task joins"),
+            Ok(DrainOutcome::TimedOut)
+        );
+    }
+
     #[tokio::test]
     async fn select_shutdown_trigger_reports_sigterm_when_it_fires_first() {
         let label = select_shutdown_trigger(async {}, std::future::pending()).await;
@@ -281,7 +404,7 @@ mod tests {
         use std::time::Duration;
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let waiter = tokio::spawn(shutdown_signal_inner(Some(ready_tx)));
+        let waiter = tokio::spawn(shutdown_signal_inner(Some(ready_tx), None));
         // Wait on the readiness channel `shutdown_signal_inner` sends on right after
         // registering both `SignalListener`s, rather than assuming a
         // `yield_now()` scheduler tick reaches that point first — a channel

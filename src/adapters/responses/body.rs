@@ -164,7 +164,7 @@ mod tests {
         let state = state_at(provider, server.uri());
         let route = route_for(provider);
         let body = prepare_body(&state, &route, &upstream_body()).await;
-        http_send(&state, &route, credential, None, body)
+        http_send(&state, &route, credential, None, None, 0, body)
             .await
             .expect("mock request should succeed");
         server

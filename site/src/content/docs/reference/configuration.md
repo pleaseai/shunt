@@ -26,6 +26,7 @@ The existing `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`,
 | :-- | :-- | :-- |
 | `bind` | `127.0.0.1:3001` | Address shunt listens on |
 | `default_provider` | `anthropic` | Provider for any model with no matching route |
+| `shutdown_timeout_seconds` | `30` | Seconds after the first SIGTERM/SIGINT for active HTTP/SSE/WebSocket work to drain before the remainder is cancelled. Must be `1`–`3600`; changing it requires a restart |
 | `max_concurrent_requests` | `1024` | Maximum inbound requests in flight through response-body completion. Excess requests are shed immediately with `503` and `Retry-After: 1`; `0` disables the limit. `/` and `/health` are exempt. A restart is required after changing this key |
 | `sse_keepalive_seconds` | `30` | Idle seconds before an SSE `ping` is injected; `0` disables ([details](/guides/shared-gateway/#sse-keepalive-pings)) |
 
@@ -55,7 +56,7 @@ This `trust_forwarded_for` switch is independent of `[server.gateway] trust_forw
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
-| `upstream_ttfb_ms` | `120000` | Maximum wait for inference-upstream HTTP response headers; `0` disables. The response body then has no wall-clock cap, preserving long SSE streams. Returns `504 timeout_error` and hot-reloads |
+| `upstream_ttfb_ms` | `120000` | Maximum wait for inference-upstream HTTP response headers; `0` disables. The response body then has no wall-clock cap, preserving long SSE streams. Turns that have not committed an SSE response return `504 timeout_error`; a committed streaming turn surfaces the timeout as one terminal SSE `error` event carrying the same envelope — the timeout never advances a chain. Hot-reloads |
 
 This timeout covers the Anthropic Messages transports, OpenAI Responses HTTP transport (including WebSocket fallback), Gemini HTTP transport, and inbound Codex Responses passthrough. It does not cover Codex WebSocket turns, Cursor transports, Antigravity processes, discovery, login/OAuth, usage polling, OIDC, or telemetry relay.
 
@@ -83,6 +84,42 @@ The named environment variable must contain one or more credentials, for example
 
 A request whose whole route chain is `passthrough` skips this gate: such a route forwards the caller's own upstream credential, so the gateway lends them nothing. **`kind = "antigravity_cli"` is exempt from that exemption** and is always treated as credential-injecting, whatever its `auth` says. The adapter ignores the caller's credential entirely and runs the operator's local `agy` with `--dangerously-skip-permissions`, so a passthrough Antigravity route would otherwise be unauthenticated local code execution as the user running shunt — sandboxed or not. Note this closes the exemption, it does not create a requirement: with neither `[server.auth]` nor [`[server.gateway]`](#servergateway-optional) configured, every route stays open, which is why an unsandboxed Antigravity provider is [refused outright off loopback](#providersname-legacy).
 
+### `[[server.auth.jwt]]` (optional)
+
+An array of tables adding a second kind of inbound credential: a JWT minted by an external identity provider, which shunt **verifies but never issues** — no login flow, no session store, no signing secret. The client is configured exactly as it is for a static token (a base URL plus a bearer), so unlike [`[server.gateway]`](#servergateway-optional) login it does not put Claude Code into gateway provider mode or cost it the client features that mode disables. See the [behavior specification](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md).
+
+```toml
+[server.auth]
+tokens_env = "SHUNT_CLIENT_TOKENS"   # optional once a JWT issuer is configured
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<client id dedicated to shunt>"]
+email_domains = ["example.com"]
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `issuer` | required | Exact `iss` match. Must use HTTPS, except HTTP on `localhost` or `127.0.0.1`; a path is allowed |
+| `audience` | required | Accepted `aud` values, as a string or an array |
+| `email_domains` | `[]` | Case-insensitive domains, matched **exactly** against the part after the final `@` — never as a suffix |
+| `allowed_emails` | `[]` | Case-insensitive full email addresses |
+| `algorithms` | `["RS256"]` | Accepted signing algorithms. Asymmetric only |
+| `authorized_parties` | `audience` | Accepted `azp` values, checked when the claim is present |
+| `clock_skew_seconds` | `0` | Tolerance applied to `exp` and `nbf` |
+| `max_token_age_seconds` | `3600` | Reject when `exp - iat` exceeds this |
+| `jwks_url` | discovery | Explicit JWKS endpoint, for issuers serving no discovery document |
+
+Each entry needs `issuer`, `audience`, and at least one `email_domains` or `allowed_emails` value; `audience` alone is not an authorization rule, because for some issuers the caller chooses their own audience. Startup also fails closed for a symmetric or unknown `algorithms` entry, and for an entry whose `issuer` equals `[server.gateway]`'s `public_url` — both verifiers read the same bearer slot, so a shared issuer would make ownership of a token depend on evaluation order.
+
+Once at least one entry exists, `tokens_env` may resolve empty: a deployment authenticating entirely through an IdP has no static tokens to set. With neither a resolvable token list nor an entry, `[server.auth]` still fails startup.
+
+A JWT is accepted **only** in `Authorization: Bearer` — not in the configured `header` and not in `x-api-key` — which is the slot Claude Code already sends `ANTHROPIC_AUTH_TOKEN` in. On a gated route the static token is checked first, then the gateway JWT where that route accepts it, then JWT entries by `iss`. Verification pins the algorithm from config (the token header's `alg` never selects it), requires `kid`, and checks `exp`/`nbf`, `aud`, `azp`, `exp - iat`, `email_verified = true`, and the email allowlist. The verified email becomes the caller identity in logs and usage attribution; an address longer than 256 bytes is rejected rather than truncated. Gated routes are the ones `[server.auth]` already guards: credential-injecting `/v1/messages` and `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage` (off loopback only), and the inbound Codex endpoint (HTTP, WebSocket, and analytics).
+
+Key sets are fetched lazily on first use per issuer, so an unreachable IdP does not block startup. A cached key set is trusted for at most 5 minutes; after that the next request attempts a refresh (subject to the 60-second refetch floor), and a successful refresh replaces the set, so a key the issuer withdraws stops verifying within about 5 minutes. If the refresh fails, the expired set keeps serving rather than turning an IdP outage into a total one; when discovery itself fails, the last discovered `jwks_uri` is tried instead. A config reload keeps cached keys only while an entry's `issuer` and `jwks_url` are both unchanged. An unknown `kid` triggers at most one refetch per 60-second window per key set. A token that verifies against no entry is `401`; a matching entry that has no cached key set and cannot fetch one is **`503`**, so an IdP outage is not reported as a bad credential.
+
+shunt keeps no revocation state, so a valid token works until it expires: `max_token_age_seconds` is what bounds that, and issuers should mint minutes-scale tokens. Removing a domain or address from the allowlist does take effect on the next request.
+
 ## `[server.admin]` (optional)
 
 Presence of this table enables the admin web surface for browser account provisioning and account-pool health ([details](/guides/admin-remote-provisioning/)). When the table is absent, none of the `/admin*` routes are registered. The same credential also authenticates the [`[server.spend]`](#serverspend-optional) spend-limit API.
@@ -94,6 +131,7 @@ Presence of this table enables the admin web surface for browser account provisi
 | `tokens_file` | _(unset)_ | Path to a file holding `name:token` pairs (one per line, or comma-separated), used when `tokens_env` is unset/empty. Also the **write** tier |
 | `session_ttl_secs` | `3600` | Browser session lifetime after login, in seconds |
 | `pending_ttl_secs` | `600` | Time allowed to finish a started provisioning flow, in seconds |
+| `hide_observed` | `false` | When `true`, shunt does not read host CLI/app logins at all. `GET /admin/api/observed` still requires admin auth but returns an empty list, and the dashboard's **Accounts and usage** table lists managed pool accounts only. Hot-applies on config reload; an already-open dashboard follows it after a page refresh |
 
 Admin tokens can come from the environment or a file. The named environment variable must contain one or more credentials, for example `SHUNT_ADMIN_TOKENS="ops:<token>"`. Alternatively, set `tokens_file` to a path (`~` is expanded) and put the pairs there — this is what [`shunt dashboard setup`](/reference/cli/#shunt-dashboard-setup) writes to `~/.shunt/admin-token`, so no secret has to live in the launch environment. When both are set, a non-empty `tokens_env` wins.
 
@@ -118,7 +156,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | Array | Access | Meaning |
 | :-- | :-- | :-- |
 | `write_keys` | `write` | Full access: `write` implies `read`. The same tier as `tokens_env`/`tokens_file` |
-| `read_keys` | `read` | Passes every `GET` on the admin surface and the spend-limit API; refused with `403 permission_error` on every mutation. It also cannot sign in: `POST /admin/login` rejects it with `401` (a browser session carries full access, so minting one from a read key would escalate it) |
+| `read_keys` | `read` | Passes every `GET` on the admin surface and the spend-limit API; refused with `403 permission_error` on every mutation. It signs in to the dashboard as a read-only session: `POST /admin/login` accepts it, the session records the `read` tier, and every mutation behind that cookie is still refused with `403` |
 
 A credential's privilege is the maximum over every set it matches, so the order the sets are scanned in cannot change it. Each `id` must be non-blank and each key at least 32 characters; ids **and** key values must each be unique across all three credential sets (`tokens_env`/`tokens_file`, `write_keys`, `read_keys`), and a collision names the colliding ids without logging a key value. A legacy `tokens_env` token shorter than 32 characters warns rather than failing, because those tokens predate the rule.
 
@@ -163,6 +201,43 @@ Presence of this table registers the spend-limit Admin API under `/v1/organizati
 | `state_path` | `~/.shunt/gateway-spend.json` | Versioned JSON file containing caps and audit records; `""` selects memory-only storage |
 
 Send the admin credential in the configured `[server.admin] header` or in `x-api-key`; a `read_keys` credential can use `GET` only. The state file is replaced atomically with private permissions after each mutation. When no home directory resolves, the default is memory-only. Adding or removing the table, and the state path itself, are both fixed at boot; configuration reloads log a warning instead of applying them.
+
+### `[server.spend.pricing]` (optional)
+
+States what a request costs. Omitting the table means the built-in list prices at multiplier 1. The table and its resolver are validated at boot, but stage 1 has no meter that reads token usage, so nothing prices a request yet.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `multiplier` | `1` | Scales every resolved rate, list price and override alike. Models a discount: at least `0.000001` and at most `1` |
+
+Each `[[server.spend.pricing.overrides]]` row replaces the list price for one model on one upstream:
+
+| Key | Required | Meaning |
+| :-- | :-- | :-- |
+| `upstream` | yes | Must name a configured upstream |
+| `model` | yes | Client or upstream model id, matched case-insensitively |
+| `input`, `output`, `cache_read`, `cache_write` | yes | USD per million tokens, each at least `0.001` and at most `18,446,744,073` |
+
+Rates are stored as whole femto-USD (1e-15 USD) per token. The two floors are set so their product is exactly 1 femto-USD per token, the smallest nonzero rate the meter can carry, so every accepted rate and multiplier together price at least 1 femto-USD per token. A value below its floor is rejected because, combined with a small enough value on the other side, it would round down to `0` and price requests at nothing while looking like a valid discount.
+
+```toml
+[server.spend.pricing]
+multiplier = 0.85
+
+[[server.spend.pricing.overrides]]
+upstream = "bedrock-eu"
+model = "claude-sonnet-4-6"
+input = 3.30
+output = 16.50
+cache_read = 0.33
+cache_write = 4.125
+```
+
+An out-of-range multiplier, a missing or out-of-range rate, a blank `upstream`, an `upstream` naming no configured upstream, and two rows pricing the same model on one upstream all fail validation at boot. Two rows collide when they name the same model, not merely the same string: `claude-sonnet-4-6` and `claude-sonnet-4-6-20260217` are one model. A `model` that is neither a built-in nor a model any `[[models]]`, `[[routes]]`, or `[[route_prefixes]]` entry can request **on that row's own `upstream`** logs a warning instead: the check is per upstream and covers prefix routes, matched case-insensitively even though routing itself is case-sensitive, except that a prefix shadowed by an earlier prefix routed elsewhere, one that is a case-exact prefix of it, does not count because routing takes the first match (a row matches the request model case-insensitively, so any spelling of its model that routes there makes it reachable, and the client picks the spelling), so a model mapped only as another upstream's `upstream_model` still warns, while one served by a `[[route_prefixes]]` entry on the row's upstream does not. A `[models.router]` id is requestable on the upstreams its targets and judges resolve to — a judge call is priced under the router's id too — while a `noop` router calls no upstream of its own; a `[models.subagents]` overlay on the same entry adds the upstreams its targets and judges resolve to, since its calls are priced under the parent id. A row for the id on any other upstream warns. A row on `server.default_provider` never warns, because routing sends everything no route or prefix claimed to that provider.
+
+Model ids are normalized before matching: Claude Code's `[1m]` context-window hint, a Bedrock region prefix and `anthropic.` namespace, a Bedrock `-v<major>:<minor>` version suffix, a dated snapshot suffix (`-20260217`, `@20251101`), and the OpenRouter / Vercel AI Gateway form — the `anthropic/` namespace is stripped and the dotted version hyphenated, so `anthropic/claude-opus-4.8` prices as `claude-opus-4-8`, while a floating alias such as `~anthropic/claude-sonnet-latest` names no version and stays unpriceable.
+
+Rates are matched most-specific-first for one upstream: an override matching the upstream model id, then one matching the client model id, then one naming the same built-in by a different id (a dated snapshot, a Bedrock id), then the built-in list price of the upstream model (never of the client model, so a built-in client id remapped to a non-Anthropic upstream model is not billed at Anthropic rates), then nothing — an unpriceable request. Server-side web search is priced per request (`$0.01`), so only the multiplier applies. All amounts are USD **estimates** computed from reported token counts against published list prices; they will not reconcile to the cent with a provider invoice.
 
 ### `[server.spend.enforcement]` (optional)
 
@@ -288,7 +363,7 @@ Presence of this table enables an inbound OpenAI Responses passthrough so the **
 | `provider` | `codex` | Configured upstream name to serve inbound requests whose `model` matches no route; must use `auth = "chatgpt_oauth"` |
 | `routes` | `[]` | Opt-in per-model routing (see below) |
 
-Registers `POST /backend-api/codex/responses`, `POST /responses`, and `POST /v1/responses` — all served by the named provider's account pool. When `[server.auth]` is configured they require a valid client token (like the other injected-credential routes); with no `[server.auth]` they are **open** to anyone who can reach them while still injecting the operator's Codex credential, so gate them on anything beyond loopback. Unlike `/v1/messages`, the request is not translated to or from Anthropic Messages; it is relayed to and from the upstream verbatim.
+Registers `POST` and `GET` (WebSocket upgrade) on each of `/backend-api/codex/responses`, `/responses`, and `/v1/responses` — all served by the named provider's account pool. When `[server.auth]` is configured they require a valid client token (like the other injected-credential routes); with no `[server.auth]` they are **open** to anyone who can reach them while still injecting the operator's Codex credential, so gate them on anything beyond loopback. Unlike `/v1/messages`, the request is not translated to or from Anthropic Messages; it is relayed to and from the upstream verbatim.
 
 ### `[[server.codex_endpoint.routes]]` (optional)
 
@@ -300,16 +375,16 @@ Each entry sends one model to a different Responses-compatible upstream, instead
 | `provider` | *(required)* | Configured provider that serves this model; must be `kind = "responses"` and must not use a credential-free auth mode (`passthrough` or `none`) |
 | `upstream_model` | `model` | Model id sent upstream. When it differs from `model`, shunt rewrites the body's top-level `model` and leaves every other field intact |
 
-Validation rejects a route to an unknown provider, to a non-`responses` provider, to a provider whose auth mode carries no credential (`passthrough` or `none`), and rejects duplicate `model` entries or blank fields. Routes are read from the live config snapshot, so adding, editing, or removing one takes effect on **reload**; only toggling the `[server.codex_endpoint]` table itself needs a restart. A routed request to a non-ChatGPT provider sends a fresh header allowlist (`content-type`, `accept`, plus the flavor-gated `OpenAI-Beta` and, for an `xai_oauth` route, the Grok-CLI identity headers), an identity-encoded body, and one credential with no pool or failover.
+Validation rejects a route to an unknown provider, to a non-`responses` provider, to a provider whose auth mode carries no credential (`passthrough` or `none`), and rejects duplicate `model` entries or blank fields. Routes are read from the live config snapshot, so adding, editing, or removing one takes effect on **reload**; only toggling the `[server.codex_endpoint]` table itself needs a restart. A routed request to a non-ChatGPT provider starts from a fresh header allowlist: only `content-type` (defaulted to `application/json`) and `accept` come from the client; shunt adds the resolved credential, the flavor-gated `OpenAI-Beta`, the Grok-CLI identity header set for an `xai_oauth` route, and, for an `api_key` route whose host is exactly `api.openai.com` and whose resolved conversation id is nonempty, regenerated `session-id`, `thread-id`, `x-client-request-id`, and `x-codex-window-id` headers. Caller-supplied credential, Codex identity, session, and `x-codex-*` headers remain stripped; xAI and other third-party OpenAI-compatible hosts receive no affinity headers, and the API-key path does not synthesize `accept: text/event-stream`. The request uses an identity-encoded body and one credential with no pool or failover.
 The same opt-in registers `GET /models` and `GET /backend-api/codex/models`, which return the valid Codex fallback `{"models":[]}` after the normal model-discovery auth gate. It also enables Codex negotiation on the shared `GET /v1/models`: when `client_version` is present in the query, that field takes precedence over Anthropic-like headers and selects the Codex empty shape. Without `client_version`, the existing Anthropic discovery response is unchanged. shunt intentionally does not synthesize incomplete Codex `ModelInfo` rows.
 
 ## `[server.usage]` (optional)
 
 Presence of this table registers a client-facing `GET /usage` endpoint that returns a **sanitized, aggregated** view of the shared account pool's quota state, so a non-admin client can anticipate throttling without the admin surface ([endpoint details](/reference/endpoints/)). When the table is absent, the route is not registered.
 
-The table has no keys today — presence alone opts in. It **requires [`[server.auth]`](#serverauth-optional)**: the endpoint identifies its caller by client token, so shunt fails startup if `[server.usage]` is set without inbound auth rather than serve pool telemetry unauthenticated.
+The table has no keys today — presence alone opts in. It **requires [`[server.auth]`](#serverauth-optional) or [`[server.gateway]`](#servergateway-optional)**: the endpoint identifies its caller by client token or gateway login, so shunt fails startup (`UsageEndpointRequiresAuth`) if `[server.usage]` is set with neither rather than serve pool telemetry unauthenticated.
 
-`GET /usage` authenticates the same client token as `/v1/messages` (configured header, `x-api-key`, or `Authorization: Bearer`) and reports per-window remaining headroom (`mean(1 - utilization)` across non-disabled accounts that report the window, i.e. the fraction of the pool's combined capacity still unused — nine exhausted accounts plus one fresh one read `0.1` — a pool-wide aggregate, not a prediction of whether the next request will be admitted), each window's reset, and a coarse `ok`/`degraded`/`exhausted` status. It never exposes account names, counts, priorities, `disabled` flags, thresholds, or per-account numbers — the full per-account detail stays behind the admin-only [`GET /admin/api/pool`](#serveradmin-optional). A window is `null` only when no non-disabled account reports it. Codex response `x-codex-*` headers and optional `wham/usage` polling populate the observed 5-hour and shared weekly windows; an unobserved window alone is `null`. Codex has no Fable-scoped (`7d_oi`) signal, although another provider in a mixed pool may supply the aggregate Fable window.
+`GET /usage` authenticates either the same client token as `/v1/messages` (configured header, `x-api-key`, or `Authorization: Bearer`) or a [gateway login](/guides/gateway-login/) access token sent as `Authorization: Bearer` (what a `shunt gateway claude` session presents), and reports per-window remaining headroom (`mean(clamp(cap - utilization, 0, 1))` across non-disabled accounts that report the window, where `cap` is the account's resolved `max_utilization*` hard cap for that window and `1.0` when none applies, i.e. the fraction of the pool's combined capacity still usable before caps exclude accounts — nine exhausted accounts plus one fresh uncapped one read `0.1`, and an account at 44% under a 50% cap counts `0.06`; an account a cap already excludes from the window's requests counts zero, and a 5h or 7d cap excludes it from Fable requests too — a pool-wide aggregate, not a prediction of whether the next request will be admitted), each window's reset, and a coarse `ok`/`degraded`/`exhausted`/`capped` status. It never exposes account names, counts, priorities, `disabled` flags, thresholds, or per-account numbers — the full per-account detail stays behind the admin-only [`GET /admin/api/pool`](#serveradmin-optional). A window is `null` only when no non-disabled account reports it. Codex response `x-codex-*` headers and optional `wham/usage` polling populate the observed 5-hour and shared weekly windows; an unobserved window alone is `null`. Codex has no Fable-scoped (`7d_oi`) signal, although another provider in a mixed pool may supply the aggregate Fable window.
 
 The response carries the pool-wide aggregate under `pool` and, under `providers`, the same sanitized aggregate computed per pooled provider, keyed by the configured provider name (the `<name>` in `[providers.<name>]` or the `name` of a `[[upstreams]]` entry — not an account identity). Mapping a model to that key is the client's job: [`GET /routes`](/reference/endpoints/) covers only models explicitly listed in `[[routes]]`, no endpoint exposes the `[[models]].upstream_model`, `[[route_prefixes]]`, or `server.default_provider` mappings, and `GET /v1/models` entries carry no provider field. On a mixed pool, `pool` blends every provider's accounts into one mean, so a client that routes to one provider should read `providers.<name>` for that provider's headroom and status. Providers whose auth mode is not pooled are omitted, and a provider's `fable` window is `null` when that provider has no Fable-scoped signal even if `pool` reports one. See the [endpoint reference](/reference/endpoints/) for the full shape.
 
@@ -319,7 +394,7 @@ Presence of this table registers `GET /api/oauth/usage` — the exact path Claud
 
 The table has no keys today — presence alone opts in. Its auth model differs from `[server.usage]`: on a loopback `[server.bind]` the route is unauthenticated (the caller cannot have reached it off the operator's own machine); on a non-loopback bind it requires a **valid** credential — a configured client token or a valid gateway JWT, gated exactly as `/v1/messages` is (bare header presence is not accepted) — and shunt fails startup (`OauthUsageEndpointRequiresAuthOnNonLoopback`) unless [`[server.auth]`](#serverauth-optional) or [`[server.gateway]`](#servergateway-optional) is also configured. shunt also refuses to boot if a `claude_oauth` provider's `base_url` resolves to this gateway's own bind (`OauthUsageSelfPollLoop`) — otherwise the outbound usage poller could read back its own synthesized aggregate instead of Anthropic's real usage.
 
-`GET /api/oauth/usage` reports only `claude_oauth`-provider accounts (never Codex/Cursor/Grok), and uses a routing-aware, priority-tiered worst case per window rather than `/usage`'s pool-wide mean headroom: within the lowest-`priority` tier of available accounts (falling back to the full non-disabled set when none are available), it reports the *maximum* utilization — the worst case among the accounts the next request can actually route to, not a pool-wide average. **This route only helps when the CLI itself is configured to call it**, which was verified to happen only for a full interactive `claude login` session, not `claude setup-token` or a shared-gateway client token — see the design note for the full precondition evidence.
+`GET /api/oauth/usage` reports only `claude_oauth`-provider accounts (never Codex/Cursor/Grok), and uses a routing-aware, priority-tiered worst case per window rather than `/usage`'s pool-wide mean headroom: within the lowest-`priority` tier of available accounts (when none are available, falling back to the non-disabled accounts reporting that window that no hard cap governing the bar excludes, meaning a 5-hour or weekly cap for the shared bars and any cap for the Fable bar, and to all of those reporting accounts only when every one is capped), it reports the *maximum* utilization — the worst case among the accounts the next request can actually route to, not a pool-wide average. **This route only helps when the CLI itself is configured to call it**, which was verified to happen only for a full interactive `claude login` session, not `claude setup-token` or a shared-gateway client token — see the design note for the full precondition evidence.
 
 ## `[server.pool]` (optional)
 
@@ -332,15 +407,22 @@ Quota-aware load-balancing tuning for the account pools — Claude (Anthropic) (
 | `default_threshold_5h` | unset | Soft default for the 5-hour window |
 | `default_threshold_7d` | unset | Soft default for the shared weekly (`7d`) window |
 | `default_threshold_fable` | unset | Soft default for the fable-only weekly (`7d_oi`) window |
+| `default_max_utilization` | unset | Hard cap default for any window without a more specific value; an account at or above it is excluded from selection |
+| `default_max_utilization_5h` | unset | Hard cap default for the 5-hour window |
+| `default_max_utilization_7d` | unset | Hard cap default for the shared weekly (`7d`) window |
+| `default_max_utilization_fable` | unset | Hard cap default for the fable-only weekly (`7d_oi`) window; governs Fable-model requests only |
 | `burn_rate_avoidance` | `false` | Also avoid accounts projected to exhaust a window's soft threshold before that window resets |
-| `usage_refresh_seconds` | disabled (`0`/absent) | Poll interval, in seconds, for Claude `GET /api/oauth/usage` and Codex `GET /wham/usage`; a positive value below 60 is clamped up to a 60-second floor |
+| `sort_by_reset` | `false` | Rank available accounts by soonest quota reset (ascending; unknown resets sort last) instead of burn-rate headroom. Toggleable at runtime from the admin dashboard or `PATCH /admin/api/pool` without editing this file — see [Pausing a pool account](/guides/pool-account-controls/) |
+| `usage_refresh_seconds` | disabled (`0`/absent) | Poll interval, in seconds, for Claude `GET /api/oauth/usage`, Codex `GET /wham/usage`, and Antigravity `POST :retrieveUserQuotaSummary`; a positive value below 60 is clamped up to a 60-second floor |
 | `state_path` | unset | File the pool's per-account quota state is persisted to, so a restart warm-starts from the last observed utilization instead of an empty pool. Absent disables persistence (the default) |
 | `ramp_initial_concurrency` | disabled (`0`/absent) | Storm control: initial concurrent-admission allowance for an account identity that just started taking traffic. `0` or absent disables admission gating |
 | `reprobe_seconds` | `900` once this table is present; `0` disables | Opportunistic-reprobe interval, in seconds, for a stale near-quota Codex/ChatGPT account; a positive value below 60 is clamped up to a 60-second floor. `0` disables re-probing; when `[server.pool]` itself is absent, re-probing is disabled regardless of this value (pre-issue-#135 behavior). Non-WebSocket outbound Responses selection and the optional inbound Codex HTTP endpoint retain re-probing; WebSocket-enabled outbound selection disables it |
 
-For each window `X`, the effective soft threshold resolves as: account `threshold_X` → account `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, and is capped at `hard_threshold`. All thresholds are utilization fractions in `[0.0, 1.0]`; out-of-range values fail startup. The threshold and burn-rate knobs govern both pool families: the Anthropic pool from its `anthropic-ratelimit-unified-*` headers, and the Codex/ChatGPT pool from its `x-codex-*` 5-hour/weekly windows (Codex has no Fable-scoped `7d_oi` window, so `default_threshold_fable` is inert there). `usage_refresh_seconds` polls both families: Anthropic accounts use the official API, while imported Codex/ChatGPT-backend accounts use the private, unofficial `wham/usage` endpoint ([details](/guides/codex-multi-account/#usage-poller)).
+For each window `X`, the effective soft threshold resolves as: account `threshold_X` → account `threshold` → `default_threshold_X` → `default_threshold` → `hard_threshold`, and is clamped at `hard_threshold`. Every threshold is a utilization fraction in `[0.0, 1.0]`; out-of-range values fail startup. Threshold and burn-rate knobs govern the two quota-aware selection families: Anthropic pools from `anthropic-ratelimit-unified-*` headers, and Codex/ChatGPT pools from `x-codex-*` 5-hour/weekly windows (Codex has no Fable-scoped `7d_oi` window, so `default_threshold_fable` is inert there). `usage_refresh_seconds` also polls imported `antigravity_oauth` accounts through Code Assist's `retrieveUserQuotaSummary` RPC. Antigravity's summary reports two shared model-family quota pools — Gemini Models and Claude + GPT Models — with provider-native 5-hour and weekly windows when the account tier exposes them. Those windows are surfaced display-only on the dashboard and do not change pool selection.
 
-A positive `usage_refresh_seconds` starts a background poller that reconciles account-pool quota state against each family's usage API ([Anthropic details](/guides/anthropic-multi-account/#usage-api-reconciliation), [Codex details](/guides/codex-multi-account/#usage-poller)); absent or `0` disables it (the default). Only imported (refreshable) accounts of either family are polled — a long-lived `claude setup-token`, or a `token_env` account of either family, is skipped because the usage endpoint rejects a non-refreshable token. For Claude, the poller reconciles each reported window's utilization, its own reset time, and its utilization observation time; only per-window and aggregate status freshness and the reset boundary captured when a status was observed remain header-derived, including when authoritative usage contains out-of-band consumption of the same account outside shunt. For Codex, it reconciles utilization and utilization observation time while keeping reset metadata response-derived (the `x-codex-*` headers and the WebSocket `codex.rate_limits` event) and status metadata header-derived. For a reported window, a future stored reset survives, while an elapsed stored reset is cleared before fresh utilization is written; the parsed wham `reset_at` is not adopted as live reset metadata. For Codex, the private endpoint's schema is observed rather than documented, so parsing is lenient and fail-soft. The interval is fixed at boot; a config reload does not start, stop, or re-tune the poller.
+Hard caps are separate from soft thresholds. For each window `X`, the effective hard cap resolves as: account `max_utilization_X` → account `max_utilization` → `default_max_utilization_X` → `default_max_utilization` → no cap. It is not clamped to `hard_threshold`, and account caps work even when `[server.pool]` is absent; store-scanned accounts (no `[[providers.X.accounts]]` entry) get the pool defaults only. Every cap is a utilization fraction in `[0.0, 1.0]`; any other value fails startup and `shunt check`. Unlike `threshold_*` and `hard_threshold`, which only reorder accounts, an account whose observed utilization in a governing window is at or above its cap is **excluded** from selection. The 5-hour and shared weekly caps govern every request; the Fable cap governs Fable-model requests only, and only once that account's `7d_oi` utilization has been observed. A window with no observed utilization never excludes. An excluded account becomes eligible again automatically once its utilization falls below the cap: through window reset or expiry, a lower observation, or a raised cap on config reload. A cap stops new routing; it is not a precise budget, and nothing reserves usage for dispatched requests, so in-flight or concurrent requests can overshoot the cap by whatever they consume. When caps leave a pool with no selectable account, shunt returns a gateway-owned HTTP `429` `rate_limit_error` ("all selectable accounts for provider '…' are at their max_utilization cap for this request"), with `retry-after` when the earliest eligibility is known. Like an upstream `429`, it advances the [`[[upstreams]]`](#upstreams-ordered-failover) failover chain, so a later upstream (possibly pay-per-use) serves the request; only when none does does the client see the `429`. The exception is a streaming request already committed to a Codex/ChatGPT pool (HTTP `200` sent): when no later upstream serves it, the client receives a terminal SSE `error` event inside the stream, not an HTTP `429`, and no `retry-after` header. On the inbound Codex endpoint the same error comes back in the OpenAI error shape. Caps are effective on Claude OAuth pools (5h, 7d, `7d_oi`) and Codex/ChatGPT pools (5-hour and weekly windows; the Fable keys are inert there), and also apply to Kimi OAuth pools when the Kimi upstream reports utilization headers (it has not been observed to, so in practice they stay inactive there; an unobserved window never excludes). Antigravity quota does not feed caps. The admin dashboard shows a capped account as "Capped" (or "Capped (Fable)" for a Fable-only cap) and marks each configured cap on the account's usage bars and in the pool table; `GET /admin/api/pool` reports the resolved `max_utilization_5h`, `max_utilization_7d`, and `max_utilization_fable` per account (a fraction, `null` when no cap governs the window). `GET /usage` reports pool status `capped` when no account is available and at least one enabled (non-`disabled`), unpaused account is capped. Example: `max_utilization_fable = 0.5` on an account keeps Fable from using more than about 50% of that account's Fable weekly bucket while Opus still uses it.
+
+A positive `usage_refresh_seconds` starts a background poller for the three supported OAuth usage sources: Claude's official usage API, Codex/ChatGPT's private `wham/usage` endpoint, and Antigravity's private `retrieveUserQuotaSummary` RPC; absent or `0` disables it (the default). Only imported (refreshable) accounts are polled. A long-lived `claude setup-token` and `token_env` credentials are skipped because they do not provide the refreshable-login ownership these endpoints require. For Claude, the poller reconciles each reported window's utilization, its own reset time, and its utilization observation time; only per-window and aggregate status freshness and the reset boundary captured when a status was observed remain header-derived, including when authoritative usage contains out-of-band consumption of the same account outside shunt. For Codex, it reconciles utilization and utilization observation time while keeping reset metadata response-derived (the `x-codex-*` headers and the WebSocket `codex.rate_limits` event) and status metadata header-derived. For a reported window, a future stored reset survives, while an elapsed stored reset is cleared before fresh utilization is written; the parsed wham `reset_at` is not adopted as live reset metadata. For Antigravity, production host spellings are normalized through the existing daily-host resolver and the grouped Gemini / Claude+GPT windows are written only to the dashboard quota-bucket field; they are never folded into the generic selection quota state. Both private schemas are treated as observed rather than documented, so parsing is fail-soft. The interval is fixed at boot; a config reload does not start, stop, or re-tune the poller.
 
 `state_path` persists the pool's quota state (per-window utilization and each window's own reset, independent utilization/status observation times and status reset boundaries, across every provider's accounts) to disk. Without it, a restart begins with an empty pool: every account looks unseen until its first post-restart response, which disables burn-rate avoidance and leaves `GET /usage` blank until traffic re-populates the pool. The file is a best-effort cache, not a source of truth — quota is re-derived from upstream responses regardless, so a missing, stale, or corrupt file only costs a cold start, never a boot failure. Writes use a private (`0600` on Unix) temp file, atomically rename it over the target, and happen on a background timer only when quota changed; failed writes retry on the next tick. Cooldowns are not persisted (they lapse on restart), and any restored window whose reset has already passed is dropped during import, before the first selection or snapshot after restore. A reset-less utilization or status signal expires one window length after its own observation time. Version-2 files migrate through an explicit legacy path and are rewritten as version 3. An aggregate `status` without `observed_at_status` captures the earliest persisted `reset_5h`, `reset_7d`, or `reset_7d_oi` as an immutable deadline. If that reset has already passed, the expired reset, the unstamped aggregate status, and its synthesized stamp are removed during the same import. A reset beyond the plausible seven-day horizon is conservatively bounded at boot plus seven days; an aggregate with no reset starts its seven-day cap at boot. Existing v2 stamps are not reinterpreted from reset metadata, while normal import still normalizes orphan metadata, expires elapsed signals, clamps future timestamps to boot, and supplies boot time to a surviving unstamped aggregate when appropriate. Later reset-only or usage updates cannot extend the captured deadline, and the result remains equivalent after the v3 rewrite and a second restore. A version-3 reset-less status stays reset-less after reset-only updates. The path is fixed at boot; a config reload does not start, stop, or re-point persistence.
 
@@ -413,11 +495,11 @@ The example attempts `anthropic-primary`, `kimi-overflow`, and `codex-fallback`,
 | :-- | :-- | :-- |
 | `name` | yes | Unique non-empty upstream name. Routes, model maps, `server.default_provider`, metrics, and admin views use this name. |
 | `provider` | unless `kind` + `base_url` are set | Built-in preset. Supplies `kind`, `base_url`, and default auth. Explicit fields override preset values. |
-| `kind` | without a preset | `anthropic`, `responses`, `cursor`, `openai_chat`, `gemini`, `antigravity`, or `antigravity_cli`. The last four have no entry in the preset table below — the built-in `[providers.gemini]`, `[providers.antigravity]`, and `[providers.antigravity-cli]` tables are the separate legacy mechanism, not presets — so an ordered upstream on any of the four must set `kind` explicitly. `openai_chat` is the bounded, text-only Anthropic Messages → OpenAI Chat Completions adapter; tool translation is intentionally rejected until supported. Note that the CLI provider's table is named `antigravity-cli` with a hyphen, while its `kind` value is `antigravity_cli` with an underscore. |
+| `kind` | without a preset | `anthropic`, `responses`, `cursor`, `openai_chat`, `gemini`, `antigravity`, or `antigravity_cli`. The last four have no entry in the preset table below — the built-in `[providers.gemini]`, `[providers.antigravity]`, and `[providers.antigravity-cli]` tables are the separate legacy mechanism, not presets — so an ordered upstream on any of the four must set `kind` explicitly. `openai_chat` is the bounded, text-only Anthropic Messages → OpenAI Chat Completions adapter; it requires `auth = "api_key"` with `api_key_env` and accepts no other auth mode. Tool translation is intentionally rejected until supported. Note that the CLI provider's table is named `antigravity-cli` with a hyphen, while its `kind` value is `antigravity_cli` with an underscore. |
 | `base_url` | without a preset | Upstream base URL. For `kind = "cursor"`, this is the login/token-refresh surface only; inference uses the fixed agent host `https://agentn.global.api5.cursor.sh`, overridable only with `SHUNT_CURSOR_AGENT_BASE_URL`. For `kind = "antigravity"`, this also governs credential-path project discovery (`loadCodeAssist`) when a stored credential has no cached project ID, not just inference; first-time onboarding (`onboardUser`) follows it too, except on the production default host, which has its own `daily-` control-plane host. When several Antigravity upstreams are configured, [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) runs that discovery against the one your routes select. For `kind = "antigravity_cli"` there is no upstream to address — the adapter runs a local `agy` binary and never reads this field — but a presetless upstream must still set it; any placeholder (the built-in provider uses `http://localhost`) will do. |
 | `auth` | no | Auth mode string, or a mode-specific map. Defaults to the preset's auth, otherwise `passthrough`. |
-| `effort`, `service_tier`, `count_tokens`, `websocket`, `tool_search`, `request_compression`, `retry` | no | Same per-upstream settings documented for legacy providers. Presets do not override `count_tokens`. `retry` is normalized for Cursor upstreams but does not apply to the Cursor streaming turn. |
-| `workspace_roots`, `sandbox` | no | Same Antigravity controls documented for legacy providers, with the same defaults (`[]` and `true`). An ordered upstream needs them for the same reasons a `[providers.*]` entry does. |
+| `effort`, `service_tier`, `classifier_model`, `count_tokens`, `websocket`, `tool_search`, `request_compression`, `retry` | no | Same per-upstream settings documented for legacy providers. Presets do not override `count_tokens`. `retry` is normalized for Cursor upstreams but does not apply to the Cursor streaming turn. |
+| `workspace_roots`, `sandbox`, `profile_dir` | no | Same Antigravity controls documented for legacy providers, with the same defaults (`[]` and `true`). An ordered upstream needs them for the same reasons a `[providers.*]` entry does. |
 
 Available presets:
 
@@ -433,14 +515,15 @@ Available presets:
 | `kimi-code` | `anthropic` | `https://api.kimi.com/coding` | `kimi_oauth` |
 | `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
 | `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
+| `opencode` | `anthropic` | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, header `x_api_key` |
 
-A bare string such as `auth = "claude_oauth"` is shorthand for `auth = { mode = "claude_oauth" }`. `api_key` maps accept `env` (required unless the preset supplies it) and `header` (`bearer` by default, or `x_api_key`). `claude_oauth`, `chatgpt_oauth`, and `kimi_oauth` maps may select `account = "name"` or `accounts = [...]`, but not both. `accounts` accepts bare store-entry names and full account tables; an explicitly empty `accounts = []` is rejected, while omitting both scope fields scans the whole store. If the ChatGPT store is empty, `chatgpt_oauth` retains its `~/.codex/auth.json` fallback. `passthrough`, `xai_oauth`, `cursor_oauth`, and `antigravity_oauth` maps take only `mode`; unknown mode-specific keys are errors.
+A bare string such as `auth = "claude_oauth"` is shorthand for `auth = { mode = "claude_oauth" }`. `api_key` maps accept `env` (required unless the preset supplies it) and `header`; an omitted `header` keeps the default (`bearer`, or the `opencode` preset's `x_api_key`). `claude_oauth`, `chatgpt_oauth`, `kimi_oauth`, and `antigravity_oauth` maps may select `account = "name"` or `accounts = [...]`, but not both. `accounts` accepts bare store-entry names and full account tables; an explicitly empty `accounts = []` is rejected, while omitting both scope fields scans the whole store. If the ChatGPT store is empty, `chatgpt_oauth` retains its `~/.codex/auth.json` fallback; if the Antigravity store is empty and nothing is configured, `antigravity_oauth` falls back to `~/.shunt/antigravity-auth.json`. `passthrough`, `xai_oauth`, and `cursor_oauth` maps take only `mode`; unknown mode-specific keys are errors.
 
 Do not combine `[[upstreams]]` with `[providers.*]` in the config file: startup fails when both file-layer declaration forms are present. Environment variables may override individual fields by normalized upstream/provider name under either form, using `SHUNT_PROVIDERS__<name>__<field>`. Declare the ordered `[[upstreams]]` array in the config file rather than trying to synthesize the whole array with one environment variable. Legacy `[providers.<name>]` remains supported and is normalized to implicit name-sorted upstreams. Because that form has no declared failover order, it supports only zero- or one-entry model maps; use `[[upstreams]]` before adding multiple entries to a model map.
 
 ### Failover behavior
 
-For a multi-entry model map, shunt filters the declared upstream sequence to the names in the map. It advances after an upstream status `429`, `401`, `403`, `404`, or any `5xx`, and after a failure before upstream response headers arrive. Gateway-local errors that do not represent an upstream attempt, such as auth misconfiguration or adapter-owned validation/header construction errors, return immediately so failover does not mask the configuration problem. There is no failover after `2xx` headers have been returned, including a later streaming-body failure.
+For a multi-entry model map, shunt filters the declared upstream sequence to the names in the map. It advances after an upstream status `429`, `401`, `403`, `404`, or any `5xx`, and after a failure before upstream response headers arrive. Gateway-local errors that do not represent an upstream attempt, such as auth misconfiguration or adapter-owned validation/header construction errors, return immediately so failover does not mask the configuration problem. There is no failover after `2xx` headers have been returned, including a later streaming-body failure. The Responses adapter's streaming paths commit the response before any upstream byte; a chain of `Anthropic`/`Responses` elements without the websocket transport then runs its failover inside the committed stream — pre-header transport failures and advance-status errors retry the next upstream before the synthetic start goes out — while a route that cannot advance (a terminal non-2xx, or a non-SSE success body from an Anthropic-kind winner) surfaces the failure as one terminal SSE `error` event on the committed stream. The winner's relay ends at the terminal frame (`message_stop`, or a relayed `error` frame): a streaming-body failure before it becomes one terminal `error` event, one after it surfaces nowhere, and the still-open upstream drains detached under a bounded budget, so the client's stream completes at the turn — an appended `error` event to a completed response would corrupt it. A TTFB timeout is never advanced: the configured timeout is an answer, surfacing as a terminal `504 timeout_error` event. On that committed path the response carries `content-type`, `x-gateway-model`, and — when a `[models.router]` entry routed the request or a `[models.subagents]` overlay diverted it — the router pair `x-gateway-routed-model`/`x-gateway-route-source`, decided before the first attempt and so independent of which upstream wins: the winner-dependent headers `x-gateway-upstream` and `x-gateway-upstream-model` are omitted — the winner is unknown when the headers go out with the commit — and upstream response headers (request ids, `anthropic-ratelimit-*` quota metadata included) never reach the client, even from an Anthropic-kind winner, while `x-gateway-model` stays (it names the client-requested id); request metrics record every attempt with its classified status, and stream attribution follows the winner once the stream knows it.
 
 When the chain is exhausted, shunt returns the best relayed failure with preference `429` → `401`/`403` → `404` → other `5xx`. Pre-header failures are not remembered as best failures. If no relayed response was remembered, shunt returns a `502 api_error` with `all upstreams failed (N attempted)`.
 
@@ -448,7 +531,7 @@ For a `passthrough` upstream, the client's own `authorization` / `x-api-key` is 
 
 Independent of origin, each retained slot is also checked by the value it actually holds: `authorization` and `x-api-key` are each cleared only when that slot's own value is shaped like a JWT shunt itself issued — three segments whose payload's `aud` claims `"shunt"`, whose `iss` claims this gateway's identity, or whose `shunt_token_use` claim is `"gateway-session"`, a dedicated marker that only shunt mints — or matches a configured `[server.auth]` client token. The JWT check is deliberately by shape, not by whether the token currently authenticates: an expired token, one minted by a sibling instance under a different `public_url`, or one that no longer verifies after a `jwt_secret` rotation is still shunt's own credential and is still cleared. The marker is an additional arm on that shape check, not a requirement: a token minted before the marker existed still matches by `aud`/`iss`, and `verify` does not require the marker either, so a token minted by an older shunt version still authenticates for as long as it remains within its TTL. An `apiKeyHelper` fills both slots with the same value, so either credential can land in either or both. A slot holding a genuine upstream credential is forwarded even when the other slot holds the gateway JWT or a static client token; only the gate-credential-bearing slot is cleared. `[server.auth] header` accepts any header name, including `authorization` itself; when it is set that way a client authenticates with a bare, unprefixed `Authorization: <token>`, so that slot is checked as a whole value as well as by its `Bearer` payload and such a token is never forwarded upstream. One caveat for that configuration: on inference requests shunt removes the configured header before routing, unconditionally, so that slot then carries nothing upstream — a caller's own credential in it is dropped too, not just a gate token. Keeping `header` at its dedicated `x-shunt-token` default avoids that collision.
 
-Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id). `count_tokens` uses only the first chain element and never fails over. `[server.codex_endpoint]` is pinned to its configured upstream for every model with no `[[server.codex_endpoint.routes]]` entry, and does not participate in this chain either way.
+Every proxied success or final failure carries `x-gateway-upstream` (selected upstream name), `x-gateway-model` (client-requested id), and `x-gateway-upstream-model` (mapped backend id) — except on the committed streaming chain path, where the response carries `content-type`, `x-gateway-model`, and the router pair below when a router routed the request or an overlay diverted it (the winner-dependent `x-gateway-upstream` and `x-gateway-upstream-model` are omitted and upstream response headers never reach the client). A response routed by a [`[models.router]`](#modelsrouter-optional) entry additionally carries `x-gateway-routed-model` (the target the router chose) and `x-gateway-route-source` (why it was chosen) — for every router type, not only the [stage router](/guides/stage-router/). A delegated turn a [`[models.subagents]`](#modelssubagents-optional) overlay diverted carries the same pair, with `x-gateway-route-source` reading `subagent_type` or `subagent` — or, for the `llm_classifier` form, the [classifier's own sources](/guides/llm-classifier/#what-the-client-sees); both are omitted only when neither a router nor an overlay decided the turn. `count_tokens` uses only the first chain element, never fails over, and is left unstamped by that pair. `[server.codex_endpoint]` is pinned to its configured upstream for every model with no `[[server.codex_endpoint.routes]]` entry, and does not participate in this chain either way.
 
 ### Migrating existing configurations
 
@@ -468,7 +551,7 @@ Each provider is a table under a name of your choosing. Built-ins (`anthropic`, 
 
 | Key | Values | Meaning |
 | :-- | :-- | :-- |
-| `kind` | `anthropic` \| `responses` \| `cursor` \| `openai_chat` \| `gemini` \| `antigravity` \| `antigravity_cli` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = the native Cursor ConnectRPC/protobuf AgentService adapter; `openai_chat` = bounded Anthropic Messages → OpenAI Chat Completions translation for text-only messages, with streaming usage trailers and fail-closed rejection of tools/tool choice until tool translation exists; `gemini` = Anthropic Messages translated to Gemini `generateContent`/`streamGenerateContent` on the Google Code Assist backend; `antigravity` = the Google Antigravity backend over HTTP, which speaks the same Code Assist protocol as `gemini` but authenticates with an Antigravity subscription token and identifies itself as `ideType: ANTIGRAVITY` during project discovery; `antigravity_cli` = **deprecated** — no upstream at all, running the local Antigravity CLI binary (`agy`) as a subprocess. Because `agy` resolves its own tool calls and no `tool_use` block can ever be returned, a request that asks for one — a non-empty `tools` array, or a `tool_choice` of `any` or `tool` — is refused with a `400 invalid_request_error` rather than silently answered as text. `tool_choice: none` (even alongside `tools`), `tool_choice: auto` with no tools, and an empty `tools: []` all oblige nothing and are accepted. |
+| `kind` | `anthropic` \| `responses` \| `cursor` \| `openai_chat` \| `gemini` \| `antigravity` \| `antigravity_cli` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API (the Responses API has no `stop` parameter, so `stop_sequences` is emulated gateway-side in the translation rather than silently dropped); `cursor` = the native Cursor ConnectRPC/protobuf AgentService adapter; `openai_chat` = bounded Anthropic Messages → OpenAI Chat Completions translation for text-only messages; it requires `auth = "api_key"` with `api_key_env` and accepts no other auth mode; `gemini` = Anthropic Messages translated to Gemini `generateContent`/`streamGenerateContent` on the Google Code Assist backend; `antigravity` = the Google Antigravity backend over HTTP, which speaks the same Code Assist protocol as `gemini` but authenticates with an Antigravity subscription token and identifies itself as `ideType: ANTIGRAVITY` during project discovery; `antigravity_cli` = **deprecated** — no upstream at all, running the local Antigravity CLI binary (`agy`) as a subprocess. Because `agy` resolves its own tool calls and no `tool_use` block can ever be returned, a request that asks for one — a non-empty `tools` array, or a `tool_choice` of `any` or `tool` — is refused with a `400 invalid_request_error` rather than silently answered as text. `tool_choice: none` (even alongside `tools`), `tool_choice: auto` with no tools, and an empty `tools: []` all oblige nothing and are accepted. |
 | `base_url` | URL | Upstream base; shunt appends the endpoint path. For `kind = "cursor"`, this is the login/token-refresh surface only; it does not select the agent/inference host. For `kind = "antigravity"`, credential-path project discovery (`loadCodeAssist`) also addresses this host when a stored credential has no cached project ID — not just inference — as does first-time onboarding (`onboardUser`), except on the production default host, which is onboarded through its own `daily-` control-plane host. When several Antigravity upstreams are configured, [`shunt login antigravity`](/reference/cli/#shunt-login-antigravity) runs that discovery against the one your routes select. |
 | `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `kimi_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough` forwards the client's own credential; `api_key` injects a key from `api_key_env`; `chatgpt_oauth` reuses `~/.codex/auth.json`; `claude_oauth` selects from explicit Anthropic accounts; `kimi_oauth` selects from explicit Kimi Code accounts (`shunt login kimi`), valid only with `kind = "anthropic"` and a `kimi.com` `base_url`; `xai_oauth` reuses `~/.shunt/xai-auth.json` from `shunt login xai` (only sent to x.ai/grok.com hosts over HTTPS); `cursor_oauth` reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`); `google_oauth` reuses the gemini CLI login in `~/.gemini/oauth_creds.json` and is valid only with `kind = "gemini"`; `antigravity_oauth` reuses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`), is valid only with `kind = "antigravity"`, and is **not** interchangeable with `google_oauth` — Antigravity requests two scopes (`cclog`, `experimentsandconfigs`) a Gemini CLI token never carries; `none` sends no credential at all, for adapters with no upstream to authenticate against (`kind = "antigravity_cli"`). |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. Its own value can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)). |
@@ -477,18 +560,20 @@ Each provider is a table under a name of your choosing. Built-ins (`anthropic`, 
 | `effort` | `low` … `max` | Optional default reasoning effort (`responses` providers). Also applies to `kind = "antigravity"`, where it is appended to a bare `gemini-*` `upstream_model` as the catalog's effort suffix. |
 | `service_tier` | `fast` \| `priority` \| `flex` \| `default` | Optional default Codex "Fast" mode opt-in (`responses` providers) — sent as the Responses API `service_tier` field. `fast` normalizes to `priority`; `default` is a client-only sentinel that is never sent on the wire. Off by default. Withheld for the `xai`/`grok` flavors even when configured (xAI 400s on it). A route-level `service_tier` (including an explicit `default`) overrides this value — see below. See [Codex → Fast mode](/guides/codex/#fast-mode). |
 | `count_tokens` | `tiktoken` (default) \| `estimate` | `responses` and `cursor` providers: local tiktoken count vs. `501 not_supported` fallback ([details](/guides/effort-and-context/#token-counting-count_tokens)). |
+| `classifier_model` | model id | `anthropic` providers only. Upstream model for Claude Code's auto-mode permission classifier request, identified by its request shape alone — every other request keeps the model it asked for. A remap **within this provider**, never a route to another one — the key is accepted on `anthropic` upstreams only. Unset by default. See [Anthropic → Auto-mode classifier](/providers/anthropic/#auto-mode-classifier). |
 | `websocket` | `true` \| `false` (default) | Opt in to the Codex Responses WebSocket v2 transport (ChatGPT/Codex backend only; falls back to HTTP on any transport failure before the first event reaches the client, so it can never do worse than plain HTTP). |
 | `tool_search` | unset ("auto", default) \| `true` \| `false` | Use the native client-executed `tool_search` protocol for Claude Code's tool search on a GPT-5.4+ model, gated on flavor (non-xAI/Grok). Unset defaults to native only for known-good hosts — the ChatGPT/Codex backend and `api.openai.com` — and the text shim everywhere else, including custom OpenAI-compatible endpoints (LiteLLM, vLLM, OpenRouter, self-hosted). Set `true` to opt a verified custom endpoint into native, or `false` to always force the shim. See [Codex → Tool search](/guides/codex/#native-protocol). |
 | `request_compression` | `true` (default) \| `false` | zstd-compress the Responses **request** body (`content-encoding: zstd`, level 3), matching what the Codex CLI sends to the same backend. Effective only on the ChatGPT/Codex flavor (`auth = "chatgpt_oauth"`) — no other Responses upstream is verified to accept a compressed request body, so the flag is inert there. Set `false` to send plain JSON, e.g. behind a middlebox that mishandles compressed request bodies. |
 | `retry` | sub-table | Bounded retry/backoff for supported transient upstream failures. On by default (conservative); see below. Normalized but inert for the Cursor streaming turn. |
 | `workspace_roots` | array of paths (default `[]`) | `kind = "antigravity_cli"` only. Roots inside which a prompt-supplied `Working directory:` may land. The system prompt is client-controlled and routinely quotes fetched documents, so it is prompt-injectable; a prompt-derived path is canonicalized (resolving symlinks and `..`) and honored **only** if it falls inside one of these roots. A path outside them is refused — the *path* is ignored, not the request, and the run falls back to the gateway's own working directory, exactly as it would had the prompt named no directory at all. Refusing the request instead would let anyone able to inject a line of system-prompt text fail every turn. Empty (the default) means no prompt-derived path is ever honored — only `SHUNT_AGY_WORKSPACE` or the gateway's own directory. |
 | `sandbox` | `true` (default) \| `false` | `kind = "antigravity_cli"` only. Runs the CLI with `--sandbox`, which keeps the agent's reads and writes inside the workspace. Print mode passes `--dangerously-skip-permissions` (it cannot service an approval prompt), so without the sandbox the agent has shell access and no workspace boundary — `workspace_roots` only changes where it *starts*. Set `false` only where unrestricted terminal access is genuinely needed and the caller is trusted. **Refused at startup when combined with a non-loopback `bind`**, which would hand arbitrary local execution to anyone who can post a Messages request. The adapter also enforces this rule per request against the listener bound at boot, so a hot reload cannot disable the sandbox while a public listener remains active. Restart shunt on a loopback bind before disabling it. |
+| `profile_dir` | path | `kind = "antigravity_cli"` only. Private state directory for the CLI child process. `agy` resolves its whole state tree — credentials included — through `HOME`, so pointing each provider entry at its own directory gives it its own Google account and lets several be pooled concurrently. Ambient `GOOGLE_*`/`GEMINI_*` variables are stripped from the child environment so the gateway host's own configuration cannot silently change which account — and whose billing — serves a request. Each directory needs its own one-time `agy` sign-in. The directory is created on demand and resolved to an absolute path — the child reads `HOME` after its working directory has moved to the request workspace, so a relative value would name a different directory to the CLI than the one shunt created. A leading `~` is expanded. Unset (the default) keeps the previous behavior: the CLI inherits the gateway's environment and its single ambient `~/.gemini` profile. |
 
 ### `[providers.<name>.retry]`
 
 Bounded retry for **transient** upstream failures on supported single-credential calls: the `passthrough`/`api_key` Anthropic path and the single-credential Responses path (`api_key`, `xai_oauth`/Grok, and a `chatgpt_oauth` provider with no pooled accounts). It re-issues the request (full body, before any bytes reach the client) on connection-level transport errors (connect reset/refused, timeout). Transient response statuses are not retried on these non-idempotent creation POSTs because the upstream may already have accepted a billable generation. The current Cursor adapter's streaming turn is not wrapped in this retry layer, so its normalized `retry` table is inert and a pre-response connection failure surfaces directly. No supported path retries a `4xx` response, and retry never begins after response-body streaming starts.
 
-Backoff is exponential with randomized (full) jitter, capped at `max_backoff_ms`. A server-supplied `Retry-After` takes precedence (both the delta-seconds and HTTP-date forms are honored); if it asks for longer than `max_backoff_ms`, the response is surfaced immediately rather than slept past budget. Retry is **held off `count_tokens`** regardless of this setting. The `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` account pools drive their own account-rotation failover and are unaffected by this table.
+Backoff is exponential with randomized (full) jitter, capped at `max_backoff_ms`. A server-supplied `Retry-After` takes precedence (both the delta-seconds and HTTP-date forms are honored); decimal delta-seconds are accepted and rounded upward to the next whole second, while malformed or overlong values are ignored. If it asks for longer than `max_backoff_ms`, the response is surfaced immediately rather than slept past budget. Retry is **held off `count_tokens`** regardless of this setting. The `claude_oauth` / `chatgpt_oauth` / `kimi_oauth` account pools drive their own account-rotation failover and are unaffected by this table.
 
 ```toml
 [providers.openai.retry]
@@ -527,18 +612,20 @@ token_env = "CLAUDE_BACKUP_OAUTH_TOKEN"
 
 | Key | Required | Meaning |
 | :-- | :-- | :-- |
-| `name` | yes | Unique account label containing only lowercase ASCII letters, digits, and hyphens. A name-only entry resolves from the shunt-managed store. Returned to the client in `x-shunt-account`; avoid personal information. |
+| `name` | yes | Unique account label containing only lowercase ASCII letters, digits, and hyphens. A name-only entry resolves from the shunt-managed store. Returned to the client in `x-shunt-account` (absent on streaming Responses pool turns, whose response commits before the winning account is known); avoid personal information. |
 | `credentials` | one usable source | Path to a Claude Code `.credentials.json`-shaped file. `~/` is expanded. shunt refreshes near expiry and atomically writes refreshed tokens back. |
 | `token_env` | one usable source | Environment variable holding a setup token. Used verbatim and not refreshable. Mutually exclusive with `credentials`. Its own value can also be written as `${VAR}` / `${file:...}` (see [Secret references](#secret-references)). |
 | `uuid` | no | Replaces an existing `metadata.user_id.account_uuid` in requests selected for this account. |
 | `threshold` | no | Per-account soft quota threshold in `[0.0, 1.0]`, for every window without a per-window value. A low value marks a backup account that rotates out early. |
 | `threshold_5h` / `threshold_7d` / `threshold_fable` | no | Per-window soft thresholds; each beats `threshold` for its window. See [`[server.pool]`](#serverpool-optional) for the full resolution order. |
+| `max_utilization` | no | Per-account hard cap in `[0.0, 1.0]` for every window without a per-window value. An account at or above it in a governing window is excluded from selection, not merely reordered. Works without `[server.pool]`. |
+| `max_utilization_5h` / `max_utilization_7d` / `max_utilization_fable` | no | Per-window hard caps; each beats `max_utilization` for its window. The Fable cap governs Fable-model requests only. See [`[server.pool]`](#serverpool-optional) for the resolution order. |
 | `priority` | no | Selection priority when the sticky account is unhealthy; lower is preferred, default `100`. Applies to Codex pools too. |
 | `disabled` | no | `true` removes the account from selection entirely (kept in config and on the admin pool dashboard). Applies to Claude and Codex pools. |
 
 A name-only entry reads `~/.shunt/accounts/claude/<name>.json`, created with `shunt login claude --name <name> --mode <mode>` (`<mode>` is one of `oauth`, `import`, or `setup-token`); the interactive CLI prompts for these three modes and recommends refreshable OAuth. `--long-lived` remains a deprecated alias for `--mode setup-token`. `SHUNT_CLAUDE_ACCOUNTS_DIR` overrides the store directory. An empty account list scans all valid store files. Refreshable OAuth/import files are updated in place when the provider rotates their refresh token, so each file must have one active owner: do not share or independently copy it across running shunt processes. Provision each process separately, or use a static setup token when appropriate. `claude_oauth` additionally requires an HTTPS `base_url` whose host is `anthropic.com` or a subdomain, preventing bearer leakage to another origin — except for loopback hosts (`localhost`, `127.0.0.1`, `[::1]`, …), which are exempt from both checks so a local debugging proxy or mock can be used over plain HTTP.
 
-Account selection is session-sticky and quota-aware. On every upstream response handled by the `claude_oauth` account pool, shunt records `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, `anthropic-ratelimit-unified-7d_oi-utilization`, their matching per-window `*-reset` headers, the aggregate `anthropic-ratelimit-unified-status`, and the matching `*-status` headers for `5h`, `7d`, and `7d_oi`. A `rejected` 5-hour or shared `7d` status makes every model near quota. A `rejected` `7d_oi` status makes Fable requests near quota. Status rejection is evaluated independently of whether the matching utilization header is present. For utilization thresholds and headroom, Fable uses `7d_oi` when that utilization is available and shared `7d` otherwise; all other families, including Sonnet, use shared `7d`. The aggregate status is a compatibility fallback only when no per-window status has been recorded. Shared 5-hour utilization at or above its threshold or the model's governing weekly utilization at or above its threshold also makes an account near quota — the threshold is the built-in `0.98` unless tuned per account (`threshold*` above) or pool-wide ([`[server.pool]`](#serverpool-optional)). shunt keeps a healthy under-threshold sticky account, but rotates off a near-quota or cooled one and prefers available under-threshold accounts by `priority`, then by soonest governing-weekly reset (or, with `[server.pool]` configured, by largest burn-rate headroom — the projected time to threshold at the observed pace minus the time to reset; `burn_rate_avoidance = true` additionally treats a negative projection as near quota), then near-quota accounts (best headroom first when `[server.pool]` is set, so an all-near pool degrades to best-margin-first while accounts past `hard_threshold` still sort last), then cooled accounts. A 429 that rejects only `7d_oi` on a Fable request creates a Fable-only cooldown; for a non-Fable request, the same `7d_oi`-only rejection creates an account-wide cooldown; `5h` or shared `7d` rejection also creates an account-wide cooldown. Utilization expires at the earlier of its own observation-time cap or that window's reset; if only its cap passes, a future reset for that window remains standalone metadata. Per-window status expires at the earlier of its own observation-time cap or the reset boundary captured when observed, and that captured boundary is cleared with the status. A stamped aggregate status has its own cap and survives unrelated window expiry, while the legacy unstamped aggregate follows window expiry. Every non-disabled account remains selectable. Reactive failover remains active. Storm control for freshly switched account concurrency is available via [`[server.pool]` `ramp_initial_concurrency`](#serverpool-optional) (off by default).
+Account selection is session-sticky and quota-aware. On every upstream response handled by the `claude_oauth` account pool, shunt records `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, `anthropic-ratelimit-unified-7d_oi-utilization`, their matching per-window `*-reset` headers, the aggregate `anthropic-ratelimit-unified-status`, and the matching `*-status` headers for `5h`, `7d`, and `7d_oi`. A `rejected` 5-hour or shared `7d` status makes every model near quota. A `rejected` `7d_oi` status makes Fable requests near quota. Status rejection is evaluated independently of whether the matching utilization header is present. For utilization thresholds and headroom, Fable uses `7d_oi` when that utilization is available and shared `7d` otherwise; all other families, including Sonnet, use shared `7d`. The aggregate status is a compatibility fallback only when no per-window status has been recorded. Shared 5-hour utilization at or above its threshold or the model's governing weekly utilization at or above its threshold also makes an account near quota — the threshold is the built-in `0.98` unless tuned per account (`threshold*` above) or pool-wide ([`[server.pool]`](#serverpool-optional)). shunt keeps a healthy under-threshold sticky account, but rotates off a near-quota or cooled one and prefers available under-threshold accounts by `priority`, then by soonest governing-weekly reset (or, with `[server.pool]` configured, by largest burn-rate headroom — the projected time to threshold at the observed pace minus the time to reset; `burn_rate_avoidance = true` additionally treats a negative projection as near quota), then near-quota accounts (best headroom first when `[server.pool]` is set, so an all-near pool degrades to best-margin-first while accounts past `hard_threshold` still sort last), then cooled accounts. A 429 that rejects only `7d_oi` on a Fable request creates a Fable-only cooldown; for a non-Fable request, the same `7d_oi`-only rejection creates an account-wide cooldown; `5h` or shared `7d` rejection also creates an account-wide cooldown. Utilization expires at the earlier of its own observation-time cap or that window's reset; if only its cap passes, a future reset for that window remains standalone metadata. Per-window status expires at the earlier of its own observation-time cap or the reset boundary captured when observed, and that captured boundary is cleared with the status. A stamped aggregate status has its own cap and survives unrelated window expiry, while the legacy unstamped aggregate follows window expiry. Without a `max_utilization*` hard cap, every non-disabled account remains selectable; an account at or above a hard cap in a governing window is excluded instead (see [`[server.pool]`](#serverpool-optional)). Reactive failover remains active. Storm control for freshly switched account concurrency is available via [`[server.pool]` `ramp_initial_concurrency`](#serverpool-optional) (off by default).
 
 See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for the complete selection and failover behavior. The behavior reference is [KarpelesLab/teamclaude](https://github.com/KarpelesLab/teamclaude); shunt has no runtime dependency on it.
 
@@ -573,7 +660,7 @@ The top-level `auto_include_builtin_models` key defaults to `true`. When enabled
 
 Discovered models come from the live upstream list when shunt can get one. It issues `GET /v1/models` against `server.default_provider` when it is Anthropic-kind, using that provider's authentication mode. With `auth = "passthrough"`, shunt forwards the caller's credential, so each caller sees the list that credential is entitled to — except a slot holding shunt's own `[server.gateway]` JWT or a configured `[server.auth]` client token rather than a real upstream credential, which is not forwarded. `authorization` and `x-api-key` are filtered independently, so a genuine credential in the other slot is still forwarded; discovery falls back to the builtin snapshot only when neither slot has a forwardable credential left. With `api_key`, shunt uses the configured key. With `claude_oauth`, it uses the first resolvable, non-disabled account from the same effective account set as inference, including store-scanned accounts in `account_scope` order. Discovery performs no pool selection, cooldown, or quota accounting. Those two gateway-owned modes therefore expose a shared credential-scoped catalog. shunt caches nothing. When the default provider is not Anthropic-kind, there is no credential, or the call fails or times out (2 s cap), shunt falls back to a builtin snapshot of the Claude catalog. Either way these ids need no dedicated `[[routes]]` entry — they resolve through your normal routing rules, falling back to `server.default_provider` when no `[[routes]]` or `[[route_prefixes]]` entry matches.
 
-A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. With ordered `[[upstreams]]`, the map may contain one or more `upstream = "backend-id"` pairs and resolves to a failover chain in `[[upstreams]]` declaration order. With legacy `[providers.*]`, it must contain exactly one pair because that form has no declared order. For that id the map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; each upstream's default `effort` applies to its chain element. An empty map, an empty or whitespace-only upstream name or backend id, an unknown upstream, a same-id `[[routes]]` entry, a mapped id ending in `[1m]` or `[1M]`, or a duplicate `[[models]]` id where either entry has a map is a startup error. Clients strip the context-window hint before matching, so including it in a mapped id would make that entry unreachable. Pure map-less duplicate ids retain their previous behavior.
+A curated entry can include `[models.upstream_model]` to advertise, route, and translate one id in the same declaration; this is the recommended form for exact-id routing instead of `[[routes]]`. With ordered `[[upstreams]]`, the map may contain one or more `upstream = "backend-id"` pairs and resolves to a failover chain in `[[upstreams]]` declaration order. With legacy `[providers.*]`, it must contain exactly one pair because that form has no declared order. For that id the map takes precedence over `[[routes]]`, `[[route_prefixes]]`, and `server.default_provider`; each upstream's default `effort` applies to its chain element. An empty map, an empty or whitespace-only upstream name or backend id, an unknown upstream, a same-id `[[routes]]` entry, a mapped id ending in `[1m]` or `[1M]`, or a duplicate `[[models]]` id where either entry has a map is a startup error. Clients strip the context-window hint before matching, so including it in a mapped id would make that entry unreachable. Pure map-less duplicate ids retain their previous behavior, unless one of them carries a `[models.router]` table — see below.
 
 ```toml
 [[models]]
@@ -589,6 +676,805 @@ codex = "gpt-5.2"
 | `id` | ✅ | Model id exposed to Claude Code |
 | `display_name` | — | Label shown in the `/model` picker |
 | `upstream_model` | — | Map from configured upstream names to backend model ids; ordered `[[upstreams]]` may produce a multi-entry failover chain, while legacy providers allow one entry |
+
+### `[models.router]` (optional)
+
+Per-request routing for one advertised id. Instead of naming a single
+destination, the entry carries a `[models.router]` table whose `type` key picks
+a routing algorithm, and the algorithm picks the destination. Absent this table
+and the [`[models.subagents]`](#modelssubagents-optional) overlay, a `[[models]]`
+entry behaves exactly as it did before. See the
+[routing overview](/guides/routing/) for how to choose a type.
+
+`type` — rather than shunt's usual `kind` or `mode` — is a **deliberate
+exception to shunt's own naming convention**, and this is the one place the
+reference says so. The routing algorithms come from
+[NVIDIA-NeMo/Switchyard](https://github.com/NVIDIA-NeMo/Switchyard), and keeping
+its key name means its schema documentation and its `type` values transfer here
+unchanged instead of being translated twice.
+
+Every target named by any router is an ordinary public model id, resolved one
+hop through the normal ladder; the client is still told the id it asked for.
+
+| `type` | Picks by | Reads the request body |
+| :-- | :-- | :-- |
+| `stage_router` | Recent tool-result metadata, per turn | Yes — `tool_use.name` and `tool_result.is_error` only |
+| `auto` | The same router under upstream's preset | Yes, as above |
+| `random` | A weighted draw, session-sticky by default | No |
+| `noop` | Nothing — answers with an empty message | No |
+| `prefill_router` | A learned classifier over the latest user turn (needs the `prefill-router` build) | Yes — the text of user turns |
+| `llm_classifier` | An LLM judge's verdict, per `classify_trigger`; in `mode = "escalation"`, a judge's ruling on the completed weak turn | Yes — the transcript, via the packaged or a custom prompt |
+| `composite` | An LLM judge sets the tier a stage router falls open to | Yes — the transcript for the judge, tool-result metadata for the signals |
+| `advisor` | One executor serves every turn; a stronger reviewer approves or sends back its terminal turns | Yes — the transcript, for the reviewer |
+
+`llm_classifier`'s [`mode = "escalation"`](#mode--escalation) and
+[`type = "advisor"`](#type--advisor) hold the turn until the verdict is in, so
+they are the only routes on which shunt buffers a response the client asked to
+stream — see [buffered turns](#buffered-turns-escalation-and-advisor).
+`prefill_router` is available only from a build that opts into the
+off-by-default `prefill-router` cargo feature — see [below](#type--prefill_router).
+
+`[models.router]` and `[models.upstream_model]` on the same entry are mutually
+exclusive.
+
+#### `type = "stage_router"`
+
+Content-aware tier selection. The entry names **two** targets — a capable tier
+and an efficient one — and lets the request's recent tool-result history pick
+between them per turn. See the [stage router guide](/guides/stage-router/) for
+how the signals and the hysteresis work.
+
+```toml
+[[models]]
+id = "claude-auto"
+display_name = "Auto (stage router)"
+
+[models.router]
+type = "stage_router"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `stage_router` |
+| `capable_target` | ✅ required | Model id for hard reasoning, investigation, and error recovery |
+| `efficient_target` | ✅ required | Model id for routine production once the plan is settled |
+| `picker` | `efficient_first` | Tier used when the signals are inconclusive. `efficient_first` or `capable_first` |
+| `confidence_threshold` | `0.5` | Minimum scorer confidence to act on a signal, in `(0.0, 1.0]` |
+| `recent_turn_window` | `3` | Assistant turns of tool results fed to the scorer. Must be at least `1` |
+| `min_dwell_turns` | `3` | Turns a tier is held before a de-escalation may fire; counted from the turn that chose it, so `0` and `1` both mean no dwell floor |
+| `deescalate_threshold` | `0.75` | Confidence required to move *down* a tier. The default sits above `confidence_threshold`'s, making the down direction the harder one, but the two are range-checked independently — a value below `confidence_threshold` is accepted, and warns at load |
+| `session_ttl_seconds` | `3600` | How long a quiet session's pinned tier survives |
+| `capable_hold_turns` | `0` | Turns the capable tier is held after a signal-driven escalation. Those turns report route source `capable_hold`, and a hold is not evidence — it cannot move a pinned tier in either direction. The default of `0` keeps pinning exactly as it was; upstream's own default is `2` |
+
+#### `[models.router.tool_semantics]` (optional)
+
+Four lists that extend shunt's built-in Claude Code tool vocabulary for one
+router. They are applied **after** the built-in table, never instead of it, so
+they reach only the names that table leaves uncategorised — `Bash`, `Skill`, and
+`mcp__*` server tools. Naming a tool the built-in table already classifies as
+observe, mutate, or plan (`Read`, `Edit`, `TodoWrite`, …) is a **startup
+error**. So is a name carrying whitespace (`" Read "`, `"some tool"`): names are
+matched exactly, so a padded one would match nothing at runtime.
+
+```toml
+[models.router.tool_semantics]
+observe = ["mcp__jbcontext__code_search"]
+mutate = []
+plan = []
+new = []
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `observe` | `[]` | Tool names that read without changing anything |
+| `mutate` | `[]` | Tool names that change state; scored as a whole-file write |
+| `plan` | `[]` | Tool names that plan or delegate |
+| `new` | `[]` | Tool names counted as newly introduced tools by the scorer |
+
+Editing any of the four drops that router's existing session pins on the next
+load, the same way editing a threshold does.
+
+#### `[models.router.handoff_notes]` (optional)
+
+A system block appended to the **forwarded** request on the turns a signal moves
+the tier, so the incoming model is told why it is taking over.
+
+```toml
+[models.router.handoff_notes]
+escalation_note = "the previous model was stalling; pick up the diagnosis"
+deescalation_note = "routine work resumes"
+only_on_wrong_signal_escalation = true
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `escalation_note` | — | Appended when a signal drives the turn up to the capable tier |
+| `deescalation_note` | — | Appended when the scorer hands work back down to the efficient tier |
+| `only_on_wrong_signal_escalation` | `true` | Restrict `escalation_note` to the signal-driven escalations (route sources `override` and `dimensions`). Set `false` to append it on every scorer-made escalation |
+
+The note is a new block at the **end** of the `system` array; Claude Code's
+attribution block is never touched. A blank note is a startup error. Which turns
+carry a note, and why each toggle costs a prompt-cache miss, is in the
+[stage router guide](/guides/stage-router/#telling-the-incoming-model-why).
+
+#### `[models.router.classifier]` (optional)
+
+An LLM **judge** for the turns the signals cannot decide. Adding this table
+moves the entry onto the driven lane: on a turn the scorer leaves undecided —
+one that would otherwise report route source `fall_open` — on a session no pin
+is holding, shunt consults the judge and routes on its verdict. It is accepted
+on `type = "stage_router"` only.
+
+```toml
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `target` | ✅ required | Public model id of the judge. Consulted, never served — it never answers the client |
+| `base_threshold` | `0.5` | Lowest `p_solve` that keeps a supported task on the efficient tier, in `(0.0, 1.0]` |
+| `classify_trigger` | `every_request` | When the judge may be consulted. `every_request` allows it on any undecided turn, tool continuations included. `user_turn` allows it only when the latest message is a human user turn — `role: user` carrying at least one block that is not a `tool_result` — so a tool continuation rides the session's pin instead of paying a judge call. `new_session` behaves exactly as `every_request` here, as it does upstream: this router already holds its decision in shunt's own session pin |
+
+The judge target is held to the same one-hop rule as the tier targets, and must
+not resolve to a **passthrough** route — the caller's credential is stripped from
+a judge call, so such a target is a startup error. `auth = "none"` is accepted. A
+judged turn reports route source `llm-classifier`; a judge failure of any kind
+resolves as `fall_open`. How the judge's credential, admission, and failures
+work is in the
+[stage router guide](/guides/stage-router/#the-judge-fallback).
+
+#### Per-call bounds
+
+Six keys bound every internal call an entry makes. They live on the table that
+makes those calls: `[models.router]` of any driven type — a `stage_router`
+carrying a `classifier`, `llm_classifier`, `composite`, or `advisor` — and a
+classifier-form [`[models.subagents]`](#modelssubagents-optional) overlay, which
+carries its own copy. Crossing one cancels the upstream call. Each must be at
+least `1`; a `0` is a startup error naming the key.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `judge_timeout_ms` | `30000` | End-to-end deadline on the non-streaming judge call — headers *and* body, so a `200` that then stalls is cut here rather than left hanging |
+| `judge_max_response_bytes` | `65536` | Largest judge reply collected; a larger one resolves as `fall_open` |
+| `gated_max_bytes` | `8388608` | Largest retained turn: its SSE frame bytes, or its JSON body |
+| `gated_idle_ms` | `60000` | Longest gap between completed content frames of a retained turn. SSE keep-alives (`event: ping` frames and `:` comment frames) do not reset it, and a frame split across chunks is reassembled before it is classified |
+| `gated_max_duration_ms` | `600000` | Wall-clock ceiling on a retained turn, headers and body |
+| `max_judge_calls` | `8` | Judge calls one session may make, counted when a call is sent and never refunded. Each delegated agent id has its own budget, and delegated turns with no agent id share one more per session. A turn that makes no judge call is never refused. The gated turn itself is not a judge call and is not counted |
+
+The three `gated_*` keys bound the **gated** turns of an
+[`escalation`](#mode--escalation) or [`advisor`](#type--advisor) entry — the
+turns shunt holds until a verdict is in. On every other entry there is no gated
+turn, and they bound nothing.
+
+The byte and idle bounds also apply where an adapter builds a non-streaming
+reply itself, before shunt collects it, and what the byte bounds count follows
+what that adapter receives: the body as it arrived for Anthropic, Gemini, and
+Responses over HTTP; each event's type and payload as compact JSON on the Codex
+WebSocket; the CLI's stdout, line terminators included, on Antigravity; and the
+retained text and tool-call fields on Cursor. The idle gap is timed between
+WebSocket events, the first one included, and between Antigravity output lines
+that carry content, so a tool step alone does not reset it. On an OpenAI
+Responses target the gap starts when the request is sent, so the wait for the
+response headers, or for the WebSocket handshake (or a pooled connection's
+liveness check) and first event, counts toward it. shunt's own local token
+count (up to 1 second) runs while the reply is read, so a reply that arrives
+after the gap is still cut. An error response's body is read within the same
+gap. The one a `chatgpt_oauth` account pool relays after every account failed
+is read within a fresh gap, started when the last account failed. On an
+OpenAI Responses target, an error body's read also stops after 5 seconds: a
+body that has sent nothing by then is cut as a stall, even when the gap is
+longer. When one has started arriving but not finished, the error is relayed
+with its status, and a message naming that status replaces the unfinished
+body. A retried request starts the gap again. A cold Antigravity
+model-catalog fetch made during one of these calls is read under the same
+bounds; a refused catalog falls back to the model id shunt would guess without
+one, and the next client turn fetches it again.
+
+#### `type = "llm_classifier"`
+
+An LLM **judge** decides the whole turn. The entry names the judge, the
+destinations it may pick, and `mode` — which of three verdict shapes the judge
+produces. `capability` and `custom` are described here; `escalation` has
+[its own section](#mode--escalation). `mode` is **required**, unlike upstream's
+schema, where it defaults to `capability`. See the
+[LLM Classifier guide](/guides/llm-classifier/).
+
+**`mode = "capability"`** — the packaged judge returns a solve probability for
+the task. A probability at or above `base_threshold` keeps the turn on
+`weak_target`; below it, the turn goes to `strong_target`.
+
+```toml
+[[models]]
+id = "claude-judged"
+
+[models.router]
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+base_threshold = 0.5
+# threshold_step = 0.0
+# classify_trigger = "every_request"
+# message_hash_fallback = false
+# recent_turn_window = 3
+# max_output_tokens = 4096
+# prompt = "…"
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `llm_classifier` |
+| `mode` | ✅ required | `capability` |
+| `classifier_target` | ✅ required | Public model id of the judge. Consulted, never served |
+| `strong_target` | ✅ required | Model id for a task the judge is not confident about |
+| `weak_target` | ✅ required | Model id for a task the judge expects to be solved |
+| `base_threshold` | ✅ required | Lowest solve probability that still routes to `weak_target`, in `(0.0, 1.0]` |
+| `threshold_step` | `0.0` | Finite and non-negative; added once for an uncertain or unmatched verdict and twice for an unsupported one. `base_threshold + 2 × threshold_step` must be at most `1.0` |
+| `prompt` | packaged prompt | Replaces the packaged capability prompt. The schema is sent separately as structured-output configuration, so the prompt must not contain `{{RESPONSE_SCHEMA}}`, and must not be blank |
+
+**`mode = "custom"`** — you supply the prompt and the JSON Schema, and a JSON
+Pointer picks a **model group name** out of the verdict. The first model of that
+group serves the turn. `any` and `judge` are reserved and required; every other
+group name is yours, which is how one entry chooses between more than two
+models.
+
+```toml
+[models.router]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+prompt = "Select exactly one target for this turn. Return only JSON matching the response schema."
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `llm_classifier` |
+| `mode` | ✅ required | `custom` |
+| `models.any` | ✅ required | Every selectable destination. Every other answer group's targets must also appear here (`judge` is exempt); one that does not is a startup error |
+| `models.judge` | ✅ required | One or more ordered judge candidates. Consulted, never served |
+| `models.<name>` | — | A group you name; a verdict naming it selects the group's first model |
+| `default_target` | ✅ required | Group used when the judge returns no usable verdict. Any configured group except `judge`, and it must be non-empty |
+| `prompt` | ✅ required | Judge system prompt. Must be non-blank and must not contain `{{RESPONSE_SCHEMA}}` — the schema is sent separately |
+| `response_schema` | ✅ required | The inner JSON Schema as a TOML string. Must parse as a JSON object; shunt adds the provider wrapper |
+| `policy` | ✅ required | `{ type = "target_selector", selector = "…" }`, where `selector` is a JSON Pointer into the verdict, such as `/target` |
+
+Both modes share these, and the six [per-call bounds](#per-call-bounds):
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every turn, tool continuations included. `user_turn` judges each new human user turn and retains that target across the tool calls between them. `new_session` judges once and reuses that target for the session |
+| `message_hash_fallback` | `false` | Keys retention on the first user message, for clients that send no session id. Requires `classify_trigger = "new_session"`; setting it on another trigger is a startup error |
+| `recent_turn_window` | unset | When set, trailing turns the judge additionally sees. Must be at least `1` |
+| `max_output_tokens` | `4096` | Completion-token ceiling on the judge verdict. Must be at least `1` |
+
+A judge call that fails in any way, or that `max_judge_calls` refuses, sends the
+turn to the algorithm's default — `strong_target` in `capability` mode,
+`default_target`'s first model in `custom` mode — under route source
+`classifier_fail_open`. A `count_tokens` probe never consults the judge. How
+retention, the budget, and probes behave is in the
+[LLM Classifier guide](/guides/llm-classifier/#when-the-judge-runs).
+
+Every target and every judge is an ordinary public model id under the same
+one-hop rule as the stage router's, and a judge must not resolve to a
+**passthrough** route for the reason given
+[above](#modelsrouterclassifier-optional).
+
+#### `mode = "escalation"`
+
+The third `llm_classifier` mode starts each session on `weak_target`, holds each
+turn, and has a judge rule on the **completed** turn. After `confirmations`
+consecutive escalate verdicts the session latches, and `strong_target` serves
+that turn and every later one. See the [Escalation guide](/guides/escalation/).
+
+```toml
+[[models]]
+id = "claude-escalate"
+
+[models.router]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+# prompt = "…"
+# max_output_tokens = 4096
+
+[models.router.escalation]
+confirmations = 2
+# recent_turn_window = 28
+# window_message_chars = 500
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `llm_classifier` |
+| `mode` | ✅ required | `escalation` |
+| `classifier_target` | ✅ required | Public model id of the trajectory judge. Consulted, never served |
+| `strong_target` | ✅ required | Model id served once the session latches |
+| `weak_target` | ✅ required | Model id served before the latch. It may be the same id as `classifier_target` |
+| `prompt` | packaged prompt | Replaces the packaged trajectory-judge prompt |
+| `max_output_tokens` | `4096` | Completion-token ceiling on the judge verdict. Must be at least `1` |
+| `escalation.confirmations` | `2` | Consecutive escalate verdicts required to latch. Must be at least `1`. Above `1` needs a session id: without one every turn starts from zero and the session never latches |
+| `escalation.recent_turn_window` | `28` | Trailing messages shown to the judge. Must be at least `1` |
+| `escalation.window_message_chars` | `500` | Per-message character cap inside that window. Must be at least `50` |
+
+The `[models.router.escalation]` table is optional; leaving it out keeps the
+three defaults, which are upstream's benchmarked configuration. The six
+[per-call bounds](#per-call-bounds) go on `[models.router]`. A classifier-form
+[`[models.subagents]`](#modelssubagents-optional) overlay stays
+`mode = "custom"` only.
+
+`weak_target` may be a **passthrough** route, although `classifier_target` may
+not. See [buffered turns](#buffered-turns-escalation-and-advisor) for the route
+sources and failure handling of the held turn.
+
+#### `type = "composite"`
+
+A judge sets the tier a stage router falls open to, and leaves the signal
+scoring alone. The stage table takes **no `picker`** — the classifier supplies
+that tier — so a `picker` key here is a startup error. See the
+[Composite guide](/guides/composite/).
+
+```toml
+[[models]]
+id = "claude-composite"
+
+[models.router]
+type = "composite"
+
+[models.router.classifier]
+target = "claude-haiku-4-5"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[models.router.stage]
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+confidence_threshold = 0.5
+# recent_turn_window = 3
+# capable_hold_turns = 0
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `composite` |
+| `classifier.target` | ✅ required | Public model id of the tier judge. Consulted, never served |
+| `classifier.base_threshold` | ✅ required | Lowest `p_solve` that still routes to the efficient tier, in `(0.0, 1.0]` |
+| `classifier.classify_trigger` | ✅ required | `user_turn` re-picks the tier on each human user turn; `new_session` picks once and holds it. `every_request` is **rejected** here — a judge call per tool step is the cost this type exists to avoid |
+| `classifier.message_hash_fallback` | `false` | Retains the tier by hashing the first user message, for clients that send no session id |
+| `stage.capable_target` | ✅ required | Capable tier |
+| `stage.efficient_target` | ✅ required | Efficient tier |
+| `stage.confidence_threshold` | ✅ required | Corroboration a decisive signal needs, in `(0.0, 1.0]` |
+| `stage.recent_turn_window` | `3` | Trailing tool results the signals are computed over. Must be at least `1` |
+| `stage.capable_hold_turns` | `0` | Turns the capable tier is held after a signal-driven escalation; shunt's default is `0`, upstream's is `2` |
+| `stage.tool_semantics` | — | The same four lists as [`[models.router.tool_semantics]`](#modelsroutertool_semantics-optional), under the same rules |
+
+The six [per-call bounds](#per-call-bounds) go on `[models.router]`, not inside
+either sub-table. A turn the classifier cannot reach falls open to
+`stage.efficient_target`, which is also what a body-less surface reports.
+
+#### `type = "advisor"`
+
+One **executor** serves every client-visible turn. A stronger **advisor**
+reviews the executor's terminal turns before the client sees them, and either
+approves the held turn or sends the executor back to redo the work. The advisor
+never serves a turn. See the [Advisor Gate guide](/guides/advisor/).
+
+```toml
+[[models]]
+id = "claude-reviewed"
+
+[models.router]
+type = "advisor"
+executor_target = "claude-sonnet-4-6"
+advisor_target = "claude-opus-4-8"
+gate_trigger = "no_tool_call"
+max_reviews = 1
+# gate_stall_turns = 0
+# gate_min_tool_results = 0
+# advisor_max_tokens = 2048
+# transcript_max_chars = 200000
+# fail_open = true
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `advisor` |
+| `executor_target` | ✅ required | Serves every client-visible turn |
+| `advisor_target` | ✅ required | Reviews gated turns. Never served |
+| `gate_trigger` | `no_tool_call` | What fires a review: `no_tool_call`, the executor's first turn that ends without a tool call, or `pattern` |
+| `gate_trigger_pattern` | unset | Regex for the `pattern` trigger, searched rather than anchored. Required and non-empty under `pattern`; setting it under `no_tool_call` is a startup error |
+| `max_reviews` | `1` | Reviews allowed per session. Must be at least `1`. A request without `x-claude-code-session-id` counts as a session of its own, so sessionless callers never share one budget |
+| `gate_stall_turns` | `0` | Reviews one turn as a mid-task checkpoint once the conversation carries this many assistant turns. `0` turns it off |
+| `gate_min_tool_results` | `0` | Tool results a conversation needs before a `no_tool_call` turn is reviewable |
+| `advisor_max_tokens` | `2048` | Output-token ceiling on each review. Must be at least `1` |
+| `advisor_temperature` | unset | Sampling temperature for reviews. Omitted from the review request when unset |
+| `transcript_max_chars` | `200000` | Cap on the transcript sent to the advisor; a longer one is trimmed from the middle. Must be at least `256` |
+| `fail_open` | `true` | When a review fails, serve the held turn. `false` fails the request with a `502` instead — also when the review was never sent because the session spent `max_judge_calls`; the failed review is still counted under its outcome (e.g. `upstream_error`, `timeout`), or as `budget_exhausted` when `max_judge_calls` refused it |
+| `reviewer_system_prompt` | packaged prompt | Replaces the APPROVE/REDO reviewer prompt |
+| `redo_feedback_prefix` | packaged prompt | Replaces the text placed in front of a REDO plan fed back to the executor |
+
+The six [per-call bounds](#per-call-bounds) go on `[models.router]`.
+`executor_target` may be a **passthrough** route, although `advisor_target` may
+not. While the session has review budget, every executor turn is held — see
+[buffered turns](#buffered-turns-escalation-and-advisor).
+
+#### Buffered turns: escalation and advisor
+
+A **gated** turn — escalation's weak turn before the latch, or an advisor
+executor turn while the session has review budget — is made first, held, and
+served only once the verdict is in, with response headers committed only when
+the replay starts. Every other turn streams exactly as before. How the caller's
+mode is kept, what counts as a complete turn, and what holding costs are in the
+[routing overview](/guides/routing/#held-turns).
+
+`x-gateway-route-source` — and the `source` label on
+`shunt.router.decisions` — says what happened:
+
+| Source | Entry | Meaning | Delivery |
+| :-- | :-- | :-- | :-- |
+| `escalation_weak` | escalation | The judge let the weak turn through: it declined, or the escalate streak is still below `confirmations` | Replayed |
+| `escalation_latch` | escalation | The session latched, on this turn or earlier, so the strong target served the turn | Live |
+| `escalation_fallback` | escalation | The weak turn failed or was cut before its terminal marker, or its upstream refused it as too long for its context window, so the strong target served the turn. The judge was not called | Live |
+| `classifier_fail_open` | escalation | The judge failed after a complete weak turn, so the weak turn was served | Replayed |
+| `advisor_approve` | advisor | The executor turn was reviewed and approved | Replayed |
+| `advisor_pass` | advisor | The executor turn was served without a review: it did not trip the gate — it ends in a tool call, for example — or no review could be reserved | Replayed |
+| `advisor_fail_open` | advisor | The review failed after a complete executor turn, so the turn was served | Replayed |
+| `advisor_redo` | advisor | The reviewer said REDO. The discarded turn was never sent; this is the executor's re-run | Live |
+| `advisor_exhausted` | advisor | The session's `max_reviews` is spent, or its advisor has failed three consults (a failed consult refunds `max_reviews`), so the executor streams with no buffering | Live |
+| `gated_error` | either | The gated turn could not be served — see below | Error |
+
+**When something fails:**
+
+| What fails | `escalation` | `advisor` |
+| :-- | :-- | :-- |
+| The gated turn crosses a `gated_*` bound, or ends before its terminal marker | Discarded before any header is sent; the strong target serves the turn live (`escalation_fallback`) | Discarded before any header is sent; the request fails with a gateway-owned `502` in the Anthropic error shape (`gated_error`). It is not a REDO and not a failover attempt: the upstream already answered `2xx` |
+| The gated call's upstream refuses the turn as too long for its context window: a `400` whose `error.message` — or, when the message does not match, the whole raw body, JSON or not — contains `prompt is too long`, `maximum number of tokens`, `context window`, or `context length` | The strong target serves the turn live (`escalation_fallback`) | Relayed unchanged (`gated_error`), so the client can compact |
+| The gated call's upstream answers with any other error status | Relayed to the client unchanged, as a live turn's would be, with the upstream's `retry-after` (`gated_error`), including when a `chatgpt_oauth` account pool ran out of accounts | Relayed unchanged (`gated_error`) |
+| The judge or review fails after a complete turn — a timeout, an oversized or unparseable reply, an upstream error, or `max_judge_calls` spent | The weak turn is served (`classifier_fail_open`) | With `fail_open = true`, the executor turn is served (`advisor_fail_open`); with `fail_open = false`, the request fails with a gateway-owned `502` (`gated_error`), including when `max_judge_calls` refused the review — the failed review is still counted under its outcome (e.g. `upstream_error`, `timeout`), or as `budget_exhausted` when `max_judge_calls` refused it |
+
+#### `type = "auto"`
+
+Upstream's stage-router preset: `picker = "efficient_first"` and
+`confidence_threshold = 0.5`, with every other stage key at its shunt default.
+Only the two targets are accepted beside `type`; set any other stage key and use
+`type = "stage_router"` instead. That includes `[models.router.classifier]` and
+the per-call bounds — the preset carries no judge, and a classifier table on an
+`auto` entry is a startup error.
+
+```toml
+[[models]]
+id = "claude-quick"
+
+[models.router]
+type = "auto"
+capable_target = "claude-opus-4-8"
+efficient_target = "claude-sonnet-4-6"
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `auto` |
+| `capable_target` | ✅ required | As for `stage_router` |
+| `efficient_target` | ✅ required | As for `stage_router` |
+
+#### `type = "random"`
+
+A weighted split across two or more targets — a canary aid. By default one
+Claude Code session stays on one arm.
+
+```toml
+[[models]]
+id = "claude-canary"
+
+[models.router]
+type = "random"
+targets = ["claude-sonnet-4-6", "gpt-5.6-terra"]
+weights = [9, 1]
+# seed = 0
+# affinity = "session"
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `random` |
+| `targets` | ✅ required | Model ids to split across |
+| `weights` | equal | One positive-or-zero weight per target; a weight of `0` disables that target. Each weight must be finite, and so must their sum — a list that overflows to infinity is rejected at load |
+| `seed` | `0` | Hash salt under `session` affinity; the draw seed under `request` affinity |
+| `affinity` | `session` | `session` keeps one session on one arm; `request` draws per request |
+
+Under `affinity = "session"` the arm is `sha256(seed ‖ model ‖ session id)`
+scaled into the weight range; a request with no `x-claude-code-session-id` takes a
+fresh weighted draw. Session affinity is stickiness, not access control. Surfaces
+with no request body report the first target with a positive weight. See the
+[routing overview](/guides/routing/#random).
+
+#### `type = "noop"`
+
+Answers without calling any upstream: an empty terminal assistant message in the
+caller's own mode. For `stream: true` that is a valid SSE sequence
+(`message_start`, `message_delta` with `stop_reason: "end_turn"`,
+`message_stop`); otherwise one Message JSON object. `count_tokens` answers
+`input_tokens: 0`. The route is authenticated exactly like any other, so this is
+not an unauthenticated hole — it is a smoke test for client wiring that proves
+the inbound path end to end without spending a token.
+
+```toml
+[[models]]
+id = "claude-noop"
+
+[models.router]
+type = "noop"
+```
+
+`type` is the only key it accepts.
+
+#### `type = "prefill_router"`
+
+A learned router. Upstream's own classifier scores the latest text user turn
+and picks one of the entry's targets, running its model in this process rather
+than calling a judge upstream.
+
+**This one needs a build that has it.** `prefill_router` is compiled in only
+behind the `prefill-router` cargo feature, which is **off by default** and
+which the release workflow never enables — so no release binary and no
+Homebrew install has it. Build from source:
+
+```sh
+cargo build --release --features prefill-router          # add ,ui for the dashboard
+```
+
+The config below parses in every build. What differs is the load: on a binary
+without the feature the load fails, so `shunt check` reports it rather than the
+gateway starting without the algorithm it was configured for. That feature
+error comes ahead of every other complaint about the table, so the key-level
+rules (a blank target, an empty `checkpoint`, a non-positive `max_length` or
+`batch_size`) are what a build with the feature on reports.
+
+```text
+models entry <id> router type = "prefill_router" is not compiled into this binary: it needs the `prefill-router` cargo feature, which is off by default and absent from release binaries; build from source with `cargo build --features prefill-router` (docs/routing-algorithms.md)
+```
+
+```toml
+[[models]]
+id = "claude-learned"
+
+[models.router]
+type = "prefill_router"
+targets = ["claude-sonnet-4-6", "claude-opus-4-8"]
+checkpoint = "/models/router.pt"
+# device = "cpu"
+# cache_dir = "/var/cache/huggingface"
+# max_length = 2048
+# batch_size = 32
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `prefill_router` |
+| `targets` | ✅ required | Model ids to choose between, in the checkpoint's head order |
+| `checkpoint` | ✅ required | Path to the tensor-only router checkpoint; a relative path resolves against the process working directory |
+| `device` | auto-detected | Torch device the router runs on — `cpu`, `cuda`, `cuda:0` |
+| `cache_dir` | — | Hugging Face cache directory for the encoder and its tokenizer |
+| `max_length` | `2048` | Maximum tokenized encoder input length; longer input is truncated. Must be greater than `0`. Unset leaves upstream's own default |
+| `batch_size` | `32` | Maximum prompts per encoder forward pass. Must be greater than `0`. Unset leaves upstream's own default |
+
+**What the operator has to supply.** The feature embeds Python through PyO3,
+so the build links libpython and the running gateway needs `torch`,
+`transformers`, `numpy`, and `accelerate` importable in the interpreter it
+embedded — set `PYO3_PYTHON` at build time to that interpreter (3.10 or newer,
+with a shared libpython) rather than letting PyO3 take the first `python3` on
+`PATH`. It also needs a router checkpoint: Switchyard v0.3.0 ships no
+checkpoint, exporter, or encoder assets, so obtaining or training a compatible
+one is the operator's job. When either is missing the gateway refuses to
+start, and a hot reload that hits the same problem is refused with the running
+config left in place:
+
+```text
+models entry <id> router type = "prefill_router" failed to load: <upstream error>
+```
+
+A reload rebuilds the router, and the per-session affinity lives inside it, so
+a reload forgets which target each session was on.
+
+**Admission comes first.** The router is driven only after `[server.auth]` and
+the gateway's managed-model policy have admitted the request. Inbound
+authentication ranges over every target the entry names rather than the one it
+will pick, so a caller must authenticate if any target injects a credential;
+the managed-model policy checks the requested id alone, so `availableModels`
+lists this id and never its private targets. A caller either gate refuses
+therefore triggers no inference and seeds no affinity for the session id it
+sent.
+
+Read the first half of that as the condition it is. An entry whose targets are
+*all* passthrough injects no credential anywhere in its envelope, so inbound
+authentication has nothing to demand and admits every caller — including an
+anonymous one, which then drives the router. If the drive itself is what you
+mean to protect, give the entry a credential-injecting target; neither
+`[server.auth]` nor gateway login gates an all-passthrough entry.
+
+**How a turn is decided.** Only `user` and `assistant` roles and only `text`
+and `tool_result` blocks are handed to the algorithm; it scores the latest text
+user turn, and treats a message whose blocks are all `tool_result` as a tool
+continuation rather than a new human turn. Session identity comes from
+`x-claude-code-session-id`, plus `x-claude-code-agent-id` for a delegated
+child, so a continuation reuses the turn's decision instead of re-running
+inference; a caller that sends neither falls back to upstream's hash of the
+first user message. Inference runs on a blocking worker, one prediction at a
+time per entry. `count_tokens` probes are decided the same way, and on a
+continuation that is an affinity hit rather than an inference.
+
+`x-gateway-route-source` — and the `source` label on
+`shunt.router.decisions{algorithm="prefill_router"}` — reports which of the
+three happened:
+
+| Source | Meaning |
+| :-- | :-- |
+| `prefill` | The router decided the turn, by inference or by session affinity |
+| `prefill_fail_open` | The routing call errored, so the request went to the default target: upstream's rule is the first entry in `targets` |
+| `prefill_default` | A surface with no request body — `/v1/models` discovery, `GET /routes`, model resolution — has no turn to score, so it reports the first target |
+
+`GET /routes` lists the entry with `algorithm: "prefill_router"` and its
+targets. The `shunt.stage_router.*` metrics stay the signal-only router's and
+never gain prefill rows.
+
+#### Validation
+
+A target that is itself a router, a blank target, a threshold outside
+`(0.0, 1.0]`, a `recent_turn_window` of `0`, a router **id** ending in `[1m]` or
+`[1M]`, a duplicate `[[models]]` id where either entry carries a router table, a
+`type` this build does not implement, or the same entry also declaring
+`[models.upstream_model]` is a startup error. On a `prefill_router` entry an
+empty `targets`, the same target listed twice, a blank `checkpoint`, and a
+`max_length` or `batch_size` of `0` are startup errors too — those are what a
+build with the feature **on** reports, because a build without it refuses the
+entry by naming the missing cargo feature before any of them is reached; and
+repeated targets are compared after the trailing `[1m]`/`[1M]` hint is stripped
+like every other target comparison. Two map-less entries may otherwise
+share an id, but a router names a routing policy rather than discovery metadata,
+so a duplicate would leave two policies for one id. Target ids are compared
+after the trailing `[1m]`/`[1M]` hint is stripped, the same way routing matches
+them — so a target resolving to any entry that carries its own router is
+rejected whatever the two types are, which is what keeps resolution one hop. A
+[`[models.router.classifier]`](#modelsrouterclassifier-optional) target is held
+to that same one-hop rule and to two more checks:
+`classifier.base_threshold` is range-checked exactly like
+`confidence_threshold`, and the judge must not resolve to a passthrough route
+— a target whose effective chain contains a passthrough upstream is a startup
+error, because the caller's credential is stripped from a judge call and a
+passthrough route has nothing else to run on. `auth = "none"` is accepted: an
+endpoint that needs no credential is not the same as one whose credential went
+missing. Any of the
+six [per-call bounds](#per-call-bounds) set to `0` is a startup error naming
+the key.
+
+Four shapes warn instead of failing the load, each because it has a coherent
+operator intent: a target that matches no explicit route (it still resolves
+through `server.default_provider` like any other unmatched id, and this warning
+now covers every router type), `capable_target` and `efficient_target` resolving
+to the same id (both tiers deliberately flattened onto one model), a
+`deescalate_threshold` below `confidence_threshold` (de-escalation made the
+easier direction, which a cost-first deployment may want), and a `[[routes]]`
+entry naming the router's own id (inert, since the router decides that id's
+destination). A `[[route_prefixes]]` entry the id merely starts with is **not**
+reported — it still serves every other id matching it. Each is emitted once per
+load — and a hot reload is a load, so a config left unfixed warns again on each
+one.
+
+### `[models.subagents]` (optional)
+
+An overlay for **delegated work** on any `[[models]]` entry: one with a
+`[models.upstream_model]` map, one with a `[models.router]` table, or a map-less
+id that resolves through `[[routes]]`. A `Task` sub-agent, a hook agent, or a
+workflow sub-agent requesting the id is diverted to the overlay's target; the
+parent session's own turns never see the table. See the
+[Subagent Routing guide](/guides/subagents/).
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `type` | ✅ required | `passthrough`, the fixed form above, or [`llm_classifier`](#subagents-type--llm_classifier), where a judge picks the child's target |
+| `target` | ✅ required (`passthrough`) | Model id a delegated turn goes to when `by_type` names nothing for its agent type — and where every delegated turn goes when the agent-type header is not sent |
+| `by_type` | `{}` | Agent type → model id, keyed on the literal `x-claude-code-agent-type` value |
+
+**What counts as delegated work.** A request whose `x-claude-code-request-class`
+is `subagent` or `workflow`; when that header is absent, a request carrying a
+non-blank `x-claude-code-agent-id`. `main`, `compaction`, and `auxiliary` never
+take the overlay, and `by_type` needs the client to set
+`CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` — see
+[what counts as delegated work](/guides/subagents/#what-counts-as-delegated-work).
+
+**`by_type` keys** are matched exactly, case included, against the literal
+`x-claude-code-agent-type` values listed in the
+[Subagent Routing guide](/guides/subagents/#the-passthrough-form). A blank key, or one carrying whitespace, is a
+startup error: it could never match.
+
+**Targets** are ordinary public model ids under the same one-hop rule as router
+targets: `target` and every `by_type` value must not resolve, after the trailing
+`[1m]`/`[1M]` hint is stripped, to an entry carrying its own `[models.router]` or
+`[models.subagents]` table — and a router target may not resolve to an entry
+carrying this overlay. A blank target, an overlaid id ending in `[1m]` or `[1M]`,
+and a duplicate `[[models]]` id where either entry carries the table are startup
+errors. A target matching no explicit route warns at load, as a router target
+does, and still resolves through `server.default_provider`.
+
+**No state.** The target is a function of the config and the request's headers
+alone: no session pin, no store, no judge call. A diverted turn reports
+`x-gateway-route-source` `subagent_type` for a `by_type` hit and `subagent` for
+the `target` fallback, and is counted under `algorithm = "subagents"`. Surfaces
+with no request never resolve the overlay's diverted target, and the overlay is
+never listed in the `GET /routes` `routers` array.
+
+#### subagents `type = "llm_classifier"`
+
+The overlay's second form: instead of a fixed target, a judge reads the
+delegated task and names the group that serves it. Only `mode = "custom"`
+exists here — `mode = "capability"` is a startup error — and the keys are the
+`custom` mode's, described in full [above](#type--llm_classifier). See the
+[Subagent Routing guide](/guides/subagents/#the-llm_classifier-form).
+
+```toml
+[models.subagents]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+classify_trigger = "new_session"
+max_output_tokens = 64
+prompt = """
+Select exactly one target for the delegated task.
+
+- Select "capable" for code review, critique, auditing, or correctness analysis.
+- Select "efficient" for implementation, research, explanation, and other delegated work.
+
+Return only JSON matching the response schema.
+"""
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+Three rules differ from the `[models.router]` form:
+
+- **`classify_trigger` defaults to `new_session`,** and `user_turn` is
+  rejected.
+- **`message_hash_fallback` must be `false`.** The classification is keyed on
+  `(session, agent)`.
+- **The parent is never classified.** A turn that is not delegated work resolves
+  the entry as if the table were absent, and makes no judge call.
+
+The six [per-call bounds](#per-call-bounds) go on this table, since it is the
+one making the calls. The judge is held to the same rules as any other: one hop
+and no passthrough route.
 
 ## `[sentry]` (optional)
 
@@ -627,4 +1513,17 @@ Extra headers on every OTLP request (e.g. a hosted-collector token). Merged unde
 
 ## Routing precedence
 
-A matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
+On a delegated turn, a matching `[models.subagents]` overlay → a matching `[models.router]` entry → a matching `[models.upstream_model]` entry → exact `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`.
+
+The overlay comes first, and only for delegated work: a `Task` child's request
+for an overlaid id is diverted to the overlay's target before the entry's own
+router or map is consulted, while the parent's own turns — and `compaction` and
+`auxiliary` — resolve the entry as if the table were absent. Everything below is
+what they, and every id carrying no overlay, resolve through.
+
+The router comes next because it is matched on the `[[models]]` entry itself: a
+request for a router-backed id is answered by the router, which picks a tier and
+resolves **that target** through the rest of the ladder — so the target, not the
+router id, is what a `[[routes]]` entry should name. An exact entry naming the
+router id is never consulted and warns at load. A `[[route_prefixes]]` entry is
+unaffected: the router takes only its own id out of that prefix's reach.

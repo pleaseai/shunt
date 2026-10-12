@@ -33,12 +33,21 @@ fn escape_html(input: &str) -> String {
 /// The login page's stylesheet, inlined because the page is a single HTML
 /// string with no asset route of its own.
 ///
-/// `ui/src/index.css` is a copy of this, for the embedded SPA bundle, which
-/// serves it as an external stylesheet instead — that is what lets the shell's
-/// Content-Security-Policy drop `'unsafe-inline'` for styles (`ui.rs`). Keep the
-/// two in step: the sign-in page and the dashboard are now rendered by two
-/// different mechanisms, and a change here that the bundle does not get makes
-/// them look like two products.
+/// The dashboard no longer shares this text. `ui/src/index.css` was a copy of
+/// it until the bundle moved to Tailwind; what the two still share is the token
+/// *values* — the palette, the type scale, and the page gradient below are
+/// spelled identically in that file's `:root`, which is what keeps the sign-in
+/// page and the dashboard looking like one product. A change to a colour here
+/// that the bundle does not get splits them, and nothing checks that today.
+///
+/// One divergence already exists and is deliberate: the dashboard offers an
+/// explicit light/dark choice and honours it through `:root[data-theme=…]`,
+/// while this page has no script and follows `prefers-color-scheme` only. An
+/// operator who pins a theme in the dashboard sees the OS default here.
+///
+/// The bundle serves its stylesheet as an external file, which is what lets the
+/// shell's Content-Security-Policy drop `'unsafe-inline'` for styles (`ui.rs`);
+/// this page still inlines a `<style>` element and so still needs it.
 const STYLE: &str = r#"
 :root {
   color-scheme: light dark;

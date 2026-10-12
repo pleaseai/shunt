@@ -1,0 +1,101 @@
+---
+title: advisor 게이트
+description: 실행 모델 하나가 모든 턴을 맡게 하고, 더 강한 어드바이저가 그 계획과 완료 주장을 승인하거나 작업을 다시 하도록 돌려보내게 합니다.
+---
+
+`type = "advisor"`는 **실행 모델**(executor) 하나가 클라이언트가 보는 모든 턴을 제공하게
+합니다. 더 강한 **어드바이저**(advisor)가 실행 모델의 마무리 턴 — 작업 전에 내놓는 계획,
+또는 작업을 끝냈다는 주장 — 을 클라이언트가 보기 전에 리뷰합니다. APPROVE는 붙잡아 둔 턴을
+내보내고, REDO는 그 턴을 버린 뒤 어드바이저의 계획과 함께 실행 모델을 다시 작업으로
+돌려보냅니다. 어드바이저는 턴을 제공하지 않으므로 클라이언트는 실행 모델의 출력만 봅니다.
+
+## 설정
+
+```toml
+[[models]]
+id = "claude-reviewed"
+
+[models.router]
+type = "advisor"
+executor_target = "claude-sonnet-4-6"
+advisor_target = "claude-opus-4-8"
+gate_trigger = "no_tool_call"
+max_reviews = 1
+# gate_stall_turns = 0
+# gate_min_tool_results = 0
+# advisor_max_tokens = 2048
+# transcript_max_chars = 200000
+# fail_open = true
+```
+
+리뷰를 일으키는 조건은 다음과 같습니다.
+
+- `gate_trigger = "no_tool_call"`(기본값)은 실행 모델이 도구 호출 없이 끝낸 첫 턴을
+  리뷰합니다. `gate_min_tool_results`를 두면 대화에 그만큼의 tool result가 쌓여야 그런 턴을
+  리뷰할 수 있습니다.
+- `gate_trigger = "pattern"`은 대신 `gate_trigger_pattern`에서 발동합니다. 이 정규식은
+  앵커 없이 검색합니다.
+- `gate_stall_turns`는 여기에 더해, 대화에 그만큼의 어시스턴트 턴이 쌓이면 작업 중간
+  점검으로 한 턴을 리뷰합니다. `0`은 끔입니다.
+
+`max_reviews`는 세션당 리뷰 수를 제한합니다. `x-claude-code-session-id`가 없는 요청은 그
+자체로 하나의 세션으로 세므로, 세션이 없는 호출자끼리 예산을 공유하지 않습니다.
+어드바이저는 `transcript_max_chars`에 맞춰 가운데를 잘라 낸 트랜스크립트를 보며,
+`reviewer_system_prompt`와 `redo_feedback_prefix`는 각각 패키지 APPROVE/REDO 리뷰어
+프롬프트와, 실행 모델에게 돌려보내는 REDO 계획 앞에 붙는 문구를 대체합니다.
+
+여섯 개 [호출당 한도](/ko/reference/configuration/#호출당-한도)는 `[models.router]`에
+놓으며, `gated_*` 세 개가 붙잡아 둔 실행 모델 턴에 상한을 겁니다.
+
+## 어떤 턴을 붙잡아 두는가
+
+턴이 `gate_trigger`에 걸리는지는 턴이 완성된 뒤에야 알 수 있습니다. 그래서 세션에 리뷰
+예산이 남아 있는 동안에는 실행 모델의 **모든** 턴을 붙잡아 두고, 게이트에 걸리지 않은 턴은
+리뷰 없이 제공합니다. `max_reviews`를 다 쓰거나 그 세션에서 리뷰 모델 호출이 세 번
+실패하면(실패한 호출은 리뷰를 돌려받습니다) 그 세션의 나머지 턴은 버퍼링 없이 실시간으로
+스트리밍됩니다. 붙잡아 둔 턴을 어떻게 제공하는지와 그 비용은
+[보류된 턴](/ko/guides/routing/#보류된-턴)에서 설명합니다. 붙잡아 둔 턴에서는 턴 전체가
+끝나야 첫 바이트가 도착합니다.
+
+## REDO
+
+붙잡아 둔 턴은 응답 헤더가 하나도 클라이언트에 닿기 전에 버립니다. 버린 턴과 어드바이저의
+계획을 대화에 덧붙이고 실행 모델을 다시 돌리며, 이 재실행은 실시간으로 스트리밍됩니다.
+
+## 리뷰가 실패하면
+
+`fail_open = true`(기본값)이면 리뷰가 실패해도 붙잡아 둔 턴을 제공합니다.
+`fail_open = false`면 대신 요청을 `502`로 실패시킵니다 — 세션이 `max_judge_calls`를 다
+써서 리뷰를 아예 보내지 않은 경우도 마찬가지입니다. 어느 쪽이든 실패한 리뷰는 여전히 그
+결과(예: `upstream_error`, `timeout`)로 집계되고, `max_judge_calls`가 거부한 리뷰는
+`budget_exhausted`로 집계됩니다.
+
+보류된 턴이 `gated_*` 한도를 넘거나 종료 표시 전에 끝나면 헤더를 보내기 전에 버리고, 요청은
+Anthropic 오류 형태의 게이트웨이 소유 `502`로 실패합니다. REDO도 페일오버 시도도
+아닙니다 — 업스트림은 이미 `2xx`로 답했습니다. 모든 실패 경우는
+[설정 레퍼런스](/ko/reference/configuration/#보류된-턴-escalation과-advisor)에 표로 정리되어
+있습니다.
+
+## 자격 증명과 프로브
+
+`advisor_target`과 달리 `executor_target`은 **passthrough** 라우트여도 됩니다. 실행 모델
+턴은 클라이언트 자신의 답이므로 호출자의 자격 증명을 싣지만, 리뷰는 판정 호출이므로
+그것을 하나도 싣지 않습니다. [판정 호출](/ko/guides/routing/#판정-호출)을 보세요.
+
+`count_tokens` 프로브는 리뷰도 보류된 호출도 만들지 않고 항상 `executor_target`으로
+응답합니다.
+
+## 클라이언트가 보는 것
+
+| `x-gateway-route-source` | 의미 |
+| :-- | :-- |
+| `advisor_approve` | 실행 모델 턴을 리뷰해 승인했고, 그 턴을 재생했습니다 |
+| `advisor_pass` | 실행 모델 턴을 리뷰 없이 제공했습니다. 게이트에 걸리지 않았거나, 리뷰를 예약할 수 없었습니다 |
+| `advisor_fail_open` | 완성된 실행 모델 턴 뒤에 리뷰가 실패해 그 턴을 제공했습니다 |
+| `advisor_redo` | 리뷰어가 REDO라고 했습니다. 이것은 실행 모델의 실시간 재실행입니다 |
+| `advisor_exhausted` | 리뷰 예산을 다 썼거나 리뷰 모델 호출이 세 번 실패해서, 실행 모델이 버퍼링 없이 스트리밍합니다 |
+| `gated_error` | 보류된 턴을 제공할 수 없었습니다 |
+
+리뷰는 `shunt.router.judge_calls{algorithm="advisor"}`로 세고, `GET /routes`는
+`advisor_target`을 `judges` 아래에 나열합니다. 모든 키는
+[설정 레퍼런스](/ko/reference/configuration/#type--advisor)에 있습니다.

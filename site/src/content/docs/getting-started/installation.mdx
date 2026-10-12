@@ -26,7 +26,9 @@ brew services start shunt
 ```
 
 Logs go to `$(brew --prefix)/var/log/shunt.log`. `brew services stop` sends `SIGTERM`, and shunt
-drains in-flight requests before exiting. On Unix, Antigravity agent turns are terminated when
+drains in-flight requests before exiting — for up to `[server] shutdown_timeout_seconds`
+(default 30; changing this one does need a restart), after which shunt stops waiting and exits. On
+Unix, Antigravity agent turns are terminated when
 shutdown starts so their isolated process groups cannot hold the drain open. Config changes don't need
 a restart — shunt [hot-reloads](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)
 the file automatically. See [Running as a

@@ -19,19 +19,53 @@ pub(super) async fn mapped_upstream_error(
     upstream: reqwest::Response,
     auth: crate::config::AuthMode,
 ) -> AdapterError {
+    mapped_upstream_error_within(status, upstream, auth, None).await
+}
+
+/// [`mapped_upstream_error`] for an attempt a gated call's idle clock bounds:
+/// `clock` is the gap and the instant it started, the attempt's send (see
+/// [`crate::adapters::within_idle`]), so the wait for the error body is the
+/// rest of the gap the header wait began rather than a fresh one (#704). The
+/// body is then read here, before the error is returned, so a stall is the
+/// call's cut — the [`crate::adapters::UpstreamBodyIdle`] marker — rather than
+/// a lazy read left to the envelope budget alone.
+///
+/// `None` is every client turn: the body stays lazy, read only when the
+/// chosen response is consumed, exactly as it always was.
+pub(super) async fn mapped_upstream_error_within(
+    status: StatusCode,
+    upstream: reqwest::Response,
+    auth: crate::config::AuthMode,
+    clock: Option<(std::time::Duration, tokio::time::Instant)>,
+) -> AdapterError {
     let retry_after = upstream.headers().get("retry-after").cloned();
     let shunt_status = crate::model::responses::client_facing_status(status);
-    let stream = futures_util::stream::once(async move {
-        let text = upstream.text().await.unwrap_or_default();
-        tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
-        let value = upstream_error_value(status, &text, auth);
-        let body = serde_json::to_vec(&map_error_value(&value, status)).unwrap_or_default();
-        Ok::<Bytes, Infallible>(Bytes::from(body))
-    });
+    let body = match clock {
+        None => Body::from_stream(futures_util::stream::once(async move {
+            let text = crate::error::bounded_upstream_text(
+                upstream,
+                crate::error::ERROR_ENVELOPE_BUDGET,
+                crate::error::ERROR_ENVELOPE_BYTES,
+            )
+            .await;
+            Ok::<Bytes, Infallible>(mapped_error_body(status, text, auth))
+        })),
+        Some(clock) => match crate::error::bounded_upstream_text_within(
+            upstream,
+            crate::error::ERROR_ENVELOPE_BUDGET,
+            crate::error::ERROR_ENVELOPE_BYTES,
+            clock,
+        )
+        .await
+        {
+            Ok(text) => Body::from(mapped_error_body(status, text, auth)),
+            Err(idle) => return crate::adapters::idle_error(idle),
+        },
+    };
     let mut response = Response::builder()
         .status(shunt_status)
         .header("content-type", "application/json")
-        .body(Body::from_stream(stream))
+        .body(body)
         .expect("valid mapped upstream error response");
     if let Some(retry_after) = retry_after {
         response.headers_mut().insert("retry-after", retry_after);
@@ -41,6 +75,22 @@ pub(super) async fn mapped_upstream_error(
         response: Box::new(response),
         failure: Some(crate::adapters::AdapterFailure::UpstreamStatus(status)),
     }
+}
+
+/// The Anthropic-shaped envelope [`mapped_upstream_error_within`] answers with,
+/// from the upstream error body's text (`None` once a read bound tripped).
+fn mapped_error_body(
+    status: StatusCode,
+    text: Option<String>,
+    auth: crate::config::AuthMode,
+) -> Bytes {
+    // A budget trip or read failure must not leave the envelope with an
+    // empty message: name the status instead, matching the anthropic
+    // fallback.
+    let text = text.unwrap_or_else(|| format!("upstream returned {status}"));
+    tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
+    let value = upstream_error_value(status, &text, auth);
+    Bytes::from(serde_json::to_vec(&map_error_value(&value, status)).unwrap_or_default())
 }
 
 fn upstream_error_value(status: StatusCode, text: &str, auth: crate::config::AuthMode) -> Value {
@@ -113,8 +163,11 @@ pub(super) fn own_error(message: String) -> AdapterError {
 /// status it was mapped against
 /// ([`crate::model::responses::AnthropicSseMachine::take_backend_error`]):
 /// `502` by default — SSE error events carry no upstream HTTP status to
-/// preserve — or `429` for an in-stream `rate_limit_exceeded`, so the client
-/// sees the same `rate_limit_error` envelope an HTTP 429 produces. Either way
+/// preserve — or the status the error `code` classifies to
+/// ([`crate::model::responses::backend_error_status`]: `429` for a throttle,
+/// `529` for an overload, `400` for a terminal policy refusal), or the `status`
+/// a Codex websocket wrapped error frame carries, so the client sees the same
+/// envelope that HTTP status produces. Either way
 /// the error is terminal (`failure: None`): the event arrived after the upstream
 /// accepted the turn with 2xx headers, and a post-acceptance failure is never
 /// replayed on the next upstream (`docs/upstreams-failover.md` §3 — the turn is
@@ -143,17 +196,31 @@ pub(super) fn backend_error(status: StatusCode, error: Value) -> AdapterError {
     }
 }
 
+/// Extract the already-mapped Anthropic error envelope from an
+/// [`AdapterError`] so the streaming transports can re-emit it as one SSE
+/// `error` event after the early `message_start` has already committed the
+/// response. Every error this module builds serializes the envelope as its
+/// JSON body, so the body bytes ARE the envelope. The extraction is
+/// [`crate::error::error_body_value`] — the same response-body-to-envelope
+/// conversion, kept in one place.
+pub(super) async fn adapter_error_envelope(error: AdapterError) -> Value {
+    crate::error::error_body_value(*error.response).await
+}
+
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use axum::body::to_bytes;
     use axum::http::StatusCode;
+    use axum::response::IntoResponse;
     use serde_json::Value;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::config::AuthMode;
 
-    use super::mapped_upstream_error;
+    use super::{
+        adapter_error_envelope, mapped_upstream_error, mapped_upstream_error_within, Bytes,
+    };
 
     /// Serves `body` at `status` from a mock server and returns the resulting
     /// `reqwest::Response`, mirroring the shape `mapped_upstream_error` sees in
@@ -330,5 +397,250 @@ mod tests {
             mapped_upstream_error(StatusCode::TOO_MANY_REQUESTS, upstream, AuthMode::ApiKey).await;
         assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.response.headers().get("retry-after").unwrap(), "7");
+    }
+
+    #[tokio::test]
+    async fn adapter_error_envelope_preserves_the_mapped_body() {
+        use crate::adapters::AdapterError;
+        let error = crate::error::ShuntError::bad_gateway("upstream timed out");
+        let adapter = AdapterError {
+            message: "responses adapter failed".into(),
+            response: Box::new(error.into_response()),
+            failure: None,
+        };
+        let envelope = adapter_error_envelope(adapter).await;
+        assert_eq!(envelope["type"], "error");
+        assert_eq!(envelope["error"]["type"], "api_error");
+        assert_eq!(envelope["error"]["message"], "upstream timed out");
+    }
+
+    /// A `400` built in-process, as a gated attempt's upstream answers it:
+    /// `body` is sent whole at its absolute instant and then ends, and `None`
+    /// is a body that never sends a byte.
+    pub(in crate::adapters::responses) fn timed_bad_request(
+        body: Option<(tokio::time::Instant, &'static [u8])>,
+    ) -> reqwest::Response {
+        let chunk = futures_util::stream::once(async move {
+            let Some((at, bytes)) = body else {
+                return futures_util::future::pending().await;
+            };
+            tokio::time::sleep_until(at).await;
+            Ok::<_, std::io::Error>(Bytes::from_static(bytes))
+        });
+        reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(400)
+                .header("content-type", "application/json")
+                .body(reqwest::Body::wrap_stream(chunk))
+                .unwrap(),
+        )
+    }
+
+    /// A gated attempt's `400` whose headers arrive 250 ms after the send and
+    /// whose body then stalls is cut at the idle gap measured from the send,
+    /// 300 ms, with the idle marker, rather than left to the envelope budget
+    /// (#704).
+    ///
+    /// Non-vacuity: map it with no clock (the lazy client read) and no marker
+    /// is set; start the first deadline at the read instead of at the send and
+    /// the cut lands at 550 ms. Either way this goes red.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_error_body_stalled_after_its_headers_is_cut_at_the_gap_from_the_send() {
+        let idle = std::time::Duration::from_millis(300);
+        let sent_at = tokio::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let error = mapped_upstream_error_within(
+            StatusCode::BAD_REQUEST,
+            timed_bad_request(None),
+            AuthMode::ApiKey,
+            Some((idle, sent_at)),
+        )
+        .await;
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle { idle }),
+            "got: {}",
+            error.message
+        );
+        assert!(
+            error.failure.is_none(),
+            "the cut is the call's, not the route's"
+        );
+        assert_eq!(sent_at.elapsed(), idle, "cut at the gap from the send");
+    }
+
+    /// The twin: the same `400` whose body completes 280 ms after the send is
+    /// mapped as it always is — the upstream's status, message, and failure.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_error_body_inside_the_gap_from_the_send_is_mapped_as_before() {
+        let idle = std::time::Duration::from_millis(300);
+        let sent_at = tokio::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let body = Some((
+            sent_at + std::time::Duration::from_millis(280),
+            &br#"{"error":{"message":"bad field"}}"#[..],
+        ));
+        let error = mapped_upstream_error_within(
+            StatusCode::BAD_REQUEST,
+            timed_bad_request(body),
+            AuthMode::ApiKey,
+            Some((idle, sent_at)),
+        )
+        .await;
+        assert_eq!(error.response.status(), StatusCode::BAD_REQUEST);
+        assert!(matches!(
+            error.failure,
+            Some(crate::adapters::AdapterFailure::UpstreamStatus(
+                StatusCode::BAD_REQUEST
+            ))
+        ));
+        assert_eq!(body_json(error).await["error"]["message"], "bad field");
+    }
+
+    /// An upstream error built in-process, with a `retry-after`: each of
+    /// `chunks` is sent at its absolute instant, and the body then ends, or
+    /// never sends another byte when `stall` is set.
+    pub(in crate::adapters::responses) fn timed_error(
+        status: u16,
+        chunks: Vec<(tokio::time::Instant, &'static [u8])>,
+        stall: bool,
+    ) -> reqwest::Response {
+        use futures_util::StreamExt;
+        let sent = futures_util::stream::iter(chunks).then(|(at, bytes)| async move {
+            tokio::time::sleep_until(at).await;
+            Ok::<_, std::io::Error>(Bytes::from_static(bytes))
+        });
+        let end = futures_util::stream::once(async move {
+            if stall {
+                futures_util::future::pending::<()>().await;
+            }
+        })
+        .filter_map(|()| async { None });
+        reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(status)
+                .header("content-type", "application/json")
+                .header("retry-after", "7")
+                .body(reqwest::Body::wrap_stream(sent.chain(end)))
+                .unwrap(),
+        )
+    }
+
+    /// The gap of #710's tests: the default `gated_idle_ms`, well past the
+    /// 5 s envelope budget, so the gap never ends a read on its own.
+    const DEFAULT_GAP: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// #710: on a gated call whose gap outlasts the envelope budget, a `429`
+    /// whose body never sends a byte is cut when the budget ends, with the
+    /// idle marker carrying the budget, rather than relayed as the upstream's
+    /// error. This is the read of the single-account path (`forward_http`)
+    /// and of the pool's non-failover relays.
+    ///
+    /// Non-vacuity: drop the no-byte arm of `bounded_upstream_text_within` and
+    /// the `429` is relayed with `failure: Some(..)` and no marker.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_error_body_silent_through_the_envelope_budget_is_cut() {
+        let sent_at = tokio::time::Instant::now();
+        let error = mapped_upstream_error_within(
+            StatusCode::TOO_MANY_REQUESTS,
+            timed_error(429, Vec::new(), true),
+            AuthMode::ApiKey,
+            Some((DEFAULT_GAP, sent_at)),
+        )
+        .await;
+        assert_eq!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>(),
+            Some(&crate::adapters::UpstreamBodyIdle {
+                idle: crate::error::ERROR_ENVELOPE_BUDGET
+            }),
+            "got: {}",
+            error.message
+        );
+        assert!(error.failure.is_none(), "a cut is not a failover");
+        assert_eq!(sent_at.elapsed(), crate::error::ERROR_ENVELOPE_BUDGET);
+    }
+
+    /// The twin: the same `429` whose body arrives 4 s into the read is
+    /// relayed as it always was, with its status, `retry-after`, message, and
+    /// failure.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_error_body_inside_the_envelope_budget_is_relayed() {
+        let sent_at = tokio::time::Instant::now();
+        let body = (
+            sent_at + std::time::Duration::from_secs(4),
+            &br#"{"error":{"message":"slow down"}}"#[..],
+        );
+        let error = mapped_upstream_error_within(
+            StatusCode::TOO_MANY_REQUESTS,
+            timed_error(429, vec![body], false),
+            AuthMode::ApiKey,
+            Some((DEFAULT_GAP, sent_at)),
+        )
+        .await;
+        assert!(error
+            .response
+            .extensions()
+            .get::<crate::adapters::UpstreamBodyIdle>()
+            .is_none());
+        assert!(matches!(
+            error.failure,
+            Some(crate::adapters::AdapterFailure::UpstreamStatus(
+                StatusCode::TOO_MANY_REQUESTS
+            ))
+        ));
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.response.headers().get("retry-after").unwrap(), "7");
+        assert_eq!(body_json(error).await["error"]["message"], "slow down");
+    }
+
+    /// The other twin, which pins the no-byte condition: a body that sent its
+    /// first bytes 1 s into the read and then stalls past the budget is
+    /// relayed as before, with the message naming the status in place of the
+    /// unfinished body.
+    ///
+    /// Non-vacuity: cut on every budget trip, bytes or none, and this gets
+    /// the marker instead.
+    #[tokio::test(start_paused = true)]
+    async fn a_gated_error_body_that_started_before_the_budget_ended_is_relayed() {
+        let sent_at = tokio::time::Instant::now();
+        let head = (
+            sent_at + std::time::Duration::from_secs(1),
+            &br#"{"error":"#[..],
+        );
+        let error = mapped_upstream_error_within(
+            StatusCode::TOO_MANY_REQUESTS,
+            timed_error(429, vec![head], true),
+            AuthMode::ApiKey,
+            Some((DEFAULT_GAP, sent_at)),
+        )
+        .await;
+        assert!(
+            error
+                .response
+                .extensions()
+                .get::<crate::adapters::UpstreamBodyIdle>()
+                .is_none(),
+            "got: {}",
+            error.message
+        );
+        assert!(matches!(
+            error.failure,
+            Some(crate::adapters::AdapterFailure::UpstreamStatus(
+                StatusCode::TOO_MANY_REQUESTS
+            ))
+        ));
+        assert_eq!(sent_at.elapsed(), crate::error::ERROR_ENVELOPE_BUDGET);
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.response.headers().get("retry-after").unwrap(), "7");
+        assert_eq!(
+            body_json(error).await["error"]["message"],
+            "upstream returned 429 Too Many Requests"
+        );
     }
 }

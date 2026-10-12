@@ -7,7 +7,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
-    auth::slots::ShuntCredentials,
+    auth::{gate, slots::ShuntCredentials},
     error::{into_openai_error_shape, ShuntError},
     server::AppState,
 };
@@ -16,14 +16,16 @@ pub(crate) mod upstream;
 
 /// Builtin catalog captured live from `GET https://api.anthropic.com/v1/models`
 /// on 2026-07-28, in the API's own order (`created_at` descending, newest
-/// first).
+/// first). `claude-opus-5-5` and `claude-fable-5-1` were added from the same
+/// endpoint on 2026-09-23, and `claude-sonnet-5-5` on 2026-09-30, where it led
+/// the list.
 ///
-/// The upstream list is **credential-scoped**: the same endpoint returned 11
-/// entries for an `x-api-key` caller, 10 for a Claude subscription OAuth bearer
-/// (no `claude-opus-4-1-20250805`), and the reference `claude gateway` 2.1.220
-/// serves a third 10-entry variant (no `claude-opus-4-5-20251101`). This table
-/// is the **superset** of all three, so no caller loses a model it can actually
-/// reach. The cost is that a caller may see an id its own credential is not
+/// The upstream list is **credential-scoped**: on 2026-07-28 the same endpoint
+/// returned 11 entries for an `x-api-key` caller, 10 for a Claude subscription
+/// OAuth bearer (no `claude-opus-4-1-20250805`), and the reference
+/// `claude gateway` 2.1.220 served a third 10-entry variant (no
+/// `claude-opus-4-5-20251101`). This table is the **superset** of all three,
+/// so no caller loses a model it can actually reach. The cost is that a caller may see an id its own credential is not
 /// entitled to; consistent with the existing stance, that stays a runtime error
 /// rather than an upstream entitlement probe at discovery time.
 ///
@@ -36,8 +38,8 @@ struct BuiltinModel {
     max_tokens: u64,
 }
 
-/// Expands one row per model so the table reads as data rather than eleven
-/// repetitions of the same struct literal:
+/// Expands one row per model so the table reads as data rather than one
+/// repeated struct literal per model:
 /// `id => display_name, created_at, max_input_tokens, max_tokens;`
 macro_rules! builtin_models {
     ($($id:literal => $display_name:literal, $created_at:literal, $max_input_tokens:literal, $max_tokens:literal;)*) => {
@@ -52,6 +54,9 @@ macro_rules! builtin_models {
 }
 
 const BUILTIN_MODELS: &[BuiltinModel] = builtin_models![
+    "claude-sonnet-5-5" => "Claude Sonnet 5.5", "2026-09-28T00:00:00Z", 1_000_000, 128_000;
+    "claude-opus-5-5" => "Claude Opus 5.5", "2026-09-21T16:24:00Z", 1_000_000, 128_000;
+    "claude-fable-5-1" => "Claude Fable 5.1", "2026-08-28T00:00:00Z", 1_000_000, 128_000;
     "claude-opus-5" => "Claude Opus 5", "2026-07-24T00:00:00Z", 1_000_000, 128_000;
     "claude-sonnet-5" => "Claude Sonnet 5", "2026-06-29T00:00:00Z", 1_000_000, 128_000;
     "claude-fable-5" => "Claude Fable 5", "2026-06-07T00:00:00Z", 1_000_000, 128_000;
@@ -133,16 +138,31 @@ async fn authentication_error(
     headers: &HeaderMap,
     codex_shape: bool,
 ) -> Option<Response> {
-    let static_client = state
-        .inbound_auth
-        .as_ref()
-        .and_then(|auth| auth.authenticate_client(headers));
+    let inbound = match &state.inbound_auth {
+        Some(auth) => {
+            gate::authenticate(auth, &state.inbound_jwks, headers, gate::Slots::Client).await
+        }
+        None => gate::Outcome::Rejected,
+    };
+    if inbound == gate::Outcome::Unavailable {
+        tracing::warn!("GET /v1/models: cannot verify credential, JWT issuer key set unreachable");
+        let response = gate::unavailable_response();
+        return Some(if codex_shape {
+            into_openai_error_shape(response).await
+        } else {
+            response
+        });
+    }
+    let inbound_client = match &inbound {
+        gate::Outcome::Authenticated { client, .. } => Some(client.as_str()),
+        _ => None,
+    };
     let gateway_identity = state
         .gateway_auth
         .as_ref()
         .and_then(|auth| auth.authenticate_bearer(headers));
     if (state.inbound_auth.is_some() || state.gateway_auth.is_some())
-        && static_client.is_none()
+        && inbound_client.is_none()
         && gateway_identity.is_none()
     {
         tracing::warn!(
@@ -171,7 +191,7 @@ async fn authentication_error(
             response
         });
     }
-    if let Some(client) = static_client {
+    if let Some(client) = inbound_client {
         tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
     } else if let Some(identity) = gateway_identity.as_ref() {
         tracing::info!(client = %identity.email, "gateway user authenticated for GET /v1/models");
@@ -294,7 +314,7 @@ mod tests {
         server::{self, AppState},
     };
 
-    use super::get;
+    use super::{get, BUILTIN_MODELS};
 
     struct OwnedEnvGuard(String);
 
@@ -316,11 +336,17 @@ mod tests {
                         "codex".to_string(),
                         "gpt-5.2".to_string(),
                     )])),
+                    router: None,
+                    stage_router: None,
+                    subagents: None,
                 },
                 ModelConfig {
                     id: "anthropic-sonnet-via-codex".to_string(),
                     display_name: None,
                     upstream_model: None,
+                    router: None,
+                    stage_router: None,
+                    subagents: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -369,6 +395,39 @@ mod tests {
         );
     }
 
+    /// The table is maintained by hand and `first_id` follows its first row, so
+    /// a new model inserted out of `created_at` order must fail here rather than
+    /// only in the hand-copied fixture below.
+    #[test]
+    fn builtin_table_is_newest_first_with_unique_ids() {
+        let table: Vec<(&str, &str)> = BUILTIN_MODELS
+            .iter()
+            .map(|model| (model.created_at, model.id))
+            .collect();
+        // A stable sort keeps rows that share a `created_at` in table order.
+        let mut newest_first = table.clone();
+        newest_first.sort_by(|a, b| b.0.cmp(a.0));
+        assert_eq!(table, newest_first, "builtin rows must be newest-first");
+        let mut ids: Vec<&str> = BUILTIN_MODELS.iter().map(|model| model.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), BUILTIN_MODELS.len(), "duplicate builtin id");
+    }
+
+    #[test]
+    fn every_builtin_claude_model_has_a_list_price() {
+        for model in BUILTIN_MODELS
+            .iter()
+            .filter(|model| model.id.starts_with("claude-"))
+        {
+            assert!(
+                crate::gateway::spend::pricing::canonical_builtin_id(model.id).is_some(),
+                "builtin model {} has no LIST_PRICES row",
+                model.id
+            );
+        }
+    }
+
     #[tokio::test]
     async fn default_returns_builtin_models_in_api_order() {
         let state =
@@ -384,6 +443,9 @@ mod tests {
             body,
             json!({
                 "data": [
+                    {"type": "model", "id": "claude-sonnet-5-5", "display_name": "Claude Sonnet 5.5", "created_at": "2026-09-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
+                    {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-09-21T16:24:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
+                    {"type": "model", "id": "claude-fable-5-1", "display_name": "Claude Fable 5.1", "created_at": "2026-08-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5", "created_at": "2026-07-24T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5", "created_at": "2026-06-29T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-fable-5", "display_name": "Claude Fable 5", "created_at": "2026-06-07T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
@@ -397,7 +459,7 @@ mod tests {
                     {"type": "model", "id": "claude-opus-4-1-20250805", "display_name": "Claude Opus 4.1", "created_at": "2025-08-05T00:00:00Z", "max_input_tokens": 200000, "max_tokens": 32000}
                 ],
                 "has_more": false,
-                "first_id": "claude-opus-5",
+                "first_id": "claude-sonnet-5-5",
                 "last_id": "claude-opus-4-1-20250805"
             })
         );
@@ -411,11 +473,17 @@ mod tests {
                     id: "claude-opus-4-8".to_string(),
                     display_name: Some("Opus Curated".to_string()),
                     upstream_model: None,
+                    router: None,
+                    stage_router: None,
+                    subagents: None,
                 },
                 ModelConfig {
                     id: "claude-custom-model".to_string(),
                     display_name: None,
                     upstream_model: None,
+                    router: None,
+                    stage_router: None,
+                    subagents: None,
                 },
             ],
             ..crate::config::Config::default()
@@ -434,6 +502,9 @@ mod tests {
                 "data": [
                     {"type": "model", "id": "claude-opus-4-8", "display_name": "Opus Curated"},
                     {"type": "model", "id": "claude-custom-model"},
+                    {"type": "model", "id": "claude-sonnet-5-5", "display_name": "Claude Sonnet 5.5", "created_at": "2026-09-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
+                    {"type": "model", "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": "2026-09-21T16:24:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
+                    {"type": "model", "id": "claude-fable-5-1", "display_name": "Claude Fable 5.1", "created_at": "2026-08-28T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5", "created_at": "2026-07-24T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5", "created_at": "2026-06-29T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
                     {"type": "model", "id": "claude-fable-5", "display_name": "Claude Fable 5", "created_at": "2026-06-07T00:00:00Z", "max_input_tokens": 1000000, "max_tokens": 128000},
@@ -479,6 +550,9 @@ mod tests {
                 id: "claude-opus-5".to_string(),
                 display_name: Some("Opus Curated".to_string()),
                 upstream_model: None,
+                router: None,
+                stage_router: None,
+                subagents: None,
             }],
             ..crate::config::Config::default()
         };
@@ -523,6 +597,9 @@ mod tests {
                 id: "claude-existing-contract".to_string(),
                 display_name: Some("Existing Contract".to_string()),
                 upstream_model: None,
+                router: None,
+                stage_router: None,
+                subagents: None,
             }],
             ..crate::config::Config::default()
         };
@@ -662,6 +739,7 @@ mod tests {
         let _env_guard = OwnedEnvGuard(env.clone());
         let mut config = codex_enabled_config();
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
         });
@@ -779,6 +857,7 @@ mod tests {
             read_keys: Vec::new(),
             session_ttl_secs: 3600,
             pending_ttl_secs: 600,
+            hide_observed: false,
             oidc: None,
         });
         let state = AppState::new(config, reqwest::Client::new()).unwrap();

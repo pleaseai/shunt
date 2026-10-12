@@ -22,7 +22,7 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 如果存在 `[server.auth]` 但环境变量未设置或格式错误,启动会**安全失败(fail closed)**。对映射模型和 `GET /v1/models` 的、不带有效 token 的请求会得到 401 `authentication_error`。两个门控都接受客户端 token 出现在任意标准 Anthropic 凭据槽位中 —— 当多个槽位都携带有效 token 时,优先级依次为:配置的头部(默认 `x-shunt-token`)、`Authorization: Bearer`、`x-api-key`。`GET /routes`、`GET|HEAD /`、`GET /health` 以及透传模型保持开放。`GET /routes` 无需认证,因为它是暴露路由元数据(配置的提供方/上游模型映射)的 shunt 原生端点,从不暴露凭据 —— 凭据只存在于提供方配置中,且从不被该处理器读取。
 
-在被门控的路由上,被接受的凭据头部在转发前总会被剥除(shunt 会在那里注入它自己的提供方凭据),匹配是常量时间的,token 值从不被记录(客户端*名称*会,按请求)。在透传路由上 shunt 不注入任何东西,因此调用方自己的凭据会按呈现的样子转发 —— 但按槽位有例外:当 `Authorization` 或 `x-api-key` 槽位自身的值是 shunt 自己的入站凭据(被接受的客户端 token、`[server.gateway]` JWT,或 `[server.admin]` 凭据 —— 管理面除了自己的头部之外也在 `x-api-key` 中接受它)时,该槽位会被清除。因此在门控处被接受的凭据绝不会被中继到上游,而另一个槽位中真实的上游凭据仍会继续流动。每个槽位会针对它携带的**每一个**值进行判定,而不只是第一个;只要某个位置上存在 shunt 的凭据,该槽位就会被整个丢弃 —— 因此如果你把同一个头部发送两次,一个值放真实凭据、另一个值放 shunt 凭据,两者都会消失。`cookie` 头部在每次转发时都会被整个移除 —— 管理面在该处接受写入级会话 cookie,而 shunt 自身不保留 cookie jar。代价是你发送的无害 cookie 也会一并被丢弃。
+在被门控的路由上,被接受的凭据头部在转发前总会被剥除(shunt 会在那里注入它自己的提供方凭据),匹配是常量时间的,token 值从不被记录(客户端*名称*会,按请求)。在透传路由上 shunt 不注入任何东西,因此调用方自己的凭据会按呈现的样子转发 —— 但按槽位有例外:当 `Authorization` 或 `x-api-key` 槽位自身的值是 shunt 自己的入站凭据(被接受的客户端 token、`[server.gateway]` JWT,或 `[server.admin]` 凭据 —— 管理面除了自己的头部之外也在 `x-api-key` 中接受它)时,该槽位会被清除。因此在门控处被接受的凭据绝不会被中继到上游,而另一个槽位中真实的上游凭据仍会继续流动。每个槽位会针对它携带的**每一个**值进行判定,而不只是第一个;只要某个位置上存在 shunt 的凭据,该槽位就会被整个丢弃 —— 因此如果你把同一个头部发送两次,一个值放真实凭据、另一个值放 shunt 凭据,两者都会消失。`cookie` 头部在每次转发时都会被整个移除 —— 管理面在该处接受会话 cookie,而 shunt 自身不保留 cookie jar。代价是你发送的无害 cookie 也会一并被丢弃。
 
 客户端侧,按网关提供的内容来选择:
 
@@ -49,6 +49,36 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 
 如果你还启用了可选的[管理 Web 界面](/zh-cn/guides/admin-remote-provisioning/),请用独立的管理员 token 保护它,并且只通过 HTTPS 或可信隧道暴露。
+
+## 验证自有 identity provider 签发的 JWT
+
+如果你的组织已经在运行 identity provider,`[[server.auth.jwt]]` 可以让 shunt 接受它签发的 token,而不必分发共享 secret —— 在不让 shunt 变成认证服务器的前提下获得按用户区分的身份。shunt **只做验证**:没有登录流程、没有会话存储、没有签名 secret。与 [gateway 登录](/zh-cn/guides/gateway-login/)不同,客户端仍然只需要配置 base URL 和 bearer,因此不会进入 Claude Code 的 gateway provider 模式,也不会失去该模式禁用的功能。
+
+```toml
+[server.auth]
+# 配置了 issuer 之后就不再需要静态 token。
+tokens_env = "SHUNT_CLIENT_TOKENS"
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<你为 shunt 创建的 client id>"]
+email_domains = ["example.com"]
+```
+
+每个调用方发送 token 的位置和静态 token 完全一样:
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="<IdP 签发的 JWT>"   # 作为 Authorization: Bearer 发送
+```
+
+JWT **只**通过 `Authorization: Bearer` 接受 —— 配置的 header 和 `x-api-key` 仍然只接受静态 token。两种方式可以同时配置,静态 token 会先被检查。
+
+配置时有两点需要注意:
+
+- **给 shunt 单独的 audience。** 为 shunt 单独创建一个 client id 并写入 `audience`,这样同一租户中为其他应用签发的 token 就不会在这里通过认证。
+- **签发短寿命 token。** shunt 不保存吊销状态,所以 token 会一直可用到过期。`max_token_age_seconds`(默认 `3600`)会拒绝寿命超过该值的 token —— 如果需要更严格的吊销,请调小它并让 IdP 签发分钟级的 token。
+
+条目配置错误时启动会 fail closed,包括只有 `audience` 而没有 `email_domains` / `allowed_emails` 规则的情况。如果 JWT 认证返回带有 `api_error` 正文的 `503`(而不是下文容量上限拒绝时的 `overloaded_error`),说明 shunt 没能拉取到 issuer 的 key set —— 这时应该检查 issuer URL 和网络可达性,而不是凭据。完整的键列表见[配置参考](/zh-cn/reference/configuration/)。
 
 ## SSE keepalive ping
 

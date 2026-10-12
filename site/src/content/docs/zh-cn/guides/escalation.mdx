@@ -1,0 +1,87 @@
+---
+title: 升级路由
+description: 让每个会话从弱目标开始,由裁判对它实际完成的工作作出裁决,并在裁判持续发现它陷入困境时把会话锁定到强目标。
+---
+
+`mode = "escalation"` 是 [`llm_classifier`](/zh-cn/guides/llm-classifier/) 的第三种模式。
+`capability` 和 `custom` 预测一个回合需要哪个模型,而升级路由让每个会话从弱目标开始,并让
+裁判读一读工作进展如何 —— 看的是弱模型实际做了什么,而不是预测。
+
+## 会话如何升级
+
+尚未锁定(latch)的会话里,每一轮都先在 `weak_target` 上生成并扣住;然后裁判对这一轮
+**已完成**的结果作出裁决:
+
+- 拒绝升档会把连续升档计数清零。
+- 升档判定则让计数加一。计数低于 `confirmations` 时,提供被扣住的弱目标回合。
+- 计数达到 `confirmations` 时,会话被锁定:这一轮的弱目标回答被丢弃,改由 `strong_target`
+  提供,此后该会话的每一轮都直接去 `strong_target`,既不调用裁判也不缓冲。
+
+因为裁判裁决的是已经存在的回合,shunt 会把这一轮扣住直到裁决出来。回放开始之前不会提交任何
+响应头,所以切换到强目标发生在发送任何响应头之前,被丢弃的弱目标回合客户端从未见过。
+[被扣住的回合](/zh-cn/guides/routing/#被扣住的回合)说明了被扣住的回合如何提供,以及要付出
+什么代价。
+
+## 如何配置
+
+```toml
+[[models]]
+id = "claude-escalate"
+
+[models.router]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+# prompt = "…"
+# max_output_tokens = 4096
+
+[models.router.escalation]
+confirmations = 2
+# recent_turn_window = 28
+# window_message_chars = 500
+```
+
+`[models.router.escalation]` 表是可选的;省略时使用三个默认值,也就是上游跑过基准的那套
+配置。`confirmations` 大于 `1` 时需要会话 id:没有的话每一轮都从零开始,会话永远不会锁定。
+裁判看到最近 `recent_turn_window` 条消息,每条最多 `window_message_chars` 个字符。
+`weak_target` 可以与 `classifier_target` 是同一个 id。
+
+六个[每次调用的上限](/zh-cn/reference/configuration/#每次调用的上限)放在 `[models.router]`
+上,其中三个 `gated_*` 上限约束的就是被扣住的弱目标回合。classifier 形态的
+[`[models.subagents]`](/zh-cn/guides/subagents/) 覆盖层仍然只接受 `mode = "custom"`。
+
+## 凭证
+
+与 `classifier_target` 不同,`weak_target` 可以是 **passthrough** 路由:弱目标回合就是客户端
+自己的回答,所以它和实时回合一样携带调用方的凭证,而裁判调用不携带调用方的任何凭证。见
+[裁判调用](/zh-cn/guides/routing/#裁判调用)。
+
+## 探测与锁定
+
+`count_tokens` 探测既不调用裁判也不发起被扣住的调用:会话处于锁定状态时由 `strong_target`
+作答 —— 会话上一轮由锁定或已确认的升档提供时即为锁定 —— 否则由 `weak_target` 作答。锁定由
+会话的被委派子任务共享,空闲一小时后失效。
+
+## 客户端看到什么
+
+`x-gateway-route-source` 说明每一轮发生了什么:
+
+| 来源 | 含义 |
+| :-- | :-- |
+| `escalation_weak` | 裁判放行了弱目标回合;它被回放 |
+| `escalation_latch` | 会话在这一轮或更早已被锁定,由强目标实时提供这一轮 |
+| `escalation_fallback` | 弱目标回合失败、被切断,或以超出上下文窗口为由被拒绝,于是由强目标实时提供这一轮,没有调用裁判 |
+| `classifier_fail_open` | 在完整的弱目标回合之后裁判失败,于是提供了弱目标回合 |
+| `gated_error` | 被扣住的回合无法提供 |
+
+每种来源的确切条件,以及弱目标回合、它的上游或裁判失败时会怎样,见
+[配置参考](/zh-cn/reference/configuration/#被扣住的回合escalation-与-advisor)。裁判调用计入
+`shunt.router.judge_calls{algorithm="llm_classifier"}`。
+
+## 代价
+
+escalation 在锁定前的每一轮都要调用一次裁判,在这些回合上,弱目标回合完成并得到裁决之前
+客户端什么也收不到。发生锁定的那一轮还要为被丢弃的弱目标调用付费,而这次调用同样已经消耗了
+上游配额。

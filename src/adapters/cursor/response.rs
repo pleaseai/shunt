@@ -24,6 +24,7 @@ pub enum CursorStreamEvent {
     /// A native MCP tool call decoded from the exec channel. `input_json` is the
     /// serialized argument object.
     ToolCall {
+        id: String,
         name: String,
         input_json: String,
     },

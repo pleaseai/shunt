@@ -198,6 +198,6 @@ returns 402 on every request, shunt treats it as an account-level failure — it
 down and tries the next one, rather than handing the 402 to your client while healthy accounts sit
 idle. If *every* account in the pool is inactive, you still get Kimi's own 402 status and message
 back, so the cause stays visible. Browser-driven account provisioning in
-the [admin web surface](https://shunt.dev/guides/admin-remote-provisioning/) does not support
+the [admin web surface](https://shunt.sh/guides/admin-remote-provisioning/) does not support
 Kimi accounts — that surface's pool view is read-only for Kimi; provision Kimi accounts with
 `shunt login kimi` on the CLI.

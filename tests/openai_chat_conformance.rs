@@ -183,6 +183,11 @@ async fn openai_chat_tracer_unary_happy_path() {
     assert_eq!(upstream_body["model"], "gpt-5", "{upstream_body}");
     assert_eq!(upstream_body["stream"], false, "{upstream_body}");
     assert_eq!(
+        upstream_body["max_completion_tokens"], 64,
+        "o-series rejects the legacy max_tokens field: {upstream_body}"
+    );
+    assert!(upstream_body.get("max_tokens").is_none(), "{upstream_body}");
+    assert_eq!(
         upstream_body["messages"][0]["role"], "user",
         "{upstream_body}"
     );
@@ -450,16 +455,17 @@ async fn openai_chat_tracer_streaming_duplicate_terminal() {
     assert_eq!(response.status(), StatusCode::OK);
     let events = collect_sse_events(response).await;
 
-    assert_eq!(
-        events
-            .iter()
-            .filter(|(event, _)| event == "message_stop")
-            .count(),
-        1,
-        "the first [DONE] must close the stream exactly once: {events:?}"
+    assert!(
+        events.iter().all(|(event, _)| event != "message_stop"),
+        "a duplicate [DONE] must not be reported as a successful stop: {events:?}"
     );
     assert!(
-        events.iter().all(|(event, _)| event != "error"),
-        "a duplicate [DONE] after the terminal is not read or surfaced: {events:?}"
+        events.iter().any(|(event, data)| {
+            event == "error"
+                && data["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("after [DONE]"))
+        }),
+        "a frame after [DONE] fails closed: {events:?}"
     );
 }

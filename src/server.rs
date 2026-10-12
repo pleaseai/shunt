@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::{
     accounts::AccountPool,
     admin::{self, AdminAuth, AdminStores},
-    auth::inbound::InboundAuth,
+    auth::{inbound::InboundAuth, inbound_jwt::JwksCache},
     codex_analytics, codex_endpoint,
     concurrency::{limit_requests, ConcurrencyLimit},
     config::{Config, ConfigError},
@@ -20,6 +20,7 @@ use crate::{
     oauth_usage, protocol, proxy,
     reload::{RuntimeState, SharedState},
     routes,
+    routing::stage::StageRouterStore,
     upstream_status::StatusStore,
     usage,
 };
@@ -48,6 +49,26 @@ pub struct AppState {
     pub gateway_auth: Option<Arc<GatewayAuth>>,
     /// Process-lifetime device grants, IdP states/cache, refresh tokens, and limits.
     pub gateway_stores: Arc<GatewayStores>,
+    /// Process-lifetime per-session tier pins for `[models.router]`.
+    /// Kept across reloads like [`AppState::accounts`] — a router's pins are
+    /// invalidated by a change to *that router's* table, not by any config edit
+    /// (see [`StageRouterStore::apply`]).
+    pub(crate) stage_router: Arc<StageRouterStore>,
+    /// The built `prefill_router` algorithms for this request's config
+    /// snapshot. Runtime state, not a process-lifetime store: a reload rebuilds
+    /// them from the new config, so this is read off `current` like
+    /// [`AppState::config`] rather than threaded through [`AppState::from_shared`].
+    pub(crate) prefill_routers: Arc<crate::routing::prefill::PrefillRouters>,
+    /// The built driven-lane algorithms for this request's config snapshot.
+    /// Runtime state, not a process-lifetime store, exactly like
+    /// [`AppState::prefill_routers`]: a reload rebuilds them, and with them
+    /// the session state libsy keeps inside each algorithm.
+    pub(crate) driven_routers: Arc<crate::routing::driven::DrivenRouters>,
+    /// Process-lifetime JWKS cache for `[[server.auth.jwt]]` issuers. Kept here
+    /// rather than on `inbound_auth` so a reload that re-resolves the entries
+    /// does not throw away keys it would immediately refetch — and so a
+    /// reload cannot be used to force repeated fetches against an issuer.
+    pub inbound_jwks: Arc<JwksCache>,
     /// Whether the listener this process actually bound at startup is
     /// loopback. Fixed at boot like `server.bind` itself (see
     /// `reload::warn_on_restart_only_changes`): a reload can rewrite
@@ -78,18 +99,28 @@ impl AppState {
             Arc::new(StatusStore::new()),
             Arc::new(AdminStores::new()),
             Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
+            Arc::new(StageRouterStore::new()),
+            Arc::new(JwksCache::new()),
             boot_is_loopback,
         ))
     }
 
     /// Snapshot the current runtime state from an existing shared store.
-    pub fn from_shared(
+    // Six process-lifetime stores, each created once at boot and carried
+    // across reloads; grouping them behind a struct would only move the same
+    // list one level down. A store created here instead of passed in would be
+    // recreated on every request by `refreshed()` — for `inbound_jwks`, a JWKS
+    // refetch per request.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_shared(
         shared: SharedState,
         http_client: reqwest::Client,
         accounts: Arc<AccountPool>,
         status: Arc<StatusStore>,
         admin_stores: Arc<AdminStores>,
         gateway_stores: Arc<GatewayStores>,
+        stage_router: Arc<StageRouterStore>,
+        inbound_jwks: Arc<JwksCache>,
         boot_is_loopback: bool,
     ) -> Self {
         let current = shared.load();
@@ -98,11 +129,15 @@ impl AppState {
             inbound_auth: current.inbound_auth.clone(),
             admin_auth: current.admin_auth.clone(),
             gateway_auth: current.gateway_auth.clone(),
+            prefill_routers: current.prefill_routers.clone(),
+            driven_routers: current.driven_routers.clone(),
             http_client,
             accounts,
             status,
             admin_stores,
             gateway_stores,
+            stage_router,
+            inbound_jwks,
             boot_is_loopback,
             shared,
         }
@@ -119,6 +154,8 @@ impl AppState {
             self.status.clone(),
             self.admin_stores.clone(),
             self.gateway_stores.clone(),
+            self.stage_router.clone(),
+            self.inbound_jwks.clone(),
             self.boot_is_loopback,
         )
     }
@@ -198,11 +235,16 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
     let state = AppState::from_shared(
         shared.clone(),
-        reqwest::Client::new(),
+        reqwest::Client::builder()
+            .redirect(crate::adapters::responses::request::codex_identity_redirect_policy())
+            .build()
+            .expect("build responses http client"),
         Arc::new(AccountPool::new()),
         Arc::new(StatusStore::new()),
         Arc::new(AdminStores::new()),
         Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
+        Arc::new(StageRouterStore::new()),
+        Arc::new(JwksCache::new()),
         boot_is_loopback,
     );
 
@@ -269,7 +311,10 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
         // classifies against, so a route cannot be added here without also
         // getting the OpenAI-shaped gateway errors its clients expect.
         for path in codex_endpoint::PATHS {
-            router = router.route(path, post(codex_endpoint::post));
+            router = router.route(
+                path,
+                get(codex_endpoint::websocket::get).post(codex_endpoint::post),
+            );
         }
         for path in codex_analytics::PATHS {
             router = router.route(path, post(codex_analytics::post));
@@ -371,6 +416,7 @@ mod tests {
         std::env::set_var(&env, "tester:tok-secret");
         let mut config = Config::default();
         config.server.auth = Some(InboundAuthConfig {
+            jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
         });

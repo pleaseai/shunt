@@ -98,6 +98,20 @@ Cursor MCP 工具调用(模型调用的某个工具会以带 `stop_reason: "tool
 并转发**内联图像**(base64 源;URL 图像会被跳过)。Cursor 自己的 agentic 文件 / shell 工具
 不会被暴露 —— 只有你的请求所声明的工具。
 
+请把 `tool_use.id` 当作不透明值。当 Cursor 在协议帧中给出调用标识时，shunt 会原样透传，因此该 id 带的是
+Cursor 自己的 `tool_<uuid>` 形态，而不是 Anthropic 上游会签发的 `toolu_<uuid>`；没有标识时，shunt 自己
+签发一个 `toolu_<uuid>`。两种情况下 id 都只需要往返：原样作为 `tool_result` 的 `tool_use_id` 回传即可。
+
+此外，一个 turn 只在 Cursor 发出权威终止帧时才结束。如果上游流在该终止帧到达之前被中断（连接断开、响应
+体被截断等），shunt 会让该 turn 失败，而不是把部分回答当作完整回答返回。
+
+```json
+{"type":"error","error":{"type":"api_error","message":"cursor: upstream EOF without an authoritative terminal"}}
+```
+
+例外情况是已经产生输出之后转为静默的 turn：Cursor 会为等待无状态桥接永远不会发送的工具结果而保持响应
+打开，因此此时的空闲流是正常的 turn 结束，而不是被中断。
+
 ## 校验
 
 ```bash

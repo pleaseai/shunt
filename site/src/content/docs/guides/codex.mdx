@@ -136,8 +136,8 @@ The ChatGPT-account backend **rejects** `gpt-*-codex` slugs (e.g. `gpt-5.2-codex
 it only accepts your account's **live-entitled** slugs. The authoritative catalog (and the
 reasoning levels each accepts) is openai/codex's
 [`models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-Current slugs: `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (frontier) and
-`gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.2`. Older accounts may only be entitled to the
+Current slugs: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-6.1-sol` (latest), `gpt-5.6-sol`, `gpt-5.6-terra`,
+`gpt-5.6-luna` (frontier) and `gpt-5.5` / `gpt-5.4`. Older accounts may only be entitled to the
 earlier ones (a free account has resolved to `gpt-5.5`). shunt surfaces the backend's own error
 `detail`, so a wrong slug returns the real reason.
 
@@ -149,11 +149,16 @@ earlier ones (a free account has resolved to `gpt-5.5`). shunt surfaces the back
 
 <Aside type="note" title="`Model not found <slug>` is client-version gating, not entitlement">
 
-Some slugs carry a `minimal_client_version` (e.g. `gpt-6-astra` needs ≥ 0.153.0). When the
+Some slugs carry a `minimal_client_version` (e.g. `gpt-6-astra` needs ≥ 0.153.0;
+`gpt-6-sol` and `gpt-6-luna` need ≥ 0.155.0). When the
 request's client identity is missing or too old the backend answers `Model not found <slug>`.
-shunt avoids this by sending the pinned Codex CLI identity headers (`originator: codex_cli_rs`,
-`user-agent`, `version`), pinned to **openai/codex rust-v0.153.3**. See
+shunt pins the Codex CLI identity headers (`originator: codex_cli_rs`, `user-agent`, `version`)
+to **openai/codex rust-v0.159.3** to pass this gate. See
 [openai/codex#31967](https://github.com/openai/codex/issues/31967).
+
+On an entitled account, `gpt-6.1-sol` was rejected with the `0.156.0` identity and completed with `0.159.2`, even though its catalog `minimal_client_version` is 0.153.0. `0.159.3` is the next upstream patch release.
+A stale identity can produce a model-not-supported error even when the account has access.
+This pin does not specify the minimum required version.
 
 </Aside>
 
@@ -212,7 +217,7 @@ Either way the slug needs explicit routing through a matching `[models.upstream_
 <Aside type="tip" title="Ready-made agents">
 
 The **[`shunt-codex` plugin](https://github.com/pleaseai/shunt/tree/main/plugins/shunt-codex)**
-ships subagents for `gpt-5.6-sol` / `-terra` / `-luna` — install with
+ships subagents for `gpt-6-sol` / `-luna` and `gpt-5.6-sol` / `-terra` / `-luna` — install with
 `/plugin install shunt-codex@shunt` after `/plugin marketplace add pleaseai/shunt`.
 
 </Aside>
@@ -324,6 +329,12 @@ explicitly configured; a route-level value wins over the provider-level default,
 including a route explicitly set to `default`, which opts that route **out** of a provider-level
 `priority`/`flex` tier instead of inheriting it. Full key reference:
 [Configuration](/reference/configuration/#providersname-legacy).
+
+The Codex CLI itself defaults `gpt-6-sol` and `gpt-6-luna` to Fast (`priority`), because their
+`models.json` entry sets `default_service_tier`. That's a client-side default the backend doesn't
+apply, so on the Claude Code routes this guide sets up, these models run at the standard tier unless
+you set `service_tier = "fast"`. A Codex CLI [pointed at shunt](/guides/connect-codex-cli/) is
+different: that endpoint forwards the request as-is, so the CLI keeps the tier it sends itself.
 
 Whatever tier ends up on the wire is also echoed to the backend in the Codex CLI's
 `x-codex-routing-hint` header, as `model=<upstream model>;tier=<tier>` (just `model=<upstream model>`
@@ -440,7 +451,8 @@ described above on every reveal:
 - The upstream must be a stock OpenAI or ChatGPT/Codex-flavored Responses backend. xAI/Grok routes
   always keep the shim.
 - The routed model must be **gpt-5.4 or later** (`gpt-5.4`, `gpt-5.5`, or the `gpt-5.6` family).
-  Earlier slugs (`gpt-5.2` and below) keep the shim regardless of `tool_search`.
+  The exact slugs `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, and `gpt-6.1-sol` are also eligible. Earlier slugs (`gpt-5.2` and below) keep the shim
+  regardless of `tool_search`.
 - `ENABLE_TOOL_SEARCH=true` is still required on the Claude Code side — this flag only changes
   *how* shunt translates that feature upstream, not whether Claude Code defers tools at all.
 

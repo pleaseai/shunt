@@ -7,27 +7,68 @@
 //! credentials (`Authorization: Bearer`, `x-api-key`) in addition to the
 //! dedicated token header. Passthrough inference routes are never checked —
 //! the caller pays with their own credential. See `docs/m4-inbound-auth.md`.
+//!
+//! A deployment may also (or instead) accept JWTs minted by an external
+//! identity provider — see [`crate::auth::inbound_jwt`] and
+//! `docs/inbound-jwt-auth.md`. Static tokens are checked here, synchronously
+//! and in constant time; the JWT path needs a network-backed key set, so it
+//! lives behind [`crate::auth::gate`].
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 
 use crate::{config::AdminKeyring, gateway::GatewayAuth};
 
-/// Resolved inbound-auth state: the header to inspect and the accepted
-/// `name → token` pairs. Built once at startup from `[server.auth]` plus the
-/// configured env var; absent entirely when inbound auth is not configured.
+use crate::auth::inbound_jwt::JwtIssuerRule;
+
+/// Resolved inbound-auth state: the header to inspect, the accepted
+/// `name → token` pairs, and the verify-only JWT issuers. Built once at startup
+/// from `[server.auth]` plus the configured env var, and rebuilt on reload;
+/// absent entirely when inbound auth is not configured.
+///
+/// `tokens` may be empty when `jwt` is not — a deployment that authenticates
+/// entirely through an IdP has no static tokens. Both empty is rejected at
+/// config time (see [`crate::config::InboundAuthConfig::resolve`]), so this
+/// type never represents an open gateway.
 #[derive(Debug, Clone)]
 pub struct InboundAuth {
     header: HeaderName,
     tokens: Vec<(String, String)>,
+    jwt: Vec<JwtIssuerRule>,
 }
 
 impl InboundAuth {
     pub fn new(header: HeaderName, tokens: Vec<(String, String)>) -> Self {
-        Self { header, tokens }
+        Self {
+            header,
+            tokens,
+            jwt: Vec::new(),
+        }
+    }
+
+    /// Attach verify-only JWT issuers. A builder rather than a `new` parameter
+    /// because the admin surface reuses this type for its own `name:token`
+    /// store (`AdminAuth`), where external issuers have no meaning.
+    pub fn with_jwt(mut self, jwt: Vec<JwtIssuerRule>) -> Self {
+        self.jwt = jwt;
+        self
     }
 
     pub fn header(&self) -> &HeaderName {
         &self.header
+    }
+
+    /// The configured verify-only JWT issuers. Empty when none are configured,
+    /// which is what lets every call site skip the async path entirely.
+    pub fn jwt(&self) -> &[JwtIssuerRule] {
+        &self.jwt
+    }
+
+    /// Whether `value` is a JWT from one of the configured
+    /// `[[server.auth.jwt]]` issuers — the by-value strip predicate for the
+    /// JWT half of this gate. See
+    /// [`crate::auth::inbound_jwt::names_configured_issuer`].
+    pub(crate) fn is_jwt_credential(&self, value: &[u8]) -> bool {
+        crate::auth::inbound_jwt::names_configured_issuer(&self.jwt, value)
     }
 
     /// Check the request's configured inbound-auth header. Returns the matching
@@ -196,14 +237,15 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 pub(crate) enum ConsumedBy {
     GatewayJwt,
     StaticToken,
+    InboundJwt,
     AdminCredential,
 }
 
 /// Whether `value` — the raw contents of a header slot — is a credential shunt
 /// itself consumes rather than the caller's own upstream credential, and which
-/// one. Three kinds qualify: shunt's gateway JWT (checked as a bare token, no
-/// `Bearer ` prefix), a configured static `[server.auth]` token, and a
-/// `[server.admin]` credential (a `tokens_env`/`tokens_file` pair or either key
+/// one. Four kinds qualify: shunt's gateway JWT (checked as a bare token, no
+/// `Bearer ` prefix), a configured static `[server.auth]` token, a JWT from a
+/// configured `[[server.auth.jwt]]` issuer, and a `[server.admin]` credential (a `tokens_env`/`tokens_file` pair or either key
 /// array — the read tier included, since a read key still reaches the admin
 /// surface). Checked by value
 /// per slot, not by whether *some* slot in the request authenticated the
@@ -221,6 +263,13 @@ pub(crate) enum ConsumedBy {
 /// Verifying first keeps the [`ConsumedBy::GatewayJwt`] label meaning "this
 /// authenticated the caller" whenever it can; the shape check only widens
 /// which non-authenticating tokens are still caught and stripped.
+///
+/// The inbound-JWT branch matches by the token's unverified `iss`, not by
+/// verifying it: the gate accepts a JWT only in the bearer slot, but an
+/// `apiKeyHelper` fills `x-api-key` with the same value, and an expired or
+/// rotated-out token from the operator's IdP is still not the caller's
+/// upstream credential. See
+/// [`crate::auth::inbound_jwt::names_configured_issuer`].
 ///
 /// The admin branch is the mirror of
 /// [`crate::admin::AdminAuth::authenticate_credential`], which accepts an admin
@@ -251,6 +300,9 @@ pub(crate) fn consumed_by(
     }
     if static_auth.is_some_and(|auth| auth.authenticate_value(value).is_some()) {
         return Some(ConsumedBy::StaticToken);
+    }
+    if static_auth.is_some_and(|auth| auth.is_jwt_credential(value)) {
+        return Some(ConsumedBy::InboundJwt);
     }
     admin_credentials
         .is_some_and(|credentials| credentials.contains(value))

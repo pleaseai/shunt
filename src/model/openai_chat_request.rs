@@ -49,16 +49,27 @@ pub fn translate_request(
         out.insert("stream_options".to_string(), json!({"include_usage": true}));
     }
     if let Some(tools) = request.get("tools") {
-        if tools.as_array().is_some_and(|tools| !tools.is_empty()) {
+        let tools = tools
+            .as_array()
+            .ok_or_else(|| bad_request("tools must be an array"))?;
+        if !tools.is_empty() {
             return Err(bad_request(
                 "OpenAI Chat slice does not support Anthropic tools yet",
             ));
         }
     }
     if let Some(tool_choice) = request.get("tool_choice") {
-        if !tool_choice.is_null() && tool_choice != "auto" {
+        if !tool_choice_allowed(tool_choice) {
             return Err(bad_request(
                 "OpenAI Chat slice does not support Anthropic tool_choice yet",
+            ));
+        }
+    }
+    if let Some(thinking) = request.get("thinking") {
+        let disabled = thinking.get("type").and_then(Value::as_str) == Some("disabled");
+        if !thinking.is_null() && !disabled {
+            return Err(bad_request(
+                "OpenAI Chat slice does not support Anthropic thinking yet",
             ));
         }
     }
@@ -66,12 +77,44 @@ pub fn translate_request(
         let max_tokens = max_tokens
             .as_u64()
             .ok_or_else(|| bad_request("max_tokens must be an unsigned integer"))?;
-        out.insert("max_tokens".to_string(), json!(max_tokens));
+        // o-series models reject the legacy `max_tokens` field.
+        out.insert("max_completion_tokens".to_string(), json!(max_tokens));
+    }
+    if let Some(temperature) = request.get("temperature") {
+        let temperature = temperature
+            .as_f64()
+            .ok_or_else(|| bad_request("temperature must be a number"))?;
+        out.insert("temperature".to_string(), json!(temperature));
+    }
+    if let Some(top_p) = request.get("top_p") {
+        let top_p = top_p
+            .as_f64()
+            .ok_or_else(|| bad_request("top_p must be a number"))?;
+        out.insert("top_p".to_string(), json!(top_p));
+    }
+    if let Some(stop_sequences) = request.get("stop_sequences") {
+        let stop_sequences = stop_sequences
+            .as_array()
+            .ok_or_else(|| bad_request("stop_sequences must be an array"))?;
+        if !stop_sequences.is_empty() {
+            let mut stop = Vec::with_capacity(stop_sequences.len());
+            for sequence in stop_sequences {
+                let sequence = sequence
+                    .as_str()
+                    .ok_or_else(|| bad_request("stop_sequences must be strings"))?;
+                stop.push(sequence);
+            }
+            out.insert("stop".to_string(), json!(stop));
+        }
     }
     let messages = request
         .get("messages")
         .and_then(Value::as_array)
         .ok_or_else(|| bad_request("messages must be an array"))?;
+    // A system prompt does not satisfy Anthropic's non-empty `messages` rule.
+    if messages.is_empty() {
+        return Err(bad_request("messages must not be empty"));
+    }
     let mut translated =
         Vec::with_capacity(messages.len() + usize::from(request.get("system").is_some()));
     if let Some(system) = request.get("system") {
@@ -80,11 +123,24 @@ pub fn translate_request(
     for message in messages {
         translated.push(translate_message(message)?);
     }
-    if translated.is_empty() {
-        return Err(bad_request("messages must not be empty"));
-    }
     out.insert("messages".to_string(), Value::Array(translated));
     Ok(Value::Object(out))
+}
+
+/// Anthropic sends `tool_choice` as an object. `auto` and `none` do not
+/// require a tool call, so the text-only slice can accept them. A bare
+/// `"auto"` string is the shape this translator used to compare against.
+fn tool_choice_allowed(choice: &Value) -> bool {
+    if choice.is_null() {
+        return true;
+    }
+    if let Some(text) = choice.as_str() {
+        return matches!(text, "auto" | "none");
+    }
+    matches!(
+        choice.get("type").and_then(Value::as_str),
+        Some("auto" | "none")
+    )
 }
 
 fn translate_system(system: &Value) -> Result<Value, AdapterError> {
