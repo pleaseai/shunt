@@ -5,7 +5,7 @@ import { tableScroll } from "@cloudflare/nimbus-docs/markdown";
 import { ENGLISH_SIDEBAR_ITEMS } from "./src/lib/i18n";
 
 const nimbusConfig = defineNimbusConfig({
-  site: "https://shunt.dev",
+  site: "https://shunt.sh",
   title: "shunt",
   description: "Shunt Claude Code to any model — a spec-compliant Claude Code LLM gateway.",
   locale: "en",

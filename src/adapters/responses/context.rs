@@ -19,6 +19,8 @@ use crate::{
     routing::Route,
 };
 
+use super::request::CodexDelegation;
+
 /// How to translate an upstream Responses stream back into Anthropic form:
 /// exactly `AnthropicSseMachine::new`'s arguments. Passed as one unit through
 /// every relay path (streaming SSE and collected JSON) so the model name and the
@@ -28,6 +30,9 @@ pub(super) struct RelayOptions {
     pub model: String,
     pub thinking_enabled: bool,
     pub tool_search_native: bool,
+    /// The client's Anthropic `stop_sequences`, emulated gateway-side because
+    /// the Responses API has no `stop` parameter (issue #605). Usually empty.
+    pub stop_sequences: Vec<String>,
 }
 
 impl RelayOptions {
@@ -37,6 +42,7 @@ impl RelayOptions {
     /// no relay call site touches the options after building the machine).
     pub(super) fn machine(self) -> AnthropicSseMachine {
         AnthropicSseMachine::new(self.model, self.thinking_enabled, self.tool_search_native)
+            .with_stop_sequences(self.stop_sequences)
     }
 }
 
@@ -44,7 +50,7 @@ impl RelayOptions {
 /// `forward` and threaded through each transport. `model` is intentionally
 /// absent — it is taken from the [`Route`] at relay time via
 /// [`TurnOptions::relay`], keeping these flags transport-agnostic.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct TurnOptions {
     /// The client asked for a streaming (SSE) response.
     pub client_wants_stream: bool,
@@ -52,6 +58,23 @@ pub(super) struct TurnOptions {
     pub thinking_enabled: bool,
     /// Native client-executed `tool_search` is enabled for this provider/model.
     pub tool_search_native: bool,
+    /// The client's Anthropic `stop_sequences` (issue #605), in request order.
+    /// Never forwarded upstream — the Responses API has no `stop` parameter —
+    /// but emulated by the SSE translation.
+    pub stop_sequences: Vec<String>,
+    /// Bounds on a whole-body read of the upstream reply, or
+    /// [`ResponseBounds::default`](crate::adapters::ResponseBounds::default)
+    /// for a client turn (which is byte-for-byte what it was).
+    ///
+    /// Only the non-streaming path buffers a whole reply, so only it consults
+    /// this. It matters because an internal `[models.router]` call is forced
+    /// non-streaming, which makes that path the one every judge or gated call
+    /// through a `kind = "responses"` target takes — and an unbounded read
+    /// there would let a judge allocate freely until the deadline instead of
+    /// failing open at `judge_max_response_bytes`, or let a gated turn whose
+    /// upstream stalls after its headers sit until `gated_max_duration_ms`.
+    /// The HTTP read and the websocket accumulation both honour both bounds.
+    pub response_bounds: crate::adapters::ResponseBounds,
 }
 
 impl TurnOptions {
@@ -62,6 +85,7 @@ impl TurnOptions {
             model: route.model.clone(),
             thinking_enabled: self.thinking_enabled,
             tool_search_native: self.tool_search_native,
+            stop_sequences: self.stop_sequences.clone(),
         }
     }
 }
@@ -69,12 +93,37 @@ impl TurnOptions {
 /// The request-derived fields the single-account transports (`forward_http` and
 /// `forward_websocket`) need beyond `state`/`route` and their own connection key
 /// (`forward_http` also takes `session_id`, `forward_websocket` also takes
-/// `pool_key`). Cheaply cloned once in `forward` so a pre-first-event websocket
-/// failure can fall back to HTTP with the same shared translated body and credential.
-#[derive(Debug, Clone)]
+/// `pool_key`). `forward` builds one per transport: a pre-first-event websocket
+/// failure falls back to HTTP with the same resolved credential.
+/// A credential resolved up front or deferred into the committed stream: the
+/// early-commit HTTP arm must not wait on a refreshable credential's
+/// (possibly networked) refresh before committing — that wait leaves the
+/// client with neither response headers nor keepalive pings, and the OAuth
+/// refresh is outside `upstream_ttfb_ms`.
+pub(super) enum CredentialSource {
+    Resolved(Credential),
+    Deferred(
+        std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Credential, crate::adapters::AdapterError>>
+                    + Send,
+            >,
+        >,
+    ),
+}
+
+impl std::fmt::Debug for CredentialSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Resolved(_) => f.write_str("Resolved(_)"),
+            Self::Deferred(_) => f.write_str("Deferred(_)"),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct ForwardOptions {
     pub upstream_body: Arc<Value>,
-    pub credential: Credential,
     pub auth: AuthMode,
     pub turn: TurnOptions,
     /// Selected Codex pool account whose WebSocket handshake quota headers should
@@ -84,6 +133,19 @@ pub(super) struct ForwardOptions {
     /// local tiktoken estimate, or `None` on non-streaming / non-tiktoken turns.
     /// Mirrored on the account-pool path by [`PoolForward::estimate_input`].
     pub estimate_input: Option<Arc<Value>>,
+    /// A pre-dispatch instant the committed stream's sample clock starts at —
+    /// the single-credential fallback after an account scan ran inside the
+    /// dispatch — else the stream's first poll.
+    pub started_at: Option<std::time::Instant>,
+    /// The composed identity key the window counter keys on — the same string
+    /// the websocket path receives as its pool/window key — so the HTTP
+    /// transport reads (and, on the mark's consumption, bumps) the same
+    /// counter. `None` for an unpoolable identity (the hashed user-id
+    /// fallback), which stays at window 0.
+    pub window_key: Option<String>,
+    /// The request's one-shot compaction mark: consumed by the first send
+    /// that reaches an upstream, on either transport.
+    pub compact: crate::request::CompactionMark,
 }
 
 /// Everything `forward_chatgpt_oauth` needs beyond `state`/`route`. The account
@@ -94,8 +156,16 @@ pub(super) struct ForwardOptions {
 /// into the pool vs. single-account dispatch.
 #[derive(Debug)]
 pub(super) struct PoolForward {
+    /// The composed identity key: the connection-pool key on the websocket
+    /// path and the window-counter key on both transports.
     pub pool_key: Option<String>,
     pub session_id: Option<String>,
+    /// The request's one-shot compaction mark, consumed by the first account
+    /// attempt that reaches an upstream.
+    pub compact: crate::request::CompactionMark,
+    /// The delegated-turn subagent identity, derived once at the adapter from
+    /// the inbound headers; `None` for a non-delegated turn.
+    pub delegation: Option<CodexDelegation>,
     pub upstream_body: Arc<Value>,
     pub accounts_config: Vec<AccountConfig>,
     pub turn: TurnOptions,

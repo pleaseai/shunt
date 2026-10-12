@@ -217,6 +217,8 @@ fn responses_translate(bencher: divan::Bencher, size: usize) {
             divan::black_box(&route),
             ResponsesFlavor::Chatgpt,
             false,
+            None,
+            true,
         )
         .unwrap()
     });
@@ -232,6 +234,8 @@ fn responses_translate_and_serialize_once(bencher: divan::Bencher, size: usize) 
             divan::black_box(&route),
             ResponsesFlavor::Chatgpt,
             false,
+            None,
+            true,
         )
         .unwrap();
         translated.to_string()
@@ -249,8 +253,15 @@ fn parse_once_http_front(body: &[u8], config: &Config, route: &Route) -> String 
         .unwrap_or(false);
     let thinking = request.pointer("/thinking/type").and_then(Value::as_str) == Some("enabled");
     divan::black_box((stream, thinking));
-    responses_request::translate_request_value(&request, route, ResponsesFlavor::Chatgpt, false)
-        .to_string()
+    responses_request::translate_request_value(
+        &request,
+        route,
+        ResponsesFlavor::Chatgpt,
+        false,
+        None,
+        true,
+    )
+    .to_string()
 }
 
 #[divan::bench(args = BODY_SIZES)]
@@ -271,6 +282,8 @@ fn pre_parse_once_http_responses_cpu_front(bencher: divan::Bencher, size: usize)
             divan::black_box(&route),
             ResponsesFlavor::Chatgpt,
             false,
+            None,
+            true,
         )
         .unwrap();
         translated.to_string()
@@ -297,6 +310,8 @@ fn continuation_fixture(size: usize) -> (StoredContinuation, Value) {
         &route(),
         ResponsesFlavor::Chatgpt,
         false,
+        None,
+        true,
     )
     .unwrap();
     let input = translated.get("input").and_then(Value::as_array).unwrap();

@@ -65,6 +65,7 @@ fn app_state_with_path(path: std::path::PathBuf, tokens_env: &str) -> AppState {
         read_keys: Vec::new(),
         session_ttl_secs: 3600,
         pending_ttl_secs: 600,
+        hide_observed: false,
         oidc: None,
     });
     config.server.spend = Some(crate::config::SpendConfig {

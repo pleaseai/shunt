@@ -1,0 +1,13 @@
+{
+  "track_id": "select-order-cap-verdict-20261005",
+  "type": "refactor",
+  "status": "completed",
+  "created_at": "2026-10-04T18:01:28Z",
+  "updated_at": "2026-10-05T12:20:48Z",
+  "issue": "#739",
+  "pr": "#743",
+  "project": "2",
+  "project_item_id": "PVTI_lADODf_st84BRosizg-ezRQ",
+  "code_branch": "amondnet/739-select-order-cap-verdict",
+  "code_pr": "#743"
+}

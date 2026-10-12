@@ -20,9 +20,9 @@ tokens_env = "SHUNT_CLIENT_TOKENS"
 export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -hex 32)"
 ```
 
-`[server.auth]`가 있는데 env 변수가 설정되지 않았거나 형식이 잘못되면 시작은 **닫힌 채로 실패(fail closed)**합니다. 유효한 토큰 없이 매핑된 모델과 `GET /v1/models`에 대한 요청은 401 `authentication_error`를 받습니다. 두 게이트 모두 표준 Anthropic 자격 증명 슬롯 어디로든 클라이언트 토큰을 받습니다 — 구성된 헤더(기본 `x-shunt-token`), `Authorization: Bearer`, `x-api-key` 순의 우선순위로(여러 슬롯에 유효한 토큰이 있을 때). `GET /routes`, `GET|HEAD /`, `GET /health`, 그리고 패스스루 모델은 열린 채로 유지됩니다. `GET /routes`는 라우팅 메타데이터(구성된 프로바이더/업스트림 모델 매핑)를 노출하는 shunt 네이티브 엔드포인트이기 때문에 인증되지 않습니다 — 자격 증명은 절대 노출하지 않으며, 자격 증명은 오직 프로바이더 구성에만 존재하고 그 핸들러가 읽는 일이 없습니다.
+`[server.auth]`가 있는데 env 변수가 설정되지 않았거나 형식이 잘못되면 시작은 **닫힌 채로 실패**(fail closed)합니다. 유효한 토큰 없이 매핑된 모델과 `GET /v1/models`에 대한 요청은 401 `authentication_error`를 받습니다. 두 게이트 모두 표준 Anthropic 자격 증명 슬롯 어디로든 클라이언트 토큰을 받습니다 — 구성된 헤더(기본 `x-shunt-token`), `Authorization: Bearer`, `x-api-key` 순의 우선순위로(여러 슬롯에 유효한 토큰이 있을 때). `GET /routes`, `GET|HEAD /`, `GET /health`, 그리고 패스스루 모델은 열린 채로 유지됩니다. `GET /routes`는 라우팅 메타데이터(구성된 프로바이더/업스트림 모델 매핑)를 노출하는 shunt 네이티브 엔드포인트이기 때문에 인증되지 않습니다 — 자격 증명은 절대 노출하지 않으며, 자격 증명은 오직 프로바이더 구성에만 존재하고 그 핸들러가 읽는 일이 없습니다.
 
-게이팅된 라우트에서는 수락되는 자격 증명 헤더가 전달 전에 항상 제거되고(shunt가 거기에 자체 프로바이더 자격 증명을 주입합니다), 매칭은 상수 시간(constant-time)이며, 토큰 값은 절대 로깅되지 않습니다(클라이언트 *이름*은 요청별로 로깅됩니다). 패스스루 라우트에서는 shunt가 아무것도 주입하지 않으므로 호출자 자신의 자격 증명이 보낸 그대로 전달됩니다 — 단, 슬롯 단위로 예외가 있습니다: `Authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체의 인바운드 자격 증명(수락된 클라이언트 토큰, `[server.gateway]` JWT, 또는 `[server.admin]` 자격 증명 — 관리 화면은 자체 헤더뿐 아니라 `x-api-key`로도 이를 수락합니다)일 때 제거됩니다. 따라서 게이트에서 수락된 자격 증명은 절대 업스트림으로 전달되지 않으면서, 다른 슬롯의 진짜 업스트림 자격 증명은 그대로 흐릅니다. 각 슬롯은 첫 번째 값만이 아니라 **모든** 값을 대상으로 판정하며, 어느 위치에든 shunt 자격 증명이 들어 있으면 그 슬롯을 통째로 제거합니다 — 같은 헤더를 두 번 보내면서 한 값에는 진짜 자격 증명을, 다른 값에는 shunt 자격 증명을 실었다면 둘 다 사라집니다. `cookie` 헤더는 전달할 때마다 헤더 통째로 제거됩니다 — 관리 화면이 쓰기 등급 세션 쿠키를 거기서 수락하고, shunt 자체는 쿠키 저장소를 두지 않기 때문입니다. 그 대가로 보낸 무해한 쿠키도 함께 사라집니다.
+게이팅된 라우트에서는 수락되는 자격 증명 헤더가 전달 전에 항상 제거되고(shunt가 거기에 자체 프로바이더 자격 증명을 주입합니다), 매칭은 상수 시간(constant-time)이며, 토큰 값은 절대 로깅되지 않습니다(클라이언트 *이름*은 요청별로 로깅됩니다). 패스스루 라우트에서는 shunt가 아무것도 주입하지 않으므로 호출자 자신의 자격 증명이 보낸 그대로 전달됩니다 — 단, 슬롯 단위로 예외가 있습니다: `Authorization`과 `x-api-key`는 각각 그 슬롯 자신의 값이 shunt 자체의 인바운드 자격 증명(수락된 클라이언트 토큰, `[server.gateway]` JWT, 또는 `[server.admin]` 자격 증명 — 관리 화면은 자체 헤더뿐 아니라 `x-api-key`로도 이를 수락합니다)일 때 제거됩니다. 따라서 게이트에서 수락된 자격 증명은 절대 업스트림으로 전달되지 않으면서, 다른 슬롯의 진짜 업스트림 자격 증명은 그대로 흐릅니다. 각 슬롯은 첫 번째 값만이 아니라 **모든** 값을 대상으로 판정하며, 어느 위치에든 shunt 자격 증명이 들어 있으면 그 슬롯을 통째로 제거합니다 — 같은 헤더를 두 번 보내면서 한 값에는 진짜 자격 증명을, 다른 값에는 shunt 자격 증명을 실었다면 둘 다 사라집니다. `cookie` 헤더는 전달할 때마다 헤더 통째로 제거됩니다 — 관리 화면이 세션 쿠키를 거기서 수락하고, shunt 자체는 쿠키 저장소를 두지 않기 때문입니다. 그 대가로 보낸 무해한 쿠키도 함께 사라집니다.
 
 클라이언트 측은 게이트웨이가 무엇을 제공하는지에 따라 고르세요:
 
@@ -49,6 +49,36 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 
 옵트인 [관리자 웹 화면](/ko/guides/admin-remote-provisioning/)도 활성화한다면, 별도의 관리자 토큰으로 보호하고 HTTPS 또는 신뢰할 수 있는 터널을 통해서만 노출하세요.
+
+## 자체 identity provider의 JWT 검증
+
+조직에서 이미 identity provider를 운영한다면, `[[server.auth.jwt]]`로 공유 secret 대신 그 토큰을 받을 수 있습니다 — shunt가 인증 서버가 되지 않으면서 사용자별 신원을 얻는 방법입니다. shunt는 **검증만** 합니다: 로그인 플로우도, 세션 저장소도, 서명 secret도 없습니다. [gateway 로그인](/ko/guides/gateway-login/)과 달리 클라이언트는 여전히 base URL과 bearer만으로 구성되므로, Claude Code의 gateway provider 모드로 들어가지 않고 그 모드가 비활성화하는 기능도 잃지 않습니다.
+
+```toml
+[server.auth]
+# issuer를 구성하면 정적 토큰은 없어도 됩니다.
+tokens_env = "SHUNT_CLIENT_TOKENS"
+
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["<shunt용으로 만든 client id>"]
+email_domains = ["example.com"]
+```
+
+각 호출자는 정적 토큰과 똑같은 자리에 토큰을 보냅니다:
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="<IdP가 발급한 JWT>"   # Authorization: Bearer로 전송
+```
+
+JWT는 **오직** `Authorization: Bearer`로만 받습니다 — 구성된 헤더와 `x-api-key`는 여전히 정적 토큰만 받습니다. 두 방식을 동시에 구성할 수 있으며, 정적 토큰을 먼저 확인합니다.
+
+설정할 때 챙겨야 할 두 가지:
+
+- **shunt 전용 audience를 주세요.** shunt 전용 client id를 만들어 `audience`에 넣으면, 같은 테넌트의 다른 애플리케이션용으로 발급된 토큰이 여기서 인증되지 않습니다.
+- **수명이 짧은 토큰을 발급하세요.** shunt는 취소 상태를 보관하지 않으므로 토큰은 만료될 때까지 동작합니다. `max_token_age_seconds`(기본 `3600`)는 그보다 긴 수명으로 발급된 토큰을 거부합니다 — 취소를 더 촘촘하게 하려면 이 값을 낮추고 IdP가 분 단위 토큰을 발급하게 하세요.
+
+항목이 잘못 구성되면 시작이 닫힌 채로 실패하며, `audience`만 있고 `email_domains`/`allowed_emails` 규칙이 없는 경우도 여기에 해당합니다. JWT 인증이 `api_error` 본문과 함께 `503`을 반환한다면(아래 용량 초과 거부의 `overloaded_error`가 아니라면) shunt가 issuer의 key set을 가져오지 못한 것입니다 — 자격 증명이 아니라 issuer URL과 네트워크 도달성을 확인하세요. 전체 키 목록은 [구성 레퍼런스](/ko/reference/configuration/)에 있습니다.
 
 ## SSE keepalive ping
 

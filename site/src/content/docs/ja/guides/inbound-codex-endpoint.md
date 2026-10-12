@@ -23,6 +23,8 @@ shunt run
 
 起動時の検証は、未知の `provider` や `auth = "chatgpt_oauth"` を使わないプロバイダーを拒否します — このエンドポイントはオペレーターの Codex ベアラーを注入するため、`chatgpt_oauth` プロバイダーだけが要件を満たします。すべてのキーとデフォルトは[設定リファレンス](/ja/reference/configuration/)を、登録されるルートは [HTTP エンドポイント](/ja/reference/endpoints/)を参照してください。
 
+このオプトインにより、Codex CLI のモデル検出も解析可能になります。`GET /models` と `GET /backend-api/codex/models` は有効なフォールバック `{"models":[]}` を返します。共有の `GET /v1/models` パスでは、`client_version` クエリフィールドが Anthropic 風のヘッダーより優先され、Codex 形式を選択します。このフィールドがなければ、既存の Anthropic 検出レスポンスは変わりません。これらのリクエストは通常のモデル検出認証ゲートを通り、shunt は不完全な Codex モデル行を生成しません。
+
 ## クライアント analytics のシンク
 
 Codex CLI は base URL へプロダクト analytics も POST します。shunt は CLI が生成しうる両方のパスを受け付けます。
@@ -80,7 +82,13 @@ wire_api = "responses"
 http_headers = { "x-shunt-token" = "<token>" }
 ```
 
-`[server.auth]` がなければ、このエンドポイントはそこへ到達できる誰にでも開かれています — ループバックや個人利用なら許容できますが、共有ゲートウェイでは不可です。クライアントが提示した認証情報は shunt への認証に**のみ**使われ、それ（および CLI がたまたま送る `Authorization`）は取り除かれ、上流へ転送されることはありません。`[server.admin]` の認証情報ヘッダー（既定では `x-shunt-admin-token`、`[server.admin] header` で指定した名前）も取り除かれます — 管理サーフェスはそのスロットで認証し、管理用の認証情報はアップストリームアカウントをプロビジョニングできるためです。`cookie` ヘッダーもヘッダーごと取り除かれます: 管理サーフェスは書き込み権限のセッション Cookie もそこで受理し、shunt 自身は Cookie ジャーを持たないため、上流がそれに依存することはありません。`x-api-key` も無条件に取り除かれます — `[server.auth]` が設定されていない場合も同様です。対象のプロバイダーは起動時に `chatgpt_oauth` 専用であることが検証されるため、インバウンドの `x-api-key` の値がこのアップストリームに対して有効な認証情報になることは決してありません。Claude Code の `apiKeyHelper` のように `Authorization` と `x-api-key` の両方に同じキーを設定するクライアントであっても、2 つ目のスロット経由でそのキーが漏れることはありません。インバウンドのクライアントが実際の Codex CLI であるため、パススルーはそのリクエストヘッダーをそのまま転送し（`version`、`originator`、`OpenAI-Beta`、`x-codex-*`、…）、差し替えるのは選択されたプールアカウントの `Authorization` ベアラーと `chatgpt-account-id` **だけ**です。認証の詳しい手順は [Codex CLI の接続](/ja/guides/connect-codex-cli/#3-shunt-クライアントトークンを提示するserverauth-設定時)を参照してください。
+`[server.auth]` がなければ、このエンドポイントはそこへ到達できる誰にでも開かれています — ループバックや個人利用なら許容できますが、共有ゲートウェイでは不可です。クライアントが提示した認証情報は shunt への認証に**のみ**使われ、それ（および CLI がたまたま送る `Authorization`）は取り除かれ、上流へ転送されることはありません。`[server.admin]` の認証情報ヘッダー（既定では `x-shunt-admin-token`、`[server.admin] header` で指定した名前）も取り除かれます — 管理サーフェスはそのスロットで認証し、管理用の認証情報はアップストリームアカウントをプロビジョニングできるためです。`cookie` ヘッダーもヘッダーごと取り除かれます: 管理サーフェスはセッション Cookie もそこで受理し、shunt 自身は Cookie ジャーを持たないため、上流がそれに依存することはありません。`x-api-key` も無条件に取り除かれます — `[server.auth]` が設定されていない場合も同様です。対象のプロバイダーは起動時に `chatgpt_oauth` 専用であることが検証されるため、インバウンドの `x-api-key` の値がこのアップストリームに対して有効な認証情報になることは決してありません。Claude Code の `apiKeyHelper` のように `Authorization` と `x-api-key` の両方に同じキーを設定するクライアントであっても、2 つ目のスロット経由でそのキーが漏れることはありません。インバウンドのクライアントが実際の Codex CLI であるため、パススルーはそのリクエストヘッダーをそのまま転送し（`version`、`originator`、`OpenAI-Beta`、`x-codex-*`、…）、差し替えるのは選択されたプールアカウントの `Authorization` ベアラーと `chatgpt-account-id` **だけ**です。認証の詳しい手順は [Codex CLI の接続](/ja/guides/connect-codex-cli/#3-shunt-クライアントトークンを提示するserverauth-設定時)を参照してください。
+
+## WebSocket トランスポート
+
+3 つの Responses パスは HTTP `POST` と認証済み WebSocket `GET` アップグレードの両方を受け付けます。認証は `101 Switching Protocols` より前に完了します。ソケットでは `generate: false` のウォームアップをローカルで完了し、通常の `response.create` は既存の HTTP アカウントプールを再利用して上流ストリーミングを強制し、最初の終端イベントまで各 SSE `data:` ペイロードを WebSocket テキストフレームとして転送します。ターンの置換またはソケット切断はアクティブな上流ボディをキャンセルします。クライアントフレームと SSE イベントは 4 MiB に制限され、送信には有界バックプレッシャーが適用され、エラーフレームには安全なレスポンスメタデータだけが含まれます。
+
+`[server.auth]` がない場合、ブラウザーからのアップグレードは `Origin` と `Host` を比較して検査されますが、この検査は同じホスト上の `http` と `https` を区別できません。そのため、ループバック以外では `[server.auth]` でエンドポイントを保護してください。
 
 ## アカウントのプロビジョニング
 
@@ -145,11 +153,11 @@ wire_api = "responses"
 env_key = "SHUNT_TOKEN"
 ```
 
-shunt は Codex 用のモデルカタログを提供しません — `GET /v1/models` のディスカバリー一覧は Anthropic 形式で、Codex のルートを公開しません。CLI はこれらのベンダーが案内するとおり、`model_catalog_json` が指す `~/.codex/models.json` カタログからスラッグのメタデータを取得します。shunt のルートを選ぶのは `model` の値だけです。
+shunt は Codex CLI のディスカバリー要求に対して有効なフォールバック `{"models":[]}` で応答しますが、Codex のルートをディスカバリー一覧で公開しません。CLI はこれらのベンダーが案内するとおり、`model_catalog_json` が指す `~/.codex/models.json` カタログからスラッグのメタデータを取得します。shunt のルートを選ぶのは `model` の値だけです。
 
 **ChatGPT 以外**のアップストリームへルーティングされたリクエストで変わる点:
 
-- **ヘッダーの許可リスト。** クライアントから引き継ぐのは `content-type` と `accept` のみで、これに解決された資格情報と、ルーティング先のアップストリーム自身が要求する identity が加わります — `OpenAI-Beta: responses=experimental`(xAI/Grok では省略)、および `xai_oauth` ルートの場合は Grok CLI の identity ヘッダー。`authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`x-codex-*`、`x-shunt-*` はいずれもサードパーティに届きません。
+- **ヘッダーの許可リスト。** 新しい許可リストは、まずクライアントから `content-type`（なければ `application/json`）と `accept` だけを引き継ぎ、解決された資格情報と、ルーティング先のアップストリーム自身が要求するヘッダーを加えます。具体的には、xAI/Grok では省略する `OpenAI-Beta: responses=experimental`、`xai_oauth` ルートの Grok CLI identity ヘッダー一式、そして `api_key` ルートの送信先が正確に `api.openai.com` で、空でない conversation id が解決された場合に新しく生成する 4 つのセッションアフィニティヘッダー（`session-id`、`thread-id`、`x-client-request-id`、`x-codex-window-id`）です。クライアントが送った `authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`thread-id`、`x-client-request-id`、`x-codex-*`、`x-shunt-*` は引き続き削除され、純正 OpenAI 向けの値も転送ではなく生成されます。xAI とその他のサードパーティ OpenAI 互換ホストにはセッションアフィニティヘッダーを追加しません。API キーパスは `accept: text/event-stream` も生成しません。
 - **ボディの `model` 書き換え。** `upstream_model` が要求されたモデルと異なる場合、shunt はトップレベルの `model` だけを書き換え、他のフィールドはそのまま残します。JSON オブジェクトでないボディはそのまま送らず `400` で拒否します。
 - **identity エンコーディング。** zstd のリクエストボディはまずデコードされ(純正の Responses API はそのエンコーディングを受け付けません)、`content-encoding` は転送されません。
 - **資格情報は 1 つ、フェイルオーバーなし。** ルーティング先のサードパーティの背後にプールはないため、429 や 5xx はローテーションを起こさず `retry-after` とともにそのままリレーされます。
@@ -163,7 +171,7 @@ shunt は Codex 用のモデルカタログを提供しません — `GET /v1/mo
 - **モデルに基づくルーティングはオプトイン。** 既定ではすべてのリクエストが `[server.codex_endpoint]` で指定された 1 つのプロバイダーへ行き、ボディの `model` フィールドはそのまま転送されます。`[[server.codex_endpoint.routes]]` を設定すると、完全一致する `model` がそのエントリのプロバイダーを選びます — [モデルを別のアップストリームへルーティングする](#モデルを別のアップストリームへルーティングする)を参照。
 - **枯渇時はそのまま中継。** プールされたすべてのアカウントを試行し、少なくとも 1 つの上流レスポンスが返っていた場合、shunt はその最後のレスポンスを Anthropic 形式のエラーへ作り直すのではなく、変更せずに中継します。Responses のクライアントは、実際の ChatGPT バックエンドから受け取るはずの生の形を期待するためです。
 - **ゲートウェイ自身のエラーは OpenAI 形式。** 失敗が shunt 自身のものである場合 — 不正または欠落したクライアントトークン（`401`）、上流レスポンスのないプールの解決不能（`502`）、サイズ超過のリクエストボディ、未設定のエンドポイント — shunt は同じステータスコードのまま、OpenAI Responses のエラー形（`{"error":{"message":…,"type":…,"code":null}}`）で返します。これにより Codex CLI は、Anthropic の `{"type":"error",…}` エンベロープではなく自身のエラー経路でパースできます。中継される*上流*のエラー（バックエンドからの 429/4xx/5xx）は、引き続きそのまま通過します。
-- **HTTP/SSE のみ。** 対象のプロバイダーが `websocket = true` であっても、このエンドポイントは常に HTTP トランスポートを使います。
+- **2 つの受信トランスポート。** HTTP `POST` はバイト忠実性を維持し、WebSocket `GET` は有界イベント配信を追加します。これはプロバイダーの outbound `websocket = true` 設定には依存しません。
 
 ## セキュリティ
 

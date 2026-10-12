@@ -97,9 +97,9 @@ directly. Only the config key redirects both the HTTP and WebSocket paths. (The 
 to `chatgpt_base_url`, `model_provider`, and `experimental_realtime_ws_base_url`: these are
 user-level `~/.codex/config.toml` keys — the CLI ignores them in a project-local
 `.codex/config.toml`, and there is no environment-variable equivalent.) With `openai_base_url`
-the CLI still *tries* a WebSocket first; shunt has no `wss` route, so the CLI falls back to
-HTTP on its own. The custom `model_provider` above avoids even that round-trip —
-`supports_websockets` defaults off, so it goes straight to HTTP.
+the CLI tries a WebSocket first, and shunt accepts that upgrade on the same Responses path.
+The custom `model_provider` above leaves `supports_websockets` off by default, so it goes
+straight to HTTP.
 
 </Aside>
 
@@ -107,8 +107,8 @@ HTTP on its own. The custom `model_provider` above avoids even that round-trip �
 
 The CLI's own local `~/.codex/auth.json` login is **irrelevant to which account answers** — every
 request draws an account from shunt's pool. A loopback `base_url` may stay plain `http://`; use
-`https://` for anything remote. Do **not** set `supports_websockets = true` on the shunt provider —
-this endpoint is HTTP/SSE-only (see below).
+`https://` for anything remote. Setting `supports_websockets = true` on the shunt provider
+is optional — this endpoint serves both HTTP/SSE and WebSocket (see below).
 
 
 
@@ -210,8 +210,10 @@ name = "backup"     # each declared name must be provisioned above; an unprovisi
 
 Selection is **session-sticky**: the Codex CLI's own `session-id` request header keys the account,
 so one conversation stays on one account for as long as it stays healthy, then fails over (429 →
-rotate, 401 → refresh + retry, 5xx → cool down + rotate). A successful pooled response carries an
-`x-shunt-account: <name>` header. On a shared gateway with [`[server.auth]`](/reference/configuration/)
+rotate, 401 → refresh + retry, 5xx → cool down + rotate). A successful pooled response on this endpoint carries an `x-shunt-account: <name>` header —
+streaming included, since the inbound passthrough commits only after the winning upstream
+responds. (The outbound Responses pool's early-committed HTTP streaming attributes the account
+with an `event: account` frame instead; see the Codex multi-account guide.) On a shared gateway with [`[server.auth]`](/reference/configuration/)
 enabled, the sticky key is scoped per authenticated client, so different clients that happen to send
 the same `session-id` use distinct sticky keys — preventing cross-client sticky-key collisions. (The
 keys are distinct; two distinct keys can still hash to the same account.)
@@ -249,8 +251,8 @@ an entitled slug, e.g. in `~/.codex/config.toml`:
 model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
 ```
 
-Current entitled slugs are `gpt-5.6-sol` / `-terra` / `-luna` and `gpt-5.5` / `gpt-5.4` /
-`gpt-5.4-mini` / `gpt-5.2` — older accounts may only have the earlier ones. See
+Current entitled slugs are `gpt-6-astra` / `-sol` / `-luna`, `gpt-5.6-sol` / `-terra` / `-luna`,
+and `gpt-5.5` / `gpt-5.4` — older accounts may only have the earlier ones. See
 [ChatGPT / Codex → Route a model](/guides/codex/#3-route-a-model-to-codex) for the authoritative
 list. A request naming a model your subscription lacks fails exactly as it would talking to
 `chatgpt.com` directly.
@@ -261,8 +263,9 @@ list. A request naming a model your subscription lacks fails exactly as it would
 
 ## 6. Verify
 
-A raw Responses request against any of the three routes should relay verbatim and (when pooled)
-return an `x-shunt-account` header:
+A raw Responses request against any of the three routes should relay verbatim and, when a pooled
+account wins, carry an `x-shunt-account` header naming it — the inbound passthrough waits for the
+winning upstream before committing, so the header names the account that actually served the turn:
 
 ```bash
 curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
@@ -271,8 +274,8 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
   -d '{"model":"gpt-5.6-sol","input":"say hi","stream":true}'
 ```
 
-- A `200` with `content-type: text/event-stream` and an `x-shunt-account:` header ⇒ the pool served
-  the request and the SSE is relayed unchanged.
+- A `200` with `content-type: text/event-stream` and an `x-shunt-account:` header naming the pool
+  account ⇒ the pool served the request and the SSE is relayed unchanged.
 - A `401 authentication_error` ⇒ missing/invalid `x-shunt-token` (step 3).
 - A `400` naming the model ⇒ the account isn't entitled to that slug (step 5).
 
@@ -281,9 +284,10 @@ side beyond the base URL. See [Inbound Codex Endpoint](/guides/inbound-codex-end
 differs from the `/v1/messages` path and [HTTP Endpoints](/reference/endpoints/) for the registered
 routes.
 
-## HTTP/SSE only
+## HTTP/SSE and WebSocket
 
-Even when the target provider has `websocket = true`, this endpoint always uses the HTTP transport,
-so leave `supports_websockets` off (its default) on the Codex CLI's shunt provider. The experimental
-[Codex WebSocket v2 transport](https://github.com/pleaseai/shunt/blob/main/docs/m11-inbound-codex-endpoint.md)
-is out of scope for this endpoint and tracked as a follow-up.
+The endpoint accepts HTTP `POST` requests and WebSocket `GET` upgrades on the same three Responses
+paths, so `supports_websockets` on the Codex CLI's shunt provider may stay off (its default, HTTP
+only) or be set to `true`. Neither transport depends on the target provider's `websocket = true`,
+which controls shunt's own outbound transport. See
+[WebSocket transport](/guides/inbound-codex-endpoint/#websocket-transport) for how the socket behaves.

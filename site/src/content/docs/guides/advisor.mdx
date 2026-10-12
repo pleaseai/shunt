@@ -1,0 +1,107 @@
+---
+title: Advisor Gate
+description: Keep one executor model on every turn and have a stronger advisor approve its plans and completion claims, or send it back to redo the work.
+---
+
+`type = "advisor"` keeps one **executor** serving every client-visible turn. A
+stronger **advisor** reviews the executor's terminal turns — a plan before the
+work, or a claim that the task is done — before the client sees them. APPROVE
+releases the held turn. REDO discards it and sends the executor back to work with
+the advisor's plan. The advisor never serves a turn, so the client only ever sees
+executor output.
+
+## Configure it
+
+```toml
+[[models]]
+id = "claude-reviewed"
+
+[models.router]
+type = "advisor"
+executor_target = "claude-sonnet-4-6"
+advisor_target = "claude-opus-4-8"
+gate_trigger = "no_tool_call"
+max_reviews = 1
+# gate_stall_turns = 0
+# gate_min_tool_results = 0
+# advisor_max_tokens = 2048
+# transcript_max_chars = 200000
+# fail_open = true
+```
+
+What fires a review:
+
+- `gate_trigger = "no_tool_call"` (the default) reviews the executor's first turn
+  that ends without a tool call. `gate_min_tool_results` makes such a turn
+  reviewable only once the conversation carries that many tool results.
+- `gate_trigger = "pattern"` fires on `gate_trigger_pattern` instead, a regex
+  that is searched rather than anchored.
+- `gate_stall_turns` additionally reviews one turn as a mid-task checkpoint once
+  the conversation carries that many assistant turns; `0` turns it off.
+
+`max_reviews` caps reviews per session. A request without
+`x-claude-code-session-id` counts as a session of its own, so sessionless callers
+never share one budget. The advisor sees the transcript trimmed from the middle to
+`transcript_max_chars`, and `reviewer_system_prompt` and `redo_feedback_prefix`
+replace the packaged APPROVE/REDO reviewer prompt and the text placed in front of
+a REDO plan fed back to the executor.
+
+The six [per-call bounds](/reference/configuration/#per-call-bounds) go on
+`[models.router]`; the three `gated_*` bounds cap the held executor turn.
+
+## Which turns are held
+
+Whether a turn trips `gate_trigger` is known only once the turn is complete, so
+while the session still has review budget **every** executor turn is held, and the
+ones that do not trip the gate are served without a review. Once `max_reviews` is
+spent, or the advisor has failed three consults in the session (a failed consult
+refunds its review), the executor streams live with no buffering for the rest of
+the session. [Held turns](/guides/routing/#held-turns) explains how a held turn is
+served and what it costs: on a held turn the first byte arrives when the whole
+turn is done.
+
+## REDO
+
+The held turn is discarded before any response header reaches the client. The
+discarded turn and the advisor's plan are appended to the conversation, and the
+executor is re-run. That re-run streams live.
+
+## When a review fails
+
+With `fail_open = true` (the default), a failed review serves the held turn.
+`fail_open = false` fails the request with a `502` instead — also when the review
+was never sent because the session spent `max_judge_calls`. Either way the failed
+review is still counted under its outcome (e.g. `upstream_error`, `timeout`), or
+as `budget_exhausted` when `max_judge_calls` refused it.
+
+A held turn that crosses a `gated_*` bound or ends before its terminal marker is
+discarded before any header is sent, and the request fails with a gateway-owned
+`502` in the Anthropic error shape. It is not a REDO and not a failover attempt:
+the upstream already answered `2xx`. The
+[configuration reference](/reference/configuration/#buffered-turns-escalation-and-advisor)
+tabulates every failure case.
+
+## Credentials and probes
+
+`executor_target` may be a **passthrough** route, although `advisor_target` may
+not: the executor turn is the client's own answer, so it carries the caller's
+credential, while a review is a judge call and carries none of it. See
+[judge calls](/guides/routing/#judge-calls).
+
+A `count_tokens` probe makes no review and no gated call, and always answers from
+`executor_target`.
+
+## What the client sees
+
+| `x-gateway-route-source` | Meaning |
+| :-- | :-- |
+| `advisor_approve` | The executor turn was reviewed and approved; it was replayed |
+| `advisor_pass` | The executor turn was served without a review — it did not trip the gate, or no review could be reserved |
+| `advisor_fail_open` | The review failed after a complete executor turn, so the turn was served |
+| `advisor_redo` | The reviewer said REDO; this is the executor's live re-run |
+| `advisor_exhausted` | Review budget is spent or the advisor failed three consults, so the executor streams with no buffering |
+| `gated_error` | The gated turn could not be served |
+
+Reviews are counted by `shunt.router.judge_calls{algorithm="advisor"}`, and
+`GET /routes` lists `advisor_target` under `judges`. Every key is in the
+[configuration reference](/reference/configuration/#type--advisor).

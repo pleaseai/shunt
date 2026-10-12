@@ -1,0 +1,430 @@
+import { useCallback, useRef, useState } from 'react';
+
+import { API, mutate } from './api';
+import { useSession } from './session';
+
+/**
+ * How long a completion request may stay in flight before the page stops
+ * waiting for it. Generous — it covers an upstream token exchange plus the store
+ * write — because its only job is to keep a connection that never settles from
+ * closing the Complete button for the life of the page.
+ */
+const COMPLETE_TIMEOUT_MS = 120_000;
+
+/**
+ * Said whenever the completion's outcome is genuinely unknown: the request was
+ * abandoned without an answer, or the answer could not be read as one. The code
+ * is single-use, so an operator sent to retry an exchange that already stored
+ * the account gets a confusing second failure — the table is the authority.
+ */
+const UNKNOWN_COMPLETION =
+  'No answer from the server — the account may still have been stored; recheck the table before retrying';
+
+/**
+ * Said when the start request never produced an answer at all. Deliberately not
+ * `copy.startFailure`, which reports an answer the server *gave*: that one means
+ * the login was refused, this one that the request may never have arrived. The
+ * same line is already drawn on the completion path, and for the same reason —
+ * telling an operator their login was refused, when nothing is known to have
+ * reached the server, sends them to fix a request that was never read.
+ *
+ * Shared by both forms rather than added to `copy`, matching `UNKNOWN_COMPLETION`:
+ * neither says anything a caller could usefully word differently, because
+ * neither knows what happened.
+ */
+const START_UNANSWERED = 'No answer from the server — no authorization step opened, so start again';
+
+/**
+ * `START_UNANSWERED` for the case where this start also closed a step. Spelled
+ * out rather than composed from the two constants: concatenating them repeats
+ * "start again" and stacks a second em dash on a sentence that already has one.
+ * The two paths are symmetric in what they cost the operator — the clear that
+ * closes the previous step runs before the request, so it has happened either
+ * way by the time this is read (#531).
+ */
+const START_UNANSWERED_AFTER_CLOSE =
+  'No answer from the server — no authorization step opened, and the one that was open has been closed, so start again';
+
+/**
+ * Appended to a rejected start's own error when an authorization step the
+ * operator could still have completed was closed — by this start, or by an
+ * earlier one whose own response never got to report it. The clear itself
+ * is by design — a step left open stays clickable and its Complete button posts
+ * to the name captured for THAT flow (#513) — but the server holds the pending
+ * login for the rest of its `pending_ttl_secs`, and after a rejection nothing on
+ * the page points at it any more. Without this line the operator reads only why
+ * the new request was refused and goes looking for a link that is gone; with it
+ * they know the step is closed and restart (#531).
+ *
+ * Said only when a step was in fact closed. A rejected start that closed
+ * nothing has nothing to report, and saying it regardless would teach an
+ * operator to read past the sentence on the one occasion it is true.
+ */
+const CLOSED_PREVIOUS_STEP =
+  'the authorization step that was open has been closed; start again.';
+
+export interface FlowMessage {
+  text: string;
+  ok: boolean;
+}
+
+export interface Flow {
+  name: string;
+  setName: (value: string) => void;
+  code: string;
+  setCode: (value: string) => void;
+  /** Non-null exactly while the authorization step is open. */
+  authorizeUrl: string | null;
+  /** True while a start request is in flight, i.e. after the step closed but
+   *  before the next one opens. */
+  starting: boolean;
+  message: FlowMessage | null;
+  completing: boolean;
+  start: (body: Record<string, unknown>) => Promise<void>;
+  complete: () => Promise<void>;
+  /** Point the form at `name` and discard any half-finished flow. */
+  prime: (name: string) => void;
+  report: (text: string, ok: boolean) => void;
+}
+
+/**
+ * One account-provisioning form's flow: start, authorize, complete.
+ *
+ * The epoch is what keeps a superseded request from writing its result back. A
+ * start or completion still in flight when the form is re-primed would otherwise
+ * restore the flow `prime` just cleared, leaving the name field naming one
+ * account while `currentName` — the handle the completion POST interpolates into
+ * its URL — still names the previous one. Following that reopened link then
+ * stores the newly authorized credential under the OLD account's name, silently
+ * overwriting a different pool account. Each request captures the epoch it was
+ * issued under and discards its own response once a newer start or a re-login
+ * has superseded it.
+ *
+ * Each form gets its own hook instance, so the two counters are separate by
+ * construction: re-priming one never discards the other's live flow.
+ */
+export function useProvisioningFlow({
+  endpoints,
+  copy,
+  onStored,
+}: {
+  endpoints: { start: string; complete: (name: string) => string };
+  copy: { startFailure: string; completeFailure: string; stored: string };
+  /** Re-read every table the completed store write can have changed. */
+  onStored: () => void;
+}): Flow {
+  const { csrf } = useSession();
+  const [name, setName] = useState('');
+  const [code, setCode] = useState('');
+  const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [message, setMessage] = useState<FlowMessage | null>(null);
+  const [completing, setCompleting] = useState(false);
+
+  const epoch = useRef(0);
+  const currentName = useRef<string | null>(null);
+  // A completion is the one request in this flow that consumes the pending
+  // login, so unlike a start it must not be superseded by a second click of its
+  // own button. The first completion is the one that stores the credential; a
+  // second finds the pending entry already consumed and fails. Letting that
+  // second click bump the epoch would silence the successful response — the
+  // confirmation and the form reset are gated on the epoch — and surface the
+  // failed one instead, reporting an error over an account that was in fact
+  // stored and leaving the finished form open. The button is closed for the
+  // duration of its own request instead. This reaches one page's own two clicks
+  // and no further: a reload clears it and permits the same retry, and a second
+  // tab or a direct API call never sees it. Ordering concurrent completions is
+  // server-side work (issue #440).
+  const completingNow = useRef(false);
+  // A step this form closed whose closure no message has reported yet. `start`
+  // closes the open step synchronously, before it sends, but its own response
+  // can be dropped by the epoch guard when a newer start supersedes it — and
+  // that newer start reads an `authorizeUrl` the older one already nulled. The
+  // ref is what carries the fact across that gap, so the closure is reported by
+  // whichever message does get through instead of by nobody. Cleared as soon as
+  // something reports it, and as soon as a step is open again.
+  const closedStepUnreported = useRef(false);
+  // The epoch `prime` last took. A completion older than it was discarded with
+  // the rest of the flow, at the operator's own request, so it has no closure to
+  // hand on to a later message.
+  const discardedEpoch = useRef(0);
+  // The start-failure message currently on screen, if that is what is on screen:
+  // `show` clears it for every other writer — a completion's own verdict, a row
+  // action reporting through `report`, the clear a new start issues. A
+  // superseded completion amends this message and no other, because only this
+  // one is the operator's account of the start that closed the step.
+  const shownStartFailure = useRef<FlowMessage | null>(null);
+
+  // Mirrors `authorizeUrl` for the same reason `shownStartFailure` mirrors the
+  // message: `complete` has to know whether a step is open *now*, and taking the
+  // state as a dependency would rebuild the callback mid-flight.
+  const stepOpen = useRef(false);
+
+  /** Open or close the authorization step, keeping `stepOpen` in step. */
+  const openStep = useCallback((url: string | null) => {
+    stepOpen.current = url !== null;
+    setAuthorizeUrl(url);
+  }, []);
+
+  /**
+   * Write the page's one message, remembering whether it came from a failed
+   * start. The ref is what lets a callback read what is on screen without
+   * taking `message` as a dependency — and keeps the decision out of a
+   * `setMessage` updater, which React is free to run twice.
+   */
+  const show = useCallback((next: FlowMessage | null, fromStartFailure = false) => {
+    shownStartFailure.current = fromStartFailure ? next : null;
+    setMessage(next);
+  }, []);
+
+  const report = useCallback((text: string, ok: boolean) => show({ text, ok }), [show]);
+
+  const prime = useCallback((next: string) => {
+    setName(next);
+    epoch.current += 1;
+    discardedEpoch.current = epoch.current;
+    currentName.current = null;
+    closedStepUnreported.current = false;
+    openStep(null);
+    setStarting(false);
+    setCode('');
+    show(null);
+  }, [show, openStep]);
+
+  const start = useCallback(
+    async (body: Record<string, unknown>) => {
+      show(null);
+      // Whether this start closes an authorization step the operator could
+      // still have completed — the fact the notices below report. Read before
+      // the clear a few lines down, and from two sources, because the closure
+      // and the message that reports it can be separated: `authorizeUrl` is the
+      // step being closed right now, and `closedStepUnreported` already holds
+      // one whose own response never got to report it — an earlier start the
+      // epoch guard dropped, or a completion this form superseded.
+      //
+      // `completingNow` defers on a step whose code is already submitted,
+      // because at this moment its outcome is not yet known. Its completion
+      // leaves `authorizeUrl` non-null until it succeeds, and clears it only
+      // *after* the epoch guard — so a Start clicked mid-completion supersedes
+      // that completion, suppressing its confirmation while `onStored` has
+      // already stored the account. Without this term the refused start would
+      // then tell the operator to start again for an account that is already in
+      // the table. The case where that completion *fails* instead is decided
+      // where it becomes known: `complete` records the closure itself. That is
+      // also why the branches below read the ref rather than a value captured
+      // here — the completion can settle while this request is still in flight.
+      //
+      // Deliberately not `starting || authorizeUrl !== null`, the predicate
+      // `AddClaudeAccount`'s radio lock uses (the Codex form has no radios and
+      // no such lock). That one reaches the superseded case too, but it fires
+      // just as readily on two chained starts that never opened a step at all,
+      // and then names a step the operator never saw. The ref reaches the same
+      // case by remembering an actual closure, so it cannot say that.
+      closedStepUnreported.current =
+        (authorizeUrl !== null && !completingNow.current) || closedStepUnreported.current;
+      // The previous flow's authorization step is closed the moment a new start
+      // is issued. Left open it stays clickable, and its Complete button posts
+      // to the name captured for THAT flow — and because `complete` bumps the
+      // epoch itself, that click also strands the start now in flight: its
+      // response arrives under a superseded epoch and is dropped, so the link
+      // the operator is looking at is never replaced by the one they asked for.
+      openStep(null);
+      currentName.current = null;
+      // The code belongs to the flow being closed. `complete` clears it only on
+      // success, so a failed exchange leaves it in the box, and it would be
+      // submitted against the new pending entry — which fails on a state
+      // mismatch, blaming the operator's fresh paste for a stale one.
+      setCode('');
+      // `authorizeUrl` alone cannot carry the login-method lock: it is null from
+      // here until the response lands, so the radios would reopen for exactly as
+      // long as the request that already captured `mode` is in flight. Released
+      // only by the epoch's owner — a superseded start leaves it to the newer
+      // start or to `prime`, either of which sets it as it takes over.
+      setStarting(true);
+      const issued = (epoch.current += 1);
+      try {
+        const result = await mutate(`${API}${endpoints.start}`, csrf, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        if (issued !== epoch.current) return;
+        setStarting(false);
+        // `!answered` is a failure too: without a readable `authorize_url` the
+        // form has nothing to show, so reporting nothing would leave the
+        // operator staring at a step that never opened.
+        if (!result.ok || !result.answered) {
+          const reason = result.message ?? copy.startFailure;
+          show(
+            {
+              text: closedStepUnreported.current ? `${reason} — ${CLOSED_PREVIOUS_STEP}` : reason,
+              ok: false,
+            },
+            true,
+          );
+          closedStepUnreported.current = false;
+          return;
+        }
+        currentName.current = (result.payload.name as string | undefined) ?? null;
+        const opened = (result.payload.authorize_url as string | undefined) ?? null;
+        openStep(opened);
+        // Only when a step is actually open again. A 2xx answer carrying no
+        // `authorize_url` lands *here*, not in the branch above — that one reads
+        // the status and whether the body parsed, never the payload — and it
+        // opened nothing, so the closure it caused stays unreported for the next
+        // message to carry.
+        if (opened !== null) closedStepUnreported.current = false;
+      } catch {
+        if (issued === epoch.current) {
+          setStarting(false);
+          show(
+            {
+              text: closedStepUnreported.current ? START_UNANSWERED_AFTER_CLOSE : START_UNANSWERED,
+              ok: false,
+            },
+            true,
+          );
+          closedStepUnreported.current = false;
+        }
+      }
+    },
+    [csrf, endpoints.start, copy.startFailure, authorizeUrl, show, openStep],
+  );
+
+  const complete = useCallback(async () => {
+    if (completingNow.current) return;
+    completingNow.current = true;
+    setCompleting(true);
+    const issued = (epoch.current += 1);
+    // A completion that never settles would strand the marker above and close
+    // the button for the life of the page. Releasing the marker on a newer start
+    // is not the way out: that would put two completions in flight against
+    // different pending entries, and the server does not order them —
+    // `PendingStore::attempt` leaves the entry in place and `complete_account`
+    // removes it only after the store, so the older exchange can land last and
+    // leave the account holding the superseded credential. The request itself is
+    // bounded instead.
+    const abort = new AbortController();
+    const bound = setTimeout(() => abort.abort(), COMPLETE_TIMEOUT_MS);
+    try {
+      const result = await mutate(
+        `${API}${endpoints.complete(encodeURIComponent(currentName.current ?? ''))}`,
+        csrf,
+        { method: 'POST', body: JSON.stringify({ code: code.trim() }), signal: abort.signal },
+      );
+      // The answer could not be read as JSON, and every admin mutation sends
+      // JSON — so it came from something else (a proxy's error page, a
+      // truncated body) and says nothing about whether the code was exchanged.
+      // That is the same unknown the abandoned-request path below reports, and
+      // it is reported the same way rather than as the definite failure `ok`
+      // alone would make it. `src/admin/script.rs` draws the same line: its
+      // completion handler's `await res.json()` is bare so an unreadable answer
+      // reaches this path, while remove and refresh use `.catch(() => ({}))`.
+      if (!result.answered) {
+        onStored();
+        if (issued === epoch.current) show({ text: UNKNOWN_COMPLETION, ok: false });
+        // No closure recorded when this one is superseded, unlike the definite
+        // failure below: this path cannot say the account was *not* stored, and
+        // the notice it would arm ends in "start again". `onStored` has already
+        // re-read the table, which is where that question is answered.
+        return;
+      }
+      if (!result.ok) {
+        if (issued === epoch.current) {
+          show({ text: result.message ?? copy.completeFailure, ok: false });
+          return;
+        }
+        // Superseded, so this failure is shown to nobody — and the start that
+        // superseded it closed this step before sending. What is certain is that
+        // the account was not stored: the operator has neither it nor the step
+        // that was going to produce it, and only the next message can say so.
+        // Whether the pending login outlived the attempt is a separate question
+        // — `PendingStore::attempt` leaves the entry in place for a state or
+        // upstream failure and discards it at the attempt cap — and the notice
+        // claims nothing about it. Hand the closure on: that is the decision
+        // `start` could not make while this request was still in flight.
+        //
+        // Not when `prime` is what superseded it. That discards the
+        // half-finished flow at the operator's own request and clears the page's
+        // message with it, so the next start closes nothing and must not say
+        // otherwise.
+        if (discardedEpoch.current >= issued) return;
+        const onScreen = shownStartFailure.current;
+        if (stepOpen.current) {
+          // The start that superseded this completion has opened a step of its
+          // own, so the operator is not stranded and there is nothing to say.
+          // Arming the carry here would strand the *fact* instead: completing
+          // that step consumes it without reporting it, and the notice would
+          // surface later on a failure that closed nothing.
+        } else if (onScreen === null) {
+          // That start has not reported yet — it is still in flight, having
+          // cleared the message as it was issued. The ref hands the closure to
+          // whatever message it writes; if that start opens a step instead, its
+          // success path releases the ref.
+          closedStepUnreported.current = true;
+        } else if (
+          !onScreen.text.endsWith(CLOSED_PREVIOUS_STEP) &&
+          onScreen.text !== START_UNANSWERED_AFTER_CLOSE
+        ) {
+          // That start has already failed and its verdict is on screen — the
+          // likelier order, since a refusal is a local validation while this
+          // exchange is an upstream round trip. Amend what the operator is
+          // reading rather than leaving the fact to a message that may never
+          // come: the next start can as easily succeed, and clear the ref
+          // without anything having said it.
+          show(
+            onScreen.text === START_UNANSWERED
+              ? { text: START_UNANSWERED_AFTER_CLOSE, ok: false }
+              : { text: `${onScreen.text} — ${CLOSED_PREVIOUS_STEP}`, ok: false },
+            true,
+          );
+        }
+        // The remaining case needs neither: the message on screen already says
+        // a step was closed, carried there from an earlier start.
+        return;
+      }
+      // The account was stored upstream whether or not this flow has since been
+      // superseded, so the tables must refresh either way — they re-read the
+      // server and touch no flow-local state. Only the confirmation and the form
+      // reset stay gated: those would stomp the newly primed flow.
+      onStored();
+      if (issued !== epoch.current) return;
+      show({ text: (result.payload.message as string | undefined) ?? copy.stored, ok: true });
+      openStep(null);
+      setName('');
+      setCode('');
+    } catch {
+      // The request was abandoned without an answer — it timed out, hit the
+      // bound above, or the connection failed — so from here it is unknown
+      // whether the account was stored. Refresh the tables and say so. The
+      // refresh races an exchange that may still be running, so it settles the
+      // question only if the store has already landed; that is worth one request
+      // and no more. Polling for a completion that has already missed a
+      // two-minute deadline would relocate the same ambiguity to a later one,
+      // and reading it authoritatively needs a server-side completion status
+      // this surface does not have (issue #440).
+      onStored();
+      if (issued === epoch.current) {
+        show({ text: UNKNOWN_COMPLETION, ok: false });
+      }
+    } finally {
+      clearTimeout(bound);
+      completingNow.current = false;
+      setCompleting(false);
+    }
+  }, [csrf, code, endpoints, copy.completeFailure, copy.stored, onStored, show, openStep]);
+
+  return {
+    name,
+    setName,
+    code,
+    setCode,
+    authorizeUrl,
+    starting,
+    message,
+    completing,
+    start,
+    complete,
+    prime,
+    report,
+  };
+}

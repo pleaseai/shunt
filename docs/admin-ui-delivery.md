@@ -36,12 +36,14 @@ elsewhere, and three of them are load-bearing:
   deliberately the **pre-split** ones, because the collision between them is the
   motivation — rewriting them to `/admin/api/*` would describe a state in which
   there is nothing to decide.
-- **Assets.** The current UI is HTML/CSS/JS inside Rust string literals
+- **Assets.** The UI *was* HTML/CSS/JS inside Rust string literals
   (`src/admin/html.rs`, `src/admin/script.rs`) — ~770 lines when this record was
-  written on 2026-08-15, and 1,525 by 2026-09-10. There is no build step, no
-  type checking, and no component model. `src/AGENTS.md` asks for files under
-  500 lines; both files were near that then and both are past it now (879 and
-  646), on presentation code alone.
+  written on 2026-08-15, and 1,525 by 2026-09-10 (879 and 646), on presentation
+  code alone, with no build step, no type checking, and no component model, and
+  both files past the 500-line ceiling `src/AGENTS.md` asks for. Decision 4
+  resolved this and is now implemented: `script.rs` is deleted and `html.rs` is
+  down to the login page (150 lines), with the dashboard in `ui/` behind
+  `--features ui`.
 
 ## Current surface
 
@@ -54,7 +56,7 @@ baseline for any new route.
 | always | `GET` | `/health` — unauthenticated, exempt from the concurrency gate |
 | always | `GET` | `/protocol`, `/v1/models`, `/routes` |
 | always | `POST` | `/v1/messages`, `/v1/messages/count_tokens` |
-| `[server.admin]` | — | 16 paths under `/admin`, 18 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which this change moved to `/admin/api/status` |
+| `[server.admin]` | — | 19 paths under `/admin`, 21 method+path pairs — `admin_router` in `src/admin/mod.rs`. [M9's endpoint table](m9-admin-surface.md#endpoints-registered-only-when-serveradmin-is-set) documents 15 of them under their pre-split paths — every one except `GET /admin/status`, which moved to `/admin/api/status`, `GET /admin/api/session` ([Decision 5](#decision-5--the-spa-bootstraps-its-session-over-the-api)), and `GET /admin/api/routes`, which postdates M9 and serves the same body the public `/routes` returns, behind the admin credential |
 | `[server.gateway]` | `GET` | `/.well-known/oauth-authorization-server`, `/device`, `/device/callback`, `/managed/settings` |
 | `[server.gateway]` | `POST` | `/oauth/device_authorization`, `/oauth/token`, `/device`, `/device/authorize` |
 | `[server.gateway]` | `POST` | `/v1/metrics`, `/v1/logs`, `/v1/traces` (inbound OTLP ingest) |
@@ -64,7 +66,8 @@ baseline for any new route.
 | `[server.spend]` | `GET`, `DELETE` | `/v1/organizations/spend_limits/{id}` |
 | `[server.usage]` | `GET` | `/usage` |
 | `[server.oauth_usage]` | `GET` | `/api/oauth/usage` |
-| `[server.admin]` + `--features ui` | `GET` | `/admin/assets/{*path}` and `/admin/{*path}` — the embedded SPA bundle and the shell fallback; plus `/admin/api/{*path}`, registered for **every** method so an unmatched JSON path answers `404` rather than the shell (Decision 3). Absent from a default build, which embeds no bundle |
+| `[server.admin]` + `--features ui` | `GET` | `/admin/assets/{*path}` and `/admin/{*path}` — the embedded SPA bundle and the shell fallback. Both are registered with `get`, so `GET`/`HEAD` answer and every other method answers `405` with `Allow: GET,HEAD` rather than falling through; plus `/admin/api/{*path}`, registered for **every** method so an unmatched JSON path answers `404` rather than the shell (Decision 3). Absent from a default build, which embeds no bundle |
+| `[server.admin]` | `GET` | `/admin` and `/admin/` — registered in **both** builds, and the only admin paths whose *answer* depends on the feature: the SPA shell with `--features ui`, and without it a `404` naming the feature. Registered either way so the default build's answer is that sentence rather than axum's empty-bodied `404` for an unregistered path, which an operator cannot tell from an unconfigured `[server.admin]`. The mount root needs both spellings because a `{*path}` segment cannot match the empty string, so `/admin/` matches neither the exact route nor the fallback (#527) |
 
 Two properties of this table matter downstream:
 
@@ -174,17 +177,20 @@ balancer, which Decision 2 makes natural.
 
 ## Storage — evaluated separately
 
-The topology above says scaling out needs a shared store, and a dashboard worth
-building needs durable history. Both are storage questions that outgrew this
-document; they are recorded in [`storage.md`](storage.md), which evaluates
+The topology above says scaling out needs a shared store, and history that
+outlives a restart needs durable storage. Both are storage questions that
+outgrew this document; they are recorded in [`storage.md`](storage.md), which evaluates
 SQLite, Turso, and PostgreSQL and adopts none of them.
 
 Two conclusions from there bear on the decisions below:
 
-- **History is a prerequisite, not a feature.** Everything the dashboard can show
-  today is a point-in-time value in memory, so a store is what separates a
-  dashboard from a status page. That argues for keeping Decision 4's frontend
-  work independent of the store decision, so neither blocks the other.
+- **Durable history is a prerequisite, not a feature.** A store is what separates
+  history that outlives a restart from a point-in-time value in memory — but it
+  is no longer what separates a dashboard from a status page.
+  [`dashboard-metrics.md`](dashboard-metrics.md) adopts a bounded in-memory ring
+  that serves a recent window with no store, so charts are not blocked here.
+  That argues for keeping Decision 4's frontend work independent of the store
+  decision, so neither blocks the other.
 - **Single-instance is not created by the UI.** shunt's gateway device-flow
   rendezvous already needs cross-replica state and does not have it. A dashboard
   only makes that visible.
@@ -456,6 +462,116 @@ verify-the-download problem. Offline builds also need the fetch to be skippable.
 crates.io packaging is not a constraint: the crate is already `publish = false`
 (issue #292).
 
+## Decision 5 — the SPA bootstraps its session over the API
+
+The server-rendered dashboard interpolates two per-session values into the page
+it emits: the session's CSRF token, and `claude::auth::EXPIRY_BUFFER` in
+milliseconds. A third joined them once sessions recorded a privilege — `access`,
+the tier the session authenticates with. The SPA cannot be built that way. Its shell is one file embedded
+at compile time and served, unauthenticated, to every visitor alike
+(`src/admin/ui.rs`) — it knows nothing about the request that fetched it, and
+making it session-aware would mean rendering it per request, which is exactly
+the server-rendered page this track is replacing.
+
+`GET /admin/api/session` returns all three, authenticated like every other route
+in that namespace.
+
+**Returning a CSRF token over a `GET` does not weaken the guard it belongs to.**
+A cross-origin page can *send* this request with the browser's ambient cookie,
+but nothing on this surface lets it read the reply: there is no CORS layer
+anywhere on the admin router, so the same-origin policy stops the read. That is
+the same property the server-rendered dashboard already depends on — a
+cross-origin page cannot read `GET /admin` either. The guard that would fail is
+the one that never existed: were a permissive `Access-Control-Allow-Origin` ever
+added to this surface, this endpoint would hand the token to any origin. Adding
+one is therefore a change that has to be reviewed against this decision.
+
+A header-credential caller receives an empty `csrf`, matching what `dashboard`
+renders for one: it carries no ambient cookie, so `check_csrf` exempts it and
+there is no token to hand out.
+
+The refresh buffer is served rather than duplicated in the bundle for a
+different reason: the dashboard reports a setup token as expired once it is
+inside that buffer, and routing refuses one on the same boundary
+(`Tokens::is_valid_at`). A copy in TypeScript could drift from the Rust
+constant; a served value cannot.
+
+## Decision 6 — the frontend stack above React + Vite
+
+[Resolution 2](#resolutions) settles the toolchain — React + Vite, its own
+package and lockfile — and says nothing about what goes *inside* it. The
+dashboard is about to grow monitoring, access-permission management, and
+possibly its own sign-in page, which is more surface than one hand-written
+97-line stylesheet and four `<details>`-and-`<table>` screens carry well. This
+fixes what may be added, and on what condition.
+
+Two constraints bound every option, and both come from this document:
+
+- **The bundle ships inside the binary** ([Decision 4](#decision-4--build-the-ui-as-an-embedded-bundle)),
+  so its size is a release-artifact cost, not a page-load one. The baseline at
+  the time of writing is 253 KB raw / 79 KB gzip of JS plus 5.6 KB / 2.0 KB of
+  CSS.
+- **The shell's CSP is `style-src 'self'` with no `'unsafe-inline'`**
+  (`src/admin/ui.rs`), which is the whole reason the stylesheet is external.
+  Anything that injects CSS at runtime — a styled-components or Styletron-style
+  CSS-in-JS layer — would have to loosen that, and is refused on those grounds
+  alone. A build-time compiler that emits a static stylesheet does not.
+
+| Layer | Decision |
+| :-- | :-- |
+| Primitives | **Base UI** (`@base-ui/react`). Headless, so it adds behavior and ARIA without a style runtime. It replaces the hand-rolled disclosure and supplies the dialog, menu, and select the screens below will need |
+| Routing | **TanStack Router**, landing with — not before — the `/admin/*` deep links [Resolution 6](#resolutions) already promised. Its `beforeLoad` is also where the sign-in redirect and the read/write tier gate belong, in one place rather than per screen |
+| Styling | **Tailwind v4 + shadcn/ui, conditional** — see below. Until that condition is met, the existing token-based `index.css` stays |
+
+**Cloudflare Kumo is rejected**, though it is the closest single answer: it is
+MIT, built on Base UI, and would supply charts as well. It is a *product* design
+system — it carries Cloudflare's visual identity, makes `@phosphor-icons/react` a
+required peer dependency, and ships a prebuilt, non-purgeable stylesheet for the
+whole system against a 2 KB baseline. Its patterns are worth reading; the
+dependency is not worth embedding in this binary.
+
+### The condition on Tailwind: `html.rs` must stop being a hand-kept copy
+
+`src/index.css` is a verbatim port of the `STYLE` const in `src/admin/html.rs`,
+which still renders the login page, and the two are kept in step by a comment
+asking a human to remember. That page cannot move into the bundle:
+[Decision 4](#decision-4--build-the-ui-as-an-embedded-bundle) keeps it
+server-rendered precisely because the bundle exists only in a `--features ui`
+build, and an admin surface that lost its *sign-in* page would be unusable
+rather than merely dashboard-less.
+
+So adopting Tailwind would split the product's visual identity into two copies
+that diverge — unless the login page's stylesheet is **generated** from the same
+source and committed, with CI regenerating it and failing on a diff. That trade
+is the condition, and it is worth stating as an improvement rather than a tax:
+it replaces a comment asking someone to remember with a gate that cannot be
+forgotten, while keeping [Resolution 1](#resolutions) intact — a default
+`cargo build` still needs no Node toolchain, because the generated CSS is in the
+tree.
+
+### What this does not decide
+
+One of the three features motivating this is still blocked behind another
+decision, and a second is only partly unblocked. Naming a frontend stack must
+not obscure either:
+
+- **Monitoring is no longer blocked on [`storage.md`](storage.md) for a recent
+  window.** [`dashboard-metrics.md`](dashboard-metrics.md) removes that block:
+  shunt owns the aggregate, and a bounded in-memory ring retains that window
+  without a store, so a monitoring screen draws real charts. Two constraints
+  survive — it does not outlive a restart and is this instance's view only, and
+  the per-account history over days that [`storage.md`](storage.md) describes
+  still needs a store. The prerequisite is the aggregate in that record, not a
+  charting library: `src/metrics.rs` emits to the Sentry and OTel sinks rather
+  than to a scrape endpoint, and sixteen of its eighteen series cannot be read
+  back in-process at all.
+- **Access-permission management is display-only** until the same decision. A
+  UI cannot mint keys: every `write_keys` / `read_keys` entry must come from a
+  `${VAR}` / `${file:}` reference, and a literal in the config file fails the
+  load (`src/config.rs`). Showing which tiers exist, and which one the current
+  session holds, is the part that needs no store — and the session's tier
+  reaching the dashboard is already done.
+
 ## Desktop
 
 [`desktop-app.md`](desktop-app.md) already fixed the desktop framework decision:
@@ -591,6 +707,12 @@ The seven questions this document originally left open are now decided:
   inheritance that must not fail open must not silently lock the operator out
   either, and only asserting both halves distinguishes the two.
 - Graceful shutdown drains both listeners from a single signal.
+- The ported views carry their own suite in `ui/` (`npm test`, vitest +
+  Testing Library), which renders components and asserts on what an operator
+  sees. It replaces the substring assertions the string-literal dashboard could
+  only support: those matched emitted JavaScript source, so they could not tell
+  a guard that runs from one that is merely present. Each property there was
+  checked by deleting the guard it covers and confirming the test fails.
 - Embedded assets: the bundle is non-empty (a build that silently embedded
   nothing must fail, not serve a blank page), `/admin/assets/*` returns the
   file's bytes, and each response carries the `Content-Type` its extension
@@ -598,6 +720,18 @@ The seven questions this document originally left open are now decided:
   wrong or missing type is not cosmetic: browsers refuse a stylesheet or module
   script served as `text/plain`, and `X-Content-Type-Options: nosniff` removes
   the sniffing that would otherwise mask the bug.
+- `GET /admin` in **both** feature configurations, because it is the one path
+  whose answer depends on the feature: the shell (with the shell's strict CSP,
+  not the login page's `'unsafe-inline'` one) with `--features ui`, and a `404`
+  whose body names `--features ui` without it. Asserting the body, not just the
+  status, is the point of the second: an empty `404` is indistinguishable from
+  an unconfigured `[server.admin]`, and the two have different fixes.
+- Session properties are asserted against `/admin/api/session`, not `/admin`.
+  Once the shell is served unauthenticated, a `200` from `/admin` says nothing
+  about the caller's cookie — so the tests for "the OIDC callback minted a
+  usable session" and "logout invalidated it" had to move to the endpoint that
+  actually authenticates, or they would have gone on passing while testing
+  nothing.
 
 ## Documentation impact
 
@@ -616,3 +750,6 @@ The seven questions this document originally left open are now decided:
 - `docs/running.md` — the single-instance topology statement belongs in the
   operational guide, not only in this design record.
 - `README.md` — only if the dashboard becomes a headline capability.
+- `ui/README.md` — whenever [Decision 6](#decision-6--the-frontend-stack-above-react--vite)
+  adds a layer, since its Layout table is what a reader checks before opening
+  the source.

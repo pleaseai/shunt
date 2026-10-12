@@ -3,17 +3,19 @@
 //!
 //! Exposes a **sanitized, aggregated** view of the shared account pool's quota
 //! state — per-window remaining headroom and reset time — so a non-admin client
-//! (a `[server.auth]` token holder) can anticipate throttling without the admin
-//! surface. Unlike `GET /admin/api/pool`, it never reveals account identities,
+//! (a `[server.auth]` token holder or a `[server.gateway]` login) can
+//! anticipate throttling without the admin surface. Unlike
+//! `GET /admin/api/pool`, it never reveals account identities,
 //! counts, priorities, disabled flags, thresholds, or burn-rate headroom: the
 //! response carries only aggregate numbers derived across the pool, plus the
 //! same aggregate computed per pooled provider (keyed by the provider's config
 //! name) so a client that routes to one provider can read that provider's
 //! headroom instead of the blended pool-wide figure.
 //!
-//! The endpoint requires `[server.auth]` (a non-admin caller must be
-//! identifiable); the pairing is enforced at config validation, and the handler
-//! fails closed if inbound auth is somehow absent.
+//! The endpoint requires `[server.auth]` or `[server.gateway]` (a non-admin
+//! caller must be identifiable, by client token or gateway login); the pairing
+//! is enforced at config validation, and the handler fails closed if neither is
+//! somehow configured.
 
 use axum::{
     extract::State,
@@ -27,7 +29,7 @@ use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 
 use crate::{
     accounts::{account_key, AccountKey, AccountSnapshot},
-    auth::claude::store as claude_store,
+    auth::{claude::store as claude_store, gate},
     config::{AccountConfig, AuthMode},
     error::ShuntError,
     server::AppState,
@@ -65,10 +67,14 @@ pub struct Windows {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct WindowStatus {
-    /// `mean(1 - utilization)` over non-disabled accounts reporting this
-    /// window — the fraction of the pool's combined capacity still unused,
-    /// clamped to `0.0..=1.0` and rounded to four decimals. Nine exhausted
-    /// accounts plus one fresh one report `0.1`, not `1.0`. This is a
+    /// `mean(cap - utilization)` over non-disabled accounts reporting this
+    /// window, where `cap` is the account's resolved `max_utilization` hard
+    /// cap for the window (`1.0` when none governs it) — the fraction of the
+    /// pool's combined capacity still usable before caps exclude accounts,
+    /// each term clamped to `0.0..=1.0` and the mean rounded to four
+    /// decimals. Nine exhausted accounts plus one fresh uncapped one report
+    /// `0.1`, not `1.0`; an account at 44% under a 50% cap counts `0.06`.
+    /// The cap values themselves never leave the aggregate. This is a
     /// pool-wide aggregate, not a prediction of whether the next request will
     /// be admitted (routing also weighs availability, model, session affinity,
     /// and priority). `None` when no non-disabled account reports the window.
@@ -78,8 +84,11 @@ pub struct WindowStatus {
     /// that aggregate window.
     pub remaining: Option<f64>,
     /// Earliest reported reset time (unix epoch seconds) among the accounts
-    /// counted in `remaining` — the soonest moment the aggregate can change.
-    /// `None` when none of them reported one.
+    /// counted in `remaining`, including when a cap that zeroes an account's
+    /// term clears (selection's deadline: the reset of each window holding it
+    /// at its cap, or that observation's expiry when earlier) — the
+    /// soonest moment the aggregate can change. `None` when none of them
+    /// reported one.
     pub resets_at: Option<u64>,
 }
 
@@ -154,26 +163,47 @@ fn pool_aggregate<'a>(
             five_hour: window_status(
                 window_snapshots.clone(),
                 |s| s.utilization_5h,
+                |s| s.max_utilization_5h,
+                CapScope::Shared,
                 |s| s.reset_5h,
             ),
             seven_day: window_status(
                 window_snapshots.clone(),
                 |s| s.utilization_7d,
+                |s| s.max_utilization_7d,
+                CapScope::Shared,
                 |s| s.reset_7d,
             ),
-            fable: window_status(window_snapshots, |s| s.utilization_7d_oi, |s| s.reset_7d_oi),
+            fable: window_status(
+                window_snapshots,
+                |s| s.utilization_7d_oi,
+                |s| s.max_utilization_fable,
+                CapScope::Fable,
+                |s| s.reset_7d_oi,
+            ),
         },
     }
 }
 
-/// Aggregate headroom for one window: the mean `1 - utilization` over the
+/// Aggregate headroom for one window: the mean `cap - utilization` over the
 /// non-disabled accounts reporting a finite utilization for it (the fraction of
-/// the pool's combined capacity still unused), and the earliest reset any of
-/// them reported. Not a guarantee about which account the next request will
-/// actually route to.
+/// the pool's combined capacity still usable before each account's resolved
+/// hard cap, `1.0` when uncapped), and the earliest reset any of them reported.
+/// The snapshot's cap is the one selection's `utilization >= cap` check reads,
+/// so an account's term reaches zero exactly when that check excludes it.
+/// `scope` names the requests this window serves, and an account a cap excludes
+/// from them — a shared 5h/7d cap excludes it from every request, Fable ones
+/// included — counts zero even when this window alone is still under its cap,
+/// since that headroom is not usable until the blocking window clears. That
+/// clearing time joins `resets_at`, because the aggregate changes then too. A cap with no
+/// observed window behind it (the Fable cap on a Codex account, which reports
+/// no `7d_oi`) adds nothing. Not a guarantee about which account the next
+/// request will actually route to.
 fn window_status<'a>(
     snapshots: impl Iterator<Item = &'a AccountSnapshot>,
     utilization: impl Fn(&AccountSnapshot) -> Option<f64>,
+    cap: impl Fn(&AccountSnapshot) -> Option<f64>,
+    scope: CapScope,
     reset: impl Fn(&AccountSnapshot) -> Option<u64>,
 ) -> WindowStatus {
     let mut reporting = 0usize;
@@ -184,7 +214,17 @@ fn window_status<'a>(
             continue;
         };
         reporting += 1;
-        headroom_sum += (1.0 - used).clamp(0.0, 1.0);
+        if scope.excludes(snapshot) {
+            if let Some(at) = scope.exclusion_clears_at(snapshot) {
+                earliest_reset = Some(earliest_reset.unwrap_or(at).min(at));
+            }
+        } else {
+            let ceiling = cap(snapshot).unwrap_or(1.0);
+            headroom_sum += (ceiling - used).clamp(0.0, 1.0);
+        }
+        // Folded even while a cap excludes the account: at this reset the
+        // snapshot path (`expire_stale_quota`) clears the window's utilization,
+        // so the account leaves `reporting` and the mean changes then.
         if let Some(at) = reset(snapshot) {
             earliest_reset = Some(earliest_reset.unwrap_or(at).min(at));
         }
@@ -201,6 +241,35 @@ fn window_status<'a>(
     }
 }
 
+/// The requests a window's headroom serves, for the hard-cap verdict that
+/// zeroes an account's term: the shared 5h/7d windows serve every request, the
+/// Fable window serves Fable requests, which the shared caps also govern.
+#[derive(Clone, Copy)]
+enum CapScope {
+    Shared,
+    Fable,
+}
+
+impl CapScope {
+    /// Whether selection excludes the account from this scope's requests.
+    fn excludes(self, snapshot: &AccountSnapshot) -> bool {
+        match self {
+            Self::Shared => snapshot.capped,
+            Self::Fable => snapshot.any_cap(),
+        }
+    }
+
+    /// When that exclusion clears, as selection computes it (the snapshot's
+    /// `cap_exclusion` deadline, which folds each capping window's reset and
+    /// observation expiry), or `None` when unknown.
+    fn exclusion_clears_at(self, snapshot: &AccountSnapshot) -> Option<u64> {
+        match self {
+            Self::Shared => snapshot.cap_clears_at,
+            Self::Fable => snapshot.cap_clears_at_fable,
+        }
+    }
+}
+
 /// Pick one representative per physical account across every provider, and
 /// return the chosen entries' positions per provider (both indexed like
 /// `resolved`; `AccountPool::snapshot` emits one row per entry in input order,
@@ -213,8 +282,13 @@ fn window_status<'a>(
 /// the store family and stable identity but not the provider name, so the same
 /// identity configured under two providers is one account too — hence one pass
 /// over all providers. An enabled alias wins over a disabled one so a disabled
-/// first alias does not hide an identity that still serves; order is otherwise
-/// first-seen. Only the window aggregates use this subset — `status` keeps
+/// first alias does not hide an identity that still serves, then the lowest
+/// `priority`, first-seen on a tie — the order `collapse_representatives` uses,
+/// so within one provider the window means read the hard caps selection
+/// actually enforces when aliases configure different ones. Across providers
+/// selection never compares aliases (each provider enforces its own), so the
+/// pool-wide pick there is the same ordering applied as a heuristic. Only the
+/// window aggregates use this subset — `status` keeps
 /// reading every row, so each alias's own threshold verdict still counts.
 fn representative_positions(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<HashSet<usize>> {
     let mut by_key: HashMap<AccountKey, (usize, usize)> = HashMap::new();
@@ -227,12 +301,19 @@ fn representative_positions(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<Hash
             match by_key.entry(account_key(provider, account)) {
                 Entry::Occupied(mut entry) => {
                     let (seen_provider, seen_index) = *entry.get();
-                    let seen_disabled = if seen_provider == provider_index {
-                        kept[seen_index].is_some_and(|seen| seen.disabled)
+                    let seen = if seen_provider == provider_index {
+                        kept[seen_index]
                     } else {
-                        chosen[seen_provider][seen_index].is_some_and(|seen| seen.disabled)
+                        chosen[seen_provider][seen_index]
                     };
-                    if seen_disabled && !account.disabled {
+                    // `collapse_representatives`' order, so the row whose
+                    // caps the mean reads is the alias selection enforces.
+                    let outranks = seen.is_some_and(|seen| {
+                        (seen.disabled && !account.disabled)
+                            || (seen.disabled == account.disabled
+                                && account.priority < seen.priority)
+                    });
+                    if outranks {
                         if seen_provider == provider_index {
                             kept[seen_index] = None;
                         } else {
@@ -263,20 +344,27 @@ fn representative_positions(resolved: &[(&str, Vec<AccountConfig>)]) -> Vec<Hash
 }
 
 /// Coarse pool health derived purely from availability booleans (no numbers):
-/// `exhausted` when every selectable account is unavailable, `degraded` when any
-/// is near quota, else `ok`. Disabled accounts never count as selectable.
+/// `capped` when no selectable account is available and at least one is held
+/// out by a `max_utilization` cap, `exhausted` when every selectable account is
+/// unavailable otherwise, `degraded` when any is near quota, else `ok`.
+/// Disabled accounts never count as selectable. The value names no account or
+/// cap setting.
 fn pool_status<'a>(snapshots: impl Iterator<Item = &'a AccountSnapshot>) -> &'static str {
     let mut any_selectable = false;
     let mut any_available = false;
     let mut any_near_quota = false;
+    let mut any_capped = false;
 
     for snapshot in snapshots.filter(|snapshot| !snapshot.disabled) {
         any_selectable = true;
         any_available |= snapshot.available;
         any_near_quota |= snapshot.near_quota;
+        any_capped |= !snapshot.paused && snapshot.any_cap();
     }
 
-    if !any_selectable || !any_available {
+    if any_selectable && !any_available && any_capped {
+        "capped"
+    } else if !any_selectable || !any_available {
         "exhausted"
     } else if any_near_quota {
         "degraded"
@@ -295,27 +383,67 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // Snapshot the live config so this response reflects the latest reload
     // (matches discovery.rs / admin routes).
     let state = state.refreshed();
-    // `[server.usage]` requires `[server.auth]` at config validation, so inbound
-    // auth is present in practice; fail closed rather than serve pool telemetry
-    // unauthenticated if it somehow is not.
-    let Some(auth) = state.inbound_auth.clone() else {
+    // `[server.usage]` requires `[server.auth]` or `[server.gateway]` at config
+    // validation, so a validator is present in practice; fail closed rather
+    // than serve pool telemetry unauthenticated if neither somehow is.
+    if state.inbound_auth.is_none() && state.gateway_auth.is_none() {
         return ShuntError::new(
             StatusCode::UNAUTHORIZED,
             "authentication_error",
-            "usage endpoint requires client authentication, but no client tokens are configured",
+            "usage endpoint requires client authentication, but neither client tokens nor gateway login are configured",
         )
         .into_response();
-    };
-    let Some(client) = auth.authenticate_client(&headers) else {
-        tracing::warn!("inbound auth failed for GET /usage: missing or invalid client token");
-        let message = format!(
-            "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) to read pool usage; ask the operator for one",
-            auth.header()
-        );
-        return ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-            .into_response();
-    };
-    tracing::info!(client = %client, "inbound client authenticated for GET /usage");
+    }
+    // Check the gateway login bearer first: it is a cheap local signature
+    // check, and a gateway JWT presented as `Authorization: Bearer` would
+    // otherwise reach the `[server.auth]` JWT issuer path, where a JWKS outage
+    // (`Outcome::Unavailable` → 503) must not lock out a valid gateway login.
+    if state
+        .gateway_auth
+        .as_ref()
+        .and_then(|auth| auth.authenticate_bearer(&headers))
+        .is_some()
+    {
+        tracing::info!("inbound gateway login authenticated for GET /usage");
+    } else {
+        let rejected = || {
+            // Name only the credentials this gateway actually accepts.
+            let message = match (&state.inbound_auth, state.gateway_auth.is_some()) {
+                (Some(auth), true) => format!(
+                    "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) or a gateway login (`shunt gateway login`) to read pool usage; ask the operator for one",
+                    auth.header()
+                ),
+                (Some(auth), false) => format!(
+                    "missing or invalid credential: this gateway requires a client token (via {}, x-api-key, or Authorization: Bearer) to read pool usage; ask the operator for one",
+                    auth.header()
+                ),
+                (None, _) => "missing or invalid credential: this gateway requires a gateway login (`shunt gateway login`) to read pool usage".to_string(),
+            };
+            ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+                .into_response()
+        };
+        let Some(auth) = state.inbound_auth.clone() else {
+            tracing::warn!("inbound auth failed for GET /usage: missing or invalid gateway login");
+            return rejected();
+        };
+        match gate::authenticate(&auth, &state.inbound_jwks, &headers, gate::Slots::Client).await {
+            gate::Outcome::Authenticated { client, .. } => {
+                tracing::info!(client = %client, "inbound client authenticated for GET /usage");
+            }
+            gate::Outcome::Unavailable => {
+                tracing::warn!(
+                    "GET /usage: cannot verify credential, JWT issuer key set unreachable"
+                );
+                return gate::unavailable_response();
+            }
+            gate::Outcome::Rejected => {
+                tracing::warn!(
+                    "inbound auth failed for GET /usage: missing or invalid client token or gateway login"
+                );
+                return rejected();
+            }
+        }
+    }
 
     let mut resolved_by_provider: Vec<(&str, Vec<AccountConfig>)> = Vec::new();
     for (name, provider) in &state.config.providers {

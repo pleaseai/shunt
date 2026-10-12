@@ -102,6 +102,29 @@ Responses 변환은 프로바이더별 또는 라우트별 추론 노력 다이�
 않으며 옵트인하려면 `tool_search = true`가 필요합니다. 여기서 `tool_search = false`로 설정하면 대신 텍스트
 심을 강제할 수 있습니다. [도구 검색](/ko/guides/codex/#도구-검색)을 참고하세요.
 
+## 정지 시퀀스
+
+Responses API에는 **`stop` 파라미터가 없습니다** — Chat Completions에는 있지만 Responses에는
+없습니다 — 따라서 클라이언트의 Anthropic `stop_sequences`는 업스트림으로 전달할 수 없습니다.
+대신 shunt가 Responses 변환 과정에서 게이트웨이 측으로 이를 흉내 냅니다. 모든 Responses
+프로바이더와 모든 전송 방식(HTTP와 WebSocket, 스트리밍과 비스트리밍)에 적용됩니다.
+
+- 어시스턴트 텍스트는 정지 시퀀스가 처음 나타나는 지점에서 잘리며, 그 뒤의 텍스트는 클라이언트에
+  전달되지 않습니다.
+- 턴은 `stop_reason: "stop_sequence"`와 일치한 문자열을 담은 `stop_sequence`로 종료됩니다. 네이티브
+  Anthropic 업스트림이 보고하는 방식과 동일합니다.
+- 일치 시점에 업스트림 요청을 중단하며, 그대로 두지 않습니다 — 스트리밍 HTTP와 두 WebSocket
+  경로가 해당합니다. 비스트리밍 HTTP는 예외로, 응답 본문을 모두 읽은 뒤에야 변환하므로 자르는
+  동작은 다른 경로와 같지만 업스트림은 끝까지 진행됩니다. 일치 시점부터 중단까지 업스트림이
+  생성한 토큰은 여전히 업스트림에서 과금되지만, 정지 시퀀스를 주로 쓰는 짧은 응답에서는 무시할
+  만한 양입니다.
+
+한 가지 알아둘 점이 있습니다. 정지 때문에 업스트림의 `response.completed` 사용량이 반영되기 전에
+턴이 끝나므로, shunt는 자체 로컬 입력 추정치로 대체하고 `output_tokens: 0`을 보고합니다 —
+스트리밍 턴에서는 `message_delta.usage`에, 비스트리밍 턴에서는 응답의 `usage`에 담깁니다. 이
+추정치에는 프로바이더의 `count_tokens = "tiktoken"` 옵트인이 필요하며, 이를 켜지 않으면 정지된
+턴은 `input_tokens: 0`을 보고합니다.
+
 ## 검증
 
 ```bash

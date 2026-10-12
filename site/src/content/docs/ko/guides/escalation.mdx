@@ -1,0 +1,94 @@
+---
+title: 에스컬레이션
+description: 각 세션을 약한 타깃에서 시작하고, 판정 모델이 실제로 한 작업을 판정하게 하며, 판정 모델이 계속 문제를 찾으면 세션을 강한 타깃에 고정합니다.
+---
+
+`mode = "escalation"`은 [`llm_classifier`](/ko/guides/llm-classifier/)의 세 번째
+모드입니다. `capability`와 `custom`이 턴에 어떤 모델이 필요한지 예측하는 것과 달리,
+에스컬레이션은 각 세션을 약한 타깃에서 시작하고 판정 모델이 작업이 어떻게 흘러가는지 읽게
+합니다 — 예측이 아니라 약한 모델이 실제로 한 작업을 봅니다.
+
+## 세션이 상향 전환되는 방식
+
+아직 고정(latch)되지 않은 세션의 턴은 `weak_target`에서 만들어 붙잡아 둡니다. 그다음 판정
+모델이 **완성된** 턴을 판정합니다.
+
+- 거절 판정은 상향 전환 연속 횟수를 0으로 되돌립니다.
+- 상향 전환 판정은 그 횟수를 늘립니다. 연속 횟수가 `confirmations`보다 작은 동안에는
+  붙잡아 둔 약한 턴을 제공합니다.
+- 연속 횟수가 `confirmations`에 닿으면 세션이 고정됩니다. 그 턴의 약한 답은 버리고
+  `strong_target`이 턴을 제공하며, 이후 그 세션의 모든 턴은 판정 호출도 버퍼링도 없이
+  곧바로 `strong_target`으로 갑니다.
+
+판정 모델이 이미 존재하는 턴을 판정하므로, shunt는 판정이 나올 때까지 그 턴을 붙잡아
+둡니다. 재생이 시작될 때까지 응답 헤더를 확정하지 않으므로 강한 타깃으로의 전환은 헤더를
+보내기 전에 일어나고, 버려진 약한 턴은 클라이언트가 본 적이 없습니다. 붙잡아 둔 턴을
+어떻게 제공하는지와 그 비용은 [보류된 턴](/ko/guides/routing/#보류된-턴)에서 설명합니다.
+
+## 설정
+
+```toml
+[[models]]
+id = "claude-escalate"
+
+[models.router]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "claude-haiku-4-5"
+strong_target = "claude-opus-4-8"
+weak_target = "claude-sonnet-4-6"
+# prompt = "…"
+# max_output_tokens = 4096
+
+[models.router.escalation]
+confirmations = 2
+# recent_turn_window = 28
+# window_message_chars = 500
+```
+
+`[models.router.escalation]` 테이블은 선택입니다. 생략하면 세 기본값을 쓰며, 이는
+업스트림이 벤치마크한 설정입니다. `confirmations`가 `1`보다 크면 세션 id가 필요합니다.
+없으면 매 턴이 0에서 시작해 세션이 끝내 고정되지 않습니다. 판정 모델은 최근
+`recent_turn_window`개 메시지를 보며, 메시지마다 `window_message_chars`자로 잘립니다.
+`weak_target`은 `classifier_target`과 같은 id여도 됩니다.
+
+여섯 개 [호출당 한도](/ko/reference/configuration/#호출당-한도)는 `[models.router]`에
+놓으며, 그중 `gated_*` 세 개가 붙잡아 둔 약한 턴에 상한을 겁니다. classifier 형태의
+[`[models.subagents]`](/ko/guides/subagents/) 오버레이는 여전히 `mode = "custom"`만
+받습니다.
+
+## 자격 증명
+
+`classifier_target`과 달리 `weak_target`은 **passthrough** 라우트여도 됩니다. 약한 턴은
+클라이언트 자신의 답이므로 실시간 턴과 똑같이 호출자의 자격 증명을 싣지만, 판정 호출은
+호출자의 자격 증명을 하나도 싣지 않습니다. [판정 호출](/ko/guides/routing/#판정-호출)을
+보세요.
+
+## 프로브와 고정
+
+`count_tokens` 프로브는 판정 호출도 보류된 호출도 만들지 않습니다. 세션이 고정된 동안에는
+`strong_target`으로, 그렇지 않으면 `weak_target`으로 응답합니다. 마지막 턴이 고정 상태로
+처리되었거나 확정된 상향 전환으로 처리되었으면 고정된 세션입니다. 이 고정은 세션의 위임된
+자식과 공유되고 한 시간 동안 유휴 상태면 만료됩니다.
+
+## 클라이언트가 보는 것
+
+`x-gateway-route-source`가 턴마다 무슨 일이 있었는지 알려 줍니다.
+
+| 소스 | 의미 |
+| :-- | :-- |
+| `escalation_weak` | 판정 모델이 약한 턴을 통과시켰고, 그 턴을 재생했습니다 |
+| `escalation_latch` | 세션이 이 턴이나 그 이전에 고정되어 강한 타깃이 턴을 실시간으로 제공했습니다 |
+| `escalation_fallback` | 약한 턴이 실패했거나, 잘렸거나, 컨텍스트 윈도에 비해 너무 길다며 거부되어 강한 타깃이 판정 호출 없이 턴을 실시간으로 제공했습니다 |
+| `classifier_fail_open` | 완성된 약한 턴 뒤에 판정이 실패해 약한 턴을 제공했습니다 |
+| `gated_error` | 보류된 턴을 제공할 수 없었습니다 |
+
+각 소스의 정확한 조건과, 약한 턴이나 그 업스트림, 판정 모델이 실패했을 때의 동작은
+[설정 레퍼런스](/ko/reference/configuration/#보류된-턴-escalation과-advisor)에 있습니다.
+판정 호출은 `shunt.router.judge_calls{algorithm="llm_classifier"}`로 셉니다.
+
+## 비용
+
+escalation은 고정 전 모든 턴에서 판정 호출을 한 번씩 하며, 그런 턴마다 약한 턴이 완성되고
+판정될 때까지 클라이언트는 아무것도 받지 못합니다. 고정되는 턴은 버리는 약한 호출의 비용도
+치르며, 그 호출도 업스트림 쿼터는 이미 썼습니다.

@@ -28,8 +28,11 @@
 //!   `otel.status_code` — so it is set directly via
 //!   `sentry::configure_scope(..).get_span()` in [`mark_sentry_span_status`].
 //!   This is a no-op whenever no Sentry span is active (client absent, or span
-//!   export disabled), so it costs nothing beyond the existing opt-in. This
-//!   only ever runs at response-header time, once, from the handler.
+//!   export disabled), so it costs nothing beyond the existing opt-in. Only
+//!   [`record_span_outcome`] makes that call, at response-header time while
+//!   the request span is still current; the late-caller helper
+//!   [`record_span_outcome_on`] records fields alone (why: the mid-stream
+//!   bullet below).
 //! - **Event capture** ([`capture_upstream_outcome`]): a Sentry error/warning
 //!   *event* for 5xx and 429/529 responses, built with `sentry::capture_message`
 //!   directly rather than a `tracing::error!`/`warn!` macro. Sentry events are
@@ -196,7 +199,26 @@ pub(crate) fn record_requested_model(model: &str) {
 /// status for the request is known; never buffers a streamed response to
 /// learn it, since the status is available at response-header time.
 pub(crate) fn record_span_outcome(provider: &str, status: StatusCode) {
-    let span = tracing::Span::current();
+    record_span_outcome_on(&tracing::Span::current(), provider, status);
+    // The ambient-scope update is this wrapper's alone: header-time callers
+    // run inside the request span, where the scope's span IS the request's
+    // Sentry span. `record_span_outcome_on`'s late callers (a committed
+    // stream's body poll, after the span exited) must not make it — see that
+    // function's docs.
+    mark_sentry_span_status(status);
+}
+
+/// [`record_span_outcome`] on an explicit span, for call sites that record
+/// after the request span has exited — a committed stream's body is polled
+/// outside the `proxy_request` span, so the chain captures the span up front
+/// and records onto it directly.
+///
+/// Records span fields only and never touches the ambient Sentry scope: by
+/// poll time `configure_scope(..).get_span()` returns `None` or some
+/// unrelated span (module docs), so the ambient update [`record_span_outcome`]
+/// makes at header time cannot reach the request's own span from here — and
+/// `set_status` on whatever else is ambient would corrupt that span.
+pub(crate) fn record_span_outcome_on(span: &tracing::Span, provider: &str, status: StatusCode) {
     span.record("shunt.provider", provider);
     span.record("http.response.status_code", status.as_u16());
     span.record(
@@ -207,7 +229,6 @@ pub(crate) fn record_span_outcome(provider: &str, status: StatusCode) {
             "ok"
         },
     );
-    mark_sentry_span_status(status);
 }
 
 /// Set the *active Sentry span/transaction's* own status (searchable as
@@ -216,6 +237,10 @@ pub(crate) fn record_span_outcome(provider: &str, status: StatusCode) {
 /// e.g. `[sentry] traces_sample_rate` is 0/unset, or no client is bound — which
 /// keeps this piggybacking on the existing span-export opt-in rather than
 /// requiring a new one.
+///
+/// Only [`record_span_outcome`] calls this, at response-header time, while
+/// the request span is still current — the one moment the scope's span is
+/// guaranteed to be the request's own (module docs).
 fn mark_sentry_span_status(status: StatusCode) {
     if let Some(span) = sentry::configure_scope(|scope| scope.get_span()) {
         span.set_status(sentry_span_status(status));
@@ -532,9 +557,10 @@ mod tests {
 
     use super::{
         capture_upstream_outcome, record_requested_model, record_span_outcome,
-        record_stream_failure, record_stream_failure_at, sanitize_model_tag, sentry_span_status,
-        should_capture_upstream_status, throttle, CutKind, StreamFailureContext, StreamFailureKind,
-        MAX_EVENT_TYPE_LEN, MAX_MODEL_TAG_LEN, MAX_UPSTREAM_ERROR_LEN,
+        record_span_outcome_on, record_stream_failure, record_stream_failure_at,
+        sanitize_model_tag, sentry_span_status, should_capture_upstream_status, throttle, CutKind,
+        StreamFailureContext, StreamFailureKind, MAX_EVENT_TYPE_LEN, MAX_MODEL_TAG_LEN,
+        MAX_UPSTREAM_ERROR_LEN,
     };
 
     #[test]
@@ -812,6 +838,56 @@ mod tests {
 
         let map = captured.0.lock().unwrap();
         assert_eq!(map.get("otel.status_code").map(String::as_str), Some("ok"));
+    }
+
+    #[test]
+    fn record_span_outcome_on_leaves_the_ambient_sentry_span_alone() {
+        // `record_span_outcome_on` runs while a committed stream's body is
+        // polled, after `proxy_request` returned: the scope's span is then
+        // `None` or an unrelated span (module docs), and calling `set_status`
+        // on whatever is ambient would corrupt it. The explicit helper must
+        // record span fields only and never write through `configure_scope`.
+        sentry::test::with_captured_events(|| {
+            let transaction =
+                sentry::start_transaction(sentry::TransactionContext::new("ambient_test", "test"));
+            sentry::configure_scope(|scope| scope.set_span(Some(transaction.into())));
+            record_span_outcome_on(
+                &tracing::Span::none(),
+                "anthropic",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+            let status = sentry::configure_scope(|scope| {
+                scope.get_span().and_then(|span| span.get_status())
+            });
+            assert_eq!(
+                status, None,
+                "the late helper must leave the ambient span's status alone"
+            );
+        });
+    }
+
+    #[test]
+    fn record_span_outcome_sets_the_ambient_sentry_span_status() {
+        // The header-time wrapper is where the Sentry span status IS
+        // reachable: the request span is still current there, so the scope's
+        // span is the request's own. This pins that the update stays on the
+        // header-time path — and doubles as the mechanism control for the
+        // test above, proving a real `set_status` is observable through this
+        // exact read-back.
+        sentry::test::with_captured_events(|| {
+            let transaction =
+                sentry::start_transaction(sentry::TransactionContext::new("ambient_test", "test"));
+            sentry::configure_scope(|scope| scope.set_span(Some(transaction.into())));
+            record_span_outcome("anthropic", StatusCode::INTERNAL_SERVER_ERROR);
+            let status = sentry::configure_scope(|scope| {
+                scope.get_span().and_then(|span| span.get_status())
+            });
+            assert_eq!(
+                status,
+                Some(sentry::protocol::SpanStatus::InternalError),
+                "the header-time wrapper must set the request's Sentry span status"
+            );
+        });
     }
 
     // `capture_upstream_outcome` is the only caller of `should_capture_upstream_status`

@@ -13,6 +13,8 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
+mod common;
+
 /// Exact, whole-value header matcher.
 ///
 /// wiremock's built-in `header()` matcher splits comma-separated header values,
@@ -243,7 +245,7 @@ async fn messages_preserves_matching_model_body_byte_for_byte() {
 /// This is the one request shape `auto_mode_classifier` repairs.
 fn classifier_body() -> Vec<u8> {
     serde_json::to_vec(&json!({
-        "model": "claude-sonnet-4-5",
+        "model": "claude-opus-5",
         "max_tokens": 64,
         "messages": [],
         "system": [{
@@ -313,6 +315,91 @@ async fn classifier_request_on_an_api_key_credential_is_forwarded_byte_for_byte(
         .post(format!("{}/v1/messages", gateway.base_url))
         .header("x-api-key", "sk-ant-api03-test")
         .body(body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+/// `classifier_model` is an operator choice about which model answers a
+/// permission check, so — unlike the identity repair — it is not gated on the
+/// bearer, and it applies on this single-credential path too.
+#[tokio::test]
+async fn classifier_model_pins_the_classifier_request_to_the_configured_model() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // `Config::default()` and the gateway's own startup read the process
+    // environment, and a concurrent write anywhere in this binary can make an
+    // unrelated read come back empty — so a reader holds the guard too
+    // (`tests/AGENTS.md`).
+    let _env = common::env_lock().await;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(common::BodyModelIs("claude-sonnet-5"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let mut config = Config::default();
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = upstream.uri();
+    provider.classifier_model = Some("claude-sonnet-5".to_string());
+    let gateway = start_gateway_with(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("x-api-key", "sk-ant-api03-test")
+        .body(classifier_body())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn classifier_model_leaves_an_ordinary_request_on_its_own_model() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // `Config::default()` and the gateway's own startup read the process
+    // environment, and a concurrent write anywhere in this binary can make an
+    // unrelated read come back empty — so a reader holds the guard too
+    // (`tests/AGENTS.md`).
+    let _env = common::env_lock().await;
+    // Same config, a body that is not the classifier's: the key must move the
+    // one request shape it names and nothing else.
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(common::BodyModelIs("claude-opus-5"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let mut config = Config::default();
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = upstream.uri();
+    provider.classifier_model = Some("claude-sonnet-5".to_string());
+    let gateway = start_gateway_with(config).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("x-api-key", "sk-ant-api03-test")
+        .body(
+            serde_json::to_vec(&json!({
+                "model": "claude-opus-5",
+                "max_tokens": 64,
+                "messages": [],
+                "system": [{"type": "text", "text": "You are a triage bot."}],
+            }))
+            .unwrap(),
+        )
         .send()
         .await
         .unwrap();
@@ -419,11 +506,12 @@ async fn same_origin_passthrough_strips_a_gateway_jwt_from_both_slots_end_to_end
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_PT_GW_SECRET_A",
         "0123456789abcdef0123456789abcdef",
     );
-    std::env::set_var(
+    vars.set(
         "SHUNT_TEST_PT_GW_USERS_A",
         "dev@example.com:approval-secret",
     );
@@ -477,11 +565,12 @@ async fn same_origin_passthrough_forwards_an_ordinary_credential_with_gateway_au
     if !can_bind_loopback() {
         return;
     }
-    std::env::set_var(
+    let mut vars = common::env_lock().await;
+    vars.set(
         "SHUNT_TEST_PT_GW_SECRET_B",
         "0123456789abcdef0123456789abcdef",
     );
-    std::env::set_var(
+    vars.set(
         "SHUNT_TEST_PT_GW_USERS_B",
         "dev@example.com:approval-secret",
     );
@@ -549,6 +638,9 @@ async fn model_upstream_map_routes_and_translates_request_end_to_end() {
             "openai".to_string(),
             "gpt-map-target".to_string(),
         )])),
+        router: None,
+        stage_router: None,
+        subagents: None,
     });
     config.route_prefixes = vec![RoutePrefixConfig {
         prefix: "claude-".to_string(),

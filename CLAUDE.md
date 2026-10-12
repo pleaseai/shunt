@@ -15,6 +15,7 @@ For full file listing with workspace artifacts, use `Skill("please:project-knowl
 - `README.md` — Project overview, quickstart, supported providers/models
 - `SECURITY.md` — Security policies
 - `CONTRIBUTING.md` — Contribution guide, code review process
+- `docs/notes/<topic>.md` — per-provider external-behaviour notes
 
 ### Domain Knowledge
 - `.please/docs/knowledge/product.md` — Product vision, goals, target users

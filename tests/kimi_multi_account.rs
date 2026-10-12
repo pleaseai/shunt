@@ -19,6 +19,8 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
+mod common;
+
 struct BearerToken(String);
 
 impl Match for BearerToken {
@@ -33,6 +35,7 @@ impl Match for BearerToken {
 
 struct TestGateway {
     base_url: String,
+    state: shunt::server::AppState,
     task: JoinHandle<()>,
 }
 
@@ -82,13 +85,14 @@ async fn start_gateway_with(mut config: Config) -> TestGateway {
         .await
         .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let (app, _shared, _state) = server::build_router(config).unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
 
     TestGateway {
         base_url: format!("http://{addr}"),
+        state,
         task,
     }
 }
@@ -147,8 +151,9 @@ async fn pool_selects_across_two_accounts() {
     }
     let token_a = ["fake-kimi-", "select-a"].concat();
     let token_b = ["fake-kimi-", "select-b"].concat();
-    std::env::set_var("SHUNT_TEST_KIMI_SELECT_A", &token_a);
-    std::env::set_var("SHUNT_TEST_KIMI_SELECT_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_SELECT_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_SELECT_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -192,9 +197,6 @@ async fn pool_selects_across_two_accounts() {
     );
 
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_KIMI_SELECT_A");
-    std::env::remove_var("SHUNT_TEST_KIMI_SELECT_B");
 }
 
 /// A 401 from the first account rotates to the next candidate rather than
@@ -208,8 +210,9 @@ async fn pool_rotates_to_next_account_on_401() {
     }
     let token_a = ["fake-kimi-", "unauth-a"].concat();
     let token_b = ["fake-kimi-", "unauth-b"].concat();
-    std::env::set_var("SHUNT_TEST_KIMI_UNAUTH_A", &token_a);
-    std::env::set_var("SHUNT_TEST_KIMI_UNAUTH_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_UNAUTH_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_UNAUTH_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -258,9 +261,6 @@ async fn pool_rotates_to_next_account_on_401() {
     );
 
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_KIMI_UNAUTH_A");
-    std::env::remove_var("SHUNT_TEST_KIMI_UNAUTH_B");
 }
 
 /// A 402 from the first account rotates to the next candidate rather than
@@ -278,8 +278,9 @@ async fn pool_rotates_to_next_account_on_402() {
     }
     let token_a = ["fake-kimi-", "membership-a"].concat();
     let token_b = ["fake-kimi-", "membership-b"].concat();
-    std::env::set_var("SHUNT_TEST_KIMI_MEMBERSHIP_A", &token_a);
-    std::env::set_var("SHUNT_TEST_KIMI_MEMBERSHIP_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_MEMBERSHIP_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_MEMBERSHIP_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -327,9 +328,6 @@ async fn pool_rotates_to_next_account_on_402() {
     );
 
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_KIMI_MEMBERSHIP_A");
-    std::env::remove_var("SHUNT_TEST_KIMI_MEMBERSHIP_B");
 }
 
 /// When every account in the pool returns 402, `forward_kimi_oauth` must
@@ -344,7 +342,8 @@ async fn all_402_pool_relays_upstream_error_verbatim() {
         return;
     }
     let token = ["fake-kimi-", "membership-only"].concat();
-    std::env::set_var("SHUNT_TEST_KIMI_MEMBERSHIP_ONLY", &token);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_MEMBERSHIP_ONLY", &token);
 
     let upstream = MockServer::start().await;
     let body = r#"{"error":{"message":"We're unable to verify your membership benefits at this time. Please ensure your membership is active.","type":"invalid_request_error"}}"#;
@@ -375,8 +374,6 @@ async fn all_402_pool_relays_upstream_error_verbatim() {
     assert_eq!(response_body, body);
 
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_KIMI_MEMBERSHIP_ONLY");
 }
 
 /// Every configured account `disabled = true` must error clearly rather than
@@ -391,8 +388,9 @@ async fn all_disabled_pool_errors_clearly() {
     }
     let token_a = ["fake-kimi-", "alldis-a"].concat();
     let token_b = ["fake-kimi-", "alldis-b"].concat();
-    std::env::set_var("SHUNT_TEST_KIMI_ALLDIS_A", &token_a);
-    std::env::set_var("SHUNT_TEST_KIMI_ALLDIS_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_ALLDIS_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_ALLDIS_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -420,9 +418,6 @@ async fn all_disabled_pool_errors_clearly() {
     );
 
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_KIMI_ALLDIS_A");
-    std::env::remove_var("SHUNT_TEST_KIMI_ALLDIS_B");
 }
 
 /// A `disabled = true` account is skipped by `select_order`: every request,
@@ -436,8 +431,9 @@ async fn disabled_account_is_skipped_in_favor_of_the_enabled_one() {
     }
     let token_a = ["fake-kimi-", "skip-a"].concat();
     let token_b = ["fake-kimi-", "skip-b"].concat();
-    std::env::set_var("SHUNT_TEST_KIMI_SKIP_A", &token_a);
-    std::env::set_var("SHUNT_TEST_KIMI_SKIP_B", &token_b);
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_SKIP_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_SKIP_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -485,9 +481,6 @@ async fn disabled_account_is_skipped_in_favor_of_the_enabled_one() {
     );
 
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_KIMI_SKIP_A");
-    std::env::remove_var("SHUNT_TEST_KIMI_SKIP_B");
 }
 
 /// An account whose `token_env` is unset cannot be resolved by
@@ -501,9 +494,13 @@ async fn unresolvable_account_cools_down_and_rotates() {
         return;
     }
     // account-a points at an env var that is never set; account-b is healthy.
-    std::env::remove_var("SHUNT_TEST_KIMI_MISSING_A");
     let token_b = ["fake-kimi-", "resolve-b"].concat();
-    std::env::set_var("SHUNT_TEST_KIMI_RESOLVE_B", &token_b);
+    let mut vars = common::env_lock().await;
+    // Unset is this test's precondition, not cleanup: the account is
+    // unresolvable *because* the name is absent. It has to hold under the
+    // guard, which also restores it afterwards.
+    vars.unset("SHUNT_TEST_KIMI_MISSING_A");
+    vars.set("SHUNT_TEST_KIMI_RESOLVE_B", &token_b);
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -530,8 +527,6 @@ async fn unresolvable_account_cools_down_and_rotates() {
         "account-b"
     );
     upstream.verify().await;
-
-    std::env::remove_var("SHUNT_TEST_KIMI_RESOLVE_B");
 }
 
 /// When every account fails to resolve, the pool never reaches an upstream:
@@ -544,8 +539,9 @@ async fn all_accounts_unresolvable_returns_bad_gateway() {
     if !can_bind_loopback() {
         return;
     }
-    std::env::remove_var("SHUNT_TEST_KIMI_MISSING_ALL_A");
-    std::env::remove_var("SHUNT_TEST_KIMI_MISSING_ALL_B");
+    let mut vars = common::env_lock().await;
+    vars.unset("SHUNT_TEST_KIMI_MISSING_ALL_A");
+    vars.unset("SHUNT_TEST_KIMI_MISSING_ALL_B");
 
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -566,5 +562,124 @@ async fn all_accounts_unresolvable_returns_bad_gateway() {
 
     let response = post_messages(&gateway, None).await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    upstream.verify().await;
+}
+
+/// Each upstream dispatch is one attempt on the admin pool counters: the
+/// account rotated off on a 5xx records a failure, and the account that
+/// served records a success.
+#[tokio::test]
+async fn rotation_counts_one_attempt_against_each_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-kimi-", "counted-a"].concat();
+    let token_b = ["fake-kimi-", "counted-b"].concat();
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_COUNTED_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_COUNTED_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let accounts = vec![
+        account("account-a", "SHUNT_TEST_KIMI_COUNTED_A"),
+        account("account-b", "SHUNT_TEST_KIMI_COUNTED_B"),
+    ];
+    let gateway = start_gateway_with(test_config(&upstream.uri(), accounts.clone())).await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    // Keyed as `resolve_pool_accounts` keys them: it stamps the Kimi family,
+    // which this provider's name alone would not infer.
+    let resolved = accounts
+        .into_iter()
+        .map(|account| AccountConfig {
+            store_family: Some(shunt::accounts::StoreFamily::Kimi),
+            ..account
+        })
+        .collect::<Vec<_>>();
+    let snapshots = gateway
+        .state
+        .accounts
+        .snapshot("anthropic", &resolved, None, None);
+    let totals = |index: usize| {
+        (
+            snapshots[index].requests_attempted,
+            snapshots[index].requests_succeeded,
+            snapshots[index].requests_failed,
+        )
+    };
+    assert_eq!(totals(0), (1, 0, 1));
+    assert_eq!(totals(1), (1, 1, 0));
+    upstream.verify().await;
+}
+
+/// Caps apply to Kimi whenever its upstream reports utilization: once the
+/// account is observed past its 5h cap, an emptied pool returns the gateway
+/// cap 429 (with `retry-after`) rather than the generic exhaustion error.
+#[tokio::test]
+async fn capped_kimi_pool_returns_the_gateway_cap_429() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token = ["fake-kimi-", "capped-a"].concat();
+    vars.set("SHUNT_TEST_KIMI_CAPPED_A", &token);
+    let upstream = MockServer::start().await;
+    let reset = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("anthropic-ratelimit-unified-5h-utilization", "0.9")
+                .insert_header("anthropic-ratelimit-unified-5h-reset", reset.to_string())
+                .set_body_string(r#"{"type":"message"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut capped = account("account-a", "SHUNT_TEST_KIMI_CAPPED_A");
+    capped.max_utilization_5h = Some(0.5);
+    let gateway = start_gateway_with(test_config(&upstream.uri(), vec![capped])).await;
+
+    // First request is served and teaches the pool the account is at 0.9.
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().contains_key("retry-after"));
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "rate_limit_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("max_utilization"),
+        "{body}"
+    );
     upstream.verify().await;
 }

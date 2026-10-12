@@ -1,0 +1,152 @@
+---
+title: Subagent Routing
+description: Send delegated work — Task sub-agents, hook agents, workflow sub-agents — to a different target than the parent session, by a fixed map or by a judge.
+---
+
+A `[models.subagents]` overlay sends **delegated work** to a different target
+while the parent session keeps its own destination. A `Task` sub-agent, a hook
+agent, or a workflow sub-agent requesting the id is diverted to the overlay's
+target; the parent session's own turns never see the table and resolve the entry
+exactly as they did without it.
+
+The overlay goes on any `[[models]]` entry: one with a `[models.upstream_model]`
+map, one with a `[models.router]` table, or a map-less id that resolves through
+`[[routes]]`. It sits on the entry rather than inside the router table because a
+fixed entry has no router table — Switchyard's "passthrough with subagents" is
+exactly a fixed entry here.
+
+It comes in two forms:
+
+| `type` | The child's target comes from |
+| :-- | :-- |
+| `passthrough` | `by_type` for its agent type, else `target` — no judge, no state |
+| `llm_classifier` | A judge that reads the delegated task, once per `(session, agent)` |
+
+## What counts as delegated work
+
+Upstream keys on its `claude_lineage` header alone. shunt reads
+`x-claude-code-request-class` first, and falls back to the agent id only when the
+class is not sent:
+
+| Request | Takes the overlay? |
+| :-- | :-- |
+| `x-claude-code-request-class: subagent` or `workflow` | Yes |
+| `x-claude-code-request-class: main`, even with an agent id | No — main traffic |
+| `x-claude-code-request-class: compaction` or `auxiliary` | No — harness maintenance |
+| No class header, and a non-blank `x-claude-code-agent-id` | Yes |
+
+Claude Code sends `x-claude-code-agent-id` on every delegated turn regardless of
+the hint gate. The class and agent-type headers are gated: behind shunt they are
+sent only when the client sets `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` (see
+[Client Environment Variables](/reference/client-environment/)). So on a default
+deployment every `Task` child takes `target`, and `by_type` needs that variable.
+
+## The `passthrough` form
+
+```toml
+[[models]]
+id = "claude-opus-4-8"
+
+[models.upstream_model]
+anthropic = "claude-opus-4-8"
+
+[models.subagents]
+type = "passthrough"
+target = "claude-haiku-4-5"
+by_type = { Explore = "claude-haiku-4-5", fork = "claude-sonnet-4-6", teammate = "claude-sonnet-4-6" }
+```
+
+A delegated turn goes to the `by_type` entry matching its
+`x-claude-code-agent-type`, or to `target` when `by_type` names nothing for its
+agent type — and every delegated turn goes to `target` when the agent-type header
+is not sent.
+
+**`by_type` keys** are the header's literal values, matched exactly, case
+included. A built-in agent's id travels verbatim — `Explore`, `Plan`,
+`general-purpose`, `claude`, and `fork` (which the client only offers under
+`CLAUDE_CODE_FORK_SUBAGENT=1`). A project agent from `.claude/agents/` arrives as
+`custom`; its own name is never sent, so `custom` is the only key it can match.
+`teammate` is the client's literal for an Agent Teams member and has not been
+observed on the wire.
+
+**No state.** The target is a function of the config and the request's headers
+alone: no session pin, no store, no judge call. On a router-backed id the child is
+diverted before the router runs, so a child's turns are never scored against the
+transcript, never pinned, and never touch or advance the parent's pin or dwell.
+
+## The `llm_classifier` form
+
+Instead of a fixed target, a judge reads the delegated task and names the group
+that serves it. Only `mode = "custom"` exists here, and the keys are the `custom`
+mode's, described on the [LLM Classifier](/guides/llm-classifier/#mode--custom)
+page.
+
+```toml
+[models.subagents]
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["claude-haiku-4-5"], capable = ["claude-opus-4-8"], efficient = ["claude-sonnet-4-6"], any = ["claude-sonnet-4-6", "claude-opus-4-8"] }
+default_target = "efficient"
+classify_trigger = "new_session"
+max_output_tokens = 64
+prompt = """
+Select exactly one target for the delegated task.
+
+- Select "capable" for code review, critique, auditing, or correctness analysis.
+- Select "efficient" for implementation, research, explanation, and other delegated work.
+
+Return only JSON matching the response schema.
+"""
+response_schema = '''
+{"type": "object",
+ "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+ "required": ["target"],
+ "additionalProperties": false}
+'''
+policy = { type = "target_selector", selector = "/target" }
+```
+
+Three rules differ from the `[models.router]` form:
+
+- **`classify_trigger` defaults to `new_session`,** and `user_turn` is rejected. A
+  delegated child is one task, so its target is picked once and held for the rest
+  of it; re-judging per user turn would spend a judge call on a decision that
+  cannot change.
+- **`message_hash_fallback` must be `false`.** The classification is already keyed
+  on `(session, agent)`, so hashing the first message instead would key two
+  different children of one session onto one verdict.
+- **The parent is never classified.** What counts as delegated work is exactly
+  what it is for the `passthrough` form, so a parent turn, a `main` turn carrying
+  an agent id, and the `compaction` and `auxiliary` classes all resolve the entry
+  as if the table were absent — and make no judge call.
+
+The six [per-call bounds](/reference/configuration/#per-call-bounds) go on this
+table, since it is the one making the calls. The judge is held to the same rules
+as any other — one hop, no passthrough route, and none of the caller's credential
+slots travel with the call (see [judge calls](/guides/routing/#judge-calls)).
+Because a delegated turn may consult it, inbound auth on such a turn ranges over
+the overlay's targets and judge as well — so a delegated turn that cannot
+authenticate is refused with zero judge calls. A `count_tokens` probe makes none
+either: it answers from the child's `(session, agent)` assignment when it has one,
+else from `default_target`'s first model.
+
+## What the client sees
+
+A diverted turn carries `x-gateway-routed-model` (the target) and
+`x-gateway-route-source` — `subagent_type` for a `by_type` hit, `subagent` for the
+`target` fallback — and is counted in `shunt.router.decisions` with
+`algorithm = "subagents"`. The `llm_classifier` form reports the classifier's own
+sources instead: `llm-classifier` on the turn the judge classified,
+`classifier_retained` on a later turn of that child that replays the assignment,
+and `classifier_fail_open` when no verdict decided the turn (see
+[LLM Classifier](/guides/llm-classifier/#what-the-client-sees)).
+
+Surfaces with no request resolve nothing: `/v1/models` discovery and `shunt check`
+carry no per-model destination information at all, and `GET /routes` shows the
+parent's own `[[routes]]`/`[models.router]` entry only when one exists — an id
+left to `server.default_provider` appears in neither array. None of the three
+resolves the overlay's diverted target, and the overlay itself is never listed in
+the `routers` array.
+
+Target rules, validation errors, and every key are in the
+[configuration reference](/reference/configuration/#modelssubagents-optional).

@@ -1,0 +1,191 @@
+---
+title: Switchyard 통합
+description: shunt 스테이지 라우터의 스코어러는 NVIDIA Switchyard 프로젝트에서 왔습니다. shunt가 가져온 것과 두고 온 것, 공개된 벤치마크 결과, 그리고 통합에 든 비용.
+---
+
+shunt의 [스테이지 라우터](/ko/guides/stage-router/)는 자체 스코어링을 만들지
+않았습니다. [NVIDIA-NeMo/Switchyard][sy]의 라우팅 라이브러리
+[`switchyard-libsy`][libsy]에 의존합니다 — "각 LLM 호출을 그래도 해낼 수 있는 가장
+저렴한 모델로 라우팅한다"를 내건 프로젝트입니다.
+
+이 문서는 통합 기록입니다. shunt가 Switchyard의 어느 부분을 쓰고 어느 부분을
+의도적으로 쓰지 않는지, 공개된 수치가 실제로 무엇을 측정한 것인지, 의존성에 든 비용이
+얼마인지를 다룹니다. 각 알고리즘이 한 턴을 어떻게 판정하는지는 그 알고리즘과 함께
+있습니다 — [라우팅 개요](/ko/guides/routing/)에서 시작하세요.
+
+[libsy]: https://github.com/NVIDIA-NeMo/Switchyard/tree/3ddea9d30174ad835cf505a93617ba251c8eb8dd/crates/libsy
+[sy]: https://github.com/NVIDIA-NeMo/Switchyard
+
+## shunt가 가져온 것
+
+Switchyard는 게이트웨이 한 벌을 제공합니다. 프록시 서버, 프로바이더 중립 프로토콜,
+요청/응답 번역, LLM 판정자 분류기, 에스컬레이션, 서브에이전트 라우팅까지. shunt는
+이미 게이트웨이이므로 스코어러와, 옵트인 테이블 뒤의 판정자 기반 알고리즘들, 그
+경계에서만 쓰는 번역 코덱을 가져오고 서버는 두고 옵니다.
+
+| Switchyard 구성 요소 | shunt에서 |
+| :-- | :-- |
+| `switchyard-libsy` 스테이지 스코어러 | **사용** — 업스트림 `main`의 검토된 리비전에 고정 |
+| `switchyard-protocol` | libsy의 의존성으로 딸려옴. shunt는 `Request`를 만들지 않음 |
+| `switchyard-translation` | **라우팅 경계에서만 사용** — 판정 요청과 그 응답의 중립 ⇄ Anthropic 변환. Anthropic → Responses 와이어 변환은 계속 shunt 자신의 `src/model/responses_request.rs`가 맡음 |
+| `switchyard-server` | **미사용** — shunt가 곧 서버 |
+| LLM 분류기 / 판정자 | **항목별 옵트인** — `stage_router`의 [`[models.router.classifier]`](/ko/guides/stage-router/#판정-모델-폴백). 신호가 결론을 내지 못한 턴에서만 호출됨. 여기에 판정자 기반 [`llm_classifier`](/ko/guides/llm-classifier/)와 [`composite`](/ko/guides/composite/) 타입. [판정 호출](/ko/guides/routing/#판정-호출) 참고 |
+| 에스컬레이션 라우팅 | **항목별 옵트인** — [`mode = "escalation"`](/ko/guides/escalation/). 판정자가 판단할 때까지 약한 턴을 붙잡아 두므로, 강한 타깃으로의 전환은 헤더를 보내기 전에 일어남. [보류된 턴](/ko/guides/routing/#보류된-턴) 참고 |
+| 핸드오프 노트 | **사용** — [`[models.router.handoff_notes]`](/ko/guides/stage-router/#들어오는-모델에게-이유-알려주기) |
+| 어드바이저 게이트 | **항목별 옵트인** — [`type = "advisor"`](/ko/guides/advisor/). 리뷰가 끝날 때까지 실행 모델의 턴을 붙잡아 둠 |
+| 서브에이전트 라우팅 | **사용** — [`[models.subagents]`](/ko/guides/subagents/) |
+
+결합점은 함수 호출 하나가 전부입니다. shunt는 파싱된 Anthropic Messages 본문에서
+libsy의 `ToolSignals` 구조체를 직접 채우고 `pick_tier`를 호출합니다. 그 구조체의
+모든 필드가 `pub`이라 사이에 번역 계층이 들어가지 않습니다.
+
+의존성은 crates.io 릴리스가 아니라 업스트림 `main`의 **불변 리비전에 건 git 핀**이고,
+`branch` 키 없이 `rev`만 씁니다 — shunt의 `tungstenite` 핀 두 개와 같은 형태입니다.
+따라서 버전을 올리는 일은 검토를 거친 diff이지, 무관한 `cargo update`가 할 수 있는
+일이 아닙니다. `0.2.0`은 유일한 공개 릴리스이고 `main`은 이미 갈라졌습니다. 스테이지
+스코어링 너머의 알고리즘 — advisor gate, composite 라우팅, 서브에이전트 라우팅,
+tool semantics, handoff note — 은 `main`에만 있습니다. API를 확인할 때는 레지스트리
+소스도, 움직이는 GitHub 기본 브랜치도 아니라 cargo가 해석한 체크아웃을 읽으세요.
+
+### 학습형 프리필 라우터
+
+업스트림에서 가져온 조각이 하나 더 있는데, 조건이 다릅니다. 가장 최근 사용자 턴을 채점해
+타깃을 고르는 학습형 분류기 `prefill_router`입니다. 이것은 기본으로 꺼져 있는
+**`prefill-router` 카고 피처**를 켜고 빌드한 바이너리에서만 쓸 수 있습니다.
+
+이유는 그 크레이트의 정체입니다. 업스트림의 `crates/prefill-router`는 PyO3로 Python을
+임베드하므로, 빌드는 libpython을 링크하고 실행에는 `torch`, `transformers`, `numpy`,
+`accelerate`를 import할 수 있는 환경과 디스크에 놓인 라우터 체크포인트가 필요합니다.
+업스트림도 같은 이유로 카고 피처 뒤에 둡니다. shunt의 릴리스 워크플로는 이 피처를 켜지
+않으므로 **미리 빌드된 릴리스 바이너리와 Homebrew 포뮬러에는 들어 있지 않습니다.**
+소스에서 `cargo build --release --features prefill-router`로 빌드하는 것이 유일한 방법이고,
+피처가 없는 바이너리는 이 타입을 지정한 설정을 로드하지 못하며 그 사실을 알려 주는 오류를
+냅니다.
+
+키와 사전 조건, 라우트 소스는 설정 레퍼런스의
+[`type = "prefill_router"`](/ko/reference/configuration/#type--prefill_router)를 보세요.
+
+## 벤치마크 결과
+
+아래는 **업스트림 Switchyard의** 수치이며 shunt의 것이 아닙니다. shunt는
+Terminal-Bench를 돌린 적이 없고, 바로 다음 절이 그 결과가 얼마나 그대로 넘어오는지를
+다룹니다.
+
+Terminal-Bench 2.1, Opus 4.8 베이스라인 대비:
+
+| 구성 | 정확도 | 총비용 | 베이스라인 대비 |
+| :-- | --: | --: | :-- |
+| Opus 4.8 베이스라인 | 76.0% | $98.06 | — |
+| 에스컬레이션 라우팅 | 75.7% | $85.00 | 정확도의 99.6%, 13.3% 저렴 |
+| **스테이지 라우팅** | **72.7%** | **$68.19** | **정확도의 95.7%, 30.5% 저렴** |
+| 능력(capability) 라우팅 | 71.2% | $79.32 | 정확도의 93.7%, 19.1% 저렴 |
+| Kimi K2.6 단독 | 55.8% | $76.28 | |
+| GLM 5.2 단독 | 52.4% | $16.47 | |
+| DeepSeek V4 Pro 단독 | 48.7% | $96.92 | |
+| Ultra 3 단독 | 39.0% | $29.66 | |
+
+shunt가 구현한 행인 스테이지 라우팅은 세 가지 라우팅 구성 중 가장 저렴하면서
+베이스라인 해결률의 95.7%를 유지합니다. 아래 네 행이 이 수치를 흥미롭게 만드는
+대조군입니다. 라우터보다 비싼 모델을 포함해 **모든** 고정 단일 모델이 56% 아래에
+머뭅니다.
+
+`0.5` 기본값을 낳은 신뢰도 문턱 캘리브레이션은 Terminal-Bench가 아니라 SWE-Bench
+Pro Python-75에서 도출된 별개의 작업입니다.
+
+### 출처와 단서
+
+- 이 수치는 업스트림의 [Benchmark Provenance][provenance] 표에 공개된 **v0.2.0**
+  Terminal-Bench 2.1 결과이며, 그 표는 다시
+  [Route AI Agent Workloads Across Models with NVIDIA NeMo Switchyard][blog]
+  (NVIDIA, 2026년 8월 11일)를 출처로 밝히고 있습니다. 블로그 글 자체에는 이 표가
+  실려 있지 않으므로, 숫자를 대조할 때는 블로그가 아니라 README를 보세요.
+- 해당 실행은 **NVIDIA 내부 추론 엔드포인트**를 사용했으며, 업스트림은 다른 서빙
+  스택에서는 절대 해결률이 달라질 수 있다고 밝히고 있습니다.
+- 업스트림이 체크인한 프로파일은 *에스컬레이션* 하나뿐입니다
+  (`benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml`). 72.7%
+  스테이지 라우팅 행 뒤에 있던 정확한 티어 쌍은 공개되지 않았으므로, shunt에 설정할
+  특정 모델 쌍에 대한 주장으로 읽지 마세요.
+- 이 표에는 지연 시간이나 요청당 라우팅 오버헤드 수치가 함께 공개되지 않았습니다.
+  업스트림은 그 질문을 자체 soak 테스트 문서로 넘깁니다.
+
+[provenance]: https://github.com/NVIDIA-NeMo/Switchyard#benchmark-provenance
+[blog]: https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/
+
+### shunt로 넘어오는 것과 넘어오지 않는 것
+
+스코어러는 같은 코드입니다. 그 주변은 전부 shunt의 것이므로, 위 표는 shunt 자신의
+결과가 아니라 *접근 방식이* 값을 한다는 증거로 읽으세요.
+
+| | 업스트림 벤치마크 | shunt |
+| :-- | :-- | :-- |
+| 스코어링 코어 | `switchyard-libsy` | 같은 크레이트, 같은 상수 |
+| 신호 추출 | 업스트림의 프로바이더 중립 추출기 | shunt 자체 구현, Anthropic Messages 블록에서 |
+| `tests_passed` / `repeated_failure` | 스코어러가 사용 가능 | 항상 `false` — 채워지지 않음 |
+| `compacted` | 스코어러가 사용 가능 | `x-claude-code-context-compacted`에서 채워지고 세션 고정에 래치됨 |
+| 모호한 턴의 판정자 | 선택적으로 사용 가능 | 기본은 꺼져 있어 피커 기본값으로 fall-open. 항목 단위로 [`[models.router.classifier]`](/ko/guides/stage-router/#판정-모델-폴백)를 두면 옵트인 |
+| 턴 간 티어 안정성 | 턴마다 독립 채점 | 비대칭 히스테리시스를 건 세션 고정 |
+| 워크로드 | Terminal-Bench 2.1 태스크 | Claude Code 세션 |
+
+이 중 둘은 반대 방향으로 작용합니다. shunt는 `tests_passed`와 `repeated_failure`를
+채우지 않으므로 libsy의 반복 실패 승격이 빠집니다 — 벤치마크보다 엄격히 신호가 적습니다.
+둘 다 이 추출기가 갖지 못한 근거, 곧 도구 결과의 *텍스트*를 요구합니다. 와이어 자체는 그
+텍스트를 실어 나릅니다 — `tool_result` 블록에는 `content` 필드가 있습니다 — 하지만
+추출기는 의도적으로 그것을 읽지 않습니다. 자유 서술형 결과 텍스트로 이 신호들을 판정한다는
+것은 곧 내용 패턴 휴리스틱이고, 구조적 대리 지표는 테스트 실행만큼이나 `ls`에도 쉽게
+발동하기 때문입니다. `compacted`는 이 무리에 속하지 않습니다. 트랜스크립트가 아니라 요청
+헤더에서 오므로 libsy의 컴팩션 오버라이드는 여기서도 발동합니다
+([스테이지 라우터](/ko/guides/stage-router/) 참고).
+반대로 shunt의 히스테리시스는 벤치마크 하니스가 결코 치르지 않는 비용, 즉 Claude Code
+세션에서 턴마다 티어를 뒤집는 대가가 비싸기 때문에 존재합니다
+([내려오기가 올라가기보다 어려운 이유](/ko/guides/stage-router/#내려오기가-올라가기보다-어려운-이유) 참고).
+
+## 알고리즘이 문서화된 곳
+
+Switchyard는 프로바이더 중립이라 티어 전환의 대가를 가격 매길 필요가 없습니다. shunt는
+Claude Code 게이트웨이이므로 그래야 하고, shunt가 벤더링한 코드 위에 더하는 것 대부분이 그
+차이에서 나옵니다. 각 부분은 그것이 속한 알고리즘과 함께 있습니다.
+
+- **스테이지 스코어러** — 신호, 차원, 점수, 결정, 그리고 shunt의 Claude Code 도구 어휘,
+  비대칭 히스테리시스, 세션 고정 — 는 [스테이지 라우터](/ko/guides/stage-router/)에
+  있습니다.
+- **모든 라우터가 공유하는 것** — 평범한 모델 id인 타깃, 클라이언트가 보는 id, 판정 호출,
+  보류된 턴 — 은 [라우팅 개요](/ko/guides/routing/)에 있습니다.
+- **판정 모델 기반 타입**은 각자 페이지가 있습니다.
+  [LLM 분류기](/ko/guides/llm-classifier/), [에스컬레이션](/ko/guides/escalation/),
+  [advisor 게이트](/ko/guides/advisor/), [컴포지트](/ko/guides/composite/)입니다.
+- **위임된 작업**, 그리고 shunt가 "위임"을 업스트림의 `claude_lineage` 헤더와 다르게 읽는
+  방식은 [서브에이전트 라우팅](/ko/guides/subagents/)에 있습니다.
+
+## 통합 비용
+
+의존성을 처음 채택할 때 `0.2.0`을 상대로 추정이 아니라 실측한 값입니다.
+
+| | |
+| :-- | :-- |
+| 릴리스 바이너리 | **+115,376 바이트 (+0.31%)** |
+| `Cargo.lock` 패키지 | **+33** (412 → 445) |
+| 그중 미사용 | 약 26개. shunt가 호출하지 않는 분류기 경로를 위한 `jsonschema` 트리 |
+| 실제 링크 여부 | `jsonschema` 트리는 링크되지 **않음** — 빌드된 바이너리에 `jsonschema` 문자열 0건, `num-bigint` 심볼 0건 |
+| 포팅 대안 | 137줄 |
+
+결정을 내린 것은 바이너리 결과였습니다. 링커가 분류기 트리를 통째로 떨어뜨리므로
+크레이트에 의존하는 비용은 0.3% 남짓입니다. 137줄 포팅은 핀이 낡을 경우의 출구로
+문서에 남아 있습니다.
+
+그 릴리스에서 `main` 핀으로 옮기면서 추가된 패키지는 **하나도 없습니다** — 락은 445에
+그대로입니다. 거기서 libsy가 새로 직접 의존하는 `http`, `regex`, `uuid`가 이미 shunt
+트리에 있었기 때문입니다. 링크 여부 결과도 새 핀에서 그대로입니다. 릴리스 바이너리에
+`jsonschema` 문자열 0건, `num-bigint` 심볼 0건입니다.
+
+판정 경계를 위해 `switchyard-translation`을 가져오면서 락 항목이 셋 늘었습니다. 크레이트
+자체와 `async-stream`, `async-stream-impl`입니다. `switchyard-protocol`은 libsy의 의존성
+으로 이미 트리에 있었습니다.
+
+## 저작자 표시
+
+`switchyard-libsy`는 Apache-2.0, © NVIDIA Corporation입니다. shunt는 그 스테이지
+스코어러를 수정 없이 사용합니다. 거절한 각 기능과 그 이유를 포함한 shunt 쪽 설계
+기록은
+[ADR-0004](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0004-content-aware-stage-router.md)
+이고, 릴리스 대신 업스트림 `main`을 핀으로 잡은 결정은
+[ADR-0005](https://github.com/pleaseai/shunt/blob/main/.please/docs/decisions/0005-routing-algorithm-extensions.md)입니다.

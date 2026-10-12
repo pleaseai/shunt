@@ -104,6 +104,29 @@ a custom OpenAI-compatible endpoint (LiteLLM, vLLM, OpenRouter, self-hosted) isn
 same way and needs `tool_search = true` to opt in. Set `tool_search = false` here to force the text
 shim instead. See [Tool search](/guides/codex/#tool-search).
 
+## Stop sequences
+
+The Responses API has **no `stop` parameter** — Chat Completions has one, Responses does not — so
+a client's Anthropic `stop_sequences` cannot be forwarded upstream. shunt emulates them
+gateway-side in the Responses translation instead, on every Responses provider and every
+transport (HTTP and WebSocket, streaming and non-streaming):
+
+- assistant text is truncated at the first occurrence of any stop sequence, and the text after it
+  never reaches the client;
+- the turn ends with `stop_reason: "stop_sequence"` and `stop_sequence` naming the match, exactly
+  as a native Anthropic upstream would report it;
+- the upstream request is aborted at the match rather than left running — on streaming HTTP and on
+  both WebSocket paths. Non-streaming HTTP is the exception: it reads the whole response body
+  before translating any of it, so it truncates like the others but lets the upstream finish.
+  Tokens the upstream generated between the match and the abort are still billed by the upstream —
+  negligible for the short completions stop sequences are typically used for.
+
+One consequence to be aware of: the stop ends the turn before the upstream's `response.completed`
+usage can be applied, so shunt substitutes its own local input estimate and reports
+`output_tokens: 0` — in `message_delta.usage` on a streaming turn, in the response's `usage` on a
+non-streaming one. The estimate needs the provider's `count_tokens = "tiktoken"` opt-in; without
+it, a stopped turn reports `input_tokens: 0`.
+
 ## Verify
 
 ```bash

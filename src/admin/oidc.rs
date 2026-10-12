@@ -5,7 +5,9 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::{auth::shared::generate_pkce, gateway::idp_client, server::AppState};
+use crate::{
+    auth::shared::generate_pkce, config::AdminAccess, gateway::idp_client, server::AppState,
+};
 
 use super::{login_response, not_found, same_origin, secure_cookie, set_cookie};
 
@@ -177,7 +179,15 @@ pub async fn callback(
             "This account is not authorized for this admin surface.",
         );
     }
-    let (sid, _csrf) = state.admin_stores.sessions.create(auth.session_ttl());
+    // An approved OIDC sign-in is a full-access operator, which is what this
+    // path has always minted. Tiers arrive by key (`[server.admin] read_keys`),
+    // not by IdP claim: nothing in the allow lists distinguishes a read-only
+    // identity, so deriving one here would be inventing a policy the config
+    // cannot express.
+    let (sid, _csrf) = state
+        .admin_stores
+        .sessions
+        .create(auth.session_ttl(), AdminAccess::Write);
     let cookie = set_cookie(&sid, secure_cookie(&headers), auth.session_ttl());
     tracing::info!("admin: OIDC browser session created");
     (

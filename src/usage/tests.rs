@@ -3,11 +3,12 @@ use serde_json::{json, Value};
 
 use crate::{
     accounts::{AccountSnapshot, UsageSnapshot, UsageWindow},
-    config::{AccountConfig, InboundAuthConfig, UsageEndpointConfig},
+    config::{AccountConfig, Config, GatewayConfig, InboundAuthConfig, UsageEndpointConfig},
+    gateway::{approval::Identity, jwt},
     server::AppState,
 };
 
-use super::{aggregate, aggregate_rows, get, ProviderRows};
+use super::{aggregate, aggregate_rows, get, representative_positions, ProviderRows};
 
 /// A seen account snapshot with the given per-window utilization; all other
 /// fields default to an available, non-disabled account.
@@ -22,10 +23,15 @@ fn snapshot(
         has_state: true,
         available: true,
         near_quota: false,
+        capped: false,
+        capped_fable: false,
+        cap_clears_at: None,
+        cap_clears_at_fable: None,
         cooldown_secs_remaining: None,
         cooldown_fable_secs_remaining: None,
         priority: 100,
         disabled: false,
+        paused: false,
         headroom_secs: None,
         utilization_5h: util_5h,
         reset_5h,
@@ -33,8 +39,17 @@ fn snapshot(
         reset_7d: None,
         utilization_7d_oi: None,
         reset_7d_oi: None,
+        max_utilization_5h: None,
+        max_utilization_7d: None,
+        max_utilization_fable: None,
         status: None,
+        quota_buckets: Vec::new(),
         needs_relogin: false,
+        requests_attempted: 0,
+        requests_succeeded: 0,
+        requests_failed: 0,
+        requests_cancelled: 0,
+        mean_latency_ms: None,
     }
 }
 
@@ -70,6 +85,125 @@ fn aggregate_counts_exhausted_accounts_against_pool_capacity() {
     assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.1));
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(500));
     assert_eq!(body["pool"]["windows"]["7d"]["remaining"], json!(0.0));
+}
+
+#[test]
+fn aggregate_measures_headroom_up_to_each_accounts_cap() {
+    // Headroom stops at the window's hard cap, the point where selection
+    // excludes the account, not at 100%: 0.44 Fable under a 0.5 cap leaves
+    // 0.06, an account past its 0.9 weekly cap leaves 0, and an uncapped
+    // window still measures to 1.0.
+    let mut capped = snapshot("capped", Some(0.10), None, Some(0.96));
+    capped.max_utilization_7d = Some(0.9);
+    capped.utilization_7d_oi = Some(0.44);
+    capped.max_utilization_fable = Some(0.5);
+    let mut uncapped = snapshot("uncapped", Some(0.30), None, Some(0.20));
+    uncapped.utilization_7d_oi = Some(0.40);
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[capped, uncapped])])).unwrap();
+    let windows = &body["pool"]["windows"];
+    // 5h: no cap on either → (0.90 + 0.70) / 2.
+    assert_eq!(windows["5h"]["remaining"], json!(0.8));
+    // 7d: past its cap → 0, plus the uncapped 0.80.
+    assert_eq!(windows["7d"]["remaining"], json!(0.4));
+    // Fable: 0.06 under the cap, plus the uncapped 0.60.
+    assert_eq!(windows["fable"]["remaining"], json!(0.33));
+    assert_eq!(body["providers"]["anthropic"]["windows"], *windows);
+}
+
+#[test]
+fn aggregate_zeroes_headroom_an_excluding_cap_makes_unusable() {
+    // Past its 0.9 weekly cap, an account serves no request at all, so its
+    // 5h and Fable headroom count zero even though both windows are still
+    // under their own caps. A Fable-only cap excludes Fable requests only,
+    // so that account keeps its 5h and 7d headroom.
+    let mut week_capped = snapshot("week-capped", Some(0.0), None, Some(0.96));
+    week_capped.max_utilization_7d = Some(0.9);
+    week_capped.utilization_7d_oi = Some(0.62);
+    week_capped.max_utilization_fable = Some(0.9);
+    week_capped.capped = true;
+    let mut fable_capped = snapshot("fable-capped", Some(0.20), None, Some(0.40));
+    fable_capped.utilization_7d_oi = Some(0.55);
+    fable_capped.max_utilization_fable = Some(0.5);
+    fable_capped.capped_fable = true;
+    let body =
+        serde_json::to_value(aggregate(&[("anthropic", &[week_capped, fable_capped])])).unwrap();
+    let windows = &body["pool"]["windows"];
+    // 5h: week-capped 0, fable-capped 0.80.
+    assert_eq!(windows["5h"]["remaining"], json!(0.4));
+    // 7d: week-capped 0, fable-capped 0.60.
+    assert_eq!(windows["7d"]["remaining"], json!(0.3));
+    // Fable: both excluded from Fable requests. Only week-capped pins the
+    // exclusion (0.28 would show otherwise); fable-capped is past its own cap,
+    // so the clamp zeroes it either way — `capped_fable` derives from that
+    // same cap and utilization, so the flag and the clamp cannot disagree.
+    assert_eq!(windows["fable"]["remaining"], json!(0.0));
+}
+
+#[test]
+fn aggregate_resets_at_includes_when_a_cross_window_cap_clears() {
+    // A 5h-capped account adds nothing to 7d or Fable until its cap clears
+    // (the snapshot's `cap_exclusion` deadline, here the 5h reset), so that is
+    // when both aggregates can next change — even though each window's own
+    // reset is later.
+    let mut five_hour_capped = snapshot("5h-capped", Some(0.95), Some(100), Some(0.30));
+    five_hour_capped.max_utilization_5h = Some(0.9);
+    five_hour_capped.max_utilization_7d = Some(0.9);
+    five_hour_capped.reset_7d = Some(900);
+    five_hour_capped.utilization_7d_oi = Some(0.20);
+    five_hour_capped.reset_7d_oi = Some(800);
+    five_hour_capped.capped = true;
+    five_hour_capped.cap_clears_at = Some(100);
+    five_hour_capped.cap_clears_at_fable = Some(100);
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[five_hour_capped])])).unwrap();
+    let windows = &body["pool"]["windows"];
+    assert_eq!(windows["7d"]["remaining"], json!(0.0));
+    assert_eq!(windows["7d"]["resets_at"], json!(100));
+    assert_eq!(windows["fable"]["resets_at"], json!(100));
+    assert_eq!(windows["5h"]["resets_at"], json!(100));
+}
+
+#[test]
+fn aggregate_resets_at_keeps_an_excluded_accounts_own_reset() {
+    // A 7d-capped account is still excluded after its 5h window resets at
+    // 100, but the snapshot path expires that window's utilization then, so
+    // the account leaves the 5h mean (0.3 -> 0.6). That reset is the soonest
+    // change, not the 7d cap clearing at 900.
+    let mut week_capped = snapshot("7d-capped", Some(0.10), Some(100), Some(0.95));
+    week_capped.max_utilization_7d = Some(0.9);
+    week_capped.reset_7d = Some(900);
+    week_capped.capped = true;
+    let healthy = snapshot("healthy", Some(0.40), Some(500), Some(0.20));
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[week_capped, healthy])])).unwrap();
+    let five_hour = &body["pool"]["windows"]["5h"];
+    assert_eq!(five_hour["remaining"], json!(0.3));
+    assert_eq!(five_hour["resets_at"], json!(100));
+}
+
+#[test]
+fn window_representative_is_the_alias_selection_prefers() {
+    // Aliases of one identity can configure different caps, so the row the
+    // mean reads must be selection's representative (`collapse_representatives`:
+    // lowest priority, first-seen on a tie), not merely the first alias —
+    // otherwise an uncapped first alias would report headroom on an account
+    // selection already excludes under the preferred alias's 50% cap.
+    let first = AccountConfig {
+        name: "first".to_string(),
+        uuid: Some("shared-identity".to_string()),
+        priority: 100,
+        ..AccountConfig::default()
+    };
+    let preferred = AccountConfig {
+        name: "preferred".to_string(),
+        priority: 10,
+        max_utilization: Some(0.5),
+        ..first.clone()
+    };
+    let tied = AccountConfig {
+        name: "tied".to_string(),
+        ..preferred.clone()
+    };
+    let chosen = representative_positions(&[("anthropic", vec![first, preferred, tied])]);
+    assert_eq!(chosen, vec![std::collections::HashSet::from([1])]);
 }
 
 #[test]
@@ -133,6 +267,42 @@ fn aggregate_status_is_exhausted_when_no_account_available() {
     a.available = false;
     a.near_quota = true;
     let body = serde_json::to_value(aggregate(&[("anthropic", &[a])])).unwrap();
+    assert_eq!(body["pool"]["status"], "exhausted");
+}
+
+#[test]
+fn aggregate_status_is_capped_when_no_account_is_available_and_one_is_capped() {
+    let mut a = snapshot("acct-a", Some(0.90), None, None);
+    a.available = false;
+    a.capped = true;
+    let mut b = snapshot("acct-b", Some(0.99), None, None);
+    b.available = false;
+    b.near_quota = true;
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[a.clone(), b])])).unwrap();
+    assert_eq!(body["pool"]["status"], "capped");
+    // A Fable-only cap counts too, and the body names no cap setting.
+    let mut c = snapshot("acct-c", Some(0.1), None, None);
+    c.available = false;
+    c.capped_fable = true;
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[c])])).unwrap();
+    assert_eq!(body["pool"]["status"], "capped");
+    assert!(!body.to_string().contains("max_utilization"));
+    // An available account keeps the pool out of `capped`.
+    let ok = snapshot("acct-ok", Some(0.1), None, None);
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[a, ok])])).unwrap();
+    assert_eq!(body["pool"]["status"], "ok");
+}
+
+#[test]
+fn aggregate_status_ignores_caps_on_paused_accounts() {
+    let mut a = snapshot("acct-a", Some(0.90), None, None);
+    a.available = false;
+    a.capped = true;
+    a.paused = true;
+    let mut b = snapshot("acct-b", Some(0.99), None, None);
+    b.available = false;
+    b.paused = true;
+    let body = serde_json::to_value(aggregate(&[("anthropic", &[a, b])])).unwrap();
     assert_eq!(body["pool"]["status"], "exhausted");
 }
 
@@ -238,20 +408,79 @@ fn aggregate_breaks_the_pool_down_per_provider() {
 /// the snapshot). Returns the state, the env var name (caller removes it),
 /// and the seeded 5h reset for assertion.
 fn state_with_auth_and_seeded_pool(token: &str, label: &str) -> (AppState, String, u64) {
+    let mut config = crate::config::Config::default();
+    let env = add_client_auth(&mut config, token, label);
+    let (state, reset_5h) = state_with_seeded_pool(config);
+    (state, env, reset_5h)
+}
+
+/// Point `[server.auth]` at a per-test env var holding `tester:{token}` and
+/// return the var's name (caller removes it).
+fn add_client_auth(config: &mut Config, token: &str, label: &str) -> String {
     // Per-test-unique name: tests share the process env, and one test's
     // `remove_var` must not race another's construction-time resolve.
     let env = format!("SHUNT_USAGE_TEST_TOKENS_{}_{label}", std::process::id());
     std::env::set_var(&env, format!("tester:{token}"));
+    config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
+        header: "x-shunt-token".to_string(),
+        tokens_env: env.clone(),
+    });
+    env
+}
+
+const GATEWAY_URL: &str = "https://gateway.example";
+const GATEWAY_SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
+
+/// Configure `[server.gateway]` with per-test signing-secret and approval-user
+/// env vars, returning both names (caller removes them).
+fn add_gateway(config: &mut Config, label: &str) -> [String; 2] {
+    let suffix = format!("{}_{label}", std::process::id());
+    let secret_env = format!("SHUNT_USAGE_TEST_GW_SECRET_{suffix}");
+    let users_env = format!("SHUNT_USAGE_TEST_GW_USERS_{suffix}");
+    std::env::set_var(&secret_env, std::str::from_utf8(GATEWAY_SECRET).unwrap());
+    std::env::set_var(&users_env, "dev@example.com:password");
+    config.server.gateway = Some(GatewayConfig {
+        public_url: GATEWAY_URL.to_string(),
+        jwt_secret_env: Some(secret_env.clone()),
+        users_env: users_env.clone(),
+        token_ttl_seconds: Some(3600),
+        trust_forwarded_for: false,
+        policies: None,
+        telemetry: None,
+        state_path: None,
+        oidc: None,
+        session: None,
+    });
+    [secret_env, users_env]
+}
+
+/// A real gateway login access token, minted with the issuer and secret
+/// `add_gateway` configures — what `shunt gateway token` prints.
+fn gateway_bearer() -> String {
+    let token = jwt::mint(
+        &Identity {
+            sub: "dev".to_string(),
+            email: "dev@example.com".to_string(),
+            name: "Dev".to_string(),
+        },
+        GATEWAY_URL,
+        GATEWAY_SECRET,
+        3600,
+    );
+    format!("Bearer {token}")
+}
+
+/// `config` with `[server.usage]` enabled, plus the built-in `codex` provider
+/// given one explicit account so the snapshot path does not touch the account
+/// store, seeded as described on [`state_with_auth_and_seeded_pool`]. Returns
+/// the state and the seeded 5h reset.
+fn state_with_seeded_pool(mut config: Config) -> (AppState, u64) {
     let reset_5h = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
         + 3_600;
-    let mut config = crate::config::Config::default();
-    config.server.auth = Some(InboundAuthConfig {
-        header: "x-shunt-token".to_string(),
-        tokens_env: env.clone(),
-    });
     config.server.usage = Some(UsageEndpointConfig::default());
     let account = AccountConfig {
         name: "acct-a".to_string(),
@@ -280,7 +509,7 @@ fn state_with_auth_and_seeded_pool(token: &str, label: &str) -> (AppState, Strin
         (reset_5h + 3_600).to_string().parse().unwrap(),
     );
     state.accounts.note_codex_quota("codex", &account, &headers);
-    (state, env, reset_5h)
+    (state, reset_5h)
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -332,6 +561,7 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
 
     let mut config = crate::config::Config::default();
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: env.clone(),
     });
@@ -361,6 +591,7 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: vec![claude_account.clone()],
             account_scope: Vec::new(),
@@ -370,6 +601,7 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
             retry: Default::default(),
             workspace_roots: Vec::new(),
             sandbox: true,
+            profile_dir: None,
         },
     );
 
@@ -475,6 +707,7 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
 
     let mut config = crate::config::Config::default();
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: env.clone(),
     });
@@ -504,6 +737,7 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
             api_key_header: ApiKeyHeader::Bearer,
             effort: None,
             service_tier: None,
+            classifier_model: None,
             count_tokens: CountTokens::default(),
             accounts: vec![kimi_account.clone()],
             account_scope: Vec::new(),
@@ -513,6 +747,7 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
             retry: Default::default(),
             workspace_roots: Vec::new(),
             sandbox: true,
+            profile_dir: None,
         },
     );
 
@@ -581,6 +816,7 @@ async fn aggregate_counts_an_aliased_identity_once() {
 
     let mut config = crate::config::Config::default();
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: env.clone(),
     });
@@ -651,12 +887,99 @@ async fn rejects_a_request_without_a_valid_client_token() {
     let body = body_json(response).await;
     assert_eq!(body["type"], "error");
     assert_eq!(body["error"]["type"], "authentication_error");
+    // Only `[server.auth]` is configured, so no gateway login is offered.
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("client token"), "{message}");
+    assert!(!message.contains("shunt gateway login"), "{message}");
+}
+
+#[tokio::test]
+async fn rejection_names_both_credentials_when_auth_and_gateway_are_configured() {
+    let mut config = Config::default();
+    let auth_env = add_client_auth(&mut config, "tok-secret", "rejects_both");
+    let gateway_env = add_gateway(&mut config, "rejects_both");
+    let (state, _) = state_with_seeded_pool(config);
+
+    let response = get(State(state), HeaderMap::new()).await;
+    std::env::remove_var(&auth_env);
+    for var in &gateway_env {
+        std::env::remove_var(var);
+    }
+
+    assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let body = body_json(response).await;
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("client token"), "{message}");
+    assert!(message.contains("shunt gateway login"), "{message}");
+}
+
+#[tokio::test]
+async fn serves_a_valid_gateway_login_without_server_auth() {
+    let mut config = Config::default();
+    let gateway_env = add_gateway(&mut config, "gateway_only");
+    let (state, _) = state_with_seeded_pool(config);
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", gateway_bearer().parse().unwrap());
+
+    let response = get(State(state), headers).await;
+    for var in &gateway_env {
+        std::env::remove_var(var);
+    }
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.75));
+}
+
+#[tokio::test]
+async fn serves_a_valid_gateway_login_alongside_server_auth() {
+    // The gateway bearer authenticates on its own even though it matches no
+    // `[server.auth]` client token.
+    let mut config = Config::default();
+    let auth_env = add_client_auth(&mut config, "tok-secret", "gateway_and_auth");
+    let gateway_env = add_gateway(&mut config, "gateway_and_auth");
+    let (state, _) = state_with_seeded_pool(config);
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", gateway_bearer().parse().unwrap());
+
+    let response = get(State(state), headers).await;
+    std::env::remove_var(&auth_env);
+    for var in &gateway_env {
+        std::env::remove_var(var);
+    }
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.75));
+}
+
+#[tokio::test]
+async fn rejects_an_invalid_bearer_when_only_gateway_login_is_configured() {
+    let mut config = Config::default();
+    let gateway_env = add_gateway(&mut config, "gateway_garbage");
+    let (state, _) = state_with_seeded_pool(config);
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", "Bearer not-a-gateway-jwt".parse().unwrap());
+
+    let response = get(State(state), headers).await;
+    for var in &gateway_env {
+        std::env::remove_var(var);
+    }
+
+    assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["type"], "authentication_error");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("shunt gateway login"), "{message}");
+    // No `[server.auth]` header exists to name.
+    assert!(!message.contains("x-shunt-token"), "{message}");
 }
 
 #[tokio::test]
 async fn fails_closed_when_inbound_auth_is_absent() {
     // Defense in depth for the branch config validation normally forbids:
-    // with no `[server.auth]`, the handler must not serve pool telemetry.
+    // with neither `[server.auth]` nor `[server.gateway]`, the handler must
+    // not serve pool telemetry.
     let state = AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
     let response = get(State(state), HeaderMap::new()).await;
     assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
@@ -694,6 +1017,7 @@ async fn returns_api_error_500_when_account_store_scan_fails() {
     std::env::set_var(&env, "tester:tok-secret");
     let mut config = crate::config::Config::default();
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: env.clone(),
     });

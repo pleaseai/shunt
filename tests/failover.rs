@@ -27,6 +27,8 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
+mod common;
+
 const CLIENT_MODEL: &str = "failover-model";
 
 struct HeaderAbsent(&'static str);
@@ -91,6 +93,7 @@ fn upstream(
         auth: Some(auth),
         effort: None,
         service_tier: None,
+        classifier_model: None,
         count_tokens: CountTokens::Tiktoken,
         websocket: false,
         tool_search: None,
@@ -98,6 +101,7 @@ fn upstream(
         retry: disabled_retry(),
         workspace_roots: Vec::new(),
         sandbox: true,
+        profile_dir: None,
     }
 }
 
@@ -128,6 +132,9 @@ fn chain_config(upstreams: Vec<UpstreamConfig>, mappings: &[(&str, &str)]) -> Co
                 .map(|(name, model)| ((*name).to_string(), (*model).to_string()))
                 .collect::<BTreeMap<_, _>>(),
         ),
+        router: None,
+        stage_router: None,
+        subagents: None,
     }];
     config
 }
@@ -316,20 +323,21 @@ async fn capability_filter_skips_incompatible_target_and_reaches_compatible_fall
 }
 
 #[tokio::test]
-async fn capability_filter_keeps_primary_but_suppresses_fallback_for_1m_requirement() {
+async fn capability_filter_keeps_fallback_when_model_has_context_hint() {
     if !can_bind_loopback() {
         return;
     }
     let primary = MockServer::start().await;
     let fallback = MockServer::start().await;
     Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(500).set_body_string("primary-only"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("advance"))
         .expect(1)
         .mount(&primary)
         .await;
     Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("fallback-ok"))
+        .expect(1)
         .mount(&fallback)
         .await;
     let config = chain_config(
@@ -351,17 +359,17 @@ async fn capability_filter_keeps_primary_but_suppresses_fallback_for_1m_requirem
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(response.headers()["x-gateway-upstream"], "primary");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-gateway-upstream"], "fallback");
     assert_eq!(
         response.headers()["x-gateway-model"],
         format!("{CLIENT_MODEL}[1m]")
     );
     assert_eq!(
         response.headers()["x-gateway-upstream-model"],
-        "large-model-a"
+        "large-model-b"
     );
-    assert_eq!(response.text().await.unwrap(), "primary-only");
+    assert_eq!(response.text().await.unwrap(), "fallback-ok");
     primary.verify().await;
     fallback.verify().await;
 }
@@ -457,13 +465,157 @@ async fn every_advance_status_reaches_the_next_upstream() {
 }
 
 #[tokio::test]
+async fn a_capped_claude_pool_advances_to_the_next_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_FAILOVER_CAPPED", "fake-oauth-failover-capped");
+    let claude = MockServer::start().await;
+    // Served once, reporting 5h utilization above the account's cap.
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("anthropic-ratelimit-unified-5h-utilization", "0.9")
+                .set_body_string("from-claude"),
+        )
+        .expect(1)
+        .mount(&claude)
+        .await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("from-fallback"))
+        .expect(1)
+        .mount(&fallback)
+        .await;
+    let capped = shunt::config::AccountConfig {
+        name: "capped".to_string(),
+        token_env: Some("SHUNT_TEST_FAILOVER_CAPPED".to_string()),
+        uuid: Some("uuid-capped".to_string()),
+        max_utilization_5h: Some(0.5),
+        ..Default::default()
+    };
+    let config = chain_config(
+        vec![
+            upstream(
+                "claude",
+                claude.uri(),
+                ProviderKind::Anthropic,
+                UpstreamAuth::Map(AuthMap::ClaudeOauth {
+                    account: None,
+                    accounts: Some(vec![shunt::config::AccountSelection::Inline(capped)]),
+                }),
+            ),
+            passthrough("fallback", fallback.uri()),
+        ],
+        &[("claude", "model-a"), ("fallback", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let first = post(&gateway).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(first.text().await.unwrap(), "from-claude");
+
+    let second = post(&gateway).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(second.text().await.unwrap(), "from-fallback");
+    claude.verify().await;
+    fallback.verify().await;
+}
+
+#[tokio::test]
+async fn a_capped_codex_pool_advances_to_the_next_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let payload = json!({
+        "exp": 4_102_444_800_u64,
+        "https://api.openai.com/auth": {"chatgpt_account_id": "acct-failover-capped"}
+    });
+    let token = format!(
+        "x.{}.y",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            serde_json::to_vec(&payload).unwrap()
+        )
+    );
+    vars.set("SHUNT_TEST_FAILOVER_CODEX_CAPPED", &token);
+    let reset_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 16_200;
+    let codex = MockServer::start().await;
+    let sse = "event: response.created\n\
+         data: {\"response\":{\"id\":\"resp_1\",\"usage\":{\"output_tokens\":0}}}\n\n\
+         event: response.output_item.added\ndata: {\"item\":{\"type\":\"message\"}}\n\n\
+         event: response.output_text.delta\ndata: {\"delta\":\"from-codex\"}\n\n\
+         event: response.output_text.done\ndata: {}\n\n\
+         event: response.completed\n\
+         data: {\"response\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":4}}}\n\n\
+         data: [DONE]\n\n";
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-codex-primary-window-minutes", "300")
+                .insert_header("x-codex-primary-used-percent", "99")
+                .insert_header("x-codex-primary-reset-at", reset_at.to_string().as_str())
+                .set_body_string(sse),
+        )
+        .expect(1)
+        .mount(&codex)
+        .await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("from-fallback"))
+        .expect(1)
+        .mount(&fallback)
+        .await;
+    let capped = shunt::config::AccountConfig {
+        name: "capped".to_string(),
+        token_env: Some("SHUNT_TEST_FAILOVER_CODEX_CAPPED".to_string()),
+        max_utilization_5h: Some(0.5),
+        ..Default::default()
+    };
+    let config = chain_config(
+        vec![
+            upstream(
+                "codex",
+                codex.uri(),
+                ProviderKind::Responses,
+                UpstreamAuth::Map(AuthMap::ChatgptOauth {
+                    account: None,
+                    accounts: Some(vec![shunt::config::AccountSelection::Inline(capped)]),
+                }),
+            ),
+            passthrough("fallback", fallback.uri()),
+        ],
+        &[("codex", "gpt-5.6-sol"), ("fallback", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let first = post(&gateway).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert!(first.text().await.unwrap().contains("from-codex"));
+
+    let second = post(&gateway).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(second.text().await.unwrap(), "from-fallback");
+    codex.verify().await;
+    fallback.verify().await;
+}
+
+#[tokio::test]
 async fn connect_failure_advances_but_400_returns_immediately() {
     if !can_bind_loopback() {
         return;
     }
-    let unavailable = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let unavailable_url = format!("http://{}", unavailable.local_addr().unwrap());
-    drop(unavailable);
+    // Port 0 never accepts a connection: unlike a released ephemeral port,
+    // nothing can rebind it between this test and the request, so the
+    // "offline" attempt is refused deterministically even when a sibling
+    // test's mock server is hunting for a port at the same time.
+    let unavailable_url = "http://127.0.0.1:0".to_string();
     let healthy = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_string("after-connect"))
@@ -561,12 +713,10 @@ async fn all_transport_failures_synthesize_anthropic_502_with_last_metadata() {
     if !can_bind_loopback() {
         return;
     }
-    let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let first_url = format!("http://{}", first.local_addr().unwrap());
-    drop(first);
-    let second = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let second_url = format!("http://{}", second.local_addr().unwrap());
-    drop(second);
+    // Port 0 never accepts a connection; see the same choice in
+    // `connect_failure_advances_but_400_returns_immediately`.
+    let first_url = "http://127.0.0.1:0".to_string();
+    let second_url = "http://127.0.0.1:0".to_string();
     let config = chain_config(
         vec![
             passthrough("first", first_url),
@@ -660,12 +810,10 @@ async fn exhausted_chain_502_reaches_the_real_gateway_and_emits_a_sentry_event()
     ));
     let hub_guard = sentry::HubSwitchGuard::new(hub.clone());
 
-    let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let first_url = format!("http://{}", first.local_addr().unwrap());
-    drop(first);
-    let second = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let second_url = format!("http://{}", second.local_addr().unwrap());
-    drop(second);
+    // Port 0 never accepts a connection; see the same choice in
+    // `connect_failure_advances_but_400_returns_immediately`.
+    let first_url = "http://127.0.0.1:0".to_string();
+    let second_url = "http://127.0.0.1:0".to_string();
     let config = chain_config(
         vec![
             passthrough("first", first_url),
@@ -926,8 +1074,9 @@ async fn mixed_chain_is_gated_and_strips_credentials_per_attempt() {
     }
     let key_env = format!("SHUNT_FAILOVER_KEY_{}", std::process::id());
     let tokens_env = format!("SHUNT_FAILOVER_CLIENT_{}", std::process::id());
-    std::env::set_var(&key_env, "upstream-key");
-    std::env::set_var(&tokens_env, "alice:client-token");
+    let mut vars = common::env_lock().await;
+    vars.set(&key_env, "upstream-key");
+    vars.set(&tokens_env, "alice:client-token");
     let passthrough_server = MockServer::start().await;
     let injected_server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -953,13 +1102,14 @@ async fn mixed_chain_is_gated_and_strips_credentials_per_attempt() {
                 ProviderKind::Anthropic,
                 UpstreamAuth::Map(AuthMap::ApiKey {
                     env: Some(key_env.clone()),
-                    header: ApiKeyHeader::Bearer,
+                    header: Some(ApiKeyHeader::Bearer),
                 }),
             ),
         ],
         &[("passthrough", "model-a"), ("credentialed", "model-b")],
     );
     config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
     });
@@ -978,8 +1128,6 @@ async fn mixed_chain_is_gated_and_strips_credentials_per_attempt() {
     )
     .await;
 
-    std::env::remove_var(key_env);
-    std::env::remove_var(tokens_env);
     assert_eq!(response.status(), StatusCode::OK);
     assert_gateway_headers(&response, "credentialed", "model-b");
     passthrough_server.verify().await;
@@ -1094,7 +1242,8 @@ async fn injected_primary_failover_strips_client_credential_on_same_origin_passt
     // closed) rather than replay them upstream — the same-origin retention only
     // applies when the primary itself is passthrough.
     let key_env = format!("SHUNT_INJECTED_PRIMARY_KEY_{}", std::process::id());
-    std::env::set_var(&key_env, "upstream-key");
+    let mut vars = common::env_lock().await;
+    vars.set(&key_env, "upstream-key");
     let origin = MockServer::start().await;
     // Injected primary attempt: carries the injected bearer, caller creds gone.
     Mock::given(method("POST"))
@@ -1121,7 +1270,7 @@ async fn injected_primary_failover_strips_client_credential_on_same_origin_passt
                 ProviderKind::Anthropic,
                 UpstreamAuth::Map(AuthMap::ApiKey {
                     env: Some(key_env.clone()),
-                    header: ApiKeyHeader::Bearer,
+                    header: Some(ApiKeyHeader::Bearer),
                 }),
             ),
             passthrough("fallback", origin.uri()),
@@ -1140,7 +1289,6 @@ async fn injected_primary_failover_strips_client_credential_on_same_origin_passt
     )
     .await;
 
-    std::env::remove_var(key_env);
     // The fallback answered only because the caller credential was stripped: a
     // replayed credential would have matched neither mock (404), not 200.
     assert_eq!(response.status(), StatusCode::OK);
@@ -1205,6 +1353,9 @@ async fn legacy_single_element_chain_adds_gateway_headers() {
             "anthropic".to_string(),
             "legacy-model".to_string(),
         )])),
+        router: None,
+        stage_router: None,
+        subagents: None,
     }];
     let gateway = start_gateway(config).await;
 

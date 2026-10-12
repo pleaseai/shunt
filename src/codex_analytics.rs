@@ -27,7 +27,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{error::ShuntError, server::AppState};
+use crate::{auth::gate, error::ShuntError, server::AppState};
 
 /// Inbound analytics sink routes this handler serves, registered by
 /// [`crate::server::build_router`] when `[server.codex_endpoint]` is set.
@@ -63,16 +63,27 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Body)
     // Match the inbound Responses endpoint's auth posture: open without
     // `[server.auth]`, otherwise accept the configured header or Bearer token.
     if let Some(auth) = &state.inbound_auth {
-        if auth.authenticate_bearer(&headers).is_none() {
-            tracing::warn!("inbound codex analytics auth failed: missing or invalid client token");
-            let message = format!(
-                "missing or invalid client token for the inbound codex endpoint: provide it via the `{}` header or `Authorization: Bearer <token>` (e.g. OPENAI_API_KEY); ask the operator for one",
-                auth.header()
-            );
-            let response =
-                ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
-                    .into_response();
-            return crate::error::into_openai_error_shape(response).await;
+        match gate::authenticate(auth, &state.inbound_jwks, &headers, gate::Slots::Bearer).await {
+            gate::Outcome::Authenticated { .. } => {}
+            gate::Outcome::Unavailable => {
+                tracing::warn!(
+                    "inbound codex analytics: cannot verify credential, JWT issuer key set unreachable"
+                );
+                return crate::error::into_openai_error_shape(gate::unavailable_response()).await;
+            }
+            gate::Outcome::Rejected => {
+                tracing::warn!(
+                    "inbound codex analytics auth failed: missing or invalid client token"
+                );
+                let message = format!(
+                    "missing or invalid client token for the inbound codex endpoint: provide it via the `{}` header or `Authorization: Bearer <token>` (e.g. OPENAI_API_KEY); ask the operator for one",
+                    auth.header()
+                );
+                let response =
+                    ShuntError::new(StatusCode::UNAUTHORIZED, "authentication_error", message)
+                        .into_response();
+                return crate::error::into_openai_error_shape(response).await;
+            }
         }
     }
 

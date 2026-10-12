@@ -18,7 +18,8 @@
 
 - Keep Rust files focused and preferably **under 500 lines**.
 - **Preserve streaming semantics**: do not buffer upstream SSE responses unless the client
-  requested non-streaming output.
+  requested non-streaming output or the entry's router (`escalation`, `advisor`) requires the
+  completed turn before serving it.
 - Keep gateway-owned errors in **Anthropic error shape**.
 - Prefer **table-driven config additions** over hardcoded provider logic — new providers and
   models should arrive as config, not new code branches.

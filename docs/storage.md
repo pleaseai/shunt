@@ -31,6 +31,11 @@ Three of these are true with exactly one process running:
   memory. "Per-account usage over the last seven days" — the thing that makes a
   dashboard worth building rather than a status page — is impossible without
   durable storage. This is the strongest reason to want a store at all.
+  Scope note: [`dashboard-metrics.md`](dashboard-metrics.md) narrows what waits
+  on this. A bounded in-memory ring serves a *recent* window (its working shape
+  is 24 h) without any store, so the dashboard is not blocked here; what stays
+  impossible without one is a window that outlives a restart, and the
+  seven-day, per-account retention this bullet describes.
 - **Spend limits and audit.** The `/v1/organizations/*` namespace reserved in
   [`admin-ui-delivery.md`](admin-ui-delivery.md#reserved-namespace--v1organizations)
   needs durable counters and an append-only mutation trail. `/audit` is a table.
