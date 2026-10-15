@@ -69,7 +69,10 @@ sha256() {
 main() {
   version="${SHUNT_VERSION:-$DEFAULT_VERSION}"
   version="${version#v}"
-  install_dir="${SHUNT_INSTALL_DIR:-$HOME/.local/bin}"
+  if [ -z "${SHUNT_INSTALL_DIR:-}" ] && [ -z "${HOME:-}" ]; then
+    err "HOME is unset; set SHUNT_INSTALL_DIR"
+  fi
+  install_dir="${SHUNT_INSTALL_DIR:-${HOME}/.local/bin}"
 
   os="$(detect_os)"
   arch="$(detect_arch "$os")"
@@ -77,7 +80,9 @@ main() {
   base_url="https://github.com/${REPO}/releases/download/v${version}"
 
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT INT TERM
+  trap 'rm -rf "$tmp"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   info "downloading ${asset} v${version}"
   download "${base_url}/${asset}" "${tmp}/${asset}" ||
