@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Install shunt via Homebrew, Cargo from git, prebuilt binaries, or from source.
+description: Install shunt via Homebrew, the install script, Cargo from git, prebuilt binaries, or from source.
 ---
 
 
@@ -34,6 +34,21 @@ a restart — shunt [hot-reloads](https://github.com/pleaseai/shunt/blob/main/do
 the file automatically. See [Running as a
 service](https://github.com/pleaseai/shunt/blob/main/docs/running.md#run-as-a-background-service-homebrew)
 for config discovery paths and more detail.
+
+## Install script (macOS / Linux)
+
+```bash
+curl -fsSL https://shunt.sh/install.sh | sh
+```
+
+The script downloads the prebuilt binary for your OS and CPU from the [GitHub release](https://github.com/pleaseai/shunt/releases), verifies it against the release's `SHA256SUMS`, and installs it as `~/.local/bin/shunt`. Two environment variables adjust it:
+
+- `SHUNT_VERSION` — the release to install (for example `0.55.0`). Defaults to the release the script was published with, which is the latest one.
+- `SHUNT_INSTALL_DIR` — the destination directory (default `~/.local/bin`). If it is not on your `PATH`, the script prints the line to add.
+
+```bash
+curl -fsSL https://shunt.sh/install.sh | SHUNT_VERSION=0.55.0 sh
+```
 
 ## Cargo (from git)
 

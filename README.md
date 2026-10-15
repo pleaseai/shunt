@@ -28,6 +28,9 @@ Providers for OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMa
 # Homebrew (macOS / Linux)
 brew install pleaseai/tap/shunt
 
+# Install script (macOS / Linux) — prebuilt binary from the GitHub release
+curl -fsSL https://shunt.sh/install.sh | sh
+
 # Cargo, directly from the source repository
 cargo install --git https://github.com/pleaseai/shunt
 ```

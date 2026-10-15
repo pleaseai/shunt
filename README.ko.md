@@ -28,6 +28,9 @@ OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax 중국, Open
 # Homebrew (macOS / Linux)
 brew install pleaseai/tap/shunt
 
+# 설치 스크립트 (macOS / Linux) — GitHub 릴리스의 사전 빌드 바이너리
+curl -fsSL https://shunt.sh/install.sh | sh
+
 # Cargo — 소스 저장소에서 직접 설치
 cargo install --git https://github.com/pleaseai/shunt
 ```

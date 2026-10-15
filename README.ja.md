@@ -28,6 +28,9 @@ OpenAI、ChatGPT/Codex、xAI、Grok、Cursor、Kimi Code、Zhipu、MiniMax 中�
 # Homebrew (macOS / Linux)
 brew install pleaseai/tap/shunt
 
+# インストールスクリプト (macOS / Linux) — GitHub リリースのビルド済みバイナリ
+curl -fsSL https://shunt.sh/install.sh | sh
+
 # Cargo — ソースリポジトリから直接インストール
 cargo install --git https://github.com/pleaseai/shunt
 ```

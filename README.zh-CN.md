@@ -28,6 +28,9 @@
 # Homebrew (macOS / Linux)
 brew install pleaseai/tap/shunt
 
+# 安装脚本 (macOS / Linux) —— 来自 GitHub release 的预构建二进制文件
+curl -fsSL https://shunt.sh/install.sh | sh
+
 # Cargo —— 直接从源码仓库安装
 cargo install --git https://github.com/pleaseai/shunt
 ```
