@@ -1604,7 +1604,8 @@ fn a_later_call_never_overtakes_a_deferred_one_after_text_closes_the_open_call()
 fn a_late_arguments_done_never_closes_an_open_text_block() {
     // Text closes call A while B is deferred, and both of A's done events
     // arrive mid-text: neither may split the text block, and B streams once
-    // the text finishes. A's block was already stopped by the text, so its
+    // the whole message item finishes — its `output_item.done` must not close
+    // B before B's own done event. A's block was already stopped by the text, so its
     // late arguments cannot reach it — the one loss an interleaved text block
     // still causes.
     let event = |name: &str, data: Value| format!("event: {name}\ndata: {data}\n\n");
@@ -1615,12 +1616,21 @@ fn a_late_arguments_done_never_closes_an_open_text_block() {
         event("response.output_item.added", json!({"item": call("b")})),
         event("response.output_text.delta", json!({"delta": "no"})),
         event(
+            "response.function_call_arguments.delta",
+            json!({"item_id": "fc_a", "delta": arguments(1)}),
+        ),
+        event(
             "response.function_call_arguments.done",
             json!({"item_id": "fc_a", "arguments": arguments(1)}),
         ),
         event("response.output_item.done", json!({"item": call("a")})),
         event("response.output_text.delta", json!({"delta": "te"})),
         event("response.output_text.done", json!({})),
+        event("response.content_part.done", json!({})),
+        event(
+            "response.output_item.done",
+            json!({"item": {"type": "message"}}),
+        ),
         event(
             "response.function_call_arguments.done",
             json!({"item_id": "fc_b", "arguments": arguments(2)}),
@@ -1629,11 +1639,22 @@ fn a_late_arguments_done_never_closes_an_open_text_block() {
     ]
     .concat();
     let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
-    for event in parse_sse_events(&fixture) {
-        machine.apply(event);
-    }
+    let emitted = parse_sse_events(&fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
     let final_json = machine.final_json();
 
+    // A's late delta must not stream onto the text block (index 1); the only
+    // argument delta is B's, on B's own block.
+    let argument_deltas = emitted
+        .split("\n\n")
+        .filter_map(|frame| frame.lines().find_map(|line| line.strip_prefix("data: ")))
+        .map(|data| serde_json::from_str::<Value>(data).unwrap())
+        .filter(|frame| frame["delta"]["type"] == "input_json_delta")
+        .map(|frame| frame["index"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(argument_deltas, vec![2]);
     let blocks = final_json["content"].as_array().unwrap();
     assert_eq!(blocks.len(), 3);
     assert_eq!(blocks[0]["id"], "call_a");

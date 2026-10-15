@@ -237,9 +237,7 @@ impl AnthropicSseMachine {
             "response.output_text.delta" => self.text_delta(&event.data),
             "response.output_text.annotation.added" => self.annotation_added(&event.data),
             "response.output_text.done" | "response.content_part.done" => {
-                let mut out = self.close_current(BlockKind::Text);
-                out.extend(self.release_deferred_calls());
-                out
+                self.close_current(BlockKind::Text)
             }
             "response.reasoning_summary_text.delta" => self.reasoning_delta(&event.data),
             "response.function_call_arguments.delta" => self.arguments_delta(&event.data),
@@ -411,6 +409,14 @@ impl AnthropicSseMachine {
             // — so the whole ToolSearch tool_use is emitted here in one shot.
             Some("tool_search_call") if self.tool_search_native => self.tool_search_call_done(item),
             Some("function_call") => self.close_tool(item),
+            // A message ends its own text block only — never a tool block the
+            // deferred calls released — and is where those calls are released:
+            // its `output_text.done` / `content_part.done` still precede it.
+            Some("message") => {
+                let mut out = self.close_current(BlockKind::Text);
+                out.extend(self.release_deferred_calls());
+                out
+            }
             _ => self.close_any(),
         }
     }
@@ -851,6 +857,13 @@ impl AnthropicSseMachine {
     }
 
     fn arguments_delta(&mut self, data: &Value) -> Vec<String> {
+        // A delta for a call whose block text or reasoning already stopped has
+        // no block left to land on; never stream it onto another block.
+        if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Tool)
+            || !self.event_names_open_call(data)
+        {
+            return Vec::new();
+        }
         let delta = data.get("delta").and_then(Value::as_str).unwrap_or("");
         self.emit_arguments(delta)
     }
@@ -891,7 +904,7 @@ impl AnthropicSseMachine {
             // nothing is open.
             return self.release_deferred_calls();
         }
-        if !self.done_matches_open_call(data) {
+        if !self.event_names_open_call(data) {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -969,8 +982,8 @@ impl AnthropicSseMachine {
         out
     }
 
-    /// Replay the deferred calls once no block at all is open — after text or
-    /// reasoning that closed the call they waited behind has itself finished.
+    /// Replay the deferred calls once no block at all is open — after the text
+    /// or reasoning item that closed the call they waited behind has finished.
     /// An open text or reasoning block is never cut short to make room.
     fn release_deferred_calls(&mut self) -> Vec<String> {
         if self.open.is_some() {
@@ -990,11 +1003,11 @@ impl AnthropicSseMachine {
         out
     }
 
-    /// Whether a done event belongs to the open tool call. `output_item.done`
-    /// names the call by its item's `id` and `call_id`,
-    /// `function_call_arguments.done` by `item_id`. An identifier missing on
+    /// Whether an argument or done event belongs to the open tool call.
+    /// `output_item.done` names the call by its item's `id` and `call_id`, the
+    /// `function_call_arguments` events by `item_id`. An identifier missing on
     /// either side cannot tell the calls apart, so it counts as a match.
-    fn done_matches_open_call(&self, data: &Value) -> bool {
+    fn event_names_open_call(&self, data: &Value) -> bool {
         let differs = |key: &str, open: &Option<String>| {
             matches!(
                 (data.get(key).and_then(Value::as_str), open),
