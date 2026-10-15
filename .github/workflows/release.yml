@@ -130,6 +130,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
 
+  # Publishes site/public/install.sh with this release's default version only
+  # now that its binaries are attached; deploy-docs.yml skips the release-please
+  # merge commit on push for this reason.
+  deploy-docs:
+    name: deploy docs
+    needs: release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/deploy-docs.yml
+    with:
+      branch: main
+    secrets: inherit
+
   # Homebrew distribution: the binaries + SHA256SUMS are attached to the GitHub
   # release by the jobs above; this reads the published checksums and rewrites
   # shunt.rb in pleaseai/homebrew-tap (same GitHub App pattern as pleaseai/ask).

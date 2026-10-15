@@ -3,6 +3,10 @@
 #   CLOUDFLARE_API_TOKEN   - API token with the "Cloudflare Pages: Edit" permission
 #   CLOUDFLARE_ACCOUNT_ID  - the Cloudflare account id
 # The Pages project ("shunt-docs") is created on first deploy if it doesn't exist.
+#
+# A release-please merge commit is not deployed on push: it stamps a new default
+# version into site/public/install.sh before release.yml has uploaded that
+# version's binaries. release.yml calls this workflow once the upload succeeds.
 name: deploy docs
 
 on:
@@ -12,6 +16,12 @@ on:
       - "site/**"
       - ".github/workflows/deploy-docs.yml"
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      branch:
+        description: "Cloudflare Pages branch to deploy as (a tag checkout has no branch for wrangler to detect)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -23,6 +33,9 @@ concurrency:
 jobs:
   deploy:
     name: build and deploy to Cloudflare Pages
+    if: >-
+      inputs.branch ||
+      !startsWith(github.event.head_commit.message || '', 'chore(main): release')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -48,4 +61,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy site/dist --project-name=shunt-docs
+          command: pages deploy site/dist --project-name=shunt-docs ${{ inputs.branch && format('--branch={0}', inputs.branch) || '' }}
