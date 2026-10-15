@@ -1297,6 +1297,106 @@ fn streaming_state_machine_emits_incremental_anthropic_events() {
     assert!(emitted.contains("\"output_tokens\":9"));
 }
 
+/// Two parallel function calls whose arguments arrive only in the done events,
+/// with no `function_call_arguments.delta` — the shape Codex sends for parallel
+/// calls (issue #765).
+const DONE_ONLY_ARGUMENTS_FIXTURE: &str = concat!(
+    "event: response.created\n",
+    "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+    "event: response.output_item.added\n",
+    "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"Probe\",\"arguments\":\"\"}}\n\n",
+    "event: response.function_call_arguments.done\n",
+    "data: {\"arguments\":\"{\\\"value\\\":7}\"}\n\n",
+    "event: response.output_item.done\n",
+    "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"Probe\",\"arguments\":\"{\\\"value\\\":7}\"}}\n\n",
+    "event: response.output_item.added\n",
+    "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_b\",\"name\":\"Probe\",\"arguments\":\"\"}}\n\n",
+    "event: response.output_item.done\n",
+    "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_b\",\"name\":\"Probe\",\"arguments\":\"{\\\"value\\\":11}\"}}\n\n",
+    "event: response.completed\n",
+    "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":4}}}\n\n",
+);
+
+#[test]
+fn done_only_function_call_arguments_reach_the_streaming_client() {
+    let mut machine =
+        AnthropicSseMachine::new("gpt-6.1-sol", false, false).without_content_accumulation();
+    let emitted = parse_sse_events(DONE_ONLY_ARGUMENTS_FIXTURE)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    assert_eq!(
+        event_names(&emitted),
+        vec![
+            "message_start",
+            "ping",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "message_delta",
+            "message_stop"
+        ]
+    );
+    // The first call's arguments arrive at `function_call_arguments.done` and
+    // must not be repeated by its `output_item.done`.
+    assert_eq!(
+        emitted
+            .matches("\"partial_json\":\"{\\\"value\\\":7}\"")
+            .count(),
+        1
+    );
+    assert_eq!(
+        emitted
+            .matches("\"partial_json\":\"{\\\"value\\\":11}\"")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn done_only_function_call_arguments_reach_the_final_json() {
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    for event in parse_sse_events(DONE_ONLY_ARGUMENTS_FIXTURE) {
+        machine.apply(event);
+    }
+    let final_json = machine.final_json();
+
+    assert_eq!(final_json["stop_reason"], "tool_use");
+    assert_eq!(final_json["content"][0]["id"], "call_a");
+    assert_eq!(final_json["content"][0]["input"], json!({"value": 7}));
+    assert_eq!(final_json["content"][1]["id"], "call_b");
+    assert_eq!(final_json["content"][1]["input"], json!({"value": 11}));
+}
+
+#[test]
+fn streamed_function_call_arguments_are_not_repeated_by_done_events() {
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"Probe\"}}\n\n",
+        "event: response.function_call_arguments.delta\n",
+        "data: {\"delta\":\"{\\\"value\\\":7}\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"Probe\",\"arguments\":\"{\\\"value\\\":7}\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{}}\n\n",
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    assert_eq!(emitted.matches("\"type\":\"input_json_delta\"").count(), 1);
+    assert_eq!(
+        machine.final_json()["content"][0]["input"],
+        json!({"value": 7})
+    );
+}
+
 #[test]
 fn response_incomplete_ends_the_turn_like_a_normal_completion() {
     // `response.incomplete` is a clean (if truncated) terminal, not a

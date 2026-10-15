@@ -71,6 +71,11 @@ pub struct AnthropicSseMachine {
     text_buffer: String,
     text_citations: Vec<Value>,
     tool_buffer: Option<ToolBuffer>,
+    /// Whether the open tool block has streamed any `input_json_delta` yet.
+    /// Tracked apart from `tool_buffer` (absent on streaming machines) so the
+    /// done events can tell whether their full `arguments` still need to reach
+    /// the client (issue #765).
+    tool_args_streamed: bool,
     reasoning: Option<ReasoningBuffer>,
     web_search_indexes: HashMap<String, String>,
     /// Whether the request used the native `tool_search` protocol (issue #82).
@@ -138,6 +143,7 @@ impl AnthropicSseMachine {
             text_buffer: String::new(),
             text_citations: Vec::new(),
             tool_buffer: None,
+            tool_args_streamed: false,
             reasoning: None,
             web_search_indexes: HashMap::new(),
             tool_search_native,
@@ -206,7 +212,12 @@ impl AnthropicSseMachine {
             }
             "response.reasoning_summary_text.delta" => self.reasoning_delta(&event.data),
             "response.function_call_arguments.delta" => self.arguments_delta(&event.data),
-            "response.function_call_arguments.done" => self.close_current(BlockKind::Tool),
+            "response.function_call_arguments.done" => {
+                if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Tool) {
+                    return Vec::new();
+                }
+                self.close_tool(&event.data)
+            }
             "response.output_item.done" => self.output_item_done(&event.data),
             // `response.incomplete` is a clean (if truncated) terminal, not a
             // transport cut — mirrors the WebSocket transport's terminal set
@@ -351,7 +362,7 @@ impl AnthropicSseMachine {
 
     /// `response.output_item.done` closes whichever item just finished. Reasoning
     /// items need special handling (stamp the round-trip signature); function_call
-    /// and message items just close.
+    /// items deliver any `arguments` no delta carried; message items just close.
     fn output_item_done(&mut self, data: &Value) -> Vec<String> {
         let item = data.get("item").unwrap_or(data);
         match item.get("type").and_then(Value::as_str) {
@@ -361,6 +372,7 @@ impl AnthropicSseMachine {
             // object) only at `done` — codex ignores the `added`/delta events too
             // — so the whole ToolSearch tool_use is emitted here in one shot.
             Some("tool_search_call") if self.tool_search_native => self.tool_search_call_done(item),
+            Some("function_call") => self.close_tool(item),
             _ => self.close_any(),
         }
     }
@@ -592,6 +604,7 @@ impl AnthropicSseMachine {
             .unwrap_or("")
             .to_string();
         self.saw_tool = true;
+        self.tool_args_streamed = false;
         self.tool_buffer = self.accumulate_content.then(|| ToolBuffer {
             id: id.clone(),
             name: name.clone(),
@@ -796,6 +809,13 @@ impl AnthropicSseMachine {
 
     fn arguments_delta(&mut self, data: &Value) -> Vec<String> {
         let delta = data.get("delta").and_then(Value::as_str).unwrap_or("");
+        self.emit_arguments(delta)
+    }
+
+    fn emit_arguments(&mut self, delta: &str) -> Vec<String> {
+        if !delta.is_empty() {
+            self.tool_args_streamed = true;
+        }
         if self.accumulate_content {
             if let Some(tool) = &mut self.tool_buffer {
                 tool.json.push_str(delta);
@@ -809,6 +829,30 @@ impl AnthropicSseMachine {
                 "delta": {"type": "input_json_delta", "partial_json": delta}
             }),
         )]
+    }
+
+    /// Close the open block at a function call's `function_call_arguments.done`
+    /// or `output_item.done`, both of which carry the call's full `arguments`.
+    /// Upstreams may send the arguments only there, with no preceding delta
+    /// (Codex parallel calls, issue #765), so a tool block that streamed nothing
+    /// gets them as one `input_json_delta` before its `content_block_stop`. A
+    /// block whose deltas already arrived is closed as-is, never sent a second
+    /// copy.
+    fn close_tool(&mut self, data: &Value) -> Vec<String> {
+        let mut out = Vec::new();
+        if !self.tool_args_streamed
+            && self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Tool)
+        {
+            if let Some(arguments) = data
+                .get("arguments")
+                .and_then(Value::as_str)
+                .filter(|arguments| !arguments.is_empty())
+            {
+                out.extend(self.emit_arguments(arguments));
+            }
+        }
+        out.extend(self.close_any());
+        out
     }
 
     fn close_current(&mut self, expected: BlockKind) -> Vec<String> {
