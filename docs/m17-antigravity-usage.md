@@ -60,7 +60,7 @@ The grouped windows are flattened into the existing dashboard
 - `Claude + GPT Models · 5h`
 - `Claude + GPT Models · weekly`
 
-They are **display-only**. `AccountPool::note_antigravity_usage` updates
+They are **display-only**. `AccountPool::note_quota_buckets` updates
 `health.quota_buckets` but leaves the generic `health.quota` selection state
 untouched, so Antigravity account selection/rotation behavior does not change.
 The buckets are memory-only and are re-fetched by the poller; no

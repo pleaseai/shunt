@@ -1,17 +1,19 @@
 //! Background poller for OAuth usage APIs — Claude's official one, Codex's
-//! private `wham/usage` one, and Antigravity's Code Assist `retrieveUserQuotaSummary` one.
+//! private `wham/usage` one, Antigravity's Code Assist `retrieveUserQuotaSummary`
+//! one, and the Grok CLI proxy's billing one.
 //!
 //! When `[server.pool] usage_refresh_seconds` is set, this spawns one task at
 //! boot that periodically polls, for every imported (refreshable) account:
 //! `GET /api/oauth/usage` across all `claude_oauth` providers, the private
 //! `GET /wham/usage` (see [`crate::auth::codex::usage`]) across all ChatGPT
-//! backend `chatgpt_oauth` providers, and `POST :retrieveUserQuotaSummary` (see
+//! backend `chatgpt_oauth` providers, `POST :retrieveUserQuotaSummary` (see
 //! [`crate::auth::antigravity::usage`]) across all `antigravity_oauth`
-//! providers — applying the returned utilization to the account pool via
-//! [`AccountPool::note_usage`] for Claude, the Codex-only
+//! providers, and `GET /billing` on the Grok CLI proxy for every pooled
+//! `xai_oauth` account — applying the returned utilization to the account pool
+//! via [`AccountPool::note_usage`] for Claude, the Codex-only
 //! [`AccountPool::note_codex_usage`] reconciliation path for wham, and the
-//! display-only [`AccountPool::note_antigravity_usage`] bucket path for
-//! Antigravity.
+//! display-only [`AccountPool::note_quota_buckets`] bucket path for
+//! Antigravity and xAI.
 //!
 //! Why: the pool's primary quota signal is the response headers on proxied
 //! traffic (`anthropic-ratelimit-unified-*` for Claude, `x-codex-*` for Codex),
@@ -44,7 +46,7 @@ use crate::{
     accounts::{account_key, AccountKey, QuotaBucketSnapshot, UsageSnapshot},
     auth::{
         self, antigravity, claude, codex, resolve_antigravity_account, resolve_chatgpt_account,
-        resolve_claude_account, Credential,
+        resolve_claude_account, resolve_xai_account, Credential,
     },
     config::{AccountConfig, AuthMode},
     server::AppState,
@@ -266,7 +268,7 @@ async fn poll_all(state: &AppState) {
                         if applied.insert((key.clone(), name.clone())) {
                             state
                                 .accounts
-                                .note_antigravity_usage(name, account, buckets.clone());
+                                .note_quota_buckets(name, account, buckets.clone());
                         }
                         continue;
                     }
@@ -298,14 +300,76 @@ async fn poll_all(state: &AppState) {
                     };
                     for (provider, account) in pending.remove(&key).unwrap_or_default() {
                         if applied.insert((key.clone(), provider.clone())) {
-                            state.accounts.note_antigravity_usage(
-                                &provider,
-                                &account,
-                                buckets.clone(),
-                            );
+                            state
+                                .accounts
+                                .note_quota_buckets(&provider, &account, buckets.clone());
                         }
                     }
                     cached.insert(key, CachedUsage::Antigravity(buckets));
+                }
+            }
+            // The subscription's billing lives on the Grok CLI proxy whatever
+            // inference host the provider names (`Config::validate` admits any
+            // x.ai/grok.com host for `xai_oauth`), so the poll always targets
+            // it rather than `provider.base_url`. An empty pool means the
+            // provider is serving the single legacy credential file, which has
+            // no pool row to show buckets on, so nothing is polled.
+            AuthMode::XaiOauth => {
+                let accounts = match provider.resolve_pool_accounts().await {
+                    Ok(accounts) => accounts,
+                    Err(error) => {
+                        tracing::debug!(provider = %name, %error, "usage poller: failed to resolve xAI accounts");
+                        continue;
+                    }
+                };
+                state.accounts.sync_enabled_accounts(name, &accounts);
+                for account in &accounts {
+                    let key = account_key(name, account);
+                    if let Some(CachedUsage::Xai(buckets)) = cached.get(&key) {
+                        if applied.insert((key.clone(), name.clone())) {
+                            state
+                                .accounts
+                                .note_quota_buckets(name, account, buckets.clone());
+                        }
+                        continue;
+                    }
+                    if cached.contains_key(&key) {
+                        tracing::debug!(
+                            provider = %name,
+                            account = %account.name,
+                            "usage poller: cached usage family does not match xAI account"
+                        );
+                        continue;
+                    }
+                    {
+                        let aliases = pending.entry(key.clone()).or_default();
+                        if !aliases.iter().any(|(provider, _)| provider == name) {
+                            aliases.push((name.clone(), account.clone()));
+                        }
+                    }
+                    if applied.contains(&(key.clone(), name.clone())) {
+                        continue;
+                    }
+                    if !xai_account_is_refreshable(account).await {
+                        continue;
+                    }
+                    let Some(buckets) = fetch_xai_usage(
+                        &state.http_client,
+                        auth::observation::GROK_API_BASE_URL,
+                        account,
+                    )
+                    .await
+                    else {
+                        continue;
+                    };
+                    for (provider, account) in pending.remove(&key).unwrap_or_default() {
+                        if applied.insert((key.clone(), provider.clone())) {
+                            state
+                                .accounts
+                                .note_quota_buckets(&provider, &account, buckets.clone());
+                        }
+                    }
+                    cached.insert(key, CachedUsage::Xai(buckets));
                 }
             }
             _ => {}
@@ -322,6 +386,7 @@ enum CachedUsage {
     Claude(UsageSnapshot),
     Codex(codex::usage::WhamUsageReport),
     Antigravity(Vec<QuotaBucketSnapshot>),
+    Xai(Vec<QuotaBucketSnapshot>),
 }
 
 /// Fetch and parse one Claude account's usage without mutating pool state.
@@ -424,6 +489,49 @@ async fn fetch_antigravity_usage(
     }
 }
 
+/// Fetch one pooled xAI account's Grok billing buckets (credits plus one per
+/// product) without mutating pool state. Only the buckets are kept: the name or
+/// masked email the observed `grok` row shows is not attached to a pool
+/// account. Empty bucket lists and every failure stay uncached so a later alias
+/// can retry.
+async fn fetch_xai_usage(
+    client: &reqwest::Client,
+    base_url: &str,
+    account: &AccountConfig,
+) -> Option<Vec<QuotaBucketSnapshot>> {
+    let credential = match resolve_xai_account(account, client).await {
+        Ok(credential) => credential,
+        Err(error) => {
+            tracing::debug!(account = %account.name, error = %error.message, "usage poller: failed to resolve xAI account credential");
+            return None;
+        }
+    };
+    let Credential::XaiOauth { access_token } = credential else {
+        return None;
+    };
+    match auth::observation::fetch_grok_quota_from(client, &access_token, base_url).await {
+        Ok(snapshot) if !snapshot.buckets.is_empty() => Some(
+            snapshot
+                .buckets
+                .into_iter()
+                .map(|bucket| QuotaBucketSnapshot {
+                    label: bucket.label,
+                    remaining: bucket.remaining,
+                    reset_time: bucket.reset_time,
+                })
+                .collect(),
+        ),
+        Ok(_) => {
+            tracing::debug!(account = %account.name, "usage poller: Grok billing reported no quota buckets, skipping");
+            None
+        }
+        Err(error) => {
+            tracing::debug!(account = %account.name, %error, "usage poller: Grok billing fetch failed");
+            None
+        }
+    }
+}
+
 /// Poll one Claude account: skip non-refreshable credentials, resolve a valid
 /// access token, fetch its usage, and apply it to the pool. Every failure
 /// degrades quietly to a debug log — a missing snapshot just leaves the
@@ -507,9 +615,49 @@ async fn poll_antigravity_account(
     let Some(buckets) = fetch_antigravity_usage(client, base_url, account).await else {
         return false;
     };
-    pool.note_antigravity_usage(provider, account, buckets);
+    pool.note_quota_buckets(provider, account, buckets);
     tracing::debug!(provider, account = %account.name, "usage poller: applied antigravity quota buckets");
     true
+}
+
+/// Poll one pooled xAI account. Mirrors [`poll_antigravity_account`]: skip a
+/// static credential, resolve (refreshing if stale), fetch the Grok billing
+/// buckets, and apply them.
+#[cfg(test)]
+async fn poll_xai_account(
+    client: &reqwest::Client,
+    pool: &AccountPool,
+    provider: &str,
+    base_url: &str,
+    account: &AccountConfig,
+) -> bool {
+    if !xai_account_is_refreshable(account).await {
+        return false;
+    }
+    let Some(buckets) = fetch_xai_usage(client, base_url, account).await else {
+        return false;
+    };
+    pool.note_quota_buckets(provider, account, buckets);
+    tracing::debug!(provider, account = %account.name, "usage poller: applied xAI quota buckets");
+    true
+}
+
+/// Whether a pooled xAI account is a refreshable `shunt login xai --name` file.
+/// A `token_env` bearer is static and is never spent on a usage call. The file
+/// shares the Codex store's nested `tokens.refresh_token` schema, so the same
+/// check reads it.
+async fn xai_account_is_refreshable(account: &AccountConfig) -> bool {
+    if account.token_env.is_some() {
+        return false;
+    }
+    let path = account
+        .credentials
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| auth::xai::store::account_path(&account.name));
+    tokio::task::spawn_blocking(move || codex_credential_file_has_refresh_token(&path))
+        .await
+        .unwrap_or(false)
 }
 
 /// Whether an account's credential is a refreshable imported login — the only
@@ -3040,6 +3188,163 @@ mod tests {
             !snap[0].has_state,
             "an empty bucket list must not mark the account observed"
         );
+
+        let _ = std::fs::remove_file(creds);
+    }
+
+    /// A pooled xAI account backed by its own credentials file.
+    fn xai_account_with_credentials(path: &Path) -> AccountConfig {
+        AccountConfig {
+            name: "sigint".to_string(),
+            credentials: Some(path.to_string_lossy().into_owned()),
+            token_env: None,
+            uuid: None,
+            store_family: Some(crate::accounts::StoreFamily::Xai),
+            ..Default::default()
+        }
+    }
+
+    /// An xAI credential file whose access token is valid for an hour, so the
+    /// poll resolves it without a refresh round trip.
+    fn xai_credential_json(access_token: &str) -> String {
+        serde_json::json!({
+            "tokens": {"access_token": access_token, "refresh_token": "r"},
+            "last_refresh": "2026-10-10T00:00:00Z"
+        })
+        .to_string()
+    }
+
+    fn xai_live_access_token() -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3_600;
+        format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&serde_json::json!({ "exp": exp })).unwrap())
+        )
+    }
+
+    #[tokio::test]
+    async fn poll_xai_account_fetches_and_applies_grok_buckets() {
+        use wiremock::matchers::{bearer_token, header, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let access_token = xai_live_access_token();
+        let creds = write_temp("xai-poll", &xai_credential_json(&access_token));
+        let account = xai_account_with_credentials(&creds);
+
+        // The same CLI-proxy billing call the observed `grok` row makes, sent
+        // with this pooled account's own bearer rather than the Grok CLI's.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/billing"))
+            .and(query_param("format", "credits"))
+            .and(bearer_token(access_token.as_str()))
+            .and(header("x-grok-client-mode", "cli"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "config": {
+                    "creditUsagePercent": 16,
+                    "billingPeriodEnd": "2026-10-12T00:00:00Z",
+                    "productUsage": [{"product": "GrokBuild", "usagePercent": 40}]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = AccountPool::new();
+        let applied = poll_xai_account(
+            &reqwest::Client::new(),
+            &pool,
+            "grok",
+            &server.uri(),
+            &account,
+        )
+        .await;
+        assert!(applied, "the poll must apply the Grok quota buckets");
+
+        let snap = pool.snapshot("grok", std::slice::from_ref(&account), None, None);
+        assert!(snap[0].has_state, "the poll must have recorded state");
+        let buckets = &snap[0].quota_buckets;
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(buckets[0].label, "Credits");
+        assert_eq!(buckets[0].remaining, Some(0.84));
+        assert_eq!(
+            buckets[0].reset_time.as_deref(),
+            Some("2026-10-12T00:00:00Z")
+        );
+        assert_eq!(buckets[1].label, "Grok Build");
+        assert_eq!(buckets[1].remaining, Some(0.6));
+
+        let _ = std::fs::remove_file(creds);
+    }
+
+    #[tokio::test]
+    async fn poll_xai_account_skips_a_token_env_credential() {
+        use wiremock::{matchers::any, Mock, MockServer, ResponseTemplate};
+
+        // A `token_env` bearer is static, like every other family's: the poll
+        // must not spend it on a usage call.
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let account = AccountConfig {
+            name: "static".to_string(),
+            token_env: Some("SHUNT_TEST_XAI_STATIC_TOKEN".to_string()),
+            store_family: Some(crate::accounts::StoreFamily::Xai),
+            ..Default::default()
+        };
+
+        let pool = AccountPool::new();
+        let applied = poll_xai_account(
+            &reqwest::Client::new(),
+            &pool,
+            "grok",
+            &server.uri(),
+            &account,
+        )
+        .await;
+        assert!(!applied);
+        let snap = pool.snapshot("grok", std::slice::from_ref(&account), None, None);
+        assert!(!snap[0].has_state);
+    }
+
+    #[tokio::test]
+    async fn poll_xai_account_leaves_no_state_when_billing_is_refused() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let creds = write_temp(
+            "xai-poll-401",
+            &xai_credential_json(&xai_live_access_token()),
+        );
+        let account = xai_account_with_credentials(&creds);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/billing"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = AccountPool::new();
+        let applied = poll_xai_account(
+            &reqwest::Client::new(),
+            &pool,
+            "grok",
+            &server.uri(),
+            &account,
+        )
+        .await;
+        assert!(!applied, "a refused billing call must not count as applied");
+        let snap = pool.snapshot("grok", std::slice::from_ref(&account), None, None);
+        assert!(!snap[0].has_state);
 
         let _ = std::fs::remove_file(creds);
     }

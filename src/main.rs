@@ -101,7 +101,7 @@ enum Command {
         /// `antigravity`, or `kimi`).
         provider: String,
         /// Stable account name used by a name-only pool entry (`claude`,
-        /// `codex`, `kimi`, and `antigravity` only).
+        /// `codex`, `kimi`, `antigravity`, and `xai` only).
         #[arg(long)]
         name: Option<String>,
         /// Generate and store a one-year `claude setup-token` value (`claude`
@@ -377,14 +377,20 @@ fn login(
 ) -> anyhow::Result<()> {
     ensure_manual_flag_valid(provider, mode, manual)?;
     match provider {
-        "xai" if name.is_none() && !long_lived && mode.is_none() => {
-            runtime()?.block_on(shunt::auth::xai::login::run(provider))
-        }
-        "xai" => {
+        "xai" if long_lived => {
             anyhow::bail!(
-                "--name, --long-lived, and --mode are only valid for `shunt login claude`"
+                "--long-lived is not supported for `shunt login xai`; xAI OAuth tokens are always refreshable"
             )
         }
+        "xai" if mode.is_some() => {
+            anyhow::bail!(
+                "--mode is not supported for `shunt login xai`; xAI OAuth tokens are always refreshable"
+            )
+        }
+        "xai" => match name {
+            Some(name) => runtime()?.block_on(shunt::auth::xai::login::run_named(name)),
+            None => runtime()?.block_on(shunt::auth::xai::login::run(provider)),
+        },
         "cursor" if name.is_none() && !long_lived && mode.is_none() => runtime()?.block_on(async {
             // Logging in should not require a fully valid gateway config:
             // read the optional override best-effort and fall back to the
@@ -1399,6 +1405,28 @@ mod tests {
         )
         .expect_err("--mode must be rejected for kimi");
         assert!(error.to_string().contains("--mode is not supported"));
+    }
+
+    #[test]
+    fn xai_login_rejects_long_lived_and_mode_with_xai_wording() {
+        let error = login("xai", None, true, None, false, None)
+            .expect_err("--long-lived must fail for xai");
+        assert!(error
+            .to_string()
+            .contains("--long-lived is not supported for `shunt login xai`"));
+
+        let error = login(
+            "xai",
+            Some("primary"),
+            false,
+            Some(LoginMode::Import),
+            false,
+            None,
+        )
+        .expect_err("--mode must fail for xai");
+        assert!(error
+            .to_string()
+            .contains("--mode is not supported for `shunt login xai`"));
     }
 
     #[test]

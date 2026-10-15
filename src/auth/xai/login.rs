@@ -4,11 +4,14 @@
 //! No loopback callback server is needed: shunt requests a device code, prints
 //! a verification URL and short user code, and long-polls xAI's token endpoint
 //! until the user approves in a browser (on any device). The resulting tokens
-//! are written to the shunt-owned credential file (see [`super::auth`]).
+//! are written to the shunt-owned credential file (see [`super::auth`]). With
+//! `--name` they go to `~/.shunt/accounts/xai/<name>.json` via [`super::store`]
+//! instead of the legacy file.
 //!
 //! Logs go to stderr (the crate convention); the URL and user code are printed
 //! to stdout with plain `println!` so they are always visible to the operator.
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
@@ -19,6 +22,7 @@ use super::auth::{
     parse_token_response, write_tokens, CLIENT_ID, DEVICE_CODE_GRANT_TYPE, DEVICE_CODE_URL, SCOPE,
     TOKEN_URL,
 };
+use super::store;
 use crate::auth::default_xai_auth_path;
 use crate::auth::shared::jwt_exp;
 
@@ -53,6 +57,55 @@ pub async fn run(provider: &str) -> anyhow::Result<()> {
     if provider != "xai" {
         bail!("unknown login provider {provider:?}; supported: xai");
     }
+    let tokens = device_login().await?;
+
+    let refresh_token = tokens
+        .refresh_token
+        .as_deref()
+        .ok_or_else(|| anyhow!("xAI did not return a refresh_token; cannot persist login"))?;
+    let path = default_xai_auth_path();
+    write_tokens(
+        &path,
+        &tokens.access_token,
+        refresh_token,
+        tokens.id_token.as_deref(),
+    )
+    .with_context(|| format!("failed to write xAI credentials to {}", path.display()))?;
+
+    report_login(&path, &tokens.access_token);
+    Ok(())
+}
+
+/// `shunt login xai --name <account-name>`: the same device flow as [`run`],
+/// persisted as a named account file (see [`super::store`]) so the account can
+/// join an xAI account pool. The legacy single-account file is never written
+/// here. Mirrors `auth::antigravity::login::run_named`.
+pub async fn run_named(name: &str) -> anyhow::Result<()> {
+    store::validate_account_name(name)?;
+    let tokens = device_login().await?;
+    let refresh_token = tokens
+        .refresh_token
+        .as_deref()
+        .ok_or_else(|| anyhow!("xAI did not return a refresh_token; cannot persist login"))?;
+    let path = store::store_oauth_tokens(
+        name,
+        &tokens.access_token,
+        refresh_token,
+        tokens.id_token.as_deref(),
+    )
+    .with_context(|| format!("failed to write xAI credentials for account {name:?}"))?;
+    report_login(&path, &tokens.access_token);
+    if let Some(notice) = legacy_notice(&default_xai_auth_path(), &store::default_accounts_dir()) {
+        println!("\n{notice}");
+    }
+    Ok(())
+}
+
+/// The device-code flow shared by [`run`] and [`run_named`]: request a code,
+/// print the verification URL and user code, and poll until the user
+/// approves. `poll_for_tokens` already rejects a response with no
+/// refresh token.
+async fn device_login() -> anyhow::Result<super::auth::TokenResponse> {
     let client = reqwest::Client::new();
     let device = request_device_code(&client)
         .await
@@ -69,34 +122,41 @@ pub async fn run(provider: &str) -> anyhow::Result<()> {
         device.user_code
     );
 
-    let tokens = poll_for_tokens(&client, &device, TOKEN_URL)
+    poll_for_tokens(&client, &device, TOKEN_URL)
         .await
-        .context("xAI device authorization failed")?;
+        .context("xAI device authorization failed")
+}
 
-    let refresh_token = tokens
-        .refresh_token
-        .as_deref()
-        .ok_or_else(|| anyhow!("xAI did not return a refresh_token; cannot persist login"))?;
-    let path = default_xai_auth_path();
-    write_tokens(
-        &path,
-        &tokens.access_token,
-        refresh_token,
-        tokens.id_token.as_deref(),
-    )
-    .with_context(|| format!("failed to write xAI credentials to {}", path.display()))?;
-
+/// Print the success lines shared by both login paths.
+fn report_login(path: &Path, access_token: &str) {
     println!(
         "\nLogin successful. Credentials saved to {}",
         path.display()
     );
-    if let Some(exp) = jwt_exp(&tokens.access_token) {
+    if let Some(exp) = jwt_exp(access_token) {
         println!(
             "Access token valid until {} (shunt refreshes it automatically).",
             crate::auth::shared::format_iso8601(exp)
         );
     }
-    Ok(())
+}
+
+/// The migration hint [`run_named`] prints when the legacy single-account
+/// file exists: an xAI provider reads that file only while its account pool
+/// is empty (docs/m18-xai-multi-account.md), so the first named login takes
+/// it out of service. Both files share one format, so moving it keeps it.
+fn legacy_notice(legacy: &Path, accounts_dir: &Path) -> Option<String> {
+    legacy.exists().then(|| {
+        format!(
+            "Note: while any named xAI account exists, shunt pools the accounts in {} and no longer reads {}.\n\
+             To keep that older login in the pool, stop shunt and move it into the store:\n    \
+             mv {} {}/<account-name>.json",
+            accounts_dir.display(),
+            legacy.display(),
+            legacy.display(),
+            accounts_dir.display(),
+        )
+    })
 }
 
 async fn request_device_code(client: &reqwest::Client) -> anyhow::Result<DeviceCode> {
@@ -353,6 +413,39 @@ mod tests {
             .expect("second poll should succeed");
         assert_eq!(tokens.access_token, "access-1");
         assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-1"));
+    }
+
+    #[test]
+    fn legacy_notice_appears_only_when_the_legacy_file_exists() {
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-xai-login-notice-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("xai-auth.json");
+        let accounts = dir.join("accounts").join("xai");
+
+        assert!(legacy_notice(&legacy, &accounts).is_none());
+
+        std::fs::write(&legacy, "{}").unwrap();
+        let notice = legacy_notice(&legacy, &accounts).expect("legacy file exists");
+        assert!(notice.contains(&legacy.display().to_string()));
+        assert!(notice.contains(&accounts.display().to_string()));
+        assert!(notice.contains("mv "));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_named_rejects_an_invalid_name_before_any_network_call() {
+        let error = run_named("Not Valid")
+            .await
+            .expect_err("invalid account name must fail");
+        assert!(error.to_string().contains("must match [a-z0-9-]+"));
     }
 
     // The slow_down clamp arithmetic (+5s, capped at 30s) is covered by

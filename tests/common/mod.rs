@@ -105,12 +105,26 @@ impl Drop for EnvVars {
     }
 }
 
+/// A per-process path that is never created. The built-in `grok` provider is
+/// an `xai_oauth` account pool, so anything that resolves pools
+/// (`/admin/api/pool`, `/usage`, an xAI route) scans its store; every guard
+/// points that scan here so no test reads the operator's real
+/// `~/.shunt/accounts/xai`. A test that needs a populated store overrides it
+/// with [`EnvVars::set`].
+fn isolated_xai_store() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "shunt-test-xai-store-{}-absent",
+        std::process::id()
+    ))
+}
+
 /// Takes [`ENV_LOCK`] and sets `vars` for the rest of the test body.
 pub async fn set_env(vars: &[(&str, &str)]) -> EnvVars {
     let mut guard = EnvVars {
         saved: Vec::with_capacity(vars.len()),
         _lock: ENV_LOCK.lock().await,
     };
+    guard.set("SHUNT_XAI_ACCOUNTS_DIR", isolated_xai_store());
     for (name, value) in vars {
         guard.set(name, value);
     }
@@ -133,6 +147,7 @@ pub fn set_env_blocking(vars: &[(&str, &str)]) -> EnvVars {
         saved: Vec::with_capacity(vars.len()),
         _lock: ENV_LOCK.blocking_lock(),
     };
+    guard.set("SHUNT_XAI_ACCOUNTS_DIR", isolated_xai_store());
     for (name, value) in vars {
         guard.set(name, value);
     }

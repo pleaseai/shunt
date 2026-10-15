@@ -132,7 +132,7 @@ These providers are seeded by default, so `provider = "<name>"` routes to them w
 | `openai` | `responses` | `OPENAI_API_KEY` | `api.openai.com/v1` |
 | `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` (`codex login`) |
 | `xai` | `responses` | `XAI_API_KEY` | `api.x.ai/v1` — the developer API, billed per token |
-| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` (`shunt login xai` with a SuperGrok / X Premium+ subscription) |
+| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` (`shunt login xai` with a SuperGrok / X Premium+ subscription), or named accounts under `~/.shunt/accounts/xai` (`shunt login xai --name`, pooled with failover) |
 | `cursor` | `cursor` | Cursor OAuth | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 | `gemini` | `gemini` | Google OAuth | `cloudcode-pa.googleapis.com` — Google Code Assist backend; reuses `~/.gemini/oauth_creds.json` |
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — Google Antigravity backend over HTTP; uses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`), or named accounts under `~/.shunt/accounts/antigravity` (`shunt login antigravity --name`, selected via `accounts = [...]`) |

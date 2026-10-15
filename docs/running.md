@@ -220,7 +220,7 @@ a brand-new table adds a provider. Every provider takes these keys:
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` \| `cursor` | Upstream protocol / adapter. `anthropic` = Messages API (passed through, optionally re-keyed); `responses` = Anthropic Messages translated to the OpenAI Responses API; `cursor` = Cursor's native ConnectRPC/protobuf AgentService. |
 | `base_url` | URL | Upstream base; shunt appends the provider endpoint path. |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `kimi_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` forwards the client's credential; `api_key` injects `api_key_env`; `chatgpt_oauth` uses Codex/ChatGPT OAuth; `claude_oauth` selects an Anthropic subscription account pool (see §3.3); `kimi_oauth` selects a Kimi Code subscription account pool (`shunt login kimi`; see the Kimi Code example below); `xai_oauth` and `cursor_oauth` reuse their shunt-managed subscription logins. |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `kimi_oauth` \| `xai_oauth` \| `cursor_oauth` | `passthrough` forwards the client's credential; `api_key` injects `api_key_env`; `chatgpt_oauth` uses Codex/ChatGPT OAuth; `claude_oauth` selects an Anthropic subscription account pool (see §3.3); `kimi_oauth` selects a Kimi Code subscription account pool (`shunt login kimi`; see the Kimi Code example below); `xai_oauth` reuses `shunt login xai` and pools named accounts (`shunt login xai --name`; see [`m18-xai-multi-account.md`](m18-xai-multi-account.md)); `cursor_oauth` reuses its shunt-managed subscription login. |
 | `api_key_env` | env var name | Where the key is read from, when `auth = "api_key"`. |
 | `api_key_header` | `bearer` (default) \| `x_api_key` | Header the injected key is sent in. |
 | `effort` | `low`…`max` | Optional default reasoning effort (`responses` providers). |
@@ -775,6 +775,8 @@ xAI API access (a subscription-tier gate) — shunt says so distinctly and point
 > 400, so shunt sends the reasoning dial only when an effort was explicitly chosen — an `effort` on the route or provider, or a per-request `output_config.effort` from the client
 > (e.g. `effort = "high"` under `[providers.xai]` or a `[[routes]]` entry). Without it, grok
 > reasons on its own and shunt sends no `reasoning` object.
+
+**Several SuperGrok accounts.** `shunt login xai --name <name>` stores a login at `~/.shunt/accounts/xai/<name>.json` (override the directory with `SHUNT_XAI_ACCOUNTS_DIR`). With no config change, an `xai_oauth` provider pools every account there and rotates on `401`/`402`/`429`/`5xx` (a `403` is relayed); scope it with `[[providers.grok.accounts]]` or `auth = { mode = "xai_oauth", accounts = [...] }`. `~/.shunt/xai-auth.json` is used only while that pool is empty. Spec: [`m18-xai-multi-account.md`](m18-xai-multi-account.md).
 
 ### 5.4 Select a mapped model (primary path)
 

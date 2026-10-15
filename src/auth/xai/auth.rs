@@ -9,16 +9,19 @@
 //! [`super::login`]) and owned solely by shunt.
 
 use std::{
+    collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
-    time::SystemTime,
+    sync::{LazyLock, Mutex as StdMutex, PoisonError},
+    time::{Duration, SystemTime},
 };
 
 use serde_json::{json, Value};
 
 use crate::adapters::AdapterError;
 use crate::auth::auth_error;
-use crate::auth::shared::{format_iso8601, is_token_valid_at, write_auth_file_atomic};
+use crate::auth::shared::refresh_lock::{normalized_auth_path, refresh_lock_for};
+use crate::auth::shared::{format_iso8601, is_token_valid_at, jwt_claims, write_auth_file_atomic};
 
 /// Public Grok-CLI OAuth client (no secret). xAI's auth server only allows this
 /// allowlisted client for the device-code flow. Source: Hermes / OpenCode.
@@ -43,14 +46,53 @@ pub struct XaiAuthStore {
     path: PathBuf,
     client: reqwest::Client,
     token_url: String,
+    refresh_timeout: Duration,
+    /// The command that rewrites this store's file, named in every
+    /// "log in again" error ([`DEFAULT_LOGIN_COMMAND`] unless set).
+    login_command: String,
 }
 
-/// In-process single-flight for the refresh path. xAI rotates the refresh
-/// token on every refresh, so of two concurrent refreshes the loser would
-/// replay an already-consumed token and fail. The winner refreshes under this
-/// lock; waiters re-read the file and find the fresh pair. Cross-process races
-/// are out of scope — shunt owns the file and one gateway process is the norm.
-static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// The login that writes the single-account file. A named pool account is
+/// re-logged in with `--name` instead (see `auth::resolve_xai_account`).
+pub(crate) const DEFAULT_LOGIN_COMMAND: &str = "shunt login xai";
+
+/// Upper bound on one refresh round trip to xAI's token endpoint. The refresh
+/// holds its credential file's single-flight lock, and a pooled request waits
+/// on that refresh before it can fail over, so a token endpoint that accepts
+/// the connection and never answers would otherwise hang the request with no
+/// limit (the refresh client sets none). A healthy refresh is one small form
+/// POST, so this only ever trips on a stalled endpoint.
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Credential files whose current access token xAI rejected (an upstream 401)
+/// before its JWT `exp`. The next [`XaiAuthStore::get_valid`] for such a file
+/// refreshes instead of handing that token out again until it expires; a
+/// successful refresh clears the mark, and a failed one leaves it set.
+/// Process-local, like the refresh locks.
+static FORCED_REFRESH: LazyLock<StdMutex<HashSet<PathBuf>>> = LazyLock::new(Default::default);
+
+/// Make the next `get_valid` for `path` refresh even an unexpired token.
+pub(crate) fn force_refresh_next(path: &Path) {
+    FORCED_REFRESH
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(path.to_path_buf());
+}
+
+/// Whether `path` is marked by [`force_refresh_next`].
+pub(crate) fn force_refresh_pending(path: &Path) -> bool {
+    FORCED_REFRESH
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(path)
+}
+
+fn clear_forced_refresh(path: &Path) {
+    FORCED_REFRESH
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(path);
+}
 
 /// Tokens as stored on disk under the `tokens` object.
 #[derive(Debug, Clone)]
@@ -75,34 +117,72 @@ impl XaiAuthStore {
             path,
             client,
             token_url: TOKEN_URL.to_string(),
+            refresh_timeout: REFRESH_TIMEOUT,
+            login_command: DEFAULT_LOGIN_COMMAND.to_string(),
         }
     }
 
+    /// Name `command` in this store's "log in again" errors.
+    pub(crate) fn with_login_command(mut self, command: String) -> Self {
+        self.login_command = command;
+        self
+    }
+
     #[cfg(test)]
-    fn with_token_url(path: PathBuf, client: reqwest::Client, token_url: String) -> Self {
+    pub(crate) fn with_token_url(
+        path: PathBuf,
+        client: reqwest::Client,
+        token_url: String,
+    ) -> Self {
         Self {
             path,
             client,
             token_url,
+            refresh_timeout: REFRESH_TIMEOUT,
+            login_command: DEFAULT_LOGIN_COMMAND.to_string(),
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_refresh_timeout(mut self, refresh_timeout: Duration) -> Self {
+        self.refresh_timeout = refresh_timeout;
+        self
+    }
+
     /// Return a valid access token, refreshing (and persisting the rotated
-    /// refresh token) when the stored one is within the 5-minute expiry buffer.
+    /// refresh token) when the stored one is within the 5-minute expiry buffer
+    /// or xAI already rejected it ([`force_refresh_next`]).
     pub async fn get_valid(&self) -> Result<XaiCred, AdapterError> {
         let tokens = self.read_tokens_off_thread().await?;
-        if is_token_valid_at(&tokens.access_token, SystemTime::now()) {
+        if !force_refresh_pending(&self.path)
+            && is_token_valid_at(&tokens.access_token, SystemTime::now())
+        {
             return Ok(XaiCred {
                 access_token: tokens.access_token,
             });
         }
 
-        // Single-flight the refresh: a concurrent caller that already holds the
-        // lock is refreshing right now, so once we acquire it, re-read — the
-        // rotated pair it wrote is what we must use, not our stale one.
-        let refreshing = REFRESH_LOCK.lock().await;
+        // Single-flight the refresh per credential file: xAI rotates the refresh
+        // token on every refresh, so of two concurrent refreshes of one file the
+        // loser would replay a consumed token. A concurrent caller that already
+        // holds this file's lock is refreshing right now, so once we acquire it,
+        // re-read — the rotated pair it wrote is what we must use, not our stale
+        // one. Other accounts' files have their own locks, so a refresh stalled
+        // on one pooled account never holds up the next. Cross-process races are
+        // out of scope — shunt owns the file and one gateway process is the norm.
+        let lock_path = {
+            let path = self.path.clone();
+            tokio::task::spawn_blocking(move || normalized_auth_path(path))
+                .await
+                .map_err(|error| auth_error(format!("xAI auth path task failed: {error}")))?
+        };
+        let refreshing = refresh_lock_for(&lock_path).lock_owned().await;
         let tokens = self.read_tokens_off_thread().await?;
-        if is_token_valid_at(&tokens.access_token, SystemTime::now()) {
+        // Re-checked under the lock: a caller that refreshed while we waited
+        // has already cleared a forced refresh, so its rotated token is reused.
+        if !force_refresh_pending(&self.path)
+            && is_token_valid_at(&tokens.access_token, SystemTime::now())
+        {
             return Ok(XaiCred {
                 access_token: tokens.access_token,
             });
@@ -117,27 +197,39 @@ impl XaiAuthStore {
         let client = self.client.clone();
         let token_url = self.token_url.clone();
         let path = self.path.clone();
+        let refresh_timeout = self.refresh_timeout;
+        let login_command = self.login_command.clone();
         let handle = tokio::spawn(async move {
             let _refreshing = refreshing; // held until the write below completes
-            let refreshed = refresh_tokens(&client, &token_url, &tokens.refresh_token).await?;
+                                          // Bounded so a token endpoint that never answers releases the lock
+                                          // and fails this account over instead of hanging the request.
+            let refreshed = tokio::time::timeout(
+                refresh_timeout,
+                refresh_tokens(&client, &token_url, &tokens.refresh_token, &login_command),
+            )
+            .await
+            .map_err(|_| {
+                auth_error("xAI token refresh timed out; the token endpoint did not answer")
+            })??;
             // xAI rotates the refresh token on every refresh and consumes the old
             // one. A success that omits refresh_token would leave the consumed
             // token on disk and break the next refresh, so treat it as an invalid
             // response instead of persisting a broken pair.
             let Some(refresh_token) = refreshed.refresh_token.as_deref() else {
-                return Err(auth_error(
-                    "xAI refresh response missing refresh_token; run shunt login xai",
-                ));
+                return Err(auth_error(format!(
+                    "xAI refresh response missing refresh_token; run {login_command}"
+                )));
             };
             let id_token = refreshed.id_token.as_deref().or(tokens.id_token.as_deref());
             write_tokens_off_thread(
-                path,
+                path.clone(),
                 refreshed.access_token.clone(),
                 refresh_token.to_string(),
                 id_token.map(ToOwned::to_owned),
             )
             .await
             .map_err(|error| auth_error(format!("failed to update xAI auth file: {error}")))?;
+            clear_forced_refresh(&path);
             tracing::info!("refreshed xAI OAuth access token");
             Ok::<String, AdapterError>(refreshed.access_token)
         });
@@ -148,10 +240,15 @@ impl XaiAuthStore {
     }
 
     fn read_tokens(&self) -> Result<TokenSet, AdapterError> {
-        let value = read_auth_value(&self.path)
-            .map_err(|error| auth_error(read_error_message(&self.path, &error)))?;
-        parse_tokens(&value)
-            .ok_or_else(|| auth_error("xAI auth tokens missing; run shunt login xai"))
+        let value = read_auth_value(&self.path).map_err(|error| {
+            auth_error(read_error_message(&self.path, &error, &self.login_command))
+        })?;
+        parse_tokens(&value).ok_or_else(|| {
+            auth_error(format!(
+                "xAI auth tokens missing; run {}",
+                self.login_command
+            ))
+        })
     }
 
     /// Read + parse the credential file on the blocking thread pool so the
@@ -182,12 +279,12 @@ async fn write_tokens_off_thread(
 /// User-facing message for a failed credential-file read. A missing file means
 /// "log in"; anything else (EACCES, corrupt JSON) names the real cause so the
 /// operator isn't misdirected into a re-login that can't help.
-fn read_error_message(path: &Path, error: &io::Error) -> String {
+fn read_error_message(path: &Path, error: &io::Error, login_command: &str) -> String {
     if error.kind() == io::ErrorKind::NotFound {
-        "xAI auth not found; run shunt login xai".to_string()
+        format!("xAI auth not found; run {login_command}")
     } else {
         format!(
-            "xAI auth file {} unreadable: {error}; fix the file or run shunt login xai",
+            "xAI auth file {} unreadable: {error}; fix the file or run {login_command}",
             path.display()
         )
     }
@@ -211,6 +308,39 @@ fn parse_tokens(value: &Value) -> Option<TokenSet> {
     })
 }
 
+/// The xAI user id (the `sub` claim) of an access token. Decoded without
+/// signature verification, so it serves display matching only (the dashboard
+/// folding a Grok CLI login into the pooled account of the same user) and is
+/// never a pool identity.
+pub fn jwt_user_id(token: &str) -> Option<String> {
+    jwt_claims(token)?
+        .get("sub")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// The credential-file JSON: `{"tokens": {...}, "last_refresh": "<ISO8601>"}`.
+/// Shared by the legacy single-account file ([`write_tokens`]) and the named
+/// account store ([`super::store::store_oauth_tokens`]), so [`XaiAuthStore`]
+/// reads and refreshes either one.
+pub(crate) fn tokens_value(
+    access_token: &str,
+    refresh_token: &str,
+    id_token: Option<&str>,
+) -> Value {
+    let mut tokens = serde_json::Map::new();
+    tokens.insert("access_token".to_string(), json!(access_token));
+    tokens.insert("refresh_token".to_string(), json!(refresh_token));
+    if let Some(id_token) = id_token {
+        tokens.insert("id_token".to_string(), json!(id_token));
+    }
+    json!({
+        "tokens": Value::Object(tokens),
+        "last_refresh": format_iso8601(SystemTime::now()),
+    })
+}
+
 /// Write the credential file: `{"tokens": {...}, "last_refresh": "<ISO8601>"}`.
 /// Creates the parent directory, writes atomically (temp + rename), `0600`.
 pub(crate) fn write_tokens(
@@ -224,17 +354,7 @@ pub(crate) fn write_tokens(
             fs::create_dir_all(parent)?;
         }
     }
-    let mut tokens = serde_json::Map::new();
-    tokens.insert("access_token".to_string(), json!(access_token));
-    tokens.insert("refresh_token".to_string(), json!(refresh_token));
-    if let Some(id_token) = id_token {
-        tokens.insert("id_token".to_string(), json!(id_token));
-    }
-    let value = json!({
-        "tokens": Value::Object(tokens),
-        "last_refresh": format_iso8601(SystemTime::now()),
-    });
-    write_auth_file_atomic(path, &value)
+    write_auth_file_atomic(path, &tokens_value(access_token, refresh_token, id_token))
 }
 
 pub(crate) fn parse_token_response(value: &Value) -> Option<TokenResponse> {
@@ -257,11 +377,16 @@ pub(crate) fn parse_token_response(value: &Value) -> Option<TokenResponse> {
     })
 }
 
+/// Refresh the token pair. `login_command` is named in every "log in again"
+/// error (see [`XaiAuthStore::with_login_command`]).
 pub(crate) async fn refresh_tokens(
     client: &reqwest::Client,
     token_url: &str,
     refresh_token: &str,
+    login_command: &str,
 ) -> Result<TokenResponse, AdapterError> {
+    let invalid_response =
+        || auth_error(format!("invalid xAI refresh response; run {login_command}"));
     let response = client
         .post(token_url)
         .header("accept", "application/json")
@@ -272,30 +397,37 @@ pub(crate) async fn refresh_tokens(
         ])
         .send()
         .await
-        .map_err(|_| auth_error("failed to refresh xAI auth; run shunt login xai"))?;
+        // A refused redirect must be distinguishable from a transport failure.
+        .map_err(|error| {
+            if error.is_redirect() {
+                auth_error(format!(
+                    "xAI token refresh redirect refused; run {login_command}"
+                ))
+            } else {
+                auth_error(format!("failed to refresh xAI auth; run {login_command}"))
+            }
+        })?;
     let status = response.status();
     if !status.is_success() {
         tracing::warn!(%status, "xAI token refresh failed");
-        return Err(refresh_status_error(status));
+        return Err(refresh_status_error(status, login_command));
     }
-    let text = response
-        .text()
-        .await
-        .map_err(|_| auth_error("invalid xAI refresh response; run shunt login xai"))?;
-    let value = serde_json::from_str::<Value>(&text)
-        .map_err(|_| auth_error("invalid xAI refresh response; run shunt login xai"))?;
-    parse_token_response(&value)
-        .ok_or_else(|| auth_error("invalid xAI refresh response; run shunt login xai"))
+    let text = response.text().await.map_err(|_| invalid_response())?;
+    let value = serde_json::from_str::<Value>(&text).map_err(|_| invalid_response())?;
+    parse_token_response(&value).ok_or_else(invalid_response)
 }
 
-pub(crate) fn refresh_status_error(status: reqwest::StatusCode) -> AdapterError {
-    auth_error(refresh_error_message(status))
+pub(crate) fn refresh_status_error(
+    status: reqwest::StatusCode,
+    login_command: &str,
+) -> AdapterError {
+    auth_error(refresh_error_message(status, login_command))
 }
 
 /// Map a non-2xx refresh status to a distinct client-facing message. A 403 is a
 /// subscription-tier/entitlement gate (re-login won't help — point at the
 /// API-key path); 400/401 is a consumed/invalid grant (re-login).
-pub(crate) fn refresh_error_message(status: reqwest::StatusCode) -> String {
+pub(crate) fn refresh_error_message(status: reqwest::StatusCode, login_command: &str) -> String {
     if status == reqwest::StatusCode::FORBIDDEN {
         "xAI OAuth account is not authorized for API access (subscription tier gate); \
          re-logging in will not help — set XAI_API_KEY and use the api-key path, \
@@ -304,9 +436,9 @@ pub(crate) fn refresh_error_message(status: reqwest::StatusCode) -> String {
     } else if status == reqwest::StatusCode::BAD_REQUEST
         || status == reqwest::StatusCode::UNAUTHORIZED
     {
-        "xAI token refresh rejected (invalid_grant); run shunt login xai".to_string()
+        format!("xAI token refresh rejected (invalid_grant); run {login_command}")
     } else {
-        format!("xAI token refresh failed (HTTP {status}); run shunt login xai")
+        format!("xAI token refresh failed (HTTP {status}); run {login_command}")
     }
 }
 
@@ -410,14 +542,14 @@ mod tests {
     fn read_errors_distinguish_missing_file_from_unreadable() {
         let missing = io::Error::new(io::ErrorKind::NotFound, "no such file");
         assert_eq!(
-            read_error_message(Path::new("/tmp/x.json"), &missing),
+            read_error_message(Path::new("/tmp/x.json"), &missing, DEFAULT_LOGIN_COMMAND),
             "xAI auth not found; run shunt login xai"
         );
 
         // EACCES / corrupt JSON name the real cause instead of claiming the
         // file doesn't exist and misdirecting the operator into a re-login.
         let denied = io::Error::new(io::ErrorKind::PermissionDenied, "permission denied");
-        let message = read_error_message(Path::new("/tmp/x.json"), &denied);
+        let message = read_error_message(Path::new("/tmp/x.json"), &denied, DEFAULT_LOGIN_COMMAND);
         assert!(message.contains("/tmp/x.json"));
         assert!(message.contains("permission denied"));
         assert!(!message.contains("not found"));
@@ -426,20 +558,26 @@ mod tests {
     #[test]
     fn refresh_status_errors_are_distinct() {
         // 403 = tier gate: must NOT tell the user to re-login; points at the key.
-        let tier = refresh_error_message(reqwest::StatusCode::FORBIDDEN);
+        let tier = refresh_error_message(reqwest::StatusCode::FORBIDDEN, DEFAULT_LOGIN_COMMAND);
         assert!(tier.contains("tier gate"));
         assert!(tier.contains("XAI_API_KEY"));
         assert!(!tier.contains("run shunt login xai"));
 
         // 400/401 = invalid grant: tell the user to log in again.
         assert!(
-            refresh_error_message(reqwest::StatusCode::BAD_REQUEST).contains("run shunt login xai")
+            refresh_error_message(reqwest::StatusCode::BAD_REQUEST, DEFAULT_LOGIN_COMMAND)
+                .contains("run shunt login xai")
         );
-        assert!(refresh_error_message(reqwest::StatusCode::UNAUTHORIZED)
-            .contains("run shunt login xai"));
+        assert!(
+            refresh_error_message(reqwest::StatusCode::UNAUTHORIZED, DEFAULT_LOGIN_COMMAND)
+                .contains("run shunt login xai")
+        );
 
         // Any other status falls back to the generic HTTP-code message.
-        let other = refresh_error_message(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+        let other = refresh_error_message(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            DEFAULT_LOGIN_COMMAND,
+        );
         assert!(other.contains("500"));
         assert!(other.contains("run shunt login xai"));
         assert!(!other.contains("tier gate"));
@@ -464,7 +602,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let token_url = format!("{}/token", server.uri());
-        let refreshed = refresh_tokens(&client, &token_url, "old-refresh")
+        let refreshed = refresh_tokens(&client, &token_url, "old-refresh", DEFAULT_LOGIN_COMMAND)
             .await
             .unwrap();
         assert_eq!(refreshed.refresh_token.as_deref(), Some("rotated-refresh"));
@@ -527,6 +665,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 
+    /// xAI can reject a token before its `exp` (an upstream 401). Once that
+    /// file is marked, the next `get_valid` refreshes instead of handing the
+    /// rejected token out again, and a successful refresh clears the mark.
+    #[tokio::test]
+    async fn a_forced_refresh_replaces_a_token_that_has_not_expired() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let fresh = jwt(future_exp() + 60);
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": fresh,
+                "refresh_token": "rotated-refresh",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let file = temp_path("forced");
+        let rejected = jwt(future_exp());
+        write_tokens(&file, &rejected, "old-refresh", None).unwrap();
+        let store = XaiAuthStore::with_token_url(
+            file.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+        // Unmarked, the unexpired token is used as is.
+        assert_eq!(store.get_valid().await.unwrap().access_token, rejected);
+
+        force_refresh_next(&file);
+        assert_eq!(store.get_valid().await.unwrap().access_token, fresh);
+        // The mark is cleared: the refreshed token is reused without a second
+        // refresh (the mock expects exactly one).
+        assert!(!force_refresh_pending(&file));
+        assert_eq!(store.get_valid().await.unwrap().access_token, fresh);
+
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
     #[tokio::test]
     async fn refresh_without_rotated_token_is_rejected_and_not_persisted() {
         use wiremock::matchers::{method, path};
@@ -576,6 +756,218 @@ mod tests {
         let token_url = format!("{}/token", server.uri());
         // A 403 refresh surfaces an authentication error (the distinct tier-gate
         // wording is asserted on refresh_error_message above).
-        assert!(refresh_tokens(&client, &token_url, "r").await.is_err());
+        assert!(
+            refresh_tokens(&client, &token_url, "r", DEFAULT_LOGIN_COMMAND)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_refreshes_of_two_accounts_write_only_their_own_files() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn jwt_for(sub: &str) -> String {
+            let payload = json!({ "exp": future_exp(), "sub": sub });
+            format!(
+                "x.{}.y",
+                URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+            )
+        }
+
+        // xAI consumes a refresh token on use: each account's grant must be
+        // redeemed exactly once, and each rotated pair must land in its own file.
+        let server = MockServer::start().await;
+        let access_a = jwt_for("a");
+        let access_b = jwt_for("b");
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("refresh_token=refresh-a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": access_a,
+                "refresh_token": "refresh-a2"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("refresh_token=refresh-b"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": access_b,
+                "refresh_token": "refresh-b2"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let file_a = temp_path("pair-a");
+        let file_b = temp_path("pair-b");
+        write_tokens(&file_a, &jwt(0), "refresh-a", None).unwrap();
+        write_tokens(&file_b, &jwt(0), "refresh-b", None).unwrap();
+        let token_url = format!("{}/token", server.uri());
+        let store_a =
+            XaiAuthStore::with_token_url(file_a.clone(), reqwest::Client::new(), token_url.clone());
+        let store_b =
+            XaiAuthStore::with_token_url(file_b.clone(), reqwest::Client::new(), token_url);
+
+        let (a, b) = tokio::join!(store_a.get_valid(), store_b.get_valid());
+        assert_eq!(a.unwrap().access_token, access_a);
+        assert_eq!(b.unwrap().access_token, access_b);
+        let stored_a = parse_tokens(&read_auth_value(&file_a).unwrap()).unwrap();
+        let stored_b = parse_tokens(&read_auth_value(&file_b).unwrap()).unwrap();
+        assert_eq!(stored_a.refresh_token, "refresh-a2");
+        assert_eq!(stored_b.refresh_token, "refresh-b2");
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(file_a.parent().unwrap());
+        let _ = std::fs::remove_dir_all(file_b.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn plain_client_follows_the_307_so_the_refusal_test_can_tell_clients_apart() {
+        use axum::body::to_bytes;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Control for the pooled-account redirect test in `auth/mod.rs`: with a
+        // client that follows redirects, the 307 hop is attempted and fails at
+        // DNS (`.invalid` never resolves). That failure is a transport error,
+        // not a refused redirect, so the body must not carry the refusal text.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", "http://refresh-thief.invalid/token"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let file = temp_path("plain-redirect");
+        write_tokens(&file, &jwt(0), "old-refresh", None).unwrap();
+        let store = XaiAuthStore::with_token_url(
+            file.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let error = store.get_valid().await.unwrap_err();
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(!body.contains("redirect refused"), "got: {body}");
+        assert!(body.contains("failed to refresh xAI auth"), "got: {body}");
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// Wait until `server` has received a request whose body contains `needle`,
+    /// so a test knows a refresh is in flight before it races a second one.
+    async fn wait_for_request(server: &wiremock::MockServer, needle: &str) {
+        for _ in 0..200 {
+            let received = server.received_requests().await.unwrap_or_default();
+            if received
+                .iter()
+                .any(|request| String::from_utf8_lossy(&request.body).contains(needle))
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("no request containing {needle:?} reached the mock token endpoint");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_refresh_does_not_block_another_accounts_refresh() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Pooled accounts fail over to each other, so one account's refresh
+        // hanging at the token endpoint must not hold up a different account's
+        // refresh: the single-flight lock is per credential file, not global.
+        let server = MockServer::start().await;
+        let access_b = jwt(future_exp());
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("refresh_token=stalled-a"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("refresh_token=refresh-b"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": access_b,
+                "refresh_token": "refresh-b2"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let file_a = temp_path("stalled-a");
+        let file_b = temp_path("unblocked-b");
+        write_tokens(&file_a, &jwt(0), "stalled-a", None).unwrap();
+        write_tokens(&file_b, &jwt(0), "refresh-b", None).unwrap();
+        let token_url = format!("{}/token", server.uri());
+        let store_a =
+            XaiAuthStore::with_token_url(file_a.clone(), reqwest::Client::new(), token_url.clone());
+        let store_b =
+            XaiAuthStore::with_token_url(file_b.clone(), reqwest::Client::new(), token_url);
+
+        let stalled = tokio::spawn(async move { store_a.get_valid().await });
+        wait_for_request(&server, "refresh_token=stalled-a").await;
+
+        let b = tokio::time::timeout(std::time::Duration::from_secs(5), store_b.get_valid())
+            .await
+            .expect("account b's refresh waited on account a's stalled refresh");
+        assert_eq!(b.unwrap().access_token, access_b);
+        stalled.abort();
+        let _ = std::fs::remove_dir_all(file_a.parent().unwrap());
+        let _ = std::fs::remove_dir_all(file_b.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_never_answers_times_out_and_frees_its_lock() {
+        use axum::body::to_bytes;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // The refresh client sets no timeout, so the store bounds the round
+        // trip itself: a token endpoint that accepts the connection and never
+        // answers must fail the refresh and release the file's lock, so the
+        // pool can cool the account down and fail over.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+
+        let file = temp_path("never-answers");
+        write_tokens(&file, &jwt(0), "never-answered", None).unwrap();
+        let store = XaiAuthStore::with_token_url(
+            file.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        )
+        .with_refresh_timeout(std::time::Duration::from_millis(200));
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), store.get_valid())
+            .await
+            .expect("the refresh hung past its time limit");
+        let bytes = to_bytes(first.unwrap_err().response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(body.contains("timed out"), "got: {body}");
+
+        let second = tokio::time::timeout(std::time::Duration::from_secs(5), store.get_valid())
+            .await
+            .expect("the timed-out refresh kept holding its lock");
+        assert!(second.is_err());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 }

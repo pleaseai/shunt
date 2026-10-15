@@ -109,6 +109,12 @@ export interface CodexStoreAccount {
   account_id?: string | null;
 }
 
+/** `GET /admin/api/accounts/xai`: the xAI user id each stored login belongs to. */
+export interface XaiStoreAccount {
+  name: string;
+  account_id?: string | null;
+}
+
 export interface AntigravityStoreAccount {
   name: string;
   expires_at?: number | null;

@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::{accounts::StoreFamily, config::AccountConfig};
 
 pub mod file_lock;
+pub(crate) mod refresh_lock;
 
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 
@@ -608,12 +609,12 @@ fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -
             path,
         } => crate::auth::codex::store::credential_account_id(Path::new(path)),
         InlineIdentityKey::Credentials {
-            family: StoreFamily::Kimi | StoreFamily::Antigravity,
+            family: StoreFamily::Kimi | StoreFamily::Antigravity | StoreFamily::Xai,
             ..
         } => {
             // Unreachable by construction: `inline_identity_key` only builds a
-            // `Credentials` key for `Claude`/`Chatgpt` — Kimi and Antigravity
-            // have no verified identity source, so they never enter the
+            // `Credentials` key for `Claude`/`Chatgpt` — Kimi, Antigravity, and
+            // xAI have no verified identity source, so they never enter the
             // inline-identity cache at all and always fall back to their
             // account name (see `inline_identity_key` and `accounts::account_key`).
             None

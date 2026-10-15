@@ -20,7 +20,7 @@ Providers are a **name → config map**. Anthropic-compatible and Responses-comp
 | [`openai`](/providers/openai/) | `responses` | `api_key` (`OPENAI_API_KEY`) | `api.openai.com/v1` |
 | [`codex`](/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` |
 | [`xai`](/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — the developer API, billed per token |
-| [`grok`](/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json` |
+| [`grok`](/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json`, or pools named logins under `~/.shunt/accounts/xai/` (`shunt login xai --name`) |
 | [`cursor`](/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — reuses `~/.gemini/oauth_creds.json` |
 | [`antigravity`](/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` — reuses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
@@ -272,6 +272,8 @@ shunt login xai
 ```
 
 xAI may gate OAuth access by subscription tier — if `grok` returns 403, use the `xai` API-key provider instead (`export XAI_API_KEY=…`).
+
+To pool several SuperGrok accounts, log each in with `shunt login xai --name <name>`; see [xAI / Grok](/guides/xai/).
 
 <Aside type="caution" title="Model slugs">
 

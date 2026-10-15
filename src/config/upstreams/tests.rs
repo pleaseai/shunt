@@ -217,6 +217,62 @@ fn account_and_accounts_are_mutually_exclusive() {
     ));
 }
 
+#[test]
+fn xai_oauth_map_scopes_store_references_and_inline_accounts() {
+    let upstream = parse(
+        r#"name = "grok"
+provider = "grok"
+auth = { mode = "xai_oauth", accounts = ["primary", { name = "inline", token_env = "XAI_TOKEN" }] }
+"#,
+    );
+    let (providers, _) = normalize(&[upstream]).unwrap();
+    assert_eq!(providers["grok"].auth, AuthMode::XaiOauth);
+    assert_eq!(providers["grok"].account_scope, ["primary"]);
+    assert_eq!(providers["grok"].accounts[0].name, "inline");
+}
+
+#[test]
+fn xai_oauth_map_accepts_a_single_account() {
+    let upstream = parse(
+        "name = \"grok\"\nprovider = \"grok\"\nauth = { mode = \"xai_oauth\", account = \"solo\" }",
+    );
+    let (providers, _) = normalize(&[upstream]).unwrap();
+    assert_eq!(providers["grok"].account_scope, ["solo"]);
+}
+
+#[test]
+fn xai_oauth_mode_only_map_still_normalizes() {
+    // Regression for the old `XaiOauth {}` variant: the mode-only map must keep
+    // normalizing to the whole-store scope, not fail on the new optional fields.
+    let upstream = parse("name = \"grok\"\nprovider = \"grok\"\nauth = { mode = \"xai_oauth\" }");
+    let (providers, _) = normalize(&[upstream]).unwrap();
+    assert_eq!(providers["grok"].auth, AuthMode::XaiOauth);
+    assert!(providers["grok"].account_scope.is_empty());
+    assert!(providers["grok"].accounts.is_empty());
+}
+
+#[test]
+fn xai_oauth_map_rejects_account_and_accounts_together() {
+    let upstream = parse(
+        "name = \"grok\"\nprovider = \"grok\"\nauth = { mode = \"xai_oauth\", account = \"one\", accounts = [\"two\"] }",
+    );
+    assert!(matches!(
+        normalize(&[upstream]).unwrap_err(),
+        ConfigError::UpstreamAuthAccountConflict { .. }
+    ));
+}
+
+#[test]
+fn xai_oauth_map_rejects_an_empty_accounts_list() {
+    let upstream = parse(
+        "name = \"grok\"\nprovider = \"grok\"\nauth = { mode = \"xai_oauth\", accounts = [] }",
+    );
+    assert!(matches!(
+        normalize(&[upstream]).unwrap_err(),
+        ConfigError::EmptyUpstreamAccountList { .. }
+    ));
+}
+
 struct TempConfig(std::path::PathBuf);
 
 impl TempConfig {
@@ -627,4 +683,23 @@ fn unsandboxed_antigravity_declared_as_an_ordered_upstream_is_also_rejected() {
         ),
         "expected the unsandboxed-on-public-bind refusal, got: {error}"
     );
+}
+
+#[test]
+fn load_accepts_an_xai_oauth_upstream_scoped_to_named_accounts() {
+    let file = TempConfig::new(
+        r#"
+[server]
+default_provider = "grok"
+
+[[upstreams]]
+name = "grok"
+provider = "grok"
+auth = { mode = "xai_oauth", accounts = ["primary", "backup"] }
+"#,
+    );
+    let config = load(&file).unwrap();
+    let grok = config.provider("grok").unwrap();
+    assert_eq!(grok.auth, AuthMode::XaiOauth);
+    assert_eq!(grok.account_scope, ["primary", "backup"]);
 }
