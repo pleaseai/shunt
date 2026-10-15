@@ -1373,6 +1373,54 @@ fn done_only_function_call_arguments_reach_the_final_json() {
 }
 
 #[test]
+fn interleaved_done_arguments_never_land_on_another_call() {
+    // Added A, added B, done A, done B: opening B already closed A's block, so
+    // A's done-event arguments have no block left to reach. They must not be
+    // written into B's `tool_use`, and B must still get its own arguments.
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_a\",\"call_id\":\"call_a\",\"name\":\"Probe\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_b\",\"call_id\":\"call_b\",\"name\":\"Probe\"}}\n\n",
+        "event: response.function_call_arguments.done\n",
+        "data: {\"item_id\":\"fc_a\",\"arguments\":\"{\\\"value\\\":7}\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_a\",\"call_id\":\"call_a\",\"name\":\"Probe\",\"arguments\":\"{\\\"value\\\":7}\"}}\n\n",
+        "event: response.function_call_arguments.done\n",
+        "data: {\"item_id\":\"fc_b\",\"arguments\":\"{\\\"value\\\":11}\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_b\",\"call_id\":\"call_b\",\"name\":\"Probe\",\"arguments\":\"{\\\"value\\\":11}\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{}}\n\n",
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    assert_eq!(
+        event_names(&emitted),
+        vec![
+            "content_block_start",
+            "content_block_stop",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "message_delta",
+            "message_stop"
+        ]
+    );
+    assert!(!emitted.contains("{\\\"value\\\":7}"));
+    assert!(emitted.contains("\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\\\":11}\"}"));
+    let final_json = machine.final_json();
+    assert_eq!(final_json["content"][0]["id"], "call_a");
+    assert_eq!(final_json["content"][0]["input"], json!({}));
+    assert_eq!(final_json["content"][1]["id"], "call_b");
+    assert_eq!(final_json["content"][1]["input"], json!({"value": 11}));
+}
+
+#[test]
 fn streamed_function_call_arguments_are_not_repeated_by_done_events() {
     let fixture = concat!(
         "event: response.output_item.added\n",

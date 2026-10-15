@@ -71,11 +71,11 @@ pub struct AnthropicSseMachine {
     text_buffer: String,
     text_citations: Vec<Value>,
     tool_buffer: Option<ToolBuffer>,
-    /// Whether the open tool block has streamed any `input_json_delta` yet.
-    /// Tracked apart from `tool_buffer` (absent on streaming machines) so the
-    /// done events can tell whether their full `arguments` still need to reach
-    /// the client (issue #765).
-    tool_args_streamed: bool,
+    /// Identity and delta state of the open tool block, tracked apart from
+    /// `tool_buffer` (absent on streaming machines) so the done events can tell
+    /// whether they belong to it and whether their full `arguments` still need
+    /// to reach the client (issue #765).
+    tool_call: OpenToolCall,
     reasoning: Option<ReasoningBuffer>,
     web_search_indexes: HashMap<String, String>,
     /// Whether the request used the native `tool_search` protocol (issue #82).
@@ -101,6 +101,16 @@ pub struct AnthropicSseMachine {
     /// Responses API has no `stop` parameter (issue #605). Empty — the common
     /// case — leaves every text path byte-identical to before the feature.
     stop: StopScanner,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OpenToolCall {
+    /// The output item's `id`, which `function_call_arguments.done` names as
+    /// `item_id`.
+    item_id: Option<String>,
+    call_id: Option<String>,
+    /// Whether any `input_json_delta` was emitted for this call.
+    args_streamed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -143,7 +153,7 @@ impl AnthropicSseMachine {
             text_buffer: String::new(),
             text_citations: Vec::new(),
             tool_buffer: None,
-            tool_args_streamed: false,
+            tool_call: OpenToolCall::default(),
             reasoning: None,
             web_search_indexes: HashMap::new(),
             tool_search_native,
@@ -604,7 +614,12 @@ impl AnthropicSseMachine {
             .unwrap_or("")
             .to_string();
         self.saw_tool = true;
-        self.tool_args_streamed = false;
+        let identifier = |key| item.get(key).and_then(Value::as_str).map(str::to_string);
+        self.tool_call = OpenToolCall {
+            item_id: identifier("id"),
+            call_id: identifier("call_id"),
+            args_streamed: false,
+        };
         self.tool_buffer = self.accumulate_content.then(|| ToolBuffer {
             id: id.clone(),
             name: name.clone(),
@@ -814,7 +829,7 @@ impl AnthropicSseMachine {
 
     fn emit_arguments(&mut self, delta: &str) -> Vec<String> {
         if !delta.is_empty() {
-            self.tool_args_streamed = true;
+            self.tool_call.args_streamed = true;
         }
         if self.accumulate_content {
             if let Some(tool) = &mut self.tool_buffer {
@@ -837,12 +852,19 @@ impl AnthropicSseMachine {
     /// (Codex parallel calls, issue #765), so a tool block that streamed nothing
     /// gets them as one `input_json_delta` before its `content_block_stop`. A
     /// block whose deltas already arrived is closed as-is, never sent a second
-    /// copy.
+    /// copy. A done event naming a different call than the open one (a call
+    /// whose block an interleaved `output_item.added` already closed) is
+    /// ignored, so its arguments never land on another call's `tool_use` and
+    /// the open call still closes on its own done events.
     fn close_tool(&mut self, data: &Value) -> Vec<String> {
+        if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Tool) {
+            return self.close_any();
+        }
+        if !self.done_matches_open_call(data) {
+            return Vec::new();
+        }
         let mut out = Vec::new();
-        if !self.tool_args_streamed
-            && self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Tool)
-        {
+        if !self.tool_call.args_streamed {
             if let Some(arguments) = data
                 .get("arguments")
                 .and_then(Value::as_str)
@@ -853,6 +875,22 @@ impl AnthropicSseMachine {
         }
         out.extend(self.close_any());
         out
+    }
+
+    /// Whether a done event belongs to the open tool call. `output_item.done`
+    /// names the call by its item's `id` and `call_id`,
+    /// `function_call_arguments.done` by `item_id`. An identifier missing on
+    /// either side cannot tell the calls apart, so it counts as a match.
+    fn done_matches_open_call(&self, data: &Value) -> bool {
+        let differs = |key: &str, open: &Option<String>| {
+            matches!(
+                (data.get(key).and_then(Value::as_str), open),
+                (Some(event), Some(open)) if event != open
+            )
+        };
+        !differs("call_id", &self.tool_call.call_id)
+            && !differs("item_id", &self.tool_call.item_id)
+            && !differs("id", &self.tool_call.item_id)
     }
 
     fn close_current(&mut self, expected: BlockKind) -> Vec<String> {
