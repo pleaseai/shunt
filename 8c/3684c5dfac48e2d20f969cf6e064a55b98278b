@@ -1,0 +1,19 @@
+site/public/install.sh
+  s_35bb4837f7bd47::t_72cc91813c9e66 72-75,83-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8c3684c5dfac48e2d20f969cf6e064a55b98278b",
+  "prompts": {},
+  "sessions": {
+    "s_35bb4837f7bd47": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b33312fe-b0fa-44c4-ae4f-cbffb4ccbef7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
