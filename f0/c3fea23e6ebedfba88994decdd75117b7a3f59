@@ -1,0 +1,24 @@
+.github/workflows/deploy-docs.yml
+  s_35bb4837f7bd47::t_8a11c7a929aa21 6-9,19-24,64
+  s_35bb4837f7bd47::t_0c9a2a538bb3de 36-38
+docs/RELEASING.md
+  s_35bb4837f7bd47::t_8a11c7a929aa21 9,22
+.github/workflows/release.yml
+  s_35bb4837f7bd47::t_8a11c7a929aa21 133-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f0c3fea23e6ebedfba88994decdd75117b7a3f59",
+  "prompts": {},
+  "sessions": {
+    "s_35bb4837f7bd47": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b33312fe-b0fa-44c4-ae4f-cbffb4ccbef7",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
