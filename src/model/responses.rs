@@ -242,7 +242,12 @@ impl AnthropicSseMachine {
             "response.reasoning_summary_text.delta" => self.reasoning_delta(&event.data),
             "response.function_call_arguments.delta" => self.arguments_delta(&event.data),
             "response.function_call_arguments.done" => {
-                if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Tool) {
+                // With no tool block open it closes nothing, unless calls are
+                // deferred behind a call text or reasoning already closed: its
+                // done event releases them, as its `output_item.done` would.
+                if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Tool)
+                    && self.deferred_calls.is_empty()
+                {
                     return Vec::new();
                 }
                 self.close_tool(&event.data)
@@ -909,12 +914,15 @@ impl AnthropicSseMachine {
         out
     }
 
-    /// Whether a function call added now must wait for the open tool block to
-    /// close. Argument events name their call only by `item_id`, so a call
-    /// without an `id` cannot have them routed back to it: it opens at once,
-    /// closing the open block as before.
+    /// Whether a function call added now must wait — behind the open tool
+    /// block, or behind calls already deferred, so a later call never overtakes
+    /// an earlier one after text or reasoning closed the open block. Argument
+    /// events name their call only by `item_id`, so a call without an `id`
+    /// cannot have them routed back to it: it opens at once, closing the open
+    /// block as before.
     fn defers_call(&self, item: &Value) -> bool {
-        self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Tool)
+        (self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Tool)
+            || !self.deferred_calls.is_empty())
             && item.get("id").and_then(Value::as_str).is_some()
     }
 

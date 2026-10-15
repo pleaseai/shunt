@@ -1500,6 +1500,107 @@ fn three_interleaved_calls_replay_in_order_with_their_own_arguments() {
 }
 
 #[test]
+fn a_later_call_never_overtakes_a_deferred_one_after_text_closes_the_open_call() {
+    // Text closes call A while B is deferred; C, added afterwards, must queue
+    // behind B rather than open first. A then sends only its arguments-done
+    // event, which must release B and C before the turn ends.
+    let added = |id: &str| {
+        format!(
+            "event: response.output_item.added\ndata: {}\n\n",
+            json!({"item": {"type": "function_call", "id": format!("fc_{id}"), "call_id": format!("call_{id}"), "name": "Probe"}})
+        )
+    };
+    let event = |name: &str, data: Value| format!("event: {name}\ndata: {data}\n\n");
+    let arguments = |value: u32| json!({"value": value}).to_string();
+    let item_done = |id: &str, value: u32| {
+        event(
+            "response.output_item.done",
+            json!({"item": {"type": "function_call", "id": format!("fc_{id}"), "call_id": format!("call_{id}"), "name": "Probe", "arguments": arguments(value)}}),
+        )
+    };
+    let fixture = [
+        added("a"),
+        event(
+            "response.function_call_arguments.delta",
+            json!({"item_id": "fc_a", "delta": arguments(1)}),
+        ),
+        added("b"),
+        event("response.output_text.delta", json!({"delta": "note"})),
+        event("response.output_text.done", json!({})),
+        added("c"),
+        event(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_b", "arguments": arguments(2)}),
+        ),
+        item_done("b", 2),
+        event(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_a", "arguments": arguments(1)}),
+        ),
+        event(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_c", "arguments": arguments(3)}),
+        ),
+        item_done("c", 3),
+    ]
+    .concat();
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    let before_terminal = parse_sse_events(&fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    for event in parse_sse_events(&event("response.completed", json!({"response": {}}))) {
+        machine.apply(event);
+    }
+
+    // Every block streams before the terminal event, at increasing indexes,
+    // and each argument delta targets its own call's block.
+    let frames = before_terminal
+        .split("\n\n")
+        .filter_map(|frame| frame.lines().find_map(|line| line.strip_prefix("data: ")))
+        .map(|data| serde_json::from_str::<Value>(data).unwrap())
+        .collect::<Vec<_>>();
+    let indexes = |kind: &str| {
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == kind)
+            .map(|frame| frame["index"].as_u64().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(indexes("content_block_start"), vec![0, 1, 2, 3]);
+    assert_eq!(indexes("content_block_stop"), vec![0, 1, 2, 3]);
+    let argument_deltas = frames
+        .iter()
+        .filter(|frame| frame["delta"]["type"] == "input_json_delta")
+        .map(|frame| {
+            (
+                frame["index"].as_u64().unwrap(),
+                frame["delta"]["partial_json"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        argument_deltas,
+        vec![(0, arguments(1)), (2, arguments(2)), (3, arguments(3))]
+    );
+
+    let final_json = machine.final_json();
+    let blocks = final_json["content"].as_array().unwrap();
+    let order = blocks
+        .iter()
+        .map(|block| {
+            block["id"]
+                .as_str()
+                .unwrap_or(block["type"].as_str().unwrap())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(order, vec!["call_a", "text", "call_b", "call_c"]);
+    assert_eq!(blocks[0]["input"], json!({"value": 1}));
+    assert_eq!(blocks[2]["input"], json!({"value": 2}));
+    assert_eq!(blocks[3]["input"], json!({"value": 3}));
+}
+
+#[test]
 fn deferred_call_is_emitted_when_the_open_call_never_finishes() {
     // Call A sends no done events, so B stays deferred until the turn ends; the
     // terminal event must still emit B with its arguments.
