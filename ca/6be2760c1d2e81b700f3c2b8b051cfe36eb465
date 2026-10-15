@@ -1,0 +1,44 @@
+README.zh-CN.md
+  s_35bb4837f7bd47::t_d05b2437d2f227 31-33
+site/src/content/docs/zh-cn/getting-started/installation.mdx
+  s_35bb4837f7bd47::t_477d151b8cc2ba 3
+  s_35bb4837f7bd47::t_d05b2437d2f227 35-49
+site/src/content/docs/ko/getting-started/installation.mdx
+  s_35bb4837f7bd47::t_d05b2437d2f227 3,36-49
+  s_35bb4837f7bd47::t_8bdc804291a291 50
+site/src/content/docs/ja/getting-started/installation.mdx
+  s_35bb4837f7bd47::t_d05b2437d2f227 3,37-50
+  s_35bb4837f7bd47::t_75580c4602ca18 51
+site/public/install.sh
+  s_35bb4837f7bd47::t_96688c6e03b6b3 1-106
+README.ja.md
+  s_35bb4837f7bd47::t_d05b2437d2f227 31-33
+README.ko.md
+  s_35bb4837f7bd47::t_d05b2437d2f227 31-33
+release-please-config.json
+  s_35bb4837f7bd47::t_96688c6e03b6b3 8-11
+README.md
+  s_35bb4837f7bd47::t_d05b2437d2f227 31-33
+site/src/content/docs/getting-started/installation.mdx
+  s_35bb4837f7bd47::t_d05b2437d2f227 3,38-51
+  s_35bb4837f7bd47::t_3e772971cb3d48 52
+docs/RELEASING.md
+  s_35bb4837f7bd47::t_477d151b8cc2ba 23
+  s_35bb4837f7bd47::t_ac7538ecb097fd 9,22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ca6be2760c1d2e81b700f3c2b8b051cfe36eb465",
+  "prompts": {},
+  "sessions": {
+    "s_35bb4837f7bd47": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b33312fe-b0fa-44c4-ae4f-cbffb4ccbef7",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
