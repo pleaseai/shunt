@@ -286,30 +286,47 @@ async fn forward_claude_oauth(
         }
         let request_body = request_body.into_raw();
 
-        let send = post_upstream(&state, &url, request_headers.clone(), request_body.clone());
-        let upstream = match send
-            .count_attempt(&state.accounts, &route.provider, account)
-            .await
-        {
-            Ok(response) => response,
-            Err(error @ crate::upstream_timeout::SendError::Timeout) => {
-                return Err(error.into_adapter_error(upstream_error));
+        // A transport failure (a TLS record error or reset on a reused
+        // connection) says nothing about the account, so it gets one immediate
+        // retry before rotating. Rotating straight away hands the request to
+        // the next candidate, which in a pool where every other account is
+        // quota-exhausted relays that account's 429 instead of the answer the
+        // healthy account would have given on a second send.
+        let mut transport_retry_left = true;
+        let upstream = loop {
+            let send = post_upstream(&state, &url, request_headers.clone(), request_body.clone());
+            match send
+                .count_attempt(&state.accounts, &route.provider, account)
+                .await
+            {
+                Ok(response) => break Some(response),
+                Err(error @ crate::upstream_timeout::SendError::Timeout) => {
+                    return Err(error.into_adapter_error(upstream_error));
+                }
+                Err(crate::upstream_timeout::SendError::Transport(error)) => {
+                    let retrying = std::mem::take(&mut transport_retry_left);
+                    tracing::warn!(
+                        provider = %route.provider,
+                        account = %account.name,
+                        retrying,
+                        error = %error.without_url(),
+                        "Claude OAuth upstream request failed"
+                    );
+                    if retrying {
+                        continue;
+                    }
+                    state.accounts.cooldown(
+                        &route.provider,
+                        account,
+                        Duration::from_secs(30),
+                        "transport",
+                    );
+                    break None;
+                }
             }
-            Err(crate::upstream_timeout::SendError::Transport(error)) => {
-                state.accounts.cooldown(
-                    &route.provider,
-                    account,
-                    Duration::from_secs(30),
-                    "transport",
-                );
-                tracing::warn!(
-                    provider = %route.provider,
-                    account = %account.name,
-                    error = %error.without_url(),
-                    "Claude OAuth upstream request failed"
-                );
-                continue;
-            }
+        };
+        let Some(upstream) = upstream else {
+            continue;
         };
 
         state
