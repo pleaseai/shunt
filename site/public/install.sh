@@ -73,6 +73,21 @@ main() {
     err "HOME is unset; set SHUNT_INSTALL_DIR"
   fi
   install_dir="${SHUNT_INSTALL_DIR:-${HOME}/.local/bin}"
+  # A quoted SHUNT_INSTALL_DIR="~/bin" reaches us unexpanded.
+  # shellcheck disable=SC2088 # matching the literal, unexpanded tilde
+  case "$install_dir" in
+    "~" | "~/"*)
+      [ -n "${HOME:-}" ] || err "HOME is unset; cannot expand ${install_dir}"
+      install_dir="${HOME}${install_dir#"~"}"
+      ;;
+  esac
+  # Drop trailing slashes so the PATH check below matches.
+  while :; do
+    case "$install_dir" in
+      ?*/) install_dir="${install_dir%/}" ;;
+      *) break ;;
+    esac
+  done
 
   os="$(detect_os)"
   arch="$(detect_arch "$os")"
@@ -80,7 +95,8 @@ main() {
   base_url="https://github.com/${REPO}/releases/download/v${version}"
 
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
+  staged=""
+  trap 'rm -rf "$tmp"; [ -z "$staged" ] || rm -f "$staged"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
@@ -97,13 +113,19 @@ main() {
     err "checksum mismatch for ${asset}: expected ${expected}, got ${actual}"
 
   mkdir -p "$install_dir" || err "cannot create ${install_dir}"
-  chmod +x "${tmp}/${asset}"
-  mv "${tmp}/${asset}" "${install_dir}/shunt" ||
-    err "cannot write ${install_dir}/shunt (set SHUNT_INSTALL_DIR to a writable directory)"
+  # Stage next to the target so the final mv is a same-filesystem rename: an
+  # interrupted copy never replaces a working shunt.
+  staged="${install_dir}/.shunt.$$"
+  if ! { cp "${tmp}/${asset}" "$staged" && chmod +x "$staged"; }; then
+    err "cannot write ${install_dir} (set SHUNT_INSTALL_DIR to a writable directory)"
+  fi
+  mv -f "$staged" "${install_dir}/shunt" ||
+    err "cannot replace ${install_dir}/shunt"
+  staged=""
 
   info "installed shunt v${version} to ${install_dir}/shunt"
   case ":${PATH}:" in
-    *":${install_dir}:"*) ;;
+    *":${install_dir}:"* | *":${install_dir}/:"*) ;;
     *) info "${install_dir} is not on your PATH; add it, e.g.: export PATH=\"${install_dir}:\$PATH\"" ;;
   esac
 }

@@ -132,7 +132,8 @@ jobs:
 
   # Publishes site/public/install.sh with this release's default version only
   # now that its binaries are attached; deploy-docs.yml skips the release-please
-  # merge commit on push for this reason.
+  # merge commit on push and refuses any deploy whose default version lacks
+  # assets. It builds the main tip, so it never replaces a newer docs deploy.
   deploy-docs:
     name: deploy docs
     needs: release
