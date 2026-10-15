@@ -237,21 +237,13 @@ impl AnthropicSseMachine {
             "response.output_text.delta" => self.text_delta(&event.data),
             "response.output_text.annotation.added" => self.annotation_added(&event.data),
             "response.output_text.done" | "response.content_part.done" => {
-                self.close_current(BlockKind::Text)
+                let mut out = self.close_current(BlockKind::Text);
+                out.extend(self.release_deferred_calls());
+                out
             }
             "response.reasoning_summary_text.delta" => self.reasoning_delta(&event.data),
             "response.function_call_arguments.delta" => self.arguments_delta(&event.data),
-            "response.function_call_arguments.done" => {
-                // With no tool block open it closes nothing, unless calls are
-                // deferred behind a call text or reasoning already closed: its
-                // done event releases them, as its `output_item.done` would.
-                if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Tool)
-                    && self.deferred_calls.is_empty()
-                {
-                    return Vec::new();
-                }
-                self.close_tool(&event.data)
-            }
+            "response.function_call_arguments.done" => self.close_tool(&event.data),
             "response.output_item.done" => self.output_item_done(&event.data),
             // `response.incomplete` is a clean (if truncated) terminal, not a
             // transport cut — mirrors the WebSocket transport's terminal set
@@ -408,7 +400,11 @@ impl AnthropicSseMachine {
     fn output_item_done(&mut self, data: &Value) -> Vec<String> {
         let item = data.get("item").unwrap_or(data);
         match item.get("type").and_then(Value::as_str) {
-            Some("reasoning") => self.reasoning_done(item),
+            Some("reasoning") => {
+                let mut out = self.reasoning_done(item);
+                out.extend(self.release_deferred_calls());
+                out
+            }
             Some("web_search_call") => self.web_search_done(item),
             // The native tool_search_call carries its full `arguments` (a JSON
             // object) only at `done` — codex ignores the `added`/delta events too
@@ -890,11 +886,10 @@ impl AnthropicSseMachine {
     /// the open call still closes on its own done events.
     fn close_tool(&mut self, data: &Value) -> Vec<String> {
         if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Tool) {
-            // Another item closed the open call first; its done event still
-            // releases the calls deferred behind it.
-            let mut out = self.close_any();
-            out.extend(self.flush_deferred_calls());
-            return out;
+            // Text or reasoning closed this call first. Its done event never
+            // closes that block, and releases the calls deferred behind it once
+            // nothing is open.
+            return self.release_deferred_calls();
         }
         if !self.done_matches_open_call(data) {
             return Vec::new();
@@ -972,6 +967,16 @@ impl AnthropicSseMachine {
             }
         }
         out
+    }
+
+    /// Replay the deferred calls once no block at all is open — after text or
+    /// reasoning that closed the call they waited behind has itself finished.
+    /// An open text or reasoning block is never cut short to make room.
+    fn release_deferred_calls(&mut self) -> Vec<String> {
+        if self.open.is_some() {
+            return Vec::new();
+        }
+        self.flush_deferred_calls()
     }
 
     /// At a terminal event, emit every call still deferred — the open call may

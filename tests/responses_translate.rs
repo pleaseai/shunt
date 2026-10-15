@@ -1601,6 +1601,49 @@ fn a_later_call_never_overtakes_a_deferred_one_after_text_closes_the_open_call()
 }
 
 #[test]
+fn a_late_arguments_done_never_closes_an_open_text_block() {
+    // Text closes call A while B is deferred, and both of A's done events
+    // arrive mid-text: neither may split the text block, and B streams once
+    // the text finishes. A's block was already stopped by the text, so its
+    // late arguments cannot reach it — the one loss an interleaved text block
+    // still causes.
+    let event = |name: &str, data: Value| format!("event: {name}\ndata: {data}\n\n");
+    let call = |id: &str| json!({"type": "function_call", "id": format!("fc_{id}"), "call_id": format!("call_{id}"), "name": "Probe"});
+    let arguments = |value: u32| json!({"value": value}).to_string();
+    let fixture = [
+        event("response.output_item.added", json!({"item": call("a")})),
+        event("response.output_item.added", json!({"item": call("b")})),
+        event("response.output_text.delta", json!({"delta": "no"})),
+        event(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_a", "arguments": arguments(1)}),
+        ),
+        event("response.output_item.done", json!({"item": call("a")})),
+        event("response.output_text.delta", json!({"delta": "te"})),
+        event("response.output_text.done", json!({})),
+        event(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_b", "arguments": arguments(2)}),
+        ),
+        event("response.completed", json!({"response": {}})),
+    ]
+    .concat();
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    for event in parse_sse_events(&fixture) {
+        machine.apply(event);
+    }
+    let final_json = machine.final_json();
+
+    let blocks = final_json["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 3);
+    assert_eq!(blocks[0]["id"], "call_a");
+    assert_eq!(blocks[0]["input"], json!({}));
+    assert_eq!(blocks[1], json!({"type": "text", "text": "note"}));
+    assert_eq!(blocks[2]["id"], "call_b");
+    assert_eq!(blocks[2]["input"], json!({"value": 2}));
+}
+
+#[test]
 fn deferred_call_is_emitted_when_the_open_call_never_finishes() {
     // Call A sends no done events, so B stays deferred until the turn ends; the
     // terminal event must still emit B with its arguments.
