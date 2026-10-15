@@ -1,0 +1,31 @@
+.github/workflows/deploy-docs.yml
+  s_35bb4837f7bd47::t_34ea22c3360526 41-42,45-65
+site/public/install.sh
+  s_35bb4837f7bd47::t_d77b0f5eaae97d 76,78,80,82-83
+  s_35bb4837f7bd47::t_32a11afa052edc 77
+  s_35bb4837f7bd47::t_722c92982da446 98-99
+  s_35bb4837f7bd47::t_a1fdf3980e2d22 128
+  s_35bb4837f7bd47::t_5dccc2fe515e72 79,81,84-90
+  s_35bb4837f7bd47::t_7d19050415b375 116-118,120,122-124
+  s_35bb4837f7bd47::t_85b64ad756be31 119,121
+.github/workflows/release.yml
+  s_35bb4837f7bd47::t_868271a03ce14e 135-136
+docs/RELEASING.md
+  s_35bb4837f7bd47::t_6ef573565e27d0 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e04fdae82232de0ad66cb0e2754c9ab14d7fe2d9",
+  "prompts": {},
+  "sessions": {
+    "s_35bb4837f7bd47": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b33312fe-b0fa-44c4-ae4f-cbffb4ccbef7",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
