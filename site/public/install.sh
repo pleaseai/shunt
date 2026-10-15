@@ -96,7 +96,7 @@ main() {
 
   tmp="$(mktemp -d)"
   staged=""
-  trap 'rm -rf "$tmp"; [ -z "$staged" ] || rm -f "$staged"' EXIT
+  trap 'rm -rf "$tmp" || :; [ -z "$staged" ] || rm -f "$staged" || :' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
@@ -119,12 +119,13 @@ main() {
   if ! { cp "${tmp}/${asset}" "$staged" && chmod +x "$staged"; }; then
     err "cannot write ${install_dir} (set SHUNT_INSTALL_DIR to a writable directory)"
   fi
+  [ ! -d "${install_dir}/shunt" ] || err "${install_dir}/shunt is a directory"
   mv -f "$staged" "${install_dir}/shunt" ||
     err "cannot replace ${install_dir}/shunt"
   staged=""
 
   info "installed shunt v${version} to ${install_dir}/shunt"
-  case ":${PATH}:" in
+  case ":${PATH:-}:" in
     *":${install_dir}:"* | *":${install_dir}/:"*) ;;
     *) info "${install_dir} is not on your PATH; add it, e.g.: export PATH=\"${install_dir}:\$PATH\"" ;;
   esac
