@@ -302,6 +302,8 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
   Evidence: `cargo test --lib store::config` → 11 passed; `cargo test --lib --features store-postgres store::config` → 20 passed; `cargo test --lib reload::` → 26 passed (2 new `[store]` tests); `cargo test --lib --features store-postgres` → 3039 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features store-postgres,bench -- -D warnings` → clean; default-build clippy fails only on the pre-existing `src/routing/stage/store.rs:50` unused import
 - [x] (2026-10-16 21:40 KST) T003 `Db` layer, open (SQLite pre-create 0600, one connection, WAL), preflight + migrations, `StoreError`
   Evidence: `cargo test --lib store::` → 146 passed (17 new in store::db / store::open); `cargo test --lib --features store-postgres store::` → 155 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features store-postgres,bench -- -D warnings` → clean
+- [x] (2026-10-16 20:58 KST) T004 Postgres in CI and the cross-engine contract harness
+  Evidence: `SHUNT_TEST_POSTGRES_URL=postgres://…@localhost:55432/postgres SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --lib --features store-postgres store::` → 165 passed (3 runs), 0 `contract_%` schemas left; URL unset → 10 passed, 5 × `skipped: SHUNT_TEST_POSTGRES_URL unset`; `REQUIRED=1` with no URL → 5 postgres tests FAILED (`SHUNT_TEST_POSTGRES_REQUIRED=1 but SHUNT_TEST_POSTGRES_URL is unset`); default features → 5 sqlite tests pass; CI run 38896134846 → `store::contract::tests::*::postgres ... ok` and the parity test ok in both `fmt · clippy · test` and `coverage` jobs, 0 skipped lines. The run is red only on `Test default build (no ui feature)`: `constant POSTGRES_ACQUIRE_TIMEOUT / DEFAULT_POSTGRES_CONNECTIONS is never used` in `src/store/open.rs` (from T003, 691d009c; not fixed here)
 
 ## Decision Log
 
@@ -338,5 +340,7 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 - Pool `restore()` treats a malformed or unknown-version snapshot as a cold start, while spend fails closed — the import path needs strict loaders for all three.
 - Observation: `cargo clippy --all-targets --features store-postgres -- -D warnings` without `bench` fails on `src/routing/stage/store.rs:50` (unused import `MAX_TRACKED_CHILD_PINS`, used only by `bench_support`); clean with `--features bench`. Pre-existing, unrelated to sqlx.
   Evidence: lib-test target error; `--features store-postgres,bench` finishes clean.
+- Observation: the default-feature build (`cargo test --test router_surface --test prefill_router` under `RUSTFLAGS=-D warnings`) fails on `src/store/open.rs` `POSTGRES_ACQUIRE_TIMEOUT` and `DEFAULT_POSTGRES_CONNECTIONS` being dead without `store-postgres`; introduced in T003, first seen in CI on the T004 push.
+  Evidence: CI run 38896134846, step `Test default build (no ui feature)`, exit 101.
 - Observation: `tests/responses_chain_stream.rs` fails 3 tests on this machine (`refused_port_is_deterministically_refused` TimedOut, two `a_body_error_*`), identically with Cargo.toml, Cargo.lock and src/lib.rs reverted to HEAD.
   Evidence: pristine run `13 passed; 3 failed`.
