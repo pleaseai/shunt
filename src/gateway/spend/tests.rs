@@ -801,3 +801,5 @@ async fn spend_routes_exist_but_refuse_a_credential_the_admin_section_does_not_h
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+mod store_backed;

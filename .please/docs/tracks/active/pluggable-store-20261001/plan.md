@@ -309,6 +309,8 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
   Deferred: binary-level two-process test (spawn `CARGO_BIN_EXE_shunt` twice against one SQLite file; second exits non-zero naming the first) — needs `serve` wired to the store, so it moves to T009
 - [x] (2026-10-16 23:30 KST) T006 Pool repo, store persister with retry-latest, shutdown flush, write-failure counter
   Evidence: `SHUNT_TEST_POSTGRES_URL=postgres://…@localhost:55432/shunt_test SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --lib --features store-postgres -- state_persist:: store:: metrics::` → 275 passed (7 persister + 4 pool_repo contract tests on each engine, existing `state_persist::tests` unchanged); `cargo test --lib -- state_persist:: store:: metrics::` (default features) → 242 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features store-postgres,bench -- -D warnings` → clean; `RUSTFLAGS="-D warnings" cargo check --lib` → clean
+- [x] (2026-10-16 23:55 KST) T007 Spend repo and the store branch in `spend::persist::save`/`restore`
+  Evidence: `cargo test --lib --features store-postgres -- gateway:: store:: state_persist::` (Postgres 55432) -> 452 passed; default build `cargo test --lib -- gateway:: store::` -> 388 passed; fmt, clippy (store-postgres,bench) and `RUSTFLAGS=-D warnings cargo check --lib` clean
 
 ## Decision Log
 
@@ -345,6 +347,15 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 - 2026-10-16: `HoldLost` halts pool flushing: it is counted on `shunt.store.write_failures{subsystem="pool"}`, logged once at ERROR, not re-marked dirty, and later `flush_now` calls return `HoldLost` without touching the database. Every other failure is counted, logged at WARN and re-marked dirty.
   Date/Author: 2026-10-16 / claude-worker
 - 2026-10-16: The write-failure counter test hook is a per-thread `thread_local` (`metrics::store_write_failures_for_tests`), not a process-wide map: `#[tokio::test]` runs on the test thread, so the sqlite and postgres arms of one test never share a count.
+  Date/Author: 2026-10-16 / claude-worker
+- Decision: `GatewayStores` carries the store handle as `OnceLock<Arc<Store>>` (`attach_store`/`store`); `AppState`, `from_shared` and `refreshed` are unchanged.
+  Rationale: `refreshed()` clones the `Arc<GatewayStores>`, so the attached store survives every refresh with no `AppState` growth (CodSpeed). `GatewayStores::new` is only called at `AppState::new` and `build_router`.
+  Date/Author: 2026-10-16 / claude-worker
+- Decision: for `spend_audit`, a record is "new" when it is typed and `id >= before.next_audit_id`; opaque audit records are never appended after the first save (they come only from a restore, mutations only append typed ones). On the first save (no `spend_meta` row) every audit record, opaque included, is written. A trim removes the oldest rows by `ord`, typed and opaque alike, down to `MAX_AUDIT_RECORDS`, which equals the in-memory `trim_audit_records` result because both drop from the front of the combined sequence (verified by the 10 001st-record and opaque-trim contract tests).
+  Rationale: the plan's `id >= before.next_audit_id` rule cannot classify opaque rows; ids inside them are untrusted.
+  Date/Author: 2026-10-16 / claude-worker
+- Decision: `save_spend` takes `before` from `SpendStore::export()` inside `persist::save`; `api.rs` holds `mutation_gate` and calls `replace` only after `save` returns, so the in-memory state is exactly `before`.
+  Rationale: keeps `api.rs` unmodified while giving the repo a transition rather than a snapshot.
   Date/Author: 2026-10-16 / claude-worker
 
 ## Surprises & Discoveries

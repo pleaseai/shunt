@@ -349,9 +349,25 @@ pub struct GatewayStores {
     /// its lifetime, so this is the ceiling on how many accepted payloads can
     /// be resident outside any request's lifetime at once.
     pub telemetry_relay_permits: Arc<tokio::sync::Semaphore>,
+    /// The optional pluggable store ([`crate::store`]). Set once at boot by
+    /// [`GatewayStores::attach_store`]; the bundle is shared by `Arc` across
+    /// every `AppState::refreshed()` snapshot, so the handle needs no field on
+    /// `AppState` itself.
+    store: std::sync::OnceLock<Arc<crate::store::Store>>,
 }
 
 impl GatewayStores {
+    /// Attach the store. Returns `false` (and keeps the first) when one is
+    /// already attached.
+    pub fn attach_store(&self, store: Arc<crate::store::Store>) -> bool {
+        self.store.set(store).is_ok()
+    }
+
+    /// The attached store, if the deployment configured one.
+    pub fn store(&self) -> Option<&Arc<crate::store::Store>> {
+        self.store.get()
+    }
+
     pub fn new(
         rate_limits: &crate::config::RateLimitsConfig,
         spend_state_path: Option<std::path::PathBuf>,
@@ -377,6 +393,7 @@ impl GatewayStores {
             telemetry_relay_permits: Arc::new(tokio::sync::Semaphore::new(
                 super::telemetry_ingest::MAX_INFLIGHT_RELAYS,
             )),
+            store: std::sync::OnceLock::new(),
         }
     }
 }

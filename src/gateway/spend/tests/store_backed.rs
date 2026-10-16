@@ -1,0 +1,90 @@
+//! The spend API with a store attached: success persists to the store, and a
+//! store write failure is the existing Anthropic-shaped 500 that leaves memory
+//! and the stored state untouched.
+
+use std::sync::Arc;
+
+use super::*;
+use crate::gateway::spend::persist;
+use crate::gateway::spend::store::{Period, Scope};
+use crate::metrics::store_write_failures_for_tests;
+use crate::store::contract::store_contract_test;
+use crate::store::spend_repo::load_spend;
+use crate::store::spend_repo::tests::{allow_writes, fail_writes};
+
+store_contract_test!(
+    create_and_delete_fail_cleanly_when_the_store_write_fails,
+    |store| {
+        let (config, _env) = SpendEnv::config("store-backed-failure");
+        let (router, _, state) = build_router(config).unwrap();
+        assert!(state.gateway_stores.attach_store(Arc::new(store.clone())));
+        let counter = store_write_failures_for_tests("spend");
+
+        // A healthy create persists to the store, not to a file.
+        let (response, created) =
+            post(&router, WRITE_KEY, organization(json!("100"), "monthly")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let id = created["id"].as_str().unwrap().to_string();
+        let stored = load_spend(&store).await.unwrap().unwrap();
+        assert_eq!(stored, state.gateway_stores.spend.export());
+        assert_eq!(stored.limits.len(), 1);
+
+        fail_writes(&store).await;
+        let (response, body) = post(&router, WRITE_KEY, organization(json!("200"), "weekly")).await;
+        assert_error_response(&response, &body, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"]["type"], "api_error");
+        assert_eq!(store_write_failures_for_tests("spend"), counter + 1);
+
+        let (response, body) = send(
+            &router,
+            request(
+                "DELETE",
+                &format!("/v1/organizations/spend_limits/{id}"),
+                WRITE_KEY,
+                None,
+            ),
+        )
+        .await;
+        assert_error_response(&response, &body, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"]["type"], "api_error");
+        assert_eq!(store_write_failures_for_tests("spend"), counter + 2);
+
+        // Memory is unchanged: one limit, one audit record.
+        let memory = state.gateway_stores.spend.export();
+        assert_eq!(memory.limits.len(), 1);
+        assert_eq!(memory.audit.len(), 1);
+        allow_writes(&store).await;
+        assert_eq!(load_spend(&store).await.unwrap().unwrap(), memory);
+
+        // And the same request now succeeds, with the store as the destination.
+        let (response, _) = post(&router, WRITE_KEY, organization(json!("200"), "weekly")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            load_spend(&store).await.unwrap().unwrap(),
+            state.gateway_stores.spend.export()
+        );
+    }
+);
+
+store_contract_test!(restore_reproduces_what_save_wrote, |store| {
+    let (config, _env) = SpendEnv::config("store-backed-restore");
+    let (_, _, writer) = build_router(config.clone()).unwrap();
+    writer.gateway_stores.attach_store(Arc::new(store.clone()));
+    let mut next = writer.gateway_stores.spend.export();
+    next = crate::gateway::spend::SpendStore::upsert_state(
+        next,
+        Scope::Organization,
+        Period::Monthly,
+        Some("9".into()),
+        "admin-key:writer",
+        "2026-10-01T00:00:00.000Z".into(),
+    )
+    .0;
+    persist::save(&writer, &next).await.unwrap();
+    writer.gateway_stores.spend.replace(next.clone());
+
+    let (_, _, reader) = build_router(config).unwrap();
+    reader.gateway_stores.attach_store(Arc::new(store.clone()));
+    persist::restore(&reader).await.unwrap();
+    assert_eq!(reader.gateway_stores.spend.export(), next);
+});

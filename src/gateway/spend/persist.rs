@@ -5,7 +5,13 @@ use serde::{Deserialize, Serialize};
 use super::store::{
     canonical_amount, validate_limit, AuditRecord, OpaqueRecord, SpendLimit, SpendState,
 };
-use crate::server::AppState;
+use crate::{
+    server::AppState,
+    store::{
+        spend_repo::{load_spend, save_spend},
+        Store,
+    },
+};
 
 const STATE_VERSION: u32 = 1;
 
@@ -31,6 +37,9 @@ struct PersistedSpendWire {
 }
 
 pub async fn restore(state: &AppState) -> io::Result<()> {
+    if let Some(store) = state.gateway_stores.store() {
+        return restore_from_store(state, store).await;
+    }
     let Some(path) = state
         .gateway_stores
         .spend
@@ -61,7 +70,18 @@ pub async fn restore(state: &AppState) -> io::Result<()> {
     }
 }
 
+/// Persist `snapshot`. With a store attached the store is the only
+/// destination; the caller holds `mutation_gate` and has not yet called
+/// `replace`, so the in-memory state is exactly what the store holds.
 pub(crate) async fn save(state: &AppState, snapshot: &SpendState) -> Result<(), String> {
+    if let Some(store) = state.gateway_stores.store() {
+        let before = state.gateway_stores.spend.export();
+        return save_spend(store, &before, snapshot).await.map_err(|error| {
+            crate::metrics::record_store_write_failure("spend");
+            tracing::warn!(%error, "failed to persist gateway spend-limit state to the store");
+            format!("failed to persist gateway spend-limit state: {error}")
+        });
+    }
     let Some(path) = state
         .gateway_stores
         .spend
@@ -75,6 +95,24 @@ pub(crate) async fn save(state: &AppState, snapshot: &SpendState) -> Result<(), 
         .await
         .map_err(|error| format!("gateway spend-limit persistence task panicked: {error}"))?
         .map_err(|error| format!("failed to persist gateway spend-limit state: {error}"))
+}
+
+async fn restore_from_store(state: &AppState, store: &Store) -> io::Result<()> {
+    let loaded = load_spend(store).await.map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("gateway spend-limit state could not be loaded from the store: {error}"),
+        )
+    })?;
+    if let Some(persisted) = loaded {
+        tracing::info!(
+            limits = persisted.limits.len(),
+            audit_records = persisted.audit.len(),
+            "restored gateway spend-limit state from the store"
+        );
+        state.gateway_stores.spend.replace(persisted);
+    }
+    Ok(())
 }
 
 fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
