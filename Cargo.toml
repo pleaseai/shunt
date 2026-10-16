@@ -51,6 +51,12 @@ prefill-router = ["dep:prefill-router"]
 # public API of a normal build is unchanged; `cargo bench --features bench`.
 bench = []
 
+# PostgreSQL backend for the optional pluggable store (ADR-0006). SQLite is
+# always compiled; this adds sqlx's Postgres driver and its rustls TLS, using
+# the aws-lc-rs provider that `ensure_crypto_provider` already installs
+# process-wide. Release CI enables it (`--features ui,store-postgres`).
+store-postgres = ["sqlx/postgres", "sqlx/tls-rustls-aws-lc-rs"]
+
 [dependencies]
 anyhow = "1"
 arc-swap = "1.9.2"
@@ -131,6 +137,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+# Optional pluggable store (ADR-0006). `default-features = false` keeps sqlx's
+# `any` driver out. `sqlite-bundled` links the same `libsqlite3-sys` that
+# `rusqlite` (Cursor reader) already uses, so exactly one SQLite is built.
+# Postgres and TLS come from the `store-postgres` feature.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "migrate", "macros"] }
 # Stage-router scoring (`switchyard_libsy::{ToolSignals, pick_tier, ...}`), and
 # the base for the routing-algorithm work in ADR-0005.
 #

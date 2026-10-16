@@ -296,6 +296,9 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 
 ## Progress
 
+- [x] (2026-10-16 19:40 KST) T001 Add sqlx dependency, `store-postgres` feature, root `build.rs`, empty `src/store/`
+  Evidence: `cargo tree -i libsqlite3-sys` → one version, `libsqlite3-sys v0.30.1`, reached from both `rusqlite v0.32.1` and `sqlx-sqlite v0.9.0`; `cargo build` and `cargo build --features store-postgres` → `Finished`; `cargo test --lib auth::observation` → 15 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features bench -- -D warnings` → clean; `cargo test --features store-postgres` → lib 3017 passed, only `tests/responses_chain_stream.rs` fails (3 tests, identical on pristine HEAD)
+
 ## Decision Log
 
 - 2026-10-01: Split request history into its own track (task count > 12; history recording spans six call sites with the account mostly absent). Seed: `.please/docs/brainstorms/2026-10-01-request-history-requirements.md`.
@@ -309,7 +312,14 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 - 2026-10-01 (plan review): The PostgreSQL TLS and password rules judge sqlx's parsed `PgConnectOptions`, not the raw URL.
 - 2026-10-01: Gateway and spend are store-backed only when `[server.gateway]` / `[server.spend]` exist; the pool is store-backed whenever `[store]` is set.
 
+- 2026-10-16: sqlx's rustls TLS (`tls-rustls-aws-lc-rs` -> `_tls-rustls-aws-lc-rs` = `_tls-rustls` + `rustls/aws-lc-rs` + `webpki-roots`) trusts the bundled Mozilla `webpki-roots` store, not the OS store: `import_root_certs` in sqlx-core 0.9.0 `src/net/tls/tls_rustls.rs` builds `RootCertStore` from `webpki_roots::TLS_SERVER_ROOTS` unless `rustls-native-certs` is on, which only `_tls-rustls-ring-native-roots` enables. It also builds its own `aws_lc_rs::default_provider()` via `builder_with_provider`, so it never reads the process-wide default that `ensure_crypto_provider` installs. A private-CA Postgres server therefore needs `sslrootcert` (not the OS trust store).
+  Date/Author: 2026-10-16 / sol-implementer
+
 ## Surprises & Discoveries
 
 - `[server.gateway].state_path` changes on reload redirect `save_if_dirty` silently (it reads `state.refreshed().config`), with no restart-only warning — pre-existing, out of scope, follow-up issue.
 - Pool `restore()` treats a malformed or unknown-version snapshot as a cold start, while spend fails closed — the import path needs strict loaders for all three.
+- Observation: `cargo clippy --all-targets --features store-postgres -- -D warnings` without `bench` fails on `src/routing/stage/store.rs:50` (unused import `MAX_TRACKED_CHILD_PINS`, used only by `bench_support`); clean with `--features bench`. Pre-existing, unrelated to sqlx.
+  Evidence: lib-test target error; `--features store-postgres,bench` finishes clean.
+- Observation: `tests/responses_chain_stream.rs` fails 3 tests on this machine (`refused_port_is_deterministically_refused` TimedOut, two `a_body_error_*`), identically with Cargo.toml, Cargo.lock and src/lib.rs reverted to HEAD.
+  Evidence: pristine run `13 passed; 3 failed`.
