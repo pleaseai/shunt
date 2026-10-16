@@ -1152,6 +1152,34 @@ mapped model.
 | `config check failed` | Run `shunt check` for the exact reason (bind address, unknown provider in a route, wrong adapter/auth). |
 | Claude Code asks you to log in | Set an Anthropic credential (`ANTHROPIC_AUTH_TOKEN` / login) that shunt can forward for unmapped models. A base URL alone is not a credential. |
 
+Anthropic OAuth pool send and retry warnings include typed transport fields:
+`connect`, `timeout`, `request`, and `body` are reqwest classifications;
+`io_kind` is the deepest exposed `std::io::ErrorKind` (for example,
+`ConnectionRefused`). `tls_kind` is an allowlisted static rustls error variant
+label, with common received alerts distinguished (for example,
+`AlertReceived.DecodeError`); other alert values use `AlertReceived.Other`.
+Arbitrary TLS payloads, including `General(String)`, are never formatted.
+These fields do not include source-error text, URLs,
+credentials, headers, or bodies. `io_kind = None` means no IO kind was exposed,
+not that TLS or HTTP/2 succeeded. `tls_kind = None` means no rustls error was
+exposed, not that TLS succeeded; HTTP/2 reason codes are not classified.
+This diagnostic-only detail does not change account cooldowns or retry behavior.
+
+**Temporary local HTTP/1.1 trial (not a proven fix):** this trial build sends
+Claude subscription OAuth requests through a separate HTTP/1.1-only connection
+pool. Selection requires a Claude subscription bearer and either `claude_oauth`
+or passthrough auth. Initial sends, same-account retries, account rotation, and
+passthrough/chain retries use the same selection. API-key Anthropic, Kimi,
+Grok, and Codex retain their existing client; OAuth refresh and quota polling are
+also unchanged. TLS certificate/hostname verification, redirect policy,
+streaming, timeouts, and retry decisions are unchanged. No config key is added.
+A request-level `version(HTTP_11)` is insufficient: the locked Hyper client can
+still use an H2 connection. The trial uses reqwest `http1_only()` instead.
+Local reproduction showed different TLS error propagation between H1 and H2;
+it did **not** establish the cause of the live failures. Building this trial does
+not install it or restart the gateway; deployment requires separate approval.
+
+
 For the full gateway troubleshooting table, see
 [Connect Claude Code to an LLM gateway](https://code.claude.com/docs/en/llm-gateway-connect#troubleshoot-gateway-errors).
 

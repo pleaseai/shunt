@@ -32,3 +32,7 @@ description: 흔한 shunt 오류와 해결 방법.
 | 공유 게이트웨이에서 `503 overloaded_error` | 게이트웨이가 인바운드 동시성 상한에 도달해 요청을 대기열에 넣지 않고 거부한 것입니다(바디 메시지 `too many requests are already in flight`, `Retry-After: 1` 동반). 업스트림 503이 아니라 shunt 자체의 admission control입니다 — 업스트림 503은 프로바이더의 메시지 그대로 릴레이됩니다. 지정된 시간 뒤에 재시도하거나, 병렬 부하를 줄이거나, [`max_concurrent_requests`](/ko/guides/shared-gateway/#인바운드-동시성-제한)를 올리고 재시작하세요(제한은 시작 시점에 고정됩니다). |
 
 전체 게이트웨이 문제 해결 표는 [Connect Claude Code to an LLM gateway](https://code.claude.com/docs/en/llm-gateway-connect#troubleshoot-gateway-errors)를 참고하세요.
+
+## 임시 HTTP/1.1 시험
+
+로컬 시험 빌드는 Claude 구독 OAuth 요청(풀 및 패스스루, 재시도 포함)에 별도의 HTTP/1.1 전용 클라이언트를 사용합니다. API 키 방식 Anthropic, Kimi, Grok, Codex, 토큰 갱신 및 할당량 폴링은 변경되지 않습니다. TLS 검증과 스트리밍은 유지됩니다. 실제 전송 장애에 대한 검증된 해결책은 아닙니다. 새 설정 키는 없으며, 설치나 재시작에는 별도의 승인이 필요합니다.

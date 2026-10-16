@@ -27,6 +27,7 @@ mod deferral;
 mod model_rewrite;
 mod safeguards;
 mod thinking;
+mod transport;
 
 pub struct AnthropicAdapter;
 
@@ -107,7 +108,7 @@ async fn forward(
     // `Bytes` clones the body as a cheap refcount bump for the safe,
     // pre-acceptance transport retry.
     let body = bytes::Bytes::from(body);
-    let client = state.http_client.clone();
+    let client = transport::request_client(&state.http_client, provider.auth, &request_headers);
     let upstream = crate::retry::send_with_retry_with_safety(
         policy,
         &route.provider,
@@ -286,7 +287,13 @@ async fn forward_claude_oauth(
         }
         let request_body = request_body.into_raw();
 
-        let send = post_upstream(&state, &url, request_headers.clone(), request_body.clone());
+        let send = post_upstream(
+            &state,
+            &route,
+            &url,
+            request_headers.clone(),
+            request_body.clone(),
+        );
         let upstream = match send
             .count_attempt(&state.accounts, &route.provider, account)
             .await
@@ -302,9 +309,16 @@ async fn forward_claude_oauth(
                     Duration::from_secs(30),
                     "transport",
                 );
+                let diagnostics = transport::Diagnostics::new(&error);
                 tracing::warn!(
                     provider = %route.provider,
                     account = %account.name,
+                    connect = diagnostics.connect,
+                    timeout = diagnostics.timeout,
+                    request = diagnostics.request,
+                    body = diagnostics.body,
+                    io_kind = ?diagnostics.io_kind,
+                    tls_kind = ?diagnostics.tls_kind,
                     error = %error.without_url(),
                     "Claude OAuth upstream request failed"
                 );
@@ -848,7 +862,7 @@ async fn forward_kimi_oauth(
         safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
         let request_body = base_body.clone().into_raw();
 
-        let upstream = match post_upstream(&state, &url, request_headers, request_body)
+        let upstream = match post_upstream(&state, &route, &url, request_headers, request_body)
             .count_attempt(&state.accounts, &route.provider, account)
             .await
         {
@@ -985,18 +999,19 @@ fn account_is_static_store_token(account: &crate::config::AccountConfig) -> bool
 
 async fn post_upstream(
     state: &AppState,
+    route: &Route,
     url: &str,
     headers: HeaderMap,
     body: Vec<u8>,
 ) -> Result<reqwest::Response, crate::upstream_timeout::SendError<reqwest::Error>> {
+    let provider = state
+        .config
+        .provider(&route.provider)
+        .expect("validated provider");
+    let client = transport::request_client(&state.http_client, provider.auth, &headers);
     crate::upstream_timeout::wait(
         state.config.server.timeouts.upstream_ttfb_ms,
-        state
-            .http_client
-            .post(url)
-            .headers(headers)
-            .body(body)
-            .send(),
+        client.post(url).headers(headers).body(body).send(),
     )
     .await
 }
@@ -1015,7 +1030,7 @@ async fn retry_upstream(
     body: Vec<u8>,
     fail_msg: &str,
 ) -> Result<Option<reqwest::Response>, AdapterError> {
-    match post_upstream(state, url, headers, body)
+    match post_upstream(state, route, url, headers, body)
         .count_attempt(&state.accounts, &route.provider, account)
         .await
     {
@@ -1035,9 +1050,16 @@ async fn retry_upstream(
                 Duration::from_secs(30),
                 "transport",
             );
+            let diagnostics = transport::Diagnostics::new(&error);
             tracing::warn!(
                 provider = %route.provider,
                 account = %account.name,
+                connect = diagnostics.connect,
+                timeout = diagnostics.timeout,
+                request = diagnostics.request,
+                body = diagnostics.body,
+                io_kind = ?diagnostics.io_kind,
+                tls_kind = ?diagnostics.tls_kind,
                 error = %error.without_url(),
                 "{}",
                 fail_msg
@@ -1491,7 +1513,7 @@ pub(crate) async fn chain_attempt(
     let body = bytes::Bytes::from(body.into_raw());
     let policy = provider.retry.policy();
     let url = upstream_url(state, route, uri);
-    let client = state.http_client.clone();
+    let client = transport::request_client(&state.http_client, provider.auth, &request_headers);
     let (upstream, headers_at) = match crate::retry::send_with_retry_with_safety(
         policy,
         &route.provider,
@@ -1815,7 +1837,10 @@ mod tests {
 
         let response = super::retry_upstream(
             &state,
-            &claude_route(),
+            &super::Route {
+                provider: "anthropic".into(),
+                ..claude_route()
+            },
             &claude_account(),
             &server.uri(),
             HeaderMap::new(),
@@ -2011,7 +2036,10 @@ mod tests {
         // and the helper must cool the account down and return None (fail over).
         let outcome = super::retry_upstream(
             &state,
-            &claude_route(),
+            &super::Route {
+                provider: "anthropic".into(),
+                ..claude_route()
+            },
             &claude_account(),
             "http://127.0.0.1:1/v1/messages",
             HeaderMap::new(),

@@ -32,3 +32,7 @@ description: 常见的 shunt 错误及其修复方法。
 | 共享网关上返回 `503 overloaded_error` | 网关已达入站并发上限,直接拒绝了该请求而不是排队(body 消息为 `too many requests are already in flight`,并带 `Retry-After: 1`)。这是 shunt 自己的准入控制,不是上游 503 —— 上游 503 会带着提供方自己的消息原样中继。请在指定延迟后重试、减少并行负载,或调高 [`max_concurrent_requests`](/zh-cn/guides/shared-gateway/#入站并发上限) 并重启(该上限在启动时固定)。 |
 
 完整的网关故障排查表见 [将 Claude Code 连接到 LLM 网关](https://code.claude.com/docs/en/llm-gateway-connect#troubleshoot-gateway-errors)。
+
+## 临时 HTTP/1.1 试验
+
+本地试验构建为 Claude 订阅 OAuth 请求（账户池和透传，包括重试）使用独立的 HTTP/1.1 客户端。API 密钥方式的 Anthropic、Kimi、Grok、Codex、令牌刷新和配额轮询保持不变。TLS 验证和流式传输仍然启用。这并非经过验证的线上传输故障修复。不会新增配置项，安装或重启需要另行批准。

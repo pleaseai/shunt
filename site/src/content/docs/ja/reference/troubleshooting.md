@@ -32,3 +32,7 @@ description: よくある shunt のエラーとその修正方法。
 | 共有ゲートウェイで `503 overloaded_error` | ゲートウェイがインバウンド同時実行数の上限に達し、リクエストをキューに入れずに拒否しました（body メッセージは `too many requests are already in flight`、`Retry-After: 1` 付き）。これは上流の 503 ではなく shunt 自身の admission control です。上流の 503 はプロバイダー自身のメッセージのまま中継されます。指定時間後に再試行するか、並列負荷を減らすか、[`max_concurrent_requests`](/ja/guides/shared-gateway/#インバウンド同時実行数の上限) を上げて再起動してください（上限は起動時に固定されます）。 |
 
 完全なゲートウェイのトラブルシューティング表については、[Connect Claude Code to an LLM gateway](https://code.claude.com/docs/en/llm-gateway-connect#troubleshoot-gateway-errors) を参照してください。
+
+## 一時的な HTTP/1.1 試験
+
+ローカル試験ビルドは、Claude サブスクリプション OAuth リクエスト（プールとパススルー、再試行を含む）に専用の HTTP/1.1 クライアントを使用します。API キー方式の Anthropic、Kimi、Grok、Codex、トークン更新、クォータのポーリングは変更しません。TLS 検証とストリーミングは維持されます。実環境の通信障害に対する実証済みの修正ではありません。設定キーの追加はなく、インストールや再起動には別途承認が必要です。
