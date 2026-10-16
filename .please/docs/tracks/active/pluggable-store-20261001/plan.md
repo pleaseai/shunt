@@ -307,6 +307,8 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 - [x] (2026-10-16 22:30 KST) T005 Instance hold: acquire, heartbeat, fencing, release
   Evidence: `SHUNT_TEST_POSTGRES_URL=postgres://…@localhost:55432/shunt_test SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --lib --features store-postgres store::` → 184 passed (9 hold contract tests on each engine + `inspect_never_touches_the_hold`); `cargo test --lib store::` (default features) → 161 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features store-postgres,bench -- -D warnings` → clean; `RUSTFLAGS="-D warnings" cargo check --lib` → clean
   Deferred: binary-level two-process test (spawn `CARGO_BIN_EXE_shunt` twice against one SQLite file; second exits non-zero naming the first) — needs `serve` wired to the store, so it moves to T009
+- [x] (2026-10-16 23:30 KST) T006 Pool repo, store persister with retry-latest, shutdown flush, write-failure counter
+  Evidence: `SHUNT_TEST_POSTGRES_URL=postgres://…@localhost:55432/shunt_test SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --lib --features store-postgres -- state_persist:: store:: metrics::` → 275 passed (7 persister + 4 pool_repo contract tests on each engine, existing `state_persist::tests` unchanged); `cargo test --lib -- state_persist:: store:: metrics::` (default features) → 242 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features store-postgres,bench -- -D warnings` → clean; `RUSTFLAGS="-D warnings" cargo check --lib` → clean
 
 ## Decision Log
 
@@ -337,6 +339,12 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 - 2026-10-16: `test_support::TempDir` gained an atomic counter in its directory name: macOS clock ticks are microseconds, so two parallel contract tests got the same directory (`table import_record already exists`).
   Date/Author: 2026-10-16 / claude-worker
 - 2026-10-16: The `CARGO_BIN_EXE_shunt` two-process hold test moves from T005 to T009: `main.rs::serve` is not wired to the store until T009, so there is no binary-level entry point to refuse the second process. T005 covers the same behavior in-process with a second `Store::open` against the same database.
+  Date/Author: 2026-10-16 / claude-worker
+- 2026-10-16: `spawn_state_persister(state, store: Option<Arc<Store>>) -> PoolPersister`; the file path is unchanged when `store` is `None`. `PoolPersister` is not abort-on-drop (the default deployment drops it in `main`); `stop(self).await` aborts and joins. The store sink serializes flushes with a `tokio::sync::Mutex`, so an older export cannot land after a newer one when the timer and `flush_now` overlap.
+  Date/Author: 2026-10-16 / claude-worker
+- 2026-10-16: `HoldLost` halts pool flushing: it is counted on `shunt.store.write_failures{subsystem="pool"}`, logged once at ERROR, not re-marked dirty, and later `flush_now` calls return `HoldLost` without touching the database. Every other failure is counted, logged at WARN and re-marked dirty.
+  Date/Author: 2026-10-16 / claude-worker
+- 2026-10-16: The write-failure counter test hook is a per-thread `thread_local` (`metrics::store_write_failures_for_tests`), not a process-wide map: `#[tokio::test]` runs on the test thread, so the sqlite and postgres arms of one test never share a count.
   Date/Author: 2026-10-16 / claude-worker
 
 ## Surprises & Discoveries

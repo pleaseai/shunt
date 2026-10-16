@@ -31,14 +31,19 @@
 //! (not portable across a restart) and short-lived, so they are intentionally
 //! left to lapse on boot.
 
-use std::{fs, io, path::Path, time::Duration};
+use std::{fs, io, path::Path, sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
     accounts::{AccountKey, QuotaState},
     server::AppState,
+    store::Store,
 };
+
+mod store_persister;
+
+pub use store_persister::{restore_from_store, PoolPersister};
 
 /// Version 2 replaces the provider-name key with the physical-account key.
 /// Version 3 separates utilization and per-window status freshness.
@@ -122,19 +127,29 @@ pub async fn restore(state: &AppState) {
     }
 }
 
-/// Spawn the background flush loop if `state_path` is configured. A no-op
-/// otherwise, so the default deployment adds no background work. Whether the
-/// task exists is decided once from the boot config (like the usage poller); a
+/// Spawn the background flush loop. With a `store`, quota is written to it
+/// (write-behind, same 15 s dirty-flag protocol) and `state_path` is not used;
+/// otherwise the loop writes the `state_path` file, and without one this is a
+/// no-op so the default deployment adds no background work. Whether the task
+/// exists is decided once from the boot config (like the usage poller); a
 /// reload does not start or stop it.
-pub fn spawn_state_persister(state: AppState) {
+pub fn spawn_state_persister(state: AppState, store: Option<Arc<Store>>) -> PoolPersister {
+    if let Some(store) = store {
+        tracing::info!(
+            interval_secs = FLUSH_INTERVAL.as_secs(),
+            "pool state persistence enabled (store)"
+        );
+        return PoolPersister::store(state, store, FLUSH_INTERVAL);
+    }
     if state_path(&state).is_none() {
-        return;
+        return PoolPersister::idle(state);
     }
     tracing::info!(
         interval_secs = FLUSH_INTERVAL.as_secs(),
         "pool state persistence enabled"
     );
-    tokio::spawn(async move {
+    let flush_state = state.clone();
+    let task = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The first tick fires immediately; consume it so the first real flush
@@ -142,9 +157,10 @@ pub fn spawn_state_persister(state: AppState) {
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            flush(&state).await;
+            flush(&flush_state).await;
         }
     });
+    PoolPersister::file(state, task)
 }
 
 /// Write the pool's quota to disk if it changed since the last flush. Atomically

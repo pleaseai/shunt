@@ -6,6 +6,7 @@ pub mod error;
 pub mod hold;
 pub mod migrate;
 pub mod open;
+pub(crate) mod pool_repo;
 
 pub use config::{StoreBackend, StoreConfig};
 pub use db::{rewrite_placeholders, Db, Row, Tx, Value};

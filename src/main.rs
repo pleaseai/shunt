@@ -735,7 +735,7 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // persisted quota before serving, then flush changes in the background. Both
     // are no-ops when the key is unset.
     shunt::state_persist::restore(&state).await;
-    shunt::state_persist::spawn_state_persister(state.clone());
+    shunt::state_persist::spawn_state_persister(state.clone(), None);
     // Opt-in `[server.gateway] state_path`: restore gateway-login refresh
     // sessions before serving; later mutations are written by the token
     // endpoint itself. A no-op when the key is unset.
