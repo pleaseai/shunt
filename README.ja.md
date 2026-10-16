@@ -212,6 +212,7 @@ OpenAI の Thibault Sottiaux は、他のコーディングハーネスを通じ
 | 上限付きのアップストリームリトライ — **デフォルトで有効**、保守的で、ストリーム途中では決してリトライしません | `[providers.<name>.retry]` | [リファレンス（英語）](https://shunt.sh/reference/configuration/#providersnameretry) |
 | 共有デプロイの制限 — **デフォルトで有効**（同時 1024、ボディ 32 MiB、TTFB 120 秒、デバイスフローのレートリミット）。CIDR・ヘッダー・URL 制限はオプトイン | `[server] max_concurrent_requests`、`[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [ガイド](https://shunt.sh/ja/guides/shared-gateway/) |
 | シークレット参照 — 任意の文字列値で `${VAR}` または `${file:/abs/path}` を使え、ホットリロードごとに再解決（`[sentry]`・`[otel]` を除く。起動時に一度だけ構築されるため再起動が必要） | 設定内の任意の文字列（**常に有効**） | [リファレンス](https://shunt.sh/ja/reference/configuration/) |
+| オプションのストア — プールのクォータ、ゲートウェイの refresh token、支出上限・監査記録を JSON スナップショットの代わりに SQLite または PostgreSQL に保存し、既存のスナップショットは一度だけインポートします。ストア 1 つにつき shunt プロセスは 1 つです。ストアには refresh token のハッシュが入っているため、データベースへのアクセスとバックアップを制限してください | `backend` と `url` を持つ `[store]`。`backend = "postgres"` には `store-postgres` ビルドが必要です（ビルド済みのリリースバイナリには含まれ、`cargo build` には含まれません） | [リファレンス](https://shunt.sh/ja/reference/configuration/#storeオプション) |
 | OpenTelemetry のメトリクスとトレース | `endpoint` が空でない `[otel]` | [ガイド](https://shunt.sh/ja/guides/opentelemetry/) |
 
 ## ドキュメント

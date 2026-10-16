@@ -68,6 +68,7 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 | `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, observed, non-expired quota values for `5h`, `7d`, or `7d_oi`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Moves off an account and requests that exhaust the pool. |
 | `shunt.pool.reprobes` | Counter | `provider` | Reprobes committed at first HTTP dispatch for stale near-quota Codex/ChatGPT accounts; WebSocket-enabled providers count inbound HTTP probes only. |
+| `shunt.store.write_failures` | Counter | `subsystem` | Failed writes to the optional [`[store]`](/reference/configuration/#store-optional), by `subsystem`: `pool` (write-behind flush), `spend`, or `gateway` (token endpoint). A failed pool flush is retried on the next 15 second tick; a failed spend or gateway write is reported to the caller. |
 | `shunt.upstream.status` | Gauge | `provider` | Observed [`[server.status]`](/reference/configuration/#serverstatus-optional) Statuspage severity: `0` none, `1` minor, `2` major, `3` critical. A provider currently `unknown` (no signal) is omitted from this series rather than reported as `0`. |
 
 ## Privacy

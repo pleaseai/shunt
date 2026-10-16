@@ -46,8 +46,16 @@ read it:
 | `shunt.pool.rotations` | `Counter<u64>` | no |
 | `shunt.pool.reprobes` | `Counter<u64>` | no |
 | `shunt.codex_ws_overflow` | `Counter<u64>` | no |
+| `shunt.store.write_failures` | `Counter<u64>` | no |
 | `shunt.pool.quota_utilization` | `ObservableGauge<f64>` | **yes** — `pool_utilization_values()` (`src/metrics.rs:62`) |
 | `shunt.upstream.status` | `ObservableGauge<f64>` | **yes** — `upstream_status_values()` (`src/metrics.rs:74`) |
+
+`shunt.store.write_failures` (label `subsystem` = `pool` | `spend` | `gateway`) was
+added with the optional store (`src/metrics.rs`, `record_store_write_failure`); it
+is also sent to Sentry as a counter of the same name when `[sentry] metrics` is on.
+The table is a snapshot of the original inventory, so the counts in the prose
+(eighteen series, sixteen write-only) predate this row and do not include it or
+the later `shunt.router.*` series.
 
 Sixteen of eighteen are write-only: `Counter` and `Histogram` handles expose
 `add()` and `record()` and nothing that returns a value. The `*_for_tests`

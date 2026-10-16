@@ -4,8 +4,13 @@ shunt keeps almost all of its state in process memory. This document records wha
 a durable store would fix, what it would not, what it would break, and which
 engine fits — so the evaluation is not repeated every time the question comes up.
 
-**Nothing is adopted here.** This is a decision record for a decision not yet
-made. The deployment constraint that motivates it is documented in
+**Status.** This is the evaluation record. Its Phase 1 outcome has shipped as the
+optional `[store]` (SQLite or PostgreSQL, single instance) — behavior, durability
+classes, import, rollback, the instance hold, and `shunt check` output are in
+[`store.md`](store.md), and the decision is
+[ADR-0006](../.please/docs/decisions/0006-optional-pluggable-store.md). Multi-instance
+coordination and request history are not built. The text below is the original
+analysis and is kept for the reasoning. The deployment constraint that motivates it is documented in
 [`admin-ui-delivery.md`](admin-ui-delivery.md#deployment-topology--single-instance-today),
 whose state table is the single source of truth for what lives where today.
 
@@ -159,7 +164,8 @@ it would port rather than be reinvented.
 > above concern the Rust rewrite. That ADR evaluates libSQL, the SQLite fork,
 > separately and defers it.
 
-Adopt nothing yet. If a store lands, plain SQLite for the history and audit work
+Adopt nothing yet. *(Superseded: the optional single-instance `[store]` has shipped; see
+[`store.md`](store.md). The multi-instance question below is still open.)* If a store lands, plain SQLite for the history and audit work
 that stands on its own merits, kept deliberately separate from the multi-instance
 question — which PostgreSQL, not SQLite, would answer.
 

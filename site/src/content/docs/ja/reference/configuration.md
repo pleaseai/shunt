@@ -137,7 +137,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | `spend_retention_months` | `13` | 将来の支出データ保持月数 |
 | `identity_retention_days` | `90` | 将来のアイデンティティ保持日数 |
 | `group_limit_mode` | `min` | `min` または `max`。将来のグループ上限解決用 |
-| `state_path` | `~/.shunt/gateway-spend.json` | 上限と監査レコードを保存するバージョン付き JSON。`""` はメモリのみ |
+| `state_path` | `~/.shunt/gateway-spend.json` | 上限と監査レコードを保存するバージョン付き JSON。`""` はメモリのみ。[`[store]`](#storeオプション) を設定するとインポート元としてだけ使われます |
 
 管理認証情報は設定された `[server.admin] header` または `x-api-key` で送信します。`read_keys` の認証情報は `GET` のみ使用できます。状態ファイルは変更のたびに非公開の一時ファイルを使ってアトミックに置換されます。ホームディレクトリを解決できない場合、デフォルトはメモリのみです。テーブルの追加・削除と状態パスはどちらも起動時に固定され、設定のリロードでは適用されず警告が記録されます。
 
@@ -311,7 +311,7 @@ headers = { "x-api-key" = "..." }
 | `burn_rate_avoidance` | `false` | ウィンドウのリセット前にソフトしきい値を使い切ると予測されるアカウントも回避する |
 | `sort_by_reset` | `false` | バーンレートのヘッドルームではなく、利用可能なアカウントをクォータのリセットが最も早い順(昇順、不明なリセットは最後)に並べ替える。`shunt.toml` を編集せずに、管理ダッシュボードまたは `PATCH /admin/api/pool` でランタイムに切り替え可能 — [プールアカウント制御](/ja/guides/pool-account-controls/)を参照 |
 | `usage_refresh_seconds` | 無効（`0`/未設定） | Claude `GET /api/oauth/usage`、Codex `GET /wham/usage`、Antigravity `POST :retrieveUserQuotaSummary` のポーリング間隔（秒）。60 未満の正の値は 60 秒の下限に切り上げられます |
-| `state_path` | 未設定 | プールのアカウント単位のクォータ状態を保存するファイル。再起動時に空のプールではなく、最後に観測された使用率からウォームスタートします。未設定で永続化は無効（デフォルト） |
+| `state_path` | 未設定 | プールのアカウント単位のクォータ状態を保存するファイル。再起動時に空のプールではなく、最後に観測された使用率からウォームスタートします。未設定で永続化は無効（デフォルト）。[`[store]`](#storeオプション) を設定するとストアがクォータを保持し、このファイルはインポート元としてだけ使われます |
 | `ramp_initial_concurrency` | 無効（`0`/未設定） | ストーム制御: トラフィックを受け始めたばかりのアカウントアイデンティティに対する初期の並行受け入れ許容量。`0` または未設定で受け入れゲーティングは無効 |
 | `reprobe_seconds` | このテーブルが存在すれば `900`。`0` で無効 | 陳腐化した近接クォータの Codex/ChatGPT アカウントに対する日和見的な再プローブ間隔（秒）。60 未満の正の値は 60 秒の下限に切り上げられます。`0` で再プローブは無効。`[server.pool]` 自体が存在しない場合、この値に関係なく再プローブは無効（issue #135 以前の挙動）。WebSocket を使わない outbound Responses 選択とオプションの inbound Codex HTTP エンドポイントは再プローブを維持し、WebSocket 有効時の outbound 選択では無効 |
 
@@ -1276,6 +1276,51 @@ policy = { type = "target_selector", selector = "/target" }
 
 6 つの[呼び出しごとの上限](#呼び出しごとの上限)は、呼び出しを行う当事者であるこの
 テーブルに置きます。ジャッジは他と同じ規則に従います — 1 ホップ、passthrough ルート禁止。
+
+## `[store]`（オプション）
+
+プールのクォータ、ゲートウェイの refresh token、支出上限とその監査記録を保存する、オプションのトランザクション対応ストアです。SQLite または PostgreSQL を使えます。このテーブルがなければ何も変わらず、3 つのサブシステムはこれまでどおり JSON の `state_path` スナップショットと復元経路を使います。設定すると、ストアがスナップショットを置き換え、既存のスナップショットは一度だけインポートされます。詳しい動作は [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)（英語）を参照してください。`[store]` は再起動が必要な設定です。設定のリロードで変更すると警告をログに出し、再起動後に反映されます。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `backend` | —（必須） | `"sqlite"` または `"postgres"`。`"postgres"` には `store-postgres` Cargo feature 付きのビルドが必要です。ビルド済みのリリースバイナリには含まれ、`cargo build` と `cargo install` には含まれません（`--features store-postgres` でビルドします）。feature がないと設定の読み込みが失敗し、エラーに feature 名が表示されます |
+| `url` | —（必須） | SQLite: ファイルパス、または `sqlite:` / `sqlite://` URL。インメモリデータベースは拒否されます。PostgreSQL: `postgres://` URL。Redacting secret — 診断出力では `[redacted]` と表示されます（[Secret 参照](#secret-参照)を参照） |
+| `max_connections` | `4` | PostgreSQL のプールサイズで、`1` 以上。常に 1 接続を使う SQLite では拒否されます |
+| `password_env` | 未設定 | PostgreSQL のみ: パスワードを保持する環境変数の名前。URL にパスワードがない場合（userinfo にも `?password=` にもない場合）だけ使います。必要なのに変数が未設定または空なら起動に失敗します |
+| `allow_insecure_remote_tls` | `false` | `localhost`、ループバック IP、unix ソケット以外の PostgreSQL ホストを `sslmode=verify-full` なしで許可します。警告をログに出します |
+| `hold_stale_seconds` | `30` | ハートビートのないままこの秒数が過ぎると、インスタンスホールドは stale になり、次のプロセスが引き継げます。`3` 以上。保持しているプロセスは `hold_stale_seconds / 3` 秒ごとにホールドを更新します |
+
+**TLS ルール。** ループバック以外の PostgreSQL ホストでは、`allow_insecure_remote_tls = true` でない限り URL に `sslmode=verify-full` が必要で、ないと設定の読み込み（と `shunt check`）が失敗します。このルールは sqlx が URL から解析したホストと `sslmode` で判定するため、`?host=` や `?hostaddr=` では回避できません。TLS クライアントは OS の証明書ストアではなく、同梱の Mozilla ルート証明書で検証します。プライベート CA を使う場合は URL に `sslrootcert=/path/ca.pem` を追加してください。
+
+**SQLite ファイル。** ファイルがなければ起動時にモード `0600` で作成し（`-wal` と `-shm` の補助ファイルも同じモードを引き継ぎます）、既存ファイルのモードは変更しません。shunt は WAL モードで 1 接続を開きます。
+
+**永続性。** 支出上限とゲートウェイの refresh token は、admin API 呼び出しやトークンレスポンスが返る前に同期的に書き込みます。プールのクォータは write-behind で 15 秒ごとと正常終了時に一度書き込むため、クラッシュすると最大で直近 15 秒分のクォータが失われることがあります。クォータはアップストリームのレスポンスから再取得されます。
+
+**一度だけのインポート。** 初回起動時に、プール、ゲートウェイ（`[server.gateway]` 設定時）、支出（`[server.spend]` 設定時）のスナップショットを各 `state_path`（ゲートウェイと支出はデフォルトパスも対象）から、サブシステムごとに 1 つのトランザクションでストアへコピーし、その記録も残します。記録のあるサブシステムは、その後データを削除しても再インポートせず、後から現れたスナップショットも無視します。shunt はスナップショットを変更せず、インポートしたスナップショットの隣に `<state_path>.imported` サイドカーを書きます。不正な形式やバージョン不一致のスナップショットは起動を失敗させ、エラーにサブシステムとファイルを示し、そのサブシステムには何もインポートしません。ストアを使っている間、`state_path` はインポート元としてだけ使われます。
+
+**ロールバック。** インポートは同期ではなくコピーです。後で `[store]` を外すと、インポート時点のスナップショットから起動するため、その後ストアで失効させたセッションが戻ったり、変更した支出上限が元に戻ったりすることがあります。インポートしたものと同一のスナップショットを読むストアなしの起動は、その旨の警告をログに出します。その起動がファイルを書き直すと警告は止まります。
+
+**ストアごとに 1 プロセス。** ストアにはインスタンスホールドがあります。生きているホールドのあるストアに対して 2 つ目の `shunt run` を起動すると、保持しているプロセス（`{HOSTNAME}:{pid}`）と最後の更新からの経過時間を示して異常終了します。`hold_stale_seconds` のあいだ更新されなかったホールドは引き継がれ、そのことがログに出ます。そのため、クラッシュ後の再起動は最大でその時間拒否されることがあります。実行中のプロセスがホールドを奪われたことを検出すると、以後のストアへの書き込みを拒否しますが、プロキシリクエストは処理し続けます。正常終了時にホールドを解放します。
+
+**ストアへの書き込みが失敗したとき。** プロキシ経路はストアを待ちません。書き込めなかった admin の支出上限変更は従来どおり Anthropic 形式の `500` を返し、何も変わりません。ゲートウェイの `/oauth/token` エンドポイントでは、トークンの発行（device grant）や refresh token のローテーションを書き込めないと `Cache-Control: no-store` 付きで `503` `{"error":"temporarily_unavailable"}` を返し、ローテーションはロールバックされるので、クライアントの再試行は成功します。grant を消費した後に device grant の発行が失敗した場合、そのユーザーはログインをやり直す必要があります。ローテーション済みトークンの再利用（replay）は従来どおり `401` `invalid_grant` を返し、そのファミリーは失効したままです。ストアがこの失効を書き込めない場合は、次に成功したストア書き込みか次の 15 秒ごとのフラッシュで書き込まれ、それより前にプロセスがクラッシュすると失われます。失敗した書き込みごとに `shunt.store.write_failures` カウンター（`subsystem` = `pool`、`spend`、`gateway`）が増えます。
+
+**`shunt check`。** `[store]` があると、[`shunt check`](/ja/reference/cli/#shunt-check) はストアを読み取り専用で開き、スキーマバージョンを報告します。マイグレーションの実行、書き込み、存在しない SQLite ファイルの作成は行いません。
+
+**セキュリティ。** ストアには refresh token のハッシュ（SHA-256。生のトークンは保存しません）と、各トークンの発行先のアイデンティティ、支出の監査記録が入っています。データベースへのアクセスとバックアップを制限してください。
+
+```toml
+# SQLite（常に利用可能）
+[store]
+backend = "sqlite"
+url = "/var/lib/shunt/shunt.db"
+
+# PostgreSQL（store-postgres feature が必要）
+# [store]
+# backend = "postgres"
+# url = "postgres://shunt@db.example.com:5432/shunt?sslmode=verify-full"
+# password_env = "SHUNT_STORE_PASSWORD"
+# max_connections = 4
+```
 
 ## `[sentry]`(任意)
 

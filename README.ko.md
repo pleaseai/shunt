@@ -213,6 +213,7 @@ OpenAI의 Thibault Sottiaux는 다른 코딩 하네스를 통해 Codex를 실행
 | 제한된 업스트림 재시도 — **기본 활성**, 보수적이며 스트림 도중에는 재시도하지 않음 | `[providers.<name>.retry]` | [레퍼런스(영문)](https://shunt.sh/reference/configuration/#providersnameretry) |
 | 공유 배포 제한 — **기본 활성**(동시 1024, 본문 32 MiB, TTFB 120초, device-flow 레이트 리밋), CIDR·헤더·URL 제한은 선택 | `[server] max_concurrent_requests`, `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [가이드](https://shunt.sh/ko/guides/shared-gateway/) |
 | 시크릿 참조 — 모든 문자열 값에 `${VAR}` 또는 `${file:/abs/path}`, 핫 리로드마다 다시 확인(`[sentry]`·`[otel]` 제외 — 기동 시 1회 구성이라 재시작 필요) | 구성의 모든 문자열(**항상 활성**) | [레퍼런스](https://shunt.sh/ko/reference/configuration/) |
+| 선택적 저장소 — 풀 쿼터, 게이트웨이 refresh token, 지출 한도·감사 기록을 JSON 스냅샷 대신 SQLite 또는 PostgreSQL에 보관하며, 기존 스냅샷은 한 번만 가져옵니다. 저장소당 shunt 프로세스는 하나입니다. 저장소에는 refresh token 해시가 들어 있으므로 데이터베이스 접근과 백업을 제한하세요 | `backend`와 `url`이 있는 `[store]`; `backend = "postgres"`는 `store-postgres` 빌드가 필요합니다(사전 빌드된 릴리스 바이너리에는 포함, `cargo build`에는 미포함) | [레퍼런스](https://shunt.sh/ko/reference/configuration/#store-선택) |
 | OpenTelemetry 메트릭과 트레이스 | `endpoint`가 비어 있지 않은 `[otel]` | [가이드](https://shunt.sh/ko/guides/opentelemetry/) |
 
 ## 문서

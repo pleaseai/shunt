@@ -212,6 +212,7 @@ Unless a row says otherwise, these are **off by default** — absent its config 
 | Bounded upstream retry — **on by default**, conservative, never mid-stream | `[providers.<name>.retry]` | [Reference](https://shunt.sh/reference/configuration/#providersnameretry) |
 | Shared-deployment limits — **on by default** (1024 concurrent, 32 MiB bodies, 120 s TTFB, device-flow rate limits); CIDR, header, and URL limits are opt-in | `[server] max_concurrent_requests`, `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [How-to](https://shunt.sh/guides/shared-gateway/) |
 | Secret references — `${VAR}` or `${file:/abs/path}` in any string value, re-resolved on hot reload (not `[sentry]`/`[otel]`, built once at startup — rotating those needs a restart) | any config string (**always on**) | [Reference](https://shunt.sh/reference/configuration/) |
+| Optional store — pool quota, gateway refresh tokens, and spend limits/audit in SQLite or PostgreSQL instead of the JSON snapshots; existing snapshots are imported once. One shunt process per store. The store holds refresh-token hashes: restrict database access and backups | `[store]` with `backend` and `url`; `backend = "postgres"` needs a `store-postgres` build (prebuilt release binaries have it; `cargo build` does not) | [Reference](https://shunt.sh/reference/configuration/#store-optional) |
 | OpenTelemetry metrics and traces | `[otel]` with a non-empty `endpoint` | [How-to](https://shunt.sh/guides/opentelemetry/) |
 
 ## Documentation

@@ -45,7 +45,25 @@ shunt check
 
 구체적인 오류를 보고합니다: 잘못된 bind 주소, 라우트의 알 수 없는 프로바이더, 누락된 `api_key_env`, 잘못된 `base_url`, 잘못된 어댑터/인증 조합.
 
-`shunt run`이 부팅 시 수행하는 라우팅된 Antigravity 자격 증명 가드도 동일하게 실행합니다: 네이티브 `antigravity` 업스트림으로 라우팅하면서 저장된 자격 증명이 없는 구성은 `config ok`를 출력한 뒤 시작 시점에 실패하는 대신, 검사 단계에서 실패하며 `shunt login antigravity`를 안내합니다. 이 검사는 오프라인으로 유지됩니다 — 라우트를 읽고 자격 증명의 존재 여부(싱글톤 파일 또는 이름 지정 풀 후보)만 확인할 뿐, 토큰을 갱신하거나 백엔드에 접속하지 않습니다. 내장 `antigravity` 프로바이더를 선언만 하고 라우팅하지 않는 구성은 영향을 받지 않으며, `kind = "antigravity_cli"` 라우팅도 마찬가지입니다.
+`shunt run`이 부팅 시 수행하는 라우팅된 Antigravity 자격 증명 가드도 동일하게 실행합니다: 네이티브 `antigravity` 업스트림으로 라우팅하면서 저장된 자격 증명이 없는 구성은 `config ok`를 출력한 뒤 시작 시점에 실패하는 대신, 검사 단계에서 실패하며 `shunt login antigravity`를 안내합니다. 이 가드는 오프라인으로 유지됩니다 — 라우트를 읽고 자격 증명의 존재 여부(싱글톤 파일 또는 이름 지정 풀 후보)만 확인할 뿐, 토큰을 갱신하거나 백엔드에 접속하지 않습니다. 내장 `antigravity` 프로바이더를 선언만 하고 라우팅하지 않는 구성은 영향을 받지 않으며, `kind = "antigravity_cli"` 라우팅도 마찬가지입니다.
+
+[`[store]`](/ko/reference/configuration/#store-선택)가 있으면 검사가 더 이상 완전한 오프라인이 아닙니다. `config ok` 뒤에 저장소를 읽기 전용으로 열어(SQLite 파일을 읽거나 PostgreSQL에 연결) 한 줄을 더 출력합니다. 마이그레이션을 실행하거나, 쓰거나, 없는 SQLite 파일을 만들지 않습니다.
+
+```bash
+shunt check
+# -> config ok
+# -> store ok: sqlite sqlite:/var/lib/shunt/shunt.db, schema v1 (binary supports v1)
+```
+
+| 저장소 상태 | `config ok` 다음 출력 | 종료 코드 |
+| :-- | :-- | :-- |
+| 최신 | `store ok: <backend> <target>, schema vN (binary supports vM)` | `0` |
+| 스키마가 바이너리보다 오래됨 | 같은 줄 뒤에 `; 1 pending migration applies at boot`(K > 1이면 `; K pending migrations apply at boot`)가 붙음 | `0` |
+| SQLite 파일 없음 | `store ok: sqlite sqlite:<path>, file does not exist yet; it is created with mode 0600 at boot` | `0` |
+| 연결 불가 | `store check failed`, 원인은 `store <target> is unreachable: <reason>` | `1` |
+| 스키마가 바이너리보다 새로움 | `store check failed`, 원인은 `store <target> is at schema version N, newer than the M this binary supports; upgrade shunt` | `1` |
+
+`<target>`은 `sqlite:<path>` 또는 `postgres://host:port/db`이며 자격 증명은 출력되지 않습니다. 검사는 최대 15초로 제한됩니다. 검증에 실패하는 `[store]`(예: `sslmode=verify-full` 없는 원격 PostgreSQL 호스트)는 그보다 먼저 `config check failed`로 실패합니다.
 
 ## `shunt init`
 

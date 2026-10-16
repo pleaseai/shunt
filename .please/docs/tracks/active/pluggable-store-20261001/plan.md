@@ -319,6 +319,8 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
   Evidence: `SHUNT_TEST_POSTGRES_URL=postgres://shunt:...@localhost:55432/shunt_test SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --features store-postgres --test store_boot` -> 13 passed (6 cases x {sqlite, postgres} + unreachable-postgres; NFR-001 slowest of 50 proxied requests 2.2 ms / 2.4 ms while the pool write was held >= 3 s); `cargo test --lib --features store-postgres store::boot` -> 5 passed (source scan over 53 files, matcher positive/negative twins, failed start releases the hold, shutdown releases the hold); AC-022 `cargo test --workspace --features store-postgres,bench --no-fail-fast` (no `[store]` anywhere but store_boot) -> 3928 passed, 3 failed, 2 ignored; the 3 are the known `tests/responses_chain_stream.rs` local failures; mutation: dropping `store_runtime.shutdown` from `serve` fails `restart_keeps_pool_sessions_and_spend::sqlite` (pool_quota 0 rows); fmt, `clippy --all-targets --features store-postgres,bench -D warnings`, `RUSTFLAGS="-D warnings" cargo check --lib` and default-feature `cargo test --no-run --test router_surface --test prefill_router --test store_boot` clean
 - [x] (2026-10-17 02:40 KST) T011 `shunt check` store inspection
   Evidence: `SHUNT_TEST_POSTGRES_URL=postgres://shunt:...@localhost:55432/shunt_test SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --features store-postgres --test check_cli` -> 11 passed (5 existing unchanged + 4 sqlite: current / unmigrated / absent / too-new, each asserting file bytes+mtime unchanged or file still absent; 2 postgres: reachable, unreachable, neither stream contains the password); default build `cargo test --test check_cli` -> 9 passed; `cargo test --lib --features store-postgres store::` -> 262 passed; fmt, `clippy --all-targets --features store-postgres,bench -D warnings`, `RUSTFLAGS="-D warnings" cargo check --lib` and `cargo test --no-run --test check_cli` (default features) clean
+- [x] (2026-10-17 03:30 KST) T012 Documentation across README, docs, site (4 locales), example config
+  Evidence: `cd site && bun run build` -> exit 0, `209 page(s) built`, Pagefind `Indexed 205 pages`; built-dist anchors present: `id="store-optional"` (en), `store-선택` (ko), `storeオプション` (ja), `store可选` (zh-cn), `shunt-check` in all four cli pages, every cross-link to them resolves; live `target/debug/shunt check` (store-postgres build) printed the documented absent-file, current-schema, unreachable-postgres and remote-TLS-rejected lines
 
 ## Decision Log
 
@@ -400,6 +402,12 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
   Rationale: the plan left punctuation open; one line keeps `check` output greppable and the docs in T012 quote these strings.
   Date/Author: 2026-10-17 / implement-executor
 
+- Decision: T012 also touched surfaces beyond the validation list: `docs/config-reload.md` (`[store]` joins the restart-only list), `docs/dashboard-metrics.md` (new `shunt.store.write_failures` row plus a note that its counts predate it), the four `guides/opentelemetry.mdx` metric tables, the four `reference/cli.mdx` `## shunt check` sections (the "stays offline" sentence now reads "This guard stays offline", scoped to the Antigravity guard), and two rows in each `reference/troubleshooting.md` (store startup errors; `/oauth/token` 503). The `state_path` rows for pool, gateway, and spend in the configuration reference each note the file is only an import source once `[store]` is set.
+  Rationale: AGENTS.md requires every surface that states the changed behavior to move in the same change; troubleshooting is a symptom/cause table, so the boot errors and the 503 fit its structure.
+  Date/Author: 2026-10-17 / sol-implementer
+- Decision: docs say prebuilt release binaries include PostgreSQL support and `cargo build`/`cargo install` do not; they do not claim the Homebrew formula has it (only `release.yml` was verified). ADR-0006 stays `Proposed` (its status is not this task's to flip), so `storage.md` still says "(proposed)" and adds a status paragraph pointing at `store.md`.
+  Date/Author: 2026-10-17 / sol-implementer
+
 ## Surprises & Discoveries
 
 - `[server.gateway].state_path` changes on reload redirect `save_if_dirty` silently (it reads `state.refreshed().config`), with no restart-only warning — pre-existing, out of scope, follow-up issue.
@@ -412,3 +420,5 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
   Evidence: pristine run `13 passed; 3 failed`.
 - Observation: on this machine a freshly spawned debug `shunt` binary takes ~3 s from `spawn()` to its first log line (the in-process boot with a SQLite store takes ~35 ms), so any timing derived from spawn time is off by seconds.
   Evidence: `/health` refused for ~3.0 s after spawn in every run; the child's log shows config load -> store opened in 33 ms.
+- Observation: `docs/dashboard-metrics.md` states 18 series and "sixteen of eighteen are write-only", but `src/metrics.rs` already has more counters than the doc's table lists (for example `shunt.router.decisions`), so the counts were stale before this track. T012 added the store row and a note rather than recounting.
+  Evidence: `grep -c shunt.router.decisions src/metrics.rs` -> 2; the table has no such row.
