@@ -300,6 +300,8 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
   Evidence: `cargo tree -i libsqlite3-sys` → one version, `libsqlite3-sys v0.30.1`, reached from both `rusqlite v0.32.1` and `sqlx-sqlite v0.9.0`; `cargo build` and `cargo build --features store-postgres` → `Finished`; `cargo test --lib auth::observation` → 15 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features bench -- -D warnings` → clean; `cargo test --features store-postgres` → lib 3017 passed, only `tests/responses_chain_stream.rs` fails (3 tests, identical on pristine HEAD)
 - [x] (2026-10-16 21:00 KST) T002 `[store]` config, validation, TLS rule, restart-only reload warning
   Evidence: `cargo test --lib store::config` → 11 passed; `cargo test --lib --features store-postgres store::config` → 20 passed; `cargo test --lib reload::` → 26 passed (2 new `[store]` tests); `cargo test --lib --features store-postgres` → 3039 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features store-postgres,bench -- -D warnings` → clean; default-build clippy fails only on the pre-existing `src/routing/stage/store.rs:50` unused import
+- [x] (2026-10-16 21:40 KST) T003 `Db` layer, open (SQLite pre-create 0600, one connection, WAL), preflight + migrations, `StoreError`
+  Evidence: `cargo test --lib store::` → 146 passed (17 new in store::db / store::open); `cargo test --lib --features store-postgres store::` → 155 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features store-postgres,bench -- -D warnings` → clean
 
 ## Decision Log
 
@@ -318,6 +320,9 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
   Date/Author: 2026-10-16 / sol-implementer
 
 - 2026-10-16: sqlx-postgres 0.9.0 has no password getter and seeds `password` from `PGPASSWORD`/`.pgpass` (`options/mod.rs` `new_without_pgpass`, `apply_pgpass`), so "inline password" is decided by parsing the URL userinfo and `?password=` with the `url` crate (`store::config::url_has_inline_password`). The TLS rule uses `get_host()`/`get_socket()`/`get_ssl_mode()`: `?host=` and `?hostaddr=` both overwrite `host` via `.host()` (`options/parse.rs:69-86`), `/`-prefixed hosts set `socket`, which `fetch_socket` prefers (`options/mod.rs:457`). The opt-out warning is logged from `StoreConfig::validate`, which re-runs on reload (the sentry/otel precedent avoids that); the repeat is accepted because it only fires while the operator keeps the opt-out set.
+  Date/Author: 2026-10-16 / claude-worker
+
+- 2026-10-16: `Store::open(.., Mode::Inspect)` does not run the preflight and returns `Ok` for a too-new schema; `shunt check` calls `Store::check_schema()` (returns `SchemaTooNew`) so it can still print "schema vN (binary supports vM)". `Mode::Serve` runs preflight inside `open`. The "byte-identical" guarantee for Inspect holds for the database file; SQLite may create or remove `-shm`/`-wal` bookkeeping for a WAL database even read-only.
   Date/Author: 2026-10-16 / claude-worker
 
 ## Surprises & Discoveries

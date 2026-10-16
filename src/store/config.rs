@@ -147,6 +147,12 @@ impl StoreConfig {
         }
     }
 
+    /// SQLite database file named by `url` (the `sqlite:` / `sqlite://` prefix
+    /// and any `?query` removed). Meaningful for the SQLite backend only.
+    pub(crate) fn sqlite_file(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(sqlite_path(self.url.expose().trim()))
+    }
+
     /// The `StoreBackend` label used in log fields.
     pub fn backend_label(&self) -> &'static str {
         self.backend.as_str()
