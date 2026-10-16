@@ -79,10 +79,10 @@ pub struct AnthropicSseMachine {
     /// Output items added while an earlier item must finish first, in arrival
     /// order (see [`DeferredItem`]).
     deferred_items: Vec<DeferredItem>,
-    /// The `id` of a deferred item whose replay ended before its
+    /// The `id` and `call_id` of a deferred item whose replay ended before its
     /// `output_item.done`: its remaining events arrive live, and the items
     /// behind it stay deferred until it finishes.
-    pending_item: Option<String>,
+    pending_item: Option<PendingItem>,
     /// Whether deferred items are being replayed, so a done event inside the
     /// replay never starts a second, nested replay.
     replaying: bool,
@@ -121,6 +121,13 @@ struct OpenToolCall {
     call_id: Option<String>,
     /// Whether any `input_json_delta` was emitted for this call.
     args_streamed: bool,
+}
+
+/// A replayed item whose `output_item.done` has not arrived yet.
+#[derive(Debug, Clone)]
+struct PendingItem {
+    id: String,
+    call_id: Option<String>,
 }
 
 /// An output item the upstream added while a tool block was still open, while
@@ -443,7 +450,7 @@ impl AnthropicSseMachine {
             Some("message") => self.close_current(BlockKind::Text),
             _ => self.close_any(),
         };
-        self.finish_item(item.get("id").and_then(Value::as_str));
+        self.finish_item(item);
         out.extend(self.release_deferred_items());
         out
     }
@@ -926,8 +933,11 @@ impl AnthropicSseMachine {
     /// the open call still closes on its own done events.
     fn close_tool(&mut self, data: &Value) -> Vec<String> {
         let mut out = Vec::new();
-        let finished = if self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Tool) {
+        if self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Tool) {
             if !self.event_names_open_call(data) {
+                // The event names another call, which is finished even though
+                // its arguments are ignored here.
+                self.finish_item(data);
                 return out;
             }
             if !self.tool_call.args_streamed {
@@ -940,16 +950,17 @@ impl AnthropicSseMachine {
                 }
             }
             out.extend(self.close_any());
-            self.tool_call.item_id.clone()
-        } else {
-            // Text or reasoning closed this call first. Its done event never
-            // closes that block, and still finishes the call.
-            data.get("item_id")
-                .or_else(|| data.get("id"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        };
-        self.finish_item(finished.as_deref());
+            // The open call itself finished, even when the done event carries
+            // no id.
+            let (item_id, call_id) = (
+                self.tool_call.item_id.clone(),
+                self.tool_call.call_id.clone(),
+            );
+            self.finish_ids(item_id.as_deref(), call_id.as_deref());
+        }
+        // When text or reasoning closed this call first, its done event never
+        // closes that block, and still finishes the call.
+        self.finish_item(data);
         out.extend(self.release_deferred_items());
         out
     }
@@ -1004,10 +1015,24 @@ impl AnthropicSseMachine {
             || !self.deferred_items.is_empty()
     }
 
-    /// Record that the item `id` names has finished, so the items deferred
-    /// behind it may replay.
-    fn finish_item(&mut self, id: Option<&str>) {
-        if id.is_some() && self.pending_item.as_deref() == id {
+    /// Record that the item an event names has finished, so the items deferred
+    /// behind it may replay. The event names it by `item_id` / `id`, or by
+    /// `call_id` on a function call.
+    fn finish_item(&mut self, data: &Value) {
+        let id = data
+            .get("item_id")
+            .or_else(|| data.get("id"))
+            .and_then(Value::as_str);
+        let call_id = data.get("call_id").and_then(Value::as_str);
+        self.finish_ids(id, call_id);
+    }
+
+    fn finish_ids(&mut self, id: Option<&str>, call_id: Option<&str>) {
+        let named = self.pending_item.as_ref().is_some_and(|pending| {
+            (id.is_some() && id == Some(pending.id.as_str()))
+                || (call_id.is_some() && call_id == pending.call_id.as_deref())
+        });
+        if named {
             self.pending_item = None;
         }
     }
@@ -1033,7 +1058,10 @@ impl AnthropicSseMachine {
                 out.extend(self.dispatch(event));
             }
             if !item.done {
-                self.pending_item = Some(item.id);
+                self.pending_item = Some(PendingItem {
+                    id: item.id,
+                    call_id: item.call_id,
+                });
             }
         }
         self.replaying = false;

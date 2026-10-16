@@ -1951,6 +1951,87 @@ fn a_call_added_while_a_released_item_streams_waits_for_its_done() {
     assert_eq!(final_json["content"][2]["input"], json!({"value": 3}));
 }
 
+/// Applies each frame and returns everything emitted, without a terminal event.
+fn emitted_sse(frames: &[String]) -> String {
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", true, false);
+    parse_sse_events(&frames.concat())
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect()
+}
+
+#[test]
+fn a_replayed_call_finished_while_another_tool_block_is_open_releases_later_items() {
+    // A is open and P deferred. A's done replays P, which stays pending. Call C
+    // has no id, so it opens at once and closes P's block; P's done then names
+    // another call than the open one, yet still finishes P so D streams.
+    let arguments = json!({"value": 1}).to_string();
+    let mut c = probe_call("c");
+    c.as_object_mut().unwrap().remove("id");
+    let emitted = emitted_sse(&[
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("a")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("p")}),
+        ),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_a", "arguments": arguments}),
+        ),
+        sse_frame("response.output_item.added", json!({"item": c})),
+        sse_frame(
+            "response.output_item.done",
+            json!({"item": probe_call("p")}),
+        ),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"arguments": arguments}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("d")}),
+        ),
+    ]);
+
+    assert!(emitted.contains("\"id\":\"call_d\""), "{emitted}");
+}
+
+#[test]
+fn a_replayed_call_finished_by_call_id_alone_releases_later_items() {
+    // B is replayed after A and stays pending; id-less text closes its block.
+    // B's done carries only `call_id`, which must still finish it so D streams.
+    let arguments = json!({"value": 1}).to_string();
+    let emitted = emitted_sse(&[
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("a")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("b")}),
+        ),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_a", "arguments": arguments}),
+        ),
+        sse_frame("response.output_text.delta", json!({"delta": "hi"})),
+        sse_frame("response.output_text.done", json!({"text": "hi"})),
+        sse_frame(
+            "response.output_item.done",
+            json!({"item": {"type": "function_call", "call_id": "call_b"}}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("d")}),
+        ),
+    ]);
+
+    assert!(emitted.contains("\"id\":\"call_d\""), "{emitted}");
+}
+
 #[test]
 fn a_stop_sequence_in_replayed_text_ends_the_turn_once() {
     // A deferred message replayed at the terminal event can hit an emulated stop
