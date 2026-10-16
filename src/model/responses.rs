@@ -966,12 +966,14 @@ impl AnthropicSseMachine {
     }
 
     /// The deferral slot an event waits in, if it must wait: the deferred item
-    /// it names, or a new slot for an item added while an earlier one has yet to
-    /// finish. Every per-item event names its item by `item_id`;
+    /// it names, or a new slot for an item added while an earlier one has yet
+    /// to finish, or for one added before the open call (or never announced)
+    /// whose text, reasoning, or done event would stop the open tool block.
+    /// Every per-item event names its item by `item_id`;
     /// `output_item.added` / `output_item.done` carry the item, named by `id`,
-    /// or by `call_id` on a function call. An item added without an `id` cannot
-    /// have its later events routed back to it, so it is never deferred: it
-    /// opens at once, closing the open block as before.
+    /// or by `call_id` on a function call. An item without an `id` cannot get a
+    /// slot, so it is never deferred: it opens at once, closing the open block
+    /// as before.
     fn deferral(&mut self, event: &ResponseEvent) -> Option<usize> {
         let name = event.event.as_deref()?;
         let data = &event.data;
@@ -993,16 +995,49 @@ impl AnthropicSseMachine {
         }) {
             return Some(index);
         }
-        if name != "response.output_item.added" || !self.holds_new_items() {
+        let tool_is_open = self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Tool);
+        let waits = match name {
+            "response.output_item.added" => self.holds_new_items(),
+            // Only while a tool block is open: with text or reasoning open, the
+            // event continues that block rather than stopping a call's.
+            "response.output_text.delta" | "response.reasoning_summary_text.delta" => tool_is_open,
+            // A function call's done event only ever closes its own block.
+            "response.output_item.done" => {
+                tool_is_open
+                    && item
+                        .and_then(|item| item.get("type"))
+                        .and_then(Value::as_str)
+                        != Some("function_call")
+            }
+            _ => false,
+        };
+        let id = id?;
+        // The replayed item still in progress streams its remaining events live.
+        if !waits
+            || self
+                .pending_item
+                .as_ref()
+                .is_some_and(|pending| pending.id == id)
+        {
             return None;
         }
-        self.deferred_items.push(DeferredItem {
-            id: id?.to_string(),
-            call_id: call_id.map(str::to_string),
-            events: Vec::new(),
-            done: false,
-        });
-        Some(self.deferred_items.len() - 1)
+        // An item that started before the open call precedes every deferred
+        // item, all of which were added after it, so it replays first.
+        let index = if name == "response.output_item.added" {
+            self.deferred_items.len()
+        } else {
+            0
+        };
+        self.deferred_items.insert(
+            index,
+            DeferredItem {
+                id: id.to_string(),
+                call_id: call_id.map(str::to_string),
+                events: Vec::new(),
+                done: false,
+            },
+        );
+        Some(index)
     }
 
     /// Whether an item added now must wait: behind the open tool block, whose
