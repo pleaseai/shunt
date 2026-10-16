@@ -731,21 +731,29 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // Reload triggers (SIGHUP and config-file watch) run as background tasks and
     // hot-swap the shared runtime state that the router reads per request.
     shunt::reload::spawn_reload_watchers(shared, path).await;
-    // Opt-in `[server.pool] state_path`: warm-start the pool from the last
-    // persisted quota before serving, then flush changes in the background. Both
-    // are no-ops when the key is unset.
-    shunt::state_persist::restore(&state).await;
-    shunt::state_persist::spawn_state_persister(state.clone(), None);
-    // Opt-in `[server.gateway] state_path`: restore gateway-login refresh
-    // sessions before serving; later mutations are written by the token
-    // endpoint itself. A no-op when the key is unset.
-    shunt::gateway::persist::restore(&state).await;
-    // Spend-limit caps and audit records share a versioned, atomic state file.
-    // Restore it before accepting admin mutations; memory-only configuration is
-    // a no-op.
-    shunt::gateway::spend::persist::restore(&state)
+    // Opt-in `[store]`: open it, import the JSON snapshots once, and restore
+    // pool, gateway sessions, and spend from it; any failure refuses to boot.
+    // Without one, the three JSON restores below run exactly as before.
+    let store_runtime = shunt::store::boot::start(&state.config, &state)
         .await
-        .context("failed to restore gateway spend-limit state")?;
+        .context("failed to start the store")?;
+    if store_runtime.is_none() {
+        // Opt-in `[server.pool] state_path`: warm-start the pool from the last
+        // persisted quota before serving, then flush changes in the background.
+        // Both are no-ops when the key is unset.
+        shunt::state_persist::restore(&state).await;
+        shunt::state_persist::spawn_state_persister(state.clone(), None);
+        // Opt-in `[server.gateway] state_path`: restore gateway-login refresh
+        // sessions before serving; later mutations are written by the token
+        // endpoint itself. A no-op when the key is unset.
+        shunt::gateway::persist::restore(&state).await;
+        // Spend-limit caps and audit records share a versioned, atomic state
+        // file. Restore it before accepting admin mutations; memory-only
+        // configuration is a no-op.
+        shunt::gateway::spend::persist::restore(&state)
+            .await
+            .context("failed to restore gateway spend-limit state")?;
+    }
     // Opt-in `[server.status]`: poll provider Statuspage `summary.json`
     // endpoints in the background, sharing the router's status store.
     // Observation-only (see AGENTS.md) and a no-op when `sources` is empty.
@@ -776,8 +784,15 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
             );
         }
     }
+    // Both drain outcomes: write pending store state, release the hold, close.
+    if let Some(store_runtime) = store_runtime {
+        store_runtime.shutdown(STORE_SHUTDOWN_TIMEOUT).await;
+    }
     Ok(())
 }
+
+/// Bound on the store's final flush, hold release, and close after the drain.
+const STORE_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     let config = Config::load(config_path.as_deref())

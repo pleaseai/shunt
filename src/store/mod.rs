@@ -1,5 +1,6 @@
 //! Optional pluggable store (ADR-0006): SQLite always, PostgreSQL behind `store-postgres`.
 
+pub mod boot;
 pub mod config;
 pub mod db;
 pub mod error;

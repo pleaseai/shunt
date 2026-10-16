@@ -138,6 +138,17 @@ impl PoolPersister {
     /// or roll back with their transaction; call [`Self::flush_now`] first to
     /// write pending state.
     pub async fn stop(mut self) {
+        self.stop_task().await;
+    }
+
+    /// Graceful shutdown in the order the store needs: end the timer first so
+    /// no tick races the final write, then [`Self::flush_now`] once.
+    pub async fn stop_and_flush(mut self) -> Result<(), StoreError> {
+        self.stop_task().await;
+        self.flush_now().await
+    }
+
+    async fn stop_task(&mut self) {
         if let Some(task) = self.task.take() {
             task.abort();
             let _ = task.await;
