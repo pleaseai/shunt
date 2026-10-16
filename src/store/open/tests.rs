@@ -63,9 +63,11 @@ async fn pending_migrations_apply_before_open_returns() {
     assert_eq!(store.schema_version().await.unwrap(), 1);
     assert_eq!(store.supported_version(), 1);
     assert_eq!(store.pending_migrations().await.unwrap(), 0);
+    store.release_hold().await.unwrap();
     store.close().await;
 
-    // An existing, already-migrated file reopens without error.
+    // An existing, already-migrated file reopens without error once the
+    // previous holder released the instance hold.
     let again = Store::open(&config, Mode::Serve).await.unwrap();
     assert_eq!(again.schema_version().await.unwrap(), 1);
     again.close().await;

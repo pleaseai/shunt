@@ -22,6 +22,19 @@ pub enum StoreError {
     /// Inspect mode only: the SQLite file does not exist (it is created at boot).
     #[error("store {target} does not exist yet; it is created at boot")]
     Absent { target: String },
+    /// Another live shunt process holds the store (AC-026).
+    #[error(
+        "store {target} is held by another shunt instance ({label}), last renewed {age_secs}s ago; \
+         only one shunt process can use a store at a time"
+    )]
+    HoldHeld {
+        target: String,
+        label: String,
+        age_secs: u64,
+    },
+    /// This process no longer holds the store: another instance took it over.
+    #[error("store {target}: the instance hold was taken over by another shunt process")]
+    HoldLost { target: String },
     /// A statement failed.
     #[error("store statement failed: {reason}")]
     Database { reason: String },

@@ -129,7 +129,8 @@ async fn a_fresh_database_has_the_seeded_hold_row() {
         .await
         .unwrap()
         .expect("seed row");
-    assert_eq!(row.opt_text(0).unwrap(), None);
+    // `Mode::Serve` acquires the seeded row before returning.
+    assert_eq!(row.opt_text(0).unwrap().as_deref(), Some(store.holder_id()));
     tx.rollback().await.unwrap();
     store.close().await;
 }

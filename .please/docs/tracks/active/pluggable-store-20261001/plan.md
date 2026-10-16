@@ -304,6 +304,9 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
   Evidence: `cargo test --lib store::` → 146 passed (17 new in store::db / store::open); `cargo test --lib --features store-postgres store::` → 155 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features store-postgres,bench -- -D warnings` → clean
 - [x] (2026-10-16 20:58 KST) T004 Postgres in CI and the cross-engine contract harness
   Evidence: `SHUNT_TEST_POSTGRES_URL=postgres://…@localhost:55432/postgres SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --lib --features store-postgres store::` → 165 passed (3 runs), 0 `contract_%` schemas left; URL unset → 10 passed, 5 × `skipped: SHUNT_TEST_POSTGRES_URL unset`; `REQUIRED=1` with no URL → 5 postgres tests FAILED (`SHUNT_TEST_POSTGRES_REQUIRED=1 but SHUNT_TEST_POSTGRES_URL is unset`); default features → 5 sqlite tests pass; CI run 38896134846 → `store::contract::tests::*::postgres ... ok` and the parity test ok in both `fmt · clippy · test` and `coverage` jobs, 0 skipped lines. The run is red only on `Test default build (no ui feature)`: `constant POSTGRES_ACQUIRE_TIMEOUT / DEFAULT_POSTGRES_CONNECTIONS is never used` in `src/store/open.rs` (from T003, 691d009c; not fixed here)
+- [x] (2026-10-16 22:30 KST) T005 Instance hold: acquire, heartbeat, fencing, release
+  Evidence: `SHUNT_TEST_POSTGRES_URL=postgres://…@localhost:55432/shunt_test SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --lib --features store-postgres store::` → 184 passed (9 hold contract tests on each engine + `inspect_never_touches_the_hold`); `cargo test --lib store::` (default features) → 161 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features store-postgres,bench -- -D warnings` → clean; `RUSTFLAGS="-D warnings" cargo check --lib` → clean
+  Deferred: binary-level two-process test (spawn `CARGO_BIN_EXE_shunt` twice against one SQLite file; second exits non-zero naming the first) — needs `serve` wired to the store, so it moves to T009
 
 ## Decision Log
 
@@ -332,6 +335,8 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 - 2026-10-16: Postgres isolation is one `contract_<uuid>` schema per test, selected by appending `options=-c search_path=<schema>` to the URL, so `Store::open` migrations and `_sqlx_migrations` land inside it; the schema is dropped (best effort) by `Harness::finish`. A panicking body leaves its schema behind. CI pins `postgres:16-alpine@sha256:721873c3...` (the multi-arch index digest).
   Date/Author: 2026-10-16 / claude-worker
 - 2026-10-16: `test_support::TempDir` gained an atomic counter in its directory name: macOS clock ticks are microseconds, so two parallel contract tests got the same directory (`table import_record already exists`).
+  Date/Author: 2026-10-16 / claude-worker
+- 2026-10-16: The `CARGO_BIN_EXE_shunt` two-process hold test moves from T005 to T009: `main.rs::serve` is not wired to the store until T009, so there is no binary-level entry point to refuse the second process. T005 covers the same behavior in-process with a second `Store::open` against the same database.
   Date/Author: 2026-10-16 / claude-worker
 
 ## Surprises & Discoveries

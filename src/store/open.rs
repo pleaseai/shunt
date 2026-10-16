@@ -1,5 +1,6 @@
-//! Opening the store: connect, preflight, (hold seam), migrate.
+//! Opening the store: connect, preflight, instance hold, migrate.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::migrate::Migrator;
@@ -8,6 +9,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use super::config::{StoreBackend, StoreConfig};
 use super::db::Db;
 use super::error::StoreError;
+use super::hold::HoldState;
 use super::migrate;
 
 /// How the store is being opened.
@@ -32,6 +34,11 @@ pub struct Store {
     db: Db,
     target: String,
     migrator: &'static Migrator,
+    /// Shared across clones: they are one instance, one hold.
+    pub(super) hold: Arc<HoldState>,
+    /// The config this store opened with, so tests can open a second opener.
+    #[cfg(test)]
+    pub(crate) config: StoreConfig,
 }
 
 impl Store {
@@ -41,7 +48,7 @@ impl Store {
         let target = config.sanitized_target();
         let db = connect(config, mode, &target).await?;
         let migrator = migrate::embedded(&db);
-        Self::finish(db, target, mode, migrator).await
+        Self::finish(config, db, target, mode, migrator).await
     }
 
     /// `open` with an explicit migration set, so tests can inject a bad one.
@@ -53,10 +60,11 @@ impl Store {
     ) -> Result<Store, StoreError> {
         let target = config.sanitized_target();
         let db = connect(config, mode, &target).await?;
-        Self::finish(db, target, mode, migrator).await
+        Self::finish(config, db, target, mode, migrator).await
     }
 
     async fn finish(
+        config: &StoreConfig,
         db: Db,
         target: String,
         mode: Mode,
@@ -66,6 +74,9 @@ impl Store {
             db,
             target,
             migrator,
+            hold: Arc::new(HoldState::new(config.hold_stale_seconds)),
+            #[cfg(test)]
+            config: config.clone(),
         };
         if mode == Mode::Inspect {
             return Ok(store);
@@ -77,7 +88,7 @@ impl Store {
         opened.map(|()| store)
     }
 
-    /// `preflight` -> before-migrate hook -> `run`, in that order.
+    /// `preflight` -> `ensure_hold_table` -> acquire hold -> `run`, in that order.
     async fn serve_steps(&self) -> Result<(), StoreError> {
         migrate::preflight(&self.db, self.migrator, &self.target).await?;
         self.before_migrate().await?;
@@ -86,9 +97,10 @@ impl Store {
 
     /// Runs after the schema-version preflight and before migrations. The
     /// instance hold is acquired here, so a refused opener never migrates a
-    /// live holder's schema. Nothing to do until the hold exists.
+    /// live holder's schema.
     async fn before_migrate(&self) -> Result<(), StoreError> {
-        Ok(())
+        self.ensure_hold_table().await?;
+        self.acquire_hold().await.map(|_| ())
     }
 
     pub fn db(&self) -> &Db {
