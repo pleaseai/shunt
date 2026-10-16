@@ -217,7 +217,7 @@ dead-pid fast path for the hold (YAGNI).
 
 ## Tasks
 
-- [ ] T001 Add sqlx dependency, `store-postgres` feature, root `build.rs`, empty `src/store/` (file: Cargo.toml) [US-5]
+- [x] T001 Add sqlx dependency, `store-postgres` feature, root `build.rs`, empty `src/store/` (file: Cargo.toml) [US-5]
   Validation: `cargo tree -i libsqlite3-sys` prints exactly one version; `cargo build` and `cargo build --features store-postgres` both succeed; the Cursor reader tests (`auth::observation`) still pass; `release.yml` builds `--features ui,store-postgres`; which root-CA store sqlx's aws-lc TLS uses is recorded in Decision Log. Evidence: command output pasted in Progress
   Method: `cargo tree -i libsqlite3-sys`, `cargo build`, `cargo build --features store-postgres`, `cargo test auth::observation`
   STOP: two `libsqlite3-sys` versions resolve, or enabling `tls-rustls-aws-lc-rs` breaks rustls provider selection (`ensure_crypto_provider`)
