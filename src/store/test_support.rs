@@ -1,9 +1,14 @@
 //! Shared test helpers for the store modules.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::config::{StoreBackend, StoreConfig, DEFAULT_HOLD_STALE_SECONDS};
+
+/// Disambiguates directories made in the same clock tick (macOS clocks tick
+/// in microseconds, so parallel tests can otherwise share a name).
+static NEXT: AtomicU64 = AtomicU64::new(0);
 
 /// A self-deleting directory under the system temp dir.
 pub(crate) struct TempDir(pub PathBuf);
@@ -11,8 +16,9 @@ pub(crate) struct TempDir(pub PathBuf);
 impl TempDir {
     pub(crate) fn new(tag: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "shunt-store-{tag}-{}-{}",
+            "shunt-store-{tag}-{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock after epoch")

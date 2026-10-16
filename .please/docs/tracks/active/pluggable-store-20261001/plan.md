@@ -325,6 +325,13 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 - 2026-10-16: `Store::open(.., Mode::Inspect)` does not run the preflight and returns `Ok` for a too-new schema; `shunt check` calls `Store::check_schema()` (returns `SchemaTooNew`) so it can still print "schema vN (binary supports vM)". `Mode::Serve` runs preflight inside `open`. The "byte-identical" guarantee for Inspect holds for the database file; SQLite may create or remove `-shm`/`-wal` bookkeeping for a WAL database even read-only.
   Date/Author: 2026-10-16 / claude-worker
 
+- 2026-10-16: The T004 harness is in-crate (`src/store/contract.rs`, tests in `src/store/contract/tests.rs`, run with `cargo test --lib store::contract`), not `tests/store_contract.rs`. T005-T008 test crate-private repo code (`state_persist`, `gateway::spend::persist`, `gateway::durable`) that an integration test cannot reach. Gate: the `postgres` arm is `#[cfg(feature = "store-postgres")]`; the sqlite arm always runs. Contract tests are written with `store_contract_test!(name, |store| { ... })`, which expands to `mod name { sqlite, postgres }`.
+  Date/Author: 2026-10-16 / claude-worker
+- 2026-10-16: Postgres isolation is one `contract_<uuid>` schema per test, selected by appending `options=-c search_path=<schema>` to the URL, so `Store::open` migrations and `_sqlx_migrations` land inside it; the schema is dropped (best effort) by `Harness::finish`. A panicking body leaves its schema behind. CI pins `postgres:16-alpine@sha256:721873c3...` (the multi-arch index digest).
+  Date/Author: 2026-10-16 / claude-worker
+- 2026-10-16: `test_support::TempDir` gained an atomic counter in its directory name: macOS clock ticks are microseconds, so two parallel contract tests got the same directory (`table import_record already exists`).
+  Date/Author: 2026-10-16 / claude-worker
+
 ## Surprises & Discoveries
 
 - `[server.gateway].state_path` changes on reload redirect `save_if_dirty` silently (it reads `state.refreshed().config`), with no restart-only warning — pre-existing, out of scope, follow-up issue.
