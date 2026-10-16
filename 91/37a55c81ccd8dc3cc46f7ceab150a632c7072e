@@ -1,0 +1,28 @@
+docs/m1-responses-translation.md
+  s_830d57399b8959::t_41091620f8039f 149
+src/model/responses.rs
+  s_830d57399b8959::t_0b09b5e3e88e9a 974-976,1004-1005,1011-1015,1021
+  s_830d57399b8959::t_4db5848c85eb21 969-972
+  s_830d57399b8959::t_15281eb4bed336 998-1003,1006-1010,1016
+  s_830d57399b8959::t_552ebc0746cac5 1017-1020
+  s_830d57399b8959::t_754eb2b168a655 1024-1040
+tests/responses_translate.rs
+  s_830d57399b8959::t_a82ee0d434e23d 1901,1986-1989,1994-2001,2003-2086
+  s_830d57399b8959::t_9e2a8eabd2e408 1902-1985,1990-1993,2002
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9137a55c81ccd8dc3cc46f7ceab150a632c7072e",
+  "prompts": {},
+  "sessions": {
+    "s_830d57399b8959": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "030d95a9-e575-490d-89bf-d87495d6fbc9",
+        "model": "unknown"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
