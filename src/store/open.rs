@@ -21,7 +21,9 @@ pub enum Mode {
 }
 
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(feature = "store-postgres")]
 const POSTGRES_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(feature = "store-postgres")]
 const DEFAULT_POSTGRES_CONNECTIONS: u32 = 4;
 
 /// An open store: the database plus the sanitized target for messages.
