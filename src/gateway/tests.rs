@@ -3106,3 +3106,5 @@ async fn telemetry_relay_does_not_follow_redirects() {
         "a redirect must not carry the payload to another host, got {delivered:?}"
     );
 }
+
+mod store_backed;

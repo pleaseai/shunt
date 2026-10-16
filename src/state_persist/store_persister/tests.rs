@@ -243,3 +243,70 @@ store_contract_test!(restore_from_store_fails_loudly_on_a_bad_row, |store| {
     let error = restore_from_store(&app_state(), &store).await.unwrap_err();
     assert!(matches!(error, StoreError::Database { .. }), "{error:?}");
 });
+
+fn gateway_identity() -> crate::gateway::approval::Identity {
+    crate::gateway::approval::Identity {
+        sub: "dev@example.com".into(),
+        email: "dev@example.com".into(),
+        name: "dev".into(),
+    }
+}
+
+async fn stored_sessions(store: &Store) -> HashMap<String, crate::gateway::refresh::RefreshRecord> {
+    crate::store::sessions_repo::load_sessions(store)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|record| (record.token_sha256.clone(), record))
+        .collect()
+}
+
+store_contract_test!(flush_now_writes_pending_gateway_sessions, |store| {
+    let state = app_state();
+    assert!(state.gateway_stores.attach_store(Arc::new(store.clone())));
+    let persister = PoolPersister::store(
+        state.clone(),
+        Arc::new(store.clone()),
+        Duration::from_secs(3600),
+    );
+    // A session mutation the durable path never committed (for example a
+    // revocation kept in memory through an outage) is pending.
+    state
+        .gateway_stores
+        .refresh_tokens
+        .issue(gateway_identity());
+    assert!(stored_sessions(&store).await.is_empty());
+
+    persister.flush_now().await.unwrap();
+    let written = stored_sessions(&store).await;
+    assert_eq!(written.len(), 1);
+    assert_eq!(
+        written.into_values().collect::<Vec<_>>(),
+        state.gateway_stores.refresh_tokens.export()
+    );
+    persister.stop().await;
+});
+
+store_contract_test!(the_spawned_loop_flushes_pending_gateway_sessions, |store| {
+    let state = app_state();
+    assert!(state.gateway_stores.attach_store(Arc::new(store.clone())));
+    let persister = PoolPersister::store(
+        state.clone(),
+        Arc::new(store.clone()),
+        Duration::from_millis(25),
+    );
+    state
+        .gateway_stores
+        .refresh_tokens
+        .issue(gateway_identity());
+    let mut written = false;
+    for _ in 0..200 {
+        if stored_sessions(&store).await.len() == 1 {
+            written = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(written, "the loop never flushed the pending session");
+    persister.stop().await;
+});

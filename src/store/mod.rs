@@ -7,6 +7,7 @@ pub mod hold;
 pub mod migrate;
 pub mod open;
 pub(crate) mod pool_repo;
+pub(crate) mod sessions_repo;
 pub(crate) mod spend_repo;
 
 pub use config::{StoreBackend, StoreConfig};

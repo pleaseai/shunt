@@ -311,6 +311,8 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
   Evidence: `SHUNT_TEST_POSTGRES_URL=postgres://…@localhost:55432/shunt_test SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --lib --features store-postgres -- state_persist:: store:: metrics::` → 275 passed (7 persister + 4 pool_repo contract tests on each engine, existing `state_persist::tests` unchanged); `cargo test --lib -- state_persist:: store:: metrics::` (default features) → 242 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features store-postgres,bench -- -D warnings` → clean; `RUSTFLAGS="-D warnings" cargo check --lib` → clean
 - [x] (2026-10-16 23:55 KST) T007 Spend repo and the store branch in `spend::persist::save`/`restore`
   Evidence: `cargo test --lib --features store-postgres -- gateway:: store:: state_persist::` (Postgres 55432) -> 452 passed; default build `cargo test --lib -- gateway:: store::` -> 388 passed; fmt, clippy (store-postgres,bench) and `RUSTFLAGS=-D warnings cargo check --lib` clean
+- [x] (2026-10-17 00:40 KST) T008 Gateway durable token path with rollback, sessions repo, `oauth.rs` wiring
+  Evidence: `cargo test --lib --features store-postgres -- gateway:: store:: state_persist::` (Postgres 55432, REQUIRED=1) -> 496 passed (12 `gateway::tests::store_backed` + 7 `sessions_repo` + 2 persister session cases, each on both engines; `state_path_keeps_refresh_sessions_across_a_restart` unchanged and green); default build -> 431 passed; fmt, clippy (store-postgres,bench) and `RUSTFLAGS=-D warnings cargo check --lib` clean; mutation (rollback disabled) -> 4 store_backed tests FAILED, restored
 
 ## Decision Log
 
@@ -357,6 +359,15 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 - Decision: `save_spend` takes `before` from `SpendStore::export()` inside `persist::save`; `api.rs` holds `mutation_gate` and calls `replace` only after `save` returns, so the in-memory state is exactly `before`.
   Rationale: keeps `api.rs` unmodified while giving the repo a transition rather than a snapshot.
   Date/Author: 2026-10-16 / claude-worker
+
+- 2026-10-17: Gateway durable path state lives in `GatewayStores.durable_sessions` (`gateway::durable::DurableSessions`: a `tokio::sync::Mutex<HashMap<token_sha256, RefreshRecord>>` whose guarded value is `committed`), not in AppState. It starts empty (correct for an empty store) and `durable::restore_from_store` sets it to the rows *loaded* (before the import sweep), so the first `flush_pending` also deletes rows that expired while down. The lock spans `export -> mutate -> export -> write`; "adds an active token" is `adds_active(before, after)` (an active hash in `after` that `before` lacks). An empty diff issues no statement (no `begin_durable`).
+  Date/Author: 2026-10-17 / sol-implementer
+- 2026-10-17: The store persister (`PoolPersister`) also calls `gateway::durable::flush_pending` on every tick and in `flush_now`, using the gateway-attached store (no-op without one). Alternative considered: a second gateway-only task; rejected because it would duplicate the interval/stop/shutdown plumbing T009 already wires for the pool persister. Pool behavior and tests are unchanged; a `flush_now` error is the pool error, else the sessions error.
+  Date/Author: 2026-10-17 / sol-implementer
+- 2026-10-17: The plan's "32 concurrent rotations of one token leave exactly one active descendant" cannot hold with the unchanged `RefreshTokenStore`: the first rotation succeeds, and each of the other 31 is a replay of a tombstone, which revokes the whole family including the new token. The test asserts the achievable form: exactly one 200, 31 x 401, store == memory, and zero active tokens afterwards (the descendant is revoked, never resurrected). Making a concurrent loser not revoke the winner would change store-less behavior, which the task forbids.
+  Date/Author: 2026-10-17 / sol-implementer
+- 2026-10-17: A device-grant issue that fails the store write returns 503 after `DeviceGrantStore::poll` already consumed the approved grant, so that login must restart from `/oauth/device_authorization` (the retried poll gets `expired_token`). Restoring the grant would need a new un-consume API on the device-grant store; not built (the plan specifies rollback of the refresh store only).
+  Date/Author: 2026-10-17 / sol-implementer
 
 ## Surprises & Discoveries
 

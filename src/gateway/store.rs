@@ -338,6 +338,9 @@ impl PerIpRateLimiter {
 pub struct GatewayStores {
     pub device_grants: DeviceGrantStore,
     pub refresh_tokens: RefreshTokenStore,
+    /// The store-backed token path's lock and committed baseline
+    /// ([`super::durable`]); unused without an attached store.
+    pub(super) durable_sessions: super::durable::DurableSessions,
     pub spend: SpendStore,
     pub device_authorization_rate: PerIpRateLimiter,
     pub device_verify_rate: PerIpRateLimiter,
@@ -375,6 +378,7 @@ impl GatewayStores {
         Self {
             device_grants: DeviceGrantStore::new(),
             refresh_tokens: RefreshTokenStore::new(),
+            durable_sessions: super::durable::DurableSessions::default(),
             spend: SpendStore::new(spend_state_path),
             device_authorization_rate: PerIpRateLimiter::new(
                 Duration::from_secs(rate_limits.device_authorization.window_seconds),

@@ -108,7 +108,7 @@ impl PoolPersister {
             gate: tokio::sync::Mutex::new(()),
             halted: AtomicBool::new(false),
         });
-        let task = tokio::spawn(store_loop(sink.clone(), state.accounts.clone(), interval));
+        let task = tokio::spawn(store_loop(sink.clone(), state.clone(), interval));
         Self {
             state,
             sink: Some(sink),
@@ -117,11 +117,16 @@ impl PoolPersister {
     }
 
     /// Write any pending quota now, for graceful shutdown. With a store this
-    /// returns the write's error; the file persister logs its own failures and
-    /// returns `Ok`.
+    /// also writes any pending gateway-session diff (a revocation a failed
+    /// token write left in memory) and returns the first error; the file
+    /// persister logs its own failures and returns `Ok`.
     pub async fn flush_now(&self) -> Result<(), StoreError> {
         match &self.sink {
-            Some(sink) => sink.flush(&self.state.accounts).await,
+            Some(sink) => {
+                let pool = sink.flush(&self.state.accounts).await;
+                let sessions = crate::gateway::durable::flush_pending(&self.state).await;
+                pool.and(sessions)
+            }
             None => {
                 flush(&self.state).await;
                 Ok(())
@@ -140,14 +145,19 @@ impl PoolPersister {
     }
 }
 
-async fn store_loop(sink: Arc<StoreSink>, accounts: Arc<AccountPool>, interval: Duration) {
+async fn store_loop(sink: Arc<StoreSink>, state: AppState, interval: Duration) {
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The first tick fires immediately; there is nothing new to write at t=0.
     ticker.tick().await;
     loop {
         ticker.tick().await;
-        let _ = sink.flush(&accounts).await;
+        let _ = sink.flush(&state.accounts).await;
+        // Pending gateway-session writes ride the same tick (15 s): a
+        // revocation kept in memory through a store outage reaches the store
+        // without waiting for another token request. A no-op when no gateway
+        // store is attached or nothing differs.
+        let _ = crate::gateway::durable::flush_pending(&state).await;
         if sink.halted() {
             return;
         }
