@@ -82,7 +82,7 @@ pub struct Config {
     /// Optional pluggable store (ADR-0006). Absent (the default) means every
     /// persistence choke point keeps its file-based body. Restart-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub store: Option<crate::store::StoreConfig>,
+    pub store: Option<Box<crate::store::StoreConfig>>,
 }
 
 fn default_auto_include_builtin_models() -> bool {

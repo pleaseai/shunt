@@ -1014,11 +1014,11 @@ mod tests {
     #[test]
     fn store_change_warns_that_restart_is_required_without_leaking_the_url() {
         let previous = Config {
-            store: Some(store_config("/var/lib/shunt/hunter2-before.db")),
+            store: Some(Box::new(store_config("/var/lib/shunt/hunter2-before.db"))),
             ..Config::default()
         };
         let mut next = previous.clone();
-        next.store = Some(store_config("/var/lib/shunt/hunter2-after.db"));
+        next.store = Some(Box::new(store_config("/var/lib/shunt/hunter2-after.db")));
 
         let logs = capture_logs(|| super::warn_on_restart_only_changes(&previous, &next));
         assert!(logs.contains("[store] configuration changed"), "{logs}");
@@ -1034,7 +1034,7 @@ mod tests {
     #[test]
     fn unchanged_store_does_not_warn() {
         let previous = Config {
-            store: Some(store_config("/var/lib/shunt/a.db")),
+            store: Some(Box::new(store_config("/var/lib/shunt/a.db"))),
             ..Config::default()
         };
         let next = previous.clone();

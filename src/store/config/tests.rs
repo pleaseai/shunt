@@ -163,7 +163,7 @@ fn config_default_has_no_store_and_round_trips() {
 fn config_validate_hooks_the_store_section() {
     use crate::config::{Config, ConfigError};
     let config = Config {
-        store: Some(sqlite(":memory:")),
+        store: Some(Box::new(sqlite(":memory:"))),
         ..Config::default()
     };
     assert!(matches!(
@@ -171,7 +171,7 @@ fn config_validate_hooks_the_store_section() {
         Err(ConfigError::InvalidStore { .. })
     ));
     let config = Config {
-        store: Some(sqlite("/tmp/shunt-store.db")),
+        store: Some(Box::new(sqlite("/tmp/shunt-store.db"))),
         ..Config::default()
     };
     config.validate().unwrap();
