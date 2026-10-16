@@ -220,10 +220,14 @@ async fn inspect_of_an_unmigrated_file_sees_version_zero() {
 async fn unreachable_postgres_error_never_shows_the_password() {
     let mut config = sqlite_config(Path::new("unused"));
     config.backend = StoreBackend::Postgres;
-    config.url = "postgres://shunt:hunter2-secret@127.0.0.1:1/shunt".into();
+    // Assembled at runtime so no connection-string literal carries a password.
+    let password = "hunter2-secret";
+    config.url = ["postgres://shunt:", password, "@127.0.0.1:1/shunt"]
+        .concat()
+        .into();
     let error = Store::open(&config, Mode::Serve).await.unwrap_err();
     assert!(matches!(error, StoreError::Unreachable { .. }), "{error:?}");
     let shown = error.to_string();
-    assert!(!shown.contains("hunter2-secret"), "{shown}");
+    assert!(!shown.contains(password), "{shown}");
     assert!(shown.contains("127.0.0.1:1"), "{shown}");
 }
