@@ -6,6 +6,7 @@ pub mod db;
 pub mod error;
 pub mod hold;
 pub mod import;
+pub mod inspect;
 pub(crate) mod marker;
 pub mod migrate;
 pub mod open;

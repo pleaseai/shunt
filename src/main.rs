@@ -816,6 +816,24 @@ fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     // config a run would actually get.
     warn_if_antigravity_pinned_to_production(&config);
     println!("config ok");
+    if let Some(store) = config.store.as_deref() {
+        // Read-only and bounded: unlike the rest of `check` this reaches the
+        // network for a PostgreSQL store, which is the point (AC-021).
+        let line = block_on_bounded(
+            runtime()?,
+            async {
+                tokio::time::timeout(
+                    shunt::store::inspect::INSPECT_TIMEOUT,
+                    shunt::store::inspect::inspect(store),
+                )
+                .await
+            },
+            std::time::Duration::from_secs(1),
+        )
+        .map_err(|_| anyhow::anyhow!("store check timed out"))?
+        .context("store check failed")?;
+        println!("{line}");
+    }
     Ok(())
 }
 
