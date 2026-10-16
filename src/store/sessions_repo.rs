@@ -98,6 +98,19 @@ pub(crate) async fn apply_diff(store: &Store, diff: &SessionsDiff) -> Result<(),
     if diff.is_empty() {
         return Ok(());
     }
+    let mut tx = store.begin_durable().await?;
+    match apply_diff_in(&mut tx, diff).await {
+        Ok(()) => tx.commit().await,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            Err(error)
+        }
+    }
+}
+
+/// The write body of [`apply_diff`], inside a transaction the caller opened
+/// (and will commit or roll back), so the import can add its `import_record`.
+pub(crate) async fn apply_diff_in(tx: &mut Tx, diff: &SessionsDiff) -> Result<(), StoreError> {
     let mut rows = Vec::with_capacity(diff.upserts.len());
     for record in &diff.upserts {
         rows.push((
@@ -107,15 +120,7 @@ pub(crate) async fn apply_diff(store: &Store, diff: &SessionsDiff) -> Result<(),
             to_i64(record.issued_at)?,
         ));
     }
-
-    let mut tx = store.begin_durable().await?;
-    match write(&mut tx, &rows, &diff.deletes).await {
-        Ok(()) => tx.commit().await,
-        Err(error) => {
-            let _ = tx.rollback().await;
-            Err(error)
-        }
-    }
+    write(tx, &rows, &diff.deletes).await
 }
 
 async fn write(

@@ -8,6 +8,7 @@ use super::store::{
 use crate::{
     server::AppState,
     store::{
+        import::LoadIssue,
         spend_repo::{load_spend, save_spend},
         Store,
     },
@@ -121,20 +122,37 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let wire: PersistedSpendWire = serde_json::from_slice(&bytes).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("gateway spend-limit state is not valid json: {error}"),
-        )
-    })?;
+    crate::store::marker::warn_if_imported("spend", path, &bytes);
+    parse(&bytes, path)
+        .map(|state| Some(PersistedSpend { state }))
+        .map_err(|issue| {
+            let message = match issue {
+                LoadIssue::NotJson(error) => {
+                    format!("gateway spend-limit state is not valid json: {error}")
+                }
+                LoadIssue::Version { found, expected } => format!(
+                    "gateway spend-limit state version mismatch: found {found}, expected {expected}"
+                ),
+            };
+            io::Error::new(io::ErrorKind::InvalidData, message)
+        })
+}
+
+/// The spend state a snapshot holds, for the store import. Strict, and the
+/// same decode the store-less [`load`] performs.
+pub(crate) fn parse_state(bytes: &[u8], path: &Path) -> Result<SpendState, LoadIssue> {
+    parse(bytes, path)
+}
+
+/// Decode a snapshot's bytes; `path` is only for log context.
+fn parse(bytes: &[u8], path: &Path) -> Result<SpendState, LoadIssue> {
+    let not_json = |error: &dyn std::fmt::Display| LoadIssue::NotJson(error.to_string());
+    let wire: PersistedSpendWire = serde_json::from_slice(bytes).map_err(|e| not_json(&e))?;
     if wire.version != STATE_VERSION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "gateway spend-limit state version mismatch: found {}, expected {STATE_VERSION}",
-                wire.version
-            ),
-        ));
+        return Err(LoadIssue::Version {
+            found: wire.version,
+            expected: STATE_VERSION.to_string(),
+        });
     }
     let mut limits = Vec::new();
     let mut opaque_limits = Vec::new();
@@ -142,7 +160,7 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
         let typed_before = limits.len();
         match serde_json::from_value::<SpendLimit>(value.clone()) {
             Ok(mut limit) => match validate_limit(&limit) {
-                Ok(()) if serde_json::to_value(&limit).map_err(io::Error::other)? == value => {
+                Ok(()) if serde_json::to_value(&limit).map_err(|e| not_json(&e))? == value => {
                     limit.amount = canonical_amount(limit.amount.as_deref())
                         .expect("validated persisted amount is canonicalizable");
                     limits.push(limit);
@@ -191,22 +209,20 @@ fn load(path: &Path) -> io::Result<Option<PersistedSpend>> {
         .unwrap_or(1)
         .max(wire.next_audit_id);
     let (audit, opaque_audit) = parse_records::<AuditRecord>(wire.audit, path, "audit")?;
-    Ok(Some(PersistedSpend {
-        state: SpendState {
-            limits,
-            opaque_limits,
-            audit,
-            opaque_audit,
-            next_audit_id,
-        },
-    }))
+    Ok(SpendState {
+        limits,
+        opaque_limits,
+        audit,
+        opaque_audit,
+        next_audit_id,
+    })
 }
 
 fn parse_records<T>(
     values: Vec<serde_json::Value>,
     path: &Path,
     kind: &str,
-) -> io::Result<(Vec<T>, Vec<OpaqueRecord>)>
+) -> Result<(Vec<T>, Vec<OpaqueRecord>), LoadIssue>
 where
     T: serde::de::DeserializeOwned + Serialize,
 {
@@ -215,7 +231,11 @@ where
     for value in values {
         let typed_before = typed.len();
         match serde_json::from_value::<T>(value.clone()) {
-            Ok(record) if serde_json::to_value(&record).map_err(io::Error::other)? == value => {
+            Ok(record)
+                if serde_json::to_value(&record)
+                    .map_err(|e| LoadIssue::NotJson(e.to_string()))?
+                    == value =>
+            {
                 typed.push(record);
             }
             Ok(_) => {

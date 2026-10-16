@@ -38,6 +38,17 @@ pub enum StoreError {
     /// A statement failed.
     #[error("store statement failed: {reason}")]
     Database { reason: String },
+    /// Importing a JSON snapshot failed; nothing was imported for that
+    /// subsystem and no import record was written (AC-029/AC-030).
+    #[error(
+        "importing the {subsystem} state snapshot {path} into the store failed: {reason}; \
+         nothing was imported for it"
+    )]
+    Import {
+        subsystem: &'static str,
+        path: String,
+        reason: String,
+    },
     /// A `u64` did not fit the store's signed 64-bit columns.
     #[error("value {value} does not fit a signed 64-bit store column")]
     OutOfRange { value: u64 },

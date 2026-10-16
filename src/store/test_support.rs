@@ -50,3 +50,32 @@ pub(crate) fn sqlite_config(path: &std::path::Path) -> StoreConfig {
         hold_stale_seconds: DEFAULT_HOLD_STALE_SECONDS,
     }
 }
+
+/// Run `run` under a throwaway tracing subscriber and return everything it
+/// logged (mirrors the capture helper in `reload.rs`).
+pub(crate) fn capture_logs(run: impl FnOnce()) -> String {
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
+
+    struct BufferWriter(Arc<Mutex<Vec<u8>>>);
+    impl Write for BufferWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let writer_output = Arc::clone(&output);
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || BufferWriter(Arc::clone(&writer_output)))
+        .with_ansi(false)
+        .without_time()
+        .finish();
+    tracing::subscriber::with_default(subscriber, run);
+    let bytes = output.lock().unwrap().clone();
+    String::from_utf8(bytes).unwrap()
+}

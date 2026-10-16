@@ -128,19 +128,30 @@ pub(crate) async fn save_spend(
     if before == after {
         return Ok(());
     }
-    let limits = limit_rows(after)?;
-    let audit = audit_rows(after)?;
-    let next_audit_id = to_i64(after.next_audit_id)?;
-    let boundary = to_i64(before.next_audit_id)?;
-
     let mut tx = store.begin_durable().await?;
-    match write(&mut tx, &limits, &audit, boundary, next_audit_id).await {
+    match write_state(&mut tx, before, after).await {
         Ok(()) => tx.commit().await,
         Err(error) => {
             let _ = tx.rollback().await;
             Err(error)
         }
     }
+}
+
+/// The write body of [`save_spend`] (without its unchanged-state shortcut),
+/// inside a transaction the caller opened (and will commit or roll back), so
+/// the import can add its `import_record`. With no `spend_meta` row yet it
+/// writes every record of `after`.
+pub(crate) async fn write_state(
+    tx: &mut Tx,
+    before: &SpendState,
+    after: &SpendState,
+) -> Result<(), StoreError> {
+    let limits = limit_rows(after)?;
+    let audit = audit_rows(after)?;
+    let next_audit_id = to_i64(after.next_audit_id)?;
+    let boundary = to_i64(before.next_audit_id)?;
+    write(tx, &limits, &audit, boundary, next_audit_id).await
 }
 
 async fn write(

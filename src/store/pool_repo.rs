@@ -37,6 +37,22 @@ pub(crate) async fn save_pool(
     store: &Store,
     exported: &[(AccountKey, QuotaState)],
 ) -> Result<(), StoreError> {
+    let mut tx = store.begin_durable().await?;
+    match write_pool(&mut tx, exported).await {
+        Ok(()) => tx.commit().await,
+        Err(error) => {
+            let _ = tx.rollback().await;
+            Err(error)
+        }
+    }
+}
+
+/// The write body of [`save_pool`], inside a transaction the caller opened
+/// (and will commit or roll back), so the import can add its `import_record`.
+pub(crate) async fn write_pool(
+    tx: &mut Tx,
+    exported: &[(AccountKey, QuotaState)],
+) -> Result<(), StoreError> {
     let mut rows = Vec::with_capacity(exported.len());
     for (key, quota) in exported {
         rows.push((
@@ -49,15 +65,7 @@ pub(crate) async fn save_pool(
             .duration_since(UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs()),
     )?;
-
-    let mut tx = store.begin_durable().await?;
-    match write_rows(&mut tx, &rows, now).await {
-        Ok(()) => tx.commit().await,
-        Err(error) => {
-            let _ = tx.rollback().await;
-            Err(error)
-        }
-    }
+    write_rows(tx, &rows, now).await
 }
 
 async fn write_rows(tx: &mut Tx, rows: &[(String, String)], now: i64) -> Result<(), StoreError> {

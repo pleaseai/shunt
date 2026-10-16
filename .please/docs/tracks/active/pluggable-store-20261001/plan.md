@@ -313,6 +313,8 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
   Evidence: `cargo test --lib --features store-postgres -- gateway:: store:: state_persist::` (Postgres 55432) -> 452 passed; default build `cargo test --lib -- gateway:: store::` -> 388 passed; fmt, clippy (store-postgres,bench) and `RUSTFLAGS=-D warnings cargo check --lib` clean
 - [x] (2026-10-17 00:40 KST) T008 Gateway durable token path with rollback, sessions repo, `oauth.rs` wiring
   Evidence: `cargo test --lib --features store-postgres -- gateway:: store:: state_persist::` (Postgres 55432, REQUIRED=1) -> 496 passed (12 `gateway::tests::store_backed` + 7 `sessions_repo` + 2 persister session cases, each on both engines; `state_path_keeps_refresh_sessions_across_a_restart` unchanged and green); default build -> 431 passed; fmt, clippy (store-postgres,bench) and `RUSTFLAGS=-D warnings cargo check --lib` clean; mutation (rollback disabled) -> 4 store_backed tests FAILED, restored
+- [x] (2026-10-17 02:10 KST) T010 Strict loaders, import-once transactions, import records, `.imported` sidecar and store-less warning
+  Evidence: `SHUNT_TEST_POSTGRES_URL=postgres://shunt:...@localhost:55432/shunt_test SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --lib --features store-postgres -- gateway:: store:: state_persist::` -> 530 passed (12 `store::import::tests` contract cases on each engine + `sources_follow_the_config_rules` + 6 `store::marker` + 3 store-less warn/no-warn cases; existing state_persist/gateway/spend tests unchanged); default build `cargo test --lib -- gateway:: store:: state_persist::` -> 453 passed; fmt, `clippy --all-targets --features store-postgres,bench -D warnings` and `RUSTFLAGS="-D warnings" cargo check --lib` clean
 
 ## Decision Log
 
@@ -367,6 +369,16 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 - 2026-10-17: The plan's "32 concurrent rotations of one token leave exactly one active descendant" cannot hold with the unchanged `RefreshTokenStore`: the first rotation succeeds, and each of the other 31 is a replay of a tombstone, which revokes the whole family including the new token. The test asserts the achievable form: exactly one 200, 31 x 401, store == memory, and zero active tokens afterwards (the descendant is revoked, never resurrected). Making a concurrent loser not revoke the winner would change store-less behavior, which the task forbids.
   Date/Author: 2026-10-17 / sol-implementer
 - 2026-10-17: A device-grant issue that fails the store write returns 503 after `DeviceGrantStore::poll` already consumed the approved grant, so that login must restart from `/oauth/device_authorization` (the retried poll gets `expired_token`). Restoring the grant would need a new un-consume API on the device-grant store; not built (the plan specifies rollback of the refresh store only).
+  Date/Author: 2026-10-17 / sol-implementer
+- Decision: the strict path is `parse(bytes)` per module plus a typed accessor the import calls (`state_persist::normalized_quotas`, `gateway::persist::parse_records`, `gateway::spend::persist::parse_state`), not a `load_strict(path)`. `LoadIssue::{NotJson, Version}` lives in `store::import`; the lenient store-less `load`s map it to the same warn texts and `None` (spend keeps its fail-closed `io::Error` messages).
+  Rationale: the import needs the exact bytes for the sha256 and the path for its error, so a path-taking `load_strict` would read the file twice.
+  Date/Author: 2026-10-17 / sol-implementer
+- Decision: a sidecar write failure after the commit is a WARN, not a boot failure.
+  Rationale: the data and `import_record` are already durable; the sidecar only drives the AC-031 warning, and failing boot would strand an operator whose store is correct.
+  Date/Author: 2026-10-17 / sol-implementer
+- Decision: `store::import` is a `pub` module (`import_all`, `ImportSources`, `Source`, `Outcome`, `ImportReport`, `Subsystem`) because `main.rs` is a separate crate from the lib; `ImportSources::from_config(&Config)` encodes "pool always, gateway/spend when configured". Every failure, including a store error mid-transaction, is wrapped in `StoreError::Import{subsystem, path, reason}` (path `(no snapshot)` for a NULL-source record).
+  Date/Author: 2026-10-17 / sol-implementer
+- Decision: the repos' write bodies became `pool_repo::write_pool`, `sessions_repo::apply_diff_in`, `spend_repo::write_state` (take `&mut Tx`); public behavior is unchanged. Import never calls a repo fn that opens its own transaction (SQLite has one connection). The AC-031 check runs inside each lenient store-less `load` right after the file read, so it fires only on store-less boots.
   Date/Author: 2026-10-17 / sol-implementer
 
 ## Surprises & Discoveries
