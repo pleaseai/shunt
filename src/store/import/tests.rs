@@ -51,6 +51,10 @@ fn quota(utilization: f64) -> QuotaState {
         reset_5h: Some(reset()),
         status: Some("allowed".to_string()),
         observed_at_5h: Some(observed()),
+        // Stamped here so normalization never fills it from the wall clock:
+        // the import and the expected value are normalized at different
+        // instants and would disagree across a second boundary.
+        observed_at_status: Some(observed()),
         ..Default::default()
     }
 }
