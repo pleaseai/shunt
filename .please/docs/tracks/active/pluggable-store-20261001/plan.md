@@ -298,6 +298,8 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 
 - [x] (2026-10-16 19:40 KST) T001 Add sqlx dependency, `store-postgres` feature, root `build.rs`, empty `src/store/`
   Evidence: `cargo tree -i libsqlite3-sys` → one version, `libsqlite3-sys v0.30.1`, reached from both `rusqlite v0.32.1` and `sqlx-sqlite v0.9.0`; `cargo build` and `cargo build --features store-postgres` → `Finished`; `cargo test --lib auth::observation` → 15 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features bench -- -D warnings` → clean; `cargo test --features store-postgres` → lib 3017 passed, only `tests/responses_chain_stream.rs` fails (3 tests, identical on pristine HEAD)
+- [x] (2026-10-16 21:00 KST) T002 `[store]` config, validation, TLS rule, restart-only reload warning
+  Evidence: `cargo test --lib store::config` → 11 passed; `cargo test --lib --features store-postgres store::config` → 20 passed; `cargo test --lib reload::` → 26 passed (2 new `[store]` tests); `cargo test --lib --features store-postgres` → 3039 passed; `cargo fmt --all --check` → exit 0; `cargo clippy --all-targets --features store-postgres,bench -- -D warnings` → clean; default-build clippy fails only on the pre-existing `src/routing/stage/store.rs:50` unused import
 
 ## Decision Log
 
@@ -314,6 +316,9 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 
 - 2026-10-16: sqlx's rustls TLS (`tls-rustls-aws-lc-rs` -> `_tls-rustls-aws-lc-rs` = `_tls-rustls` + `rustls/aws-lc-rs` + `webpki-roots`) trusts the bundled Mozilla `webpki-roots` store, not the OS store: `import_root_certs` in sqlx-core 0.9.0 `src/net/tls/tls_rustls.rs` builds `RootCertStore` from `webpki_roots::TLS_SERVER_ROOTS` unless `rustls-native-certs` is on, which only `_tls-rustls-ring-native-roots` enables. It also builds its own `aws_lc_rs::default_provider()` via `builder_with_provider`, so it never reads the process-wide default that `ensure_crypto_provider` installs. A private-CA Postgres server therefore needs `sslrootcert` (not the OS trust store).
   Date/Author: 2026-10-16 / sol-implementer
+
+- 2026-10-16: sqlx-postgres 0.9.0 has no password getter and seeds `password` from `PGPASSWORD`/`.pgpass` (`options/mod.rs` `new_without_pgpass`, `apply_pgpass`), so "inline password" is decided by parsing the URL userinfo and `?password=` with the `url` crate (`store::config::url_has_inline_password`). The TLS rule uses `get_host()`/`get_socket()`/`get_ssl_mode()`: `?host=` and `?hostaddr=` both overwrite `host` via `.host()` (`options/parse.rs:69-86`), `/`-prefixed hosts set `socket`, which `fetch_socket` prefers (`options/mod.rs:457`). The opt-out warning is logged from `StoreConfig::validate`, which re-runs on reload (the sentry/otel precedent avoids that); the repeat is accepted because it only fires while the operator keeps the opt-out set.
+  Date/Author: 2026-10-16 / claude-worker
 
 ## Surprises & Discoveries
 
