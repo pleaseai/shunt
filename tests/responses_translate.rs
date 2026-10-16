@@ -2003,13 +2003,26 @@ fn items_started_before_an_open_call_wait_for_its_done_only_arguments() {
 }
 
 #[test]
-fn an_item_started_before_an_open_call_replays_ahead_of_later_items() {
-    // msg_1 starts before call A, B is added and deferred while A is open, and
-    // only then does msg_1's text arrive. msg_1 keeps its upstream place ahead
-    // of B once A finishes.
-    let message = json!({"type": "message", "id": "msg_1"});
+fn items_started_before_an_open_call_replay_in_order_ahead_of_later_items() {
+    // msg_1 and msg_2 start before call A, B is added and deferred while A is
+    // open, and only then does their text arrive. Both keep their upstream
+    // order, ahead of B, once A finishes.
+    let message = |id: &str| json!({"type": "message", "id": id});
+    let text = |id: &str, delta: &str| {
+        sse_frame(
+            "response.output_text.delta",
+            json!({"item_id": id, "delta": delta}),
+        )
+    };
     let fixture = [
-        sse_frame("response.output_item.added", json!({"item": message})),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": message("msg_1")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": message("msg_2")}),
+        ),
         sse_frame(
             "response.output_item.added",
             json!({"item": probe_call("a")}),
@@ -2018,11 +2031,16 @@ fn an_item_started_before_an_open_call_replays_ahead_of_later_items() {
             "response.output_item.added",
             json!({"item": probe_call("b")}),
         ),
+        text("msg_1", "one"),
         sse_frame(
-            "response.output_text.delta",
-            json!({"item_id": "msg_1", "delta": "note"}),
+            "response.output_item.done",
+            json!({"item": message("msg_1")}),
         ),
-        sse_frame("response.output_item.done", json!({"item": message})),
+        text("msg_2", "two"),
+        sse_frame(
+            "response.output_item.done",
+            json!({"item": message("msg_2")}),
+        ),
         sse_frame(
             "response.function_call_arguments.done",
             json!({"item_id": "fc_a", "arguments": json!({"value": 1}).to_string()}),
@@ -2040,9 +2058,14 @@ fn an_item_started_before_an_open_call_replays_ahead_of_later_items() {
     }
     let final_json = machine.final_json();
 
-    assert_eq!(block_labels(&final_json), vec!["call_a", "text", "call_b"]);
+    assert_eq!(
+        block_labels(&final_json),
+        vec!["call_a", "text", "text", "call_b"]
+    );
     assert_eq!(final_json["content"][0]["input"], json!({"value": 1}));
-    assert_eq!(final_json["content"][2]["input"], json!({"value": 2}));
+    assert_eq!(final_json["content"][1]["text"], "one");
+    assert_eq!(final_json["content"][2]["text"], "two");
+    assert_eq!(final_json["content"][3]["input"], json!({"value": 2}));
 }
 
 #[test]

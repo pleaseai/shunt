@@ -146,6 +146,9 @@ struct DeferredItem {
     /// Whether the item's own done event is among `events`, so its replay
     /// finishes it.
     done: bool,
+    /// Whether the item started before the open call — it reached the queue
+    /// through a later event, not its `output_item.added`.
+    started_early: bool,
 }
 
 impl DeferredItem {
@@ -1021,12 +1024,17 @@ impl AnthropicSseMachine {
         {
             return None;
         }
-        // An item that started before the open call precedes every deferred
-        // item, all of which were added after it, so it replays first.
-        let index = if name == "response.output_item.added" {
-            self.deferred_items.len()
+        // An item that started before the open call precedes every item added
+        // after it, so it replays ahead of them, behind the items that started
+        // early before it.
+        let started_early = name != "response.output_item.added";
+        let index = if started_early {
+            self.deferred_items
+                .iter()
+                .position(|deferred| !deferred.started_early)
+                .unwrap_or(self.deferred_items.len())
         } else {
-            0
+            self.deferred_items.len()
         };
         self.deferred_items.insert(
             index,
@@ -1035,6 +1043,7 @@ impl AnthropicSseMachine {
                 call_id: call_id.map(str::to_string),
                 events: Vec::new(),
                 done: false,
+                started_early,
             },
         );
         Some(index)
