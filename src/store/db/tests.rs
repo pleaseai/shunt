@@ -152,7 +152,10 @@ async fn fetch_optional_returns_the_first_of_several_rows_or_none() {
         .unwrap();
     let mut tx = store.db().begin().await.unwrap();
     let first = tx
-        .fetch_optional("SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9", &[])
+        .fetch_optional(
+            "SELECT v FROM (SELECT 9 AS v UNION ALL SELECT 7 UNION ALL SELECT 8) ORDER BY v",
+            &[],
+        )
         .await
         .unwrap()
         .expect("first row");
