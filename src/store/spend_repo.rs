@@ -130,7 +130,19 @@ pub(crate) async fn save_spend(
     }
     let mut tx = store.begin_durable().await?;
     match write_state(&mut tx, before, after).await {
-        Ok(()) => tx.commit().await,
+        Ok(()) => {
+            tx.commit().await.map_err(|error| match error {
+                StoreError::Database { reason } => StoreError::CommitUncertain { reason },
+                other => other,
+            })?;
+            #[cfg(test)]
+            if crate::store::sessions_repo::tests::take_lost_commit_ack(store) {
+                return Err(StoreError::CommitUncertain {
+                    reason: "injected: the acknowledgement was lost".to_string(),
+                });
+            }
+            Ok(())
+        }
         Err(error) => {
             let _ = tx.rollback().await;
             Err(error)
@@ -244,6 +256,12 @@ async fn trim_audit(tx: &mut Tx) -> Result<(), StoreError> {
 /// does not decode is an error, never a skipped record: dropping it would let
 /// the next save erase it.
 pub(crate) async fn load_spend(store: &Store) -> Result<Option<SpendState>, StoreError> {
+    #[cfg(test)]
+    if crate::store::sessions_repo::tests::take_failed_load(store) {
+        return Err(StoreError::Database {
+            reason: "injected: load failed".to_string(),
+        });
+    }
     let mut tx = store.db().begin().await?;
     let fetched = fetch_all(&mut tx).await;
     tx.rollback().await?;

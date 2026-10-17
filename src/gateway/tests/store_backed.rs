@@ -20,7 +20,9 @@ use crate::metrics::store_write_failures_for_tests;
 use crate::store::contract::store_contract_test;
 use crate::store::sessions_repo::{
     index, load_sessions,
-    tests::{allow_writes, block_durable_writes, fail_writes, lose_next_commit_ack},
+    tests::{
+        allow_writes, block_durable_writes, fail_next_load, fail_writes, lose_next_commit_ack,
+    },
 };
 use crate::store::{Store, StoreError};
 
@@ -486,6 +488,22 @@ store_contract_test!(
         assert_eq!(active(&memory(&state)), 1);
     }
 );
+
+store_contract_test!(an_unreadable_unknown_commit_resyncs_the_baseline, |store| {
+    let (_config, _env, router, state) = gateway(&store);
+    let first = login(&router, &state, "ada").await;
+
+    // The rotation lands, its ack is lost, and the read-back fails too.
+    lose_next_commit_ack(&store);
+    fail_next_load(&store);
+    assert_unavailable(&refresh(&router, &first).await);
+
+    // The next commit reloads the baseline, then rewrites the store to match
+    // memory: the token the client still holds rotates, the family survives.
+    assert_eq!(refresh(&router, &first).await.status, StatusCode::OK);
+    assert_eq!(stored(&store).await, memory(&state));
+    assert_eq!(active(&memory(&state)), 1);
+});
 
 store_contract_test!(restore_from_store_seeds_memory_and_the_baseline, |store| {
     let (config, _env, router, state) = gateway(&store);

@@ -213,6 +213,15 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Response
         }
     };
     let gate = state.gateway_stores.spend.mutation_gate().await;
+    if let Err(message) = super::persist::resync_if_needed(&state).await {
+        tracing::error!(%message);
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "api_error",
+            "failed to persist spend limit",
+            request_id,
+        );
+    }
     let snapshot = state.gateway_stores.spend.export();
     let (next, limit) = super::store::SpendStore::upsert_state(
         snapshot.clone(),
@@ -265,6 +274,15 @@ pub async fn delete_by_id(
         Err(response) => return *response,
     };
     let gate = state.gateway_stores.spend.mutation_gate().await;
+    if let Err(message) = super::persist::resync_if_needed(&state).await {
+        tracing::error!(%message);
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "api_error",
+            "failed to persist spend limit",
+            request_id,
+        );
+    }
     let snapshot = state.gateway_stores.spend.export();
     let Some((next, _)) =
         super::store::SpendStore::delete_state(snapshot, &id, &actor, timestamp())

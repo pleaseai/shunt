@@ -168,8 +168,15 @@ macro_rules! store_contract_test {
                     return;
                 };
                 let $store = harness.store.clone();
-                $body
+                // A panicking body must still drop its scratch schema.
+                let outcome = ::futures_util::FutureExt::catch_unwind(
+                    ::std::panic::AssertUnwindSafe(async move { $body }),
+                )
+                .await;
                 harness.finish().await;
+                if let Err(payload) = outcome {
+                    ::std::panic::resume_unwind(payload);
+                }
             }
         }
     };

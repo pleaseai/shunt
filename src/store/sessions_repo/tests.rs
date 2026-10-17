@@ -27,25 +27,44 @@ fn map(records: Vec<RefreshRecord>) -> HashMap<String, RefreshRecord> {
     index(records)
 }
 
-static LOST_COMMIT_ACKS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+static ARMED_FAULTS: std::sync::Mutex<Vec<(usize, &'static str)>> =
+    std::sync::Mutex::new(Vec::new());
 
-fn hold_key(store: &Store) -> usize {
-    std::sync::Arc::as_ptr(&store.hold) as usize
+fn arm(store: &Store, fault: &'static str) {
+    let key = std::sync::Arc::as_ptr(&store.hold) as usize;
+    ARMED_FAULTS.lock().unwrap().push((key, fault));
 }
 
-/// Make the next [`apply_diff`] on `store` report an unknown commit outcome
-/// after the write really committed.
+/// Consume one armed `fault` for `store`; each fault fires once.
+fn take(store: &Store, fault: &'static str) -> bool {
+    let key = std::sync::Arc::as_ptr(&store.hold) as usize;
+    let mut armed = ARMED_FAULTS.lock().unwrap();
+    armed
+        .iter()
+        .position(|entry| *entry == (key, fault))
+        .is_some_and(|at| {
+            armed.remove(at);
+            true
+        })
+}
+
+/// Make the next [`apply_diff`] or `save_spend` on `store` report an unknown
+/// commit outcome after the write really committed.
 pub(crate) fn lose_next_commit_ack(store: &Store) {
-    LOST_COMMIT_ACKS.lock().unwrap().push(hold_key(store));
+    arm(store, "commit_ack");
 }
 
-pub(super) fn take_lost_commit_ack(store: &Store) -> bool {
-    let mut armed = LOST_COMMIT_ACKS.lock().unwrap();
-    let key = hold_key(store);
-    armed.iter().position(|k| *k == key).is_some_and(|at| {
-        armed.remove(at);
-        true
-    })
+pub(crate) fn take_lost_commit_ack(store: &Store) -> bool {
+    take(store, "commit_ack")
+}
+
+/// Make the next `load_sessions` or `load_spend` on `store` fail.
+pub(crate) fn fail_next_load(store: &Store) {
+    arm(store, "load");
+}
+
+pub(crate) fn take_failed_load(store: &Store) -> bool {
+    take(store, "load")
 }
 
 /// Hold the instance-hold row (and, on SQLite, the only connection), so every

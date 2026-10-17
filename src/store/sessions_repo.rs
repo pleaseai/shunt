@@ -167,6 +167,12 @@ async fn write(
 /// skipped row: a dropped tombstone would let a replayed token rotate again,
 /// and the next diff would erase the row for good.
 pub(crate) async fn load_sessions(store: &Store) -> Result<Vec<RefreshRecord>, StoreError> {
+    #[cfg(test)]
+    if crate::store::sessions_repo::tests::take_failed_load(store) {
+        return Err(StoreError::Database {
+            reason: "injected: load failed".to_string(),
+        });
+    }
     let mut tx = store.db().begin().await?;
     let fetched = tx
         .fetch_all(

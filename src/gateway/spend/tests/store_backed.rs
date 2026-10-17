@@ -9,7 +9,9 @@ use crate::gateway::spend::persist;
 use crate::gateway::spend::store::{Period, Scope};
 use crate::metrics::store_write_failures_for_tests;
 use crate::store::contract::store_contract_test;
-use crate::store::sessions_repo::tests::block_durable_writes;
+use crate::store::sessions_repo::tests::{
+    block_durable_writes, fail_next_load, lose_next_commit_ack,
+};
 use crate::store::spend_repo::load_spend;
 use crate::store::spend_repo::tests::{allow_writes, fail_writes};
 
@@ -127,5 +129,59 @@ store_contract_test!(
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), all, "no duplicate audit id");
+    }
+);
+
+fn audit_ids_are_unique(state: &crate::gateway::spend::store::SpendState) -> bool {
+    let mut ids: Vec<_> = state.audit.iter().map(|record| record.id).collect();
+    let all = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.len() == all
+}
+
+store_contract_test!(a_lost_commit_ack_that_landed_reports_success, |store| {
+    let (config, _env) = SpendEnv::config("store-backed-lost-ack");
+    let (router, _, state) = build_router(config).unwrap();
+    assert!(state.gateway_stores.attach_store(Arc::new(store.clone())));
+
+    lose_next_commit_ack(&store);
+    let (response, _) = post(&router, WRITE_KEY, organization(json!("100"), "monthly")).await;
+    assert_eq!(response.status(), StatusCode::OK, "the write had landed");
+    let memory = state.gateway_stores.spend.export();
+    assert_eq!(memory.limits.len(), 1);
+    assert_eq!(load_spend(&store).await.unwrap().unwrap(), memory);
+
+    let (response, _) = post(&router, WRITE_KEY, organization(json!("200"), "weekly")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let stored = load_spend(&store).await.unwrap().unwrap();
+    assert_eq!(stored, state.gateway_stores.spend.export());
+    assert!(audit_ids_are_unique(&stored));
+});
+
+store_contract_test!(
+    an_unreadable_unknown_commit_resyncs_before_the_next_mutation,
+    |store| {
+        let (config, _env) = SpendEnv::config("store-backed-resync");
+        let (router, _, state) = build_router(config).unwrap();
+        assert!(state.gateway_stores.attach_store(Arc::new(store.clone())));
+
+        lose_next_commit_ack(&store);
+        fail_next_load(&store);
+        let (response, body) =
+            post(&router, WRITE_KEY, organization(json!("100"), "monthly")).await;
+        assert_error_response(&response, &body, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(state.gateway_stores.spend.export().limits.is_empty());
+
+        let (response, _) = post(&router, WRITE_KEY, organization(json!("200"), "weekly")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored = load_spend(&store).await.unwrap().unwrap();
+        assert_eq!(stored, state.gateway_stores.spend.export());
+        assert_eq!(
+            stored.limits.len(),
+            2,
+            "the landed write was not overwritten"
+        );
+        assert!(audit_ids_are_unique(&stored));
     }
 );

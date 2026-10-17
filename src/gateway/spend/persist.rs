@@ -10,7 +10,7 @@ use crate::{
     store::{
         import::LoadIssue,
         spend_repo::{load_spend, save_spend},
-        Store,
+        Store, StoreError,
     },
 };
 
@@ -111,12 +111,68 @@ pub(crate) async fn commit(
     let state = state.clone();
     tokio::spawn(async move {
         let _gate = gate;
-        save(&state, &next).await?;
-        state.gateway_stores.spend.replace(next);
-        Ok(())
+        match state.gateway_stores.store() {
+            Some(store) => commit_to_store(&state, store, next).await,
+            None => {
+                save(&state, &next).await?;
+                state.gateway_stores.spend.replace(next);
+                Ok(())
+            }
+        }
     })
     .await
     .map_err(|error| format!("gateway spend-limit commit task failed: {error}"))?
+}
+
+/// The store half of [`commit`]. A commit whose outcome is unknown is settled
+/// against what the store holds: memory follows the store, so audit ids never
+/// go backwards. If the store cannot be read back, the next mutation resyncs.
+async fn commit_to_store(state: &AppState, store: &Store, next: SpendState) -> Result<(), String> {
+    let spend = &state.gateway_stores.spend;
+    let Err(error) = save_spend(store, &spend.export(), &next).await else {
+        spend.replace(next);
+        return Ok(());
+    };
+    crate::metrics::record_store_write_failure("spend");
+    tracing::warn!(%error, "failed to persist gateway spend-limit state to the store");
+    if matches!(error, StoreError::CommitUncertain { .. }) {
+        match load_spend(store).await {
+            Ok(Some(stored)) if stored == next => {
+                spend.replace(next);
+                return Ok(());
+            }
+            Ok(Some(stored)) => {
+                spend.replace(stored);
+            }
+            Ok(None) => {}
+            Err(_) => spend.set_needs_resync(true),
+        }
+    }
+    Err(format!(
+        "failed to persist gateway spend-limit state: {error}"
+    ))
+}
+
+/// Before a mutation computes its snapshot (under `mutation_gate`): if an
+/// earlier commit's outcome was left unknown, reload memory from the store,
+/// failing with the store error while it still cannot be read.
+pub(crate) async fn resync_if_needed(state: &AppState) -> Result<(), String> {
+    let spend = &state.gateway_stores.spend;
+    let Some(store) = state
+        .gateway_stores
+        .store()
+        .filter(|_| spend.needs_resync())
+    else {
+        return Ok(());
+    };
+    let loaded = load_spend(store)
+        .await
+        .map_err(|error| format!("failed to resync gateway spend-limit state: {error}"))?;
+    if let Some(stored) = loaded {
+        spend.replace(stored);
+    }
+    spend.set_needs_resync(false);
+    Ok(())
 }
 
 async fn restore_from_store(state: &AppState, store: &Store) -> io::Result<()> {
