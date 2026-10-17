@@ -52,6 +52,9 @@ A single Rust binary that:
 - OAuth login + credential refresh, multi-account pooling & load balancing — `src/auth/`
 - `/v1/models` discovery, `/v1/messages` proxy, `count_tokens`
 - Opt-in admin web surface for browser account provisioning + read-only pool dashboard
+- Opt-in durable store (`[store]`: SQLite or PostgreSQL) for pool quota, gateway
+  sessions, and spend limits/audit, with a one-time import of the JSON snapshots —
+  single instance (`src/store/`, `docs/store.md`)
 - Observability: tracing, opt-in OpenTelemetry export, Sentry
 
 ## Design Constraints

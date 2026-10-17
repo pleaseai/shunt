@@ -158,7 +158,7 @@ it would port rather than be reinvented.
 
 > **Superseded in part by
 > [ADR-0006](../.please/docs/decisions/0006-optional-pluggable-store.md)
-> (proposed).** It adopts an optional store with `sqlite` and `postgres`
+> (accepted).** It adopts an optional store with `sqlite` and `postgres`
 > backends on `sqlx`, answers the open questions below, and splits the work
 > into a single-instance phase and a multi-instance phase. The Turso findings
 > above concern the Rust rewrite. That ADR evaluates libSQL, the SQLite fork,
