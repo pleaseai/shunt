@@ -100,7 +100,19 @@ pub(crate) async fn apply_diff(store: &Store, diff: &SessionsDiff) -> Result<(),
     }
     let mut tx = store.begin_durable().await?;
     match apply_diff_in(&mut tx, diff).await {
-        Ok(()) => tx.commit().await,
+        Ok(()) => {
+            tx.commit().await.map_err(|error| match error {
+                StoreError::Database { reason } => StoreError::CommitUncertain { reason },
+                other => other,
+            })?;
+            #[cfg(test)]
+            if tests::take_lost_commit_ack(store) {
+                return Err(StoreError::CommitUncertain {
+                    reason: "injected: the acknowledgement was lost".to_string(),
+                });
+            }
+            Ok(())
+        }
         Err(error) => {
             let _ = tx.rollback().await;
             Err(error)

@@ -27,6 +27,41 @@ fn map(records: Vec<RefreshRecord>) -> HashMap<String, RefreshRecord> {
     index(records)
 }
 
+static LOST_COMMIT_ACKS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+fn hold_key(store: &Store) -> usize {
+    std::sync::Arc::as_ptr(&store.hold) as usize
+}
+
+/// Make the next [`apply_diff`] on `store` report an unknown commit outcome
+/// after the write really committed.
+pub(crate) fn lose_next_commit_ack(store: &Store) {
+    LOST_COMMIT_ACKS.lock().unwrap().push(hold_key(store));
+}
+
+pub(super) fn take_lost_commit_ack(store: &Store) -> bool {
+    let mut armed = LOST_COMMIT_ACKS.lock().unwrap();
+    let key = hold_key(store);
+    armed.iter().position(|k| *k == key).is_some_and(|at| {
+        armed.remove(at);
+        true
+    })
+}
+
+/// Hold the instance-hold row (and, on SQLite, the only connection), so every
+/// durable write blocks in `begin_durable` until the returned transaction is
+/// rolled back.
+pub(crate) async fn block_durable_writes(store: &Store) -> crate::store::Tx {
+    let mut tx = store.db().begin().await.unwrap();
+    tx.execute(
+        "UPDATE instance_hold SET heartbeat_at = heartbeat_at WHERE id = 1",
+        &[],
+    )
+    .await
+    .unwrap();
+    tx
+}
+
 async fn run(store: &Store, statements: &[String]) {
     let mut tx = store.db().begin().await.unwrap();
     for statement in statements {

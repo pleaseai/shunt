@@ -26,7 +26,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::{approval::Identity, refresh::RefreshRecord, store::GatewayStores};
 use crate::{
@@ -41,7 +41,7 @@ use crate::{
 /// [`GatewayStores`]; it replaces `persist_gate` for the store path.
 #[derive(Default)]
 pub struct DurableSessions {
-    committed: Mutex<HashMap<String, RefreshRecord>>,
+    committed: Arc<Mutex<HashMap<String, RefreshRecord>>>,
 }
 
 /// A mutation's result plus how its store write went.
@@ -71,25 +71,30 @@ fn record_failure(error: &StoreError, what: &str) {
 /// Run `mutate` and commit its token diff, holding the durable lock from the
 /// first export to the end of the write.
 ///
-/// The locked section runs in a spawned task the caller only awaits: a dropped
+/// The lock is taken in the caller, before anything is spawned, so waiters
+/// queue inside the request future (bounded by the inbound permit, and
+/// cancel-safe because nothing has been mutated yet). The mutate, write and
+/// baseline update then run in one spawned task that owns the guard: a dropped
 /// request (client disconnect, HTTP/2 reset) cannot interrupt it between the
-/// mutation and the rollback decision, which would strand an unseen token.
+/// mutation and the rollback decision, which would strand an unseen token, and
+/// at most one such task exists at a time.
 async fn commit<T: Send + 'static>(
     stores: Arc<GatewayStores>,
     store: Arc<Store>,
     mutate: impl FnOnce(&super::refresh::RefreshTokenStore) -> T + Send + 'static,
 ) -> Committed<T> {
-    tokio::spawn(async move { commit_locked(&stores, &store, mutate).await })
+    let committed = stores.durable_sessions.committed.clone().lock_owned().await;
+    tokio::spawn(async move { commit_locked(committed, &stores, &store, mutate).await })
         .await
         .expect("the durable commit task does not panic or get cancelled")
 }
 
 async fn commit_locked<T>(
+    mut committed: OwnedMutexGuard<HashMap<String, RefreshRecord>>,
     stores: &GatewayStores,
     store: &Store,
     mutate: impl FnOnce(&super::refresh::RefreshTokenStore) -> T,
 ) -> Committed<T> {
-    let mut committed = stores.durable_sessions.committed.lock().await;
     let before = index(stores.refresh_tokens.export());
     let value = mutate(&stores.refresh_tokens);
     let after = index(stores.refresh_tokens.export());
@@ -105,6 +110,19 @@ async fn commit_locked<T>(
             }
         }
         Err(error) => {
+            // A commit whose outcome is unknown may have reached the store:
+            // trust what the store holds over the error.
+            if matches!(error, StoreError::CommitUncertain { .. })
+                && stored_equals(store, &after).await
+            {
+                tracing::warn!(%error, "store commit outcome was unknown; the write had landed");
+                *committed = after;
+                return Committed {
+                    value,
+                    error: None,
+                    rolled_back: false,
+                };
+            }
             let rolled_back = adds_active(&before, &after);
             record_failure(
                 &error,
@@ -124,6 +142,13 @@ async fn commit_locked<T>(
             }
         }
     }
+}
+
+/// Whether the store holds exactly `expected`; a read failure counts as no.
+async fn stored_equals(store: &Store, expected: &HashMap<String, RefreshRecord>) -> bool {
+    load_sessions(store)
+        .await
+        .is_ok_and(|records| index(records) == *expected)
 }
 
 /// Issue a refresh token for a completed device grant and commit it. An error

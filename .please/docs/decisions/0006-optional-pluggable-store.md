@@ -4,6 +4,14 @@
 
 Accepted
 
+**Note (2026-10-17):** the request-history part of Phase 1 (the rollups in §3
+and the "Dashboard history survives a restart" consequence) ships in a
+follow-up track; see
+[`2026-10-01-request-history-requirements.md`](../brainstorms/2026-10-01-request-history-requirements.md).
+Phase 1 as delivered covers the three snapshots: pool quota, gateway refresh
+tokens, and spend limits with their audit. The decision text below is
+unchanged.
+
 ## Date
 
 2026-10-01

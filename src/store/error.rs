@@ -38,6 +38,10 @@ pub enum StoreError {
     /// A statement failed.
     #[error("store statement failed: {reason}")]
     Database { reason: String },
+    /// `COMMIT` failed, so the write may or may not have landed (the
+    /// connection can drop after the server committed but before the ack).
+    #[error("store commit outcome unknown: {reason}")]
+    CommitUncertain { reason: String },
     /// Importing a JSON snapshot failed; nothing was imported for that
     /// subsystem and no import record was written (AC-029/AC-030).
     #[error(

@@ -9,6 +9,7 @@ use crate::gateway::spend::persist;
 use crate::gateway::spend::store::{Period, Scope};
 use crate::metrics::store_write_failures_for_tests;
 use crate::store::contract::store_contract_test;
+use crate::store::sessions_repo::tests::block_durable_writes;
 use crate::store::spend_repo::load_spend;
 use crate::store::spend_repo::tests::{allow_writes, fail_writes};
 
@@ -88,3 +89,43 @@ store_contract_test!(restore_reproduces_what_save_wrote, |store| {
     persist::restore(&reader).await.unwrap();
     assert_eq!(reader.gateway_stores.spend.export(), next);
 });
+
+store_contract_test!(
+    a_dropped_mutation_cannot_split_the_store_from_memory,
+    |store| {
+        let (config, _env) = SpendEnv::config("store-backed-dropped");
+        let (router, _, state) = build_router(config).unwrap();
+        assert!(state.gateway_stores.attach_store(Arc::new(store.clone())));
+
+        let blocker = block_durable_writes(&store).await;
+        let dropped = {
+            let router = router.clone();
+            tokio::spawn(async move {
+                post(&router, WRITE_KEY, organization(json!("100"), "monthly")).await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        dropped.abort();
+        blocker.rollback().await.unwrap();
+
+        // The write was in flight: it finishes both halves, or neither.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let memory = state.gateway_stores.spend.export();
+        assert_eq!(
+            memory.limits.len(),
+            1,
+            "the commit and the replace both ran"
+        );
+        assert_eq!(load_spend(&store).await.unwrap().unwrap(), memory);
+
+        let (response, _) = post(&router, WRITE_KEY, organization(json!("200"), "weekly")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored = load_spend(&store).await.unwrap().unwrap();
+        assert_eq!(stored, state.gateway_stores.spend.export());
+        let mut ids: Vec<_> = stored.audit.iter().map(|record| record.id).collect();
+        let all = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), all, "no duplicate audit id");
+    }
+);

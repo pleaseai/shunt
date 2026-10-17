@@ -212,7 +212,7 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Response
             );
         }
     };
-    let _gate = state.gateway_stores.spend.mutation_gate().await;
+    let gate = state.gateway_stores.spend.mutation_gate().await;
     let snapshot = state.gateway_stores.spend.export();
     let (next, limit) = super::store::SpendStore::upsert_state(
         snapshot.clone(),
@@ -225,7 +225,7 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Response
     if next == snapshot {
         return success(StatusCode::OK, &limit, request_id);
     }
-    if let Err(message) = super::persist::save(&state, &next).await {
+    if let Err(message) = super::persist::commit(&state, gate, next).await {
         tracing::error!(%message);
         return error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -234,7 +234,6 @@ pub async fn create(State(state): State<AppState>, request: Request) -> Response
             request_id,
         );
     }
-    state.gateway_stores.spend.replace(next);
     success(StatusCode::OK, &limit, request_id)
 }
 
@@ -265,14 +264,14 @@ pub async fn delete_by_id(
         Ok(actor) => actor,
         Err(response) => return *response,
     };
-    let _gate = state.gateway_stores.spend.mutation_gate().await;
+    let gate = state.gateway_stores.spend.mutation_gate().await;
     let snapshot = state.gateway_stores.spend.export();
     let Some((next, _)) =
         super::store::SpendStore::delete_state(snapshot, &id, &actor, timestamp())
     else {
         return not_found(&id, request_id);
     };
-    if let Err(message) = super::persist::save(&state, &next).await {
+    if let Err(message) = super::persist::commit(&state, gate, next).await {
         tracing::error!(%message);
         return error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -281,7 +280,6 @@ pub async fn delete_by_id(
             request_id,
         );
     }
-    state.gateway_stores.spend.replace(next);
     success(
         StatusCode::OK,
         &DeletedResponse {

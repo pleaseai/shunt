@@ -98,6 +98,27 @@ pub(crate) async fn save(state: &AppState, snapshot: &SpendState) -> Result<(), 
         .map_err(|error| format!("failed to persist gateway spend-limit state: {error}"))
 }
 
+/// [`save`] `next`, then make it the in-memory state, as one step a dropped
+/// request cannot split. `gate` is the caller's `mutation_gate` guard; it moves
+/// into the spawned task, so the store never gets ahead of memory (a later
+/// mutation would reuse `next_audit_id`) and no second mutation starts before
+/// this one has finished.
+pub(crate) async fn commit(
+    state: &AppState,
+    gate: tokio::sync::OwnedMutexGuard<()>,
+    next: SpendState,
+) -> Result<(), String> {
+    let state = state.clone();
+    tokio::spawn(async move {
+        let _gate = gate;
+        save(&state, &next).await?;
+        state.gateway_stores.spend.replace(next);
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("gateway spend-limit commit task failed: {error}"))?
+}
+
 async fn restore_from_store(state: &AppState, store: &Store) -> io::Result<()> {
     let loaded = load_spend(store).await.map_err(|error| {
         io::Error::new(

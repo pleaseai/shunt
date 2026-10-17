@@ -20,7 +20,7 @@ use crate::metrics::store_write_failures_for_tests;
 use crate::store::contract::store_contract_test;
 use crate::store::sessions_repo::{
     index, load_sessions,
-    tests::{allow_writes, fail_writes},
+    tests::{allow_writes, block_durable_writes, fail_writes, lose_next_commit_ack},
 };
 use crate::store::{Store, StoreError};
 
@@ -434,6 +434,56 @@ store_contract_test!(
             2,
             "the rotation committed whole, not half in memory"
         );
+    }
+);
+
+store_contract_test!(aborted_waiters_leave_no_detached_commits_queued, |store| {
+    let (_config, _env, router, state) = gateway(&store);
+    let first = login(&router, &state, "ada").await;
+
+    let blocker = block_durable_writes(&store).await;
+    let running = {
+        let (router, first) = (router.clone(), first.clone());
+        tokio::spawn(async move { refresh(&router, &first).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // The running commit holds the durable lock; these queue behind it.
+    let waiters: Vec<_> = (0..4)
+        .map(|_| {
+            let (router, first) = (router.clone(), first.clone());
+            tokio::spawn(async move { refresh(&router, &first).await })
+        })
+        .collect();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    for waiter in &waiters {
+        waiter.abort();
+    }
+    blocker.rollback().await.unwrap();
+
+    assert_eq!(running.await.unwrap().status, StatusCode::OK);
+    // Detached waiters would replay `first` and revoke the family.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(active(&memory(&state)), 1, "no waiter replayed the token");
+    assert_eq!(stored(&store).await, memory(&state));
+});
+
+store_contract_test!(
+    an_unknown_commit_outcome_is_reconciled_with_the_store,
+    |store| {
+        let (_config, _env, router, state) = gateway(&store);
+        let first = login(&router, &state, "ada").await;
+
+        lose_next_commit_ack(&store);
+        let reply = refresh(&router, &first).await;
+        assert_eq!(reply.status, StatusCode::OK, "the write had landed");
+        let second = reply.body["refresh_token"].as_str().unwrap().to_string();
+        assert_eq!(stored(&store).await, memory(&state));
+        assert_eq!(active(&memory(&state)), 1);
+
+        // The next rotation works and the family was not revoked.
+        assert_eq!(refresh(&router, &second).await.status, StatusCode::OK);
+        assert_eq!(stored(&store).await, memory(&state));
+        assert_eq!(active(&memory(&state)), 1);
     }
 );
 

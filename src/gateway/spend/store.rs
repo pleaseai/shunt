@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -119,7 +122,7 @@ pub(crate) struct SpendState {
 
 pub struct SpendStore {
     state: Mutex<SpendState>,
-    mutation_gate: tokio::sync::Mutex<()>,
+    mutation_gate: Arc<tokio::sync::Mutex<()>>,
     state_path: Option<PathBuf>,
 }
 
@@ -130,13 +133,14 @@ impl SpendStore {
                 next_audit_id: 1,
                 ..SpendState::default()
             }),
-            mutation_gate: tokio::sync::Mutex::new(()),
+            mutation_gate: Arc::new(tokio::sync::Mutex::new(())),
             state_path,
         }
     }
 
-    pub(crate) async fn mutation_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.mutation_gate.lock().await
+    /// Owned, so a mutation can move it into the task that commits and replaces.
+    pub(crate) async fn mutation_gate(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.mutation_gate.clone().lock_owned().await
     }
 
     pub fn get(&self, id: &str) -> Option<SpendLimit> {
