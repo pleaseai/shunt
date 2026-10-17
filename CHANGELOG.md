@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.57.0](https://github.com/pleaseai/shunt/compare/v0.56.0...v0.57.0) (2026-10-17)
+
+
+### Features
+
+* **store:** optional pluggable store on sqlx (SQLite, PostgreSQL), Phase 1a ([#774](https://github.com/pleaseai/shunt/issues/774)) ([b99367c](https://github.com/pleaseai/shunt/commit/b99367c2b488d8c3657c59fdfa16be7fd60c63fb))
+
+
+### Bug Fixes
+
+* **store:** settle an uncertain commit under the instance-hold lock ([#780](https://github.com/pleaseai/shunt/issues/780)) ([f325d91](https://github.com/pleaseai/shunt/commit/f325d917d2bae2de7c05ee929e7a215c1cd68ea6))
+
 ## [0.56.0](https://github.com/pleaseai/shunt/compare/v0.55.1...v0.56.0) (2026-10-16)
 
 
