@@ -130,6 +130,27 @@ async fn a_failing_migration_returns_migration_error() {
 }
 
 #[tokio::test]
+async fn a_failed_migration_releases_the_hold_for_a_corrected_restart() {
+    let dir = TempDir::new("badmig-hold");
+    let migrations = dir.file("migrations");
+    std::fs::create_dir(&migrations).unwrap();
+    std::fs::write(migrations.join("0001_bad.sql"), "THIS IS NOT SQL;").unwrap();
+    let bad: &'static Migrator =
+        Box::leak(Box::new(Migrator::new(migrations.as_path()).await.unwrap()));
+
+    let config = sqlite_config(&dir.file("s.db"));
+    let error = Store::open_with(&config, Mode::Serve, bad)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, StoreError::Migration { .. }), "{error:?}");
+
+    let store = Store::open(&config, Mode::Serve)
+        .await
+        .expect("the failed open released its hold");
+    store.close().await;
+}
+
+#[tokio::test]
 async fn too_new_schema_is_refused_and_the_file_is_untouched() {
     let dir = TempDir::new("toonew");
     let data = dir.0.join("data");

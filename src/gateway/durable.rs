@@ -24,7 +24,7 @@
 //!   it. `committed` did not advance, so the next durable write, or the store
 //!   persister tick ([`flush_pending`]), writes the pending revocation.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::Mutex;
 
@@ -70,7 +70,21 @@ fn record_failure(error: &StoreError, what: &str) {
 
 /// Run `mutate` and commit its token diff, holding the durable lock from the
 /// first export to the end of the write.
-async fn commit<T>(
+///
+/// The locked section runs in a spawned task the caller only awaits: a dropped
+/// request (client disconnect, HTTP/2 reset) cannot interrupt it between the
+/// mutation and the rollback decision, which would strand an unseen token.
+async fn commit<T: Send + 'static>(
+    stores: Arc<GatewayStores>,
+    store: Arc<Store>,
+    mutate: impl FnOnce(&super::refresh::RefreshTokenStore) -> T + Send + 'static,
+) -> Committed<T> {
+    tokio::spawn(async move { commit_locked(&stores, &store, mutate).await })
+        .await
+        .expect("the durable commit task does not panic or get cancelled")
+}
+
+async fn commit_locked<T>(
     stores: &GatewayStores,
     store: &Store,
     mutate: impl FnOnce(&super::refresh::RefreshTokenStore) -> T,
@@ -115,11 +129,11 @@ async fn commit<T>(
 /// Issue a refresh token for a completed device grant and commit it. An error
 /// means nothing was issued (memory is rolled back).
 pub(super) async fn issue(
-    stores: &GatewayStores,
-    store: &Store,
+    stores: Arc<GatewayStores>,
+    store: Arc<Store>,
     identity: Identity,
 ) -> Result<String, StoreError> {
-    let outcome = commit(stores, store, |tokens| tokens.issue(identity)).await;
+    let outcome = commit(stores, store, move |tokens| tokens.issue(identity)).await;
     match outcome.error {
         None => Ok(outcome.value),
         Some(error) => Err(error),
@@ -127,8 +141,13 @@ pub(super) async fn issue(
 }
 
 /// Rotate `presented` and commit the diff.
-pub(super) async fn rotate(stores: &GatewayStores, store: &Store, presented: &str) -> Rotation {
-    let outcome = commit(stores, store, |tokens| tokens.rotate(presented)).await;
+pub(super) async fn rotate(
+    stores: Arc<GatewayStores>,
+    store: Arc<Store>,
+    presented: &str,
+) -> Rotation {
+    let presented = presented.to_string();
+    let outcome = commit(stores, store, move |tokens| tokens.rotate(&presented)).await;
     match (outcome.value, outcome.error) {
         (Some((identity, token)), None) => Rotation::Rotated(identity, token),
         (Some(_), Some(_)) => {

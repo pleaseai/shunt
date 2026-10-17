@@ -188,7 +188,9 @@ pub async fn token(
 async fn issue_refresh_token(state: &AppState, identity: &Identity) -> Option<String> {
     let stores = &state.gateway_stores;
     match stores.store() {
-        Some(store) => durable::issue(stores, store, identity.clone()).await.ok(),
+        Some(store) => durable::issue(stores.clone(), store.clone(), identity.clone())
+            .await
+            .ok(),
         None => Some(stores.refresh_tokens.issue(identity.clone())),
     }
 }
@@ -196,7 +198,7 @@ async fn issue_refresh_token(state: &AppState, identity: &Identity) -> Option<St
 async fn rotate_refresh_token(state: &AppState, presented: &str) -> Rotation {
     let stores = &state.gateway_stores;
     match stores.store() {
-        Some(store) => durable::rotate(stores, store, presented).await,
+        Some(store) => durable::rotate(stores.clone(), store.clone(), presented).await,
         None => match stores.refresh_tokens.rotate(presented) {
             Some((identity, token)) => Rotation::Rotated(identity, token),
             None => Rotation::Rejected,

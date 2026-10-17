@@ -1,5 +1,5 @@
 -- Store schema v1 (ADR-0006). Keep table and column names identical to
--- migrations/postgres/0001_init.sql; only types differ where an engine needs it.
+-- migrations/sqlite/0001_init.sql; only types differ where an engine needs it.
 -- No dollar sign anywhere in this file: engines read it as a placeholder marker.
 
 CREATE TABLE import_record (

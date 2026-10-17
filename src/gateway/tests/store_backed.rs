@@ -402,6 +402,41 @@ store_contract_test!(a_lost_hold_fails_a_rotation_with_503, |store| {
     );
 });
 
+store_contract_test!(
+    a_dropped_request_does_not_strand_an_uncommitted_rotation,
+    |store| {
+        let (_config, _env, router, state) = gateway(&store);
+        let first = login(&router, &state, "ada").await;
+
+        let stores = state.gateway_stores.clone();
+        let shared = Arc::new(store.clone());
+        let request = tokio::spawn(async move { durable::rotate(stores, shared, &first).await });
+        // Let the commit reach its store write, then drop the request as a client
+        // disconnect would.
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        request.abort();
+
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if stored(&store).await == memory(&state) {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(settled.is_ok(), "memory and the store converge");
+        assert_eq!(stored(&store).await, memory(&state));
+        assert_eq!(
+            stored(&store).await.len(),
+            2,
+            "the rotation committed whole, not half in memory"
+        );
+    }
+);
+
 store_contract_test!(restore_from_store_seeds_memory_and_the_baseline, |store| {
     let (config, _env, router, state) = gateway(&store);
     let first = login(&router, &state, "ada").await;

@@ -83,6 +83,12 @@ impl Store {
         }
         let opened = store.serve_steps().await;
         if opened.is_err() {
+            // The hold may have been acquired before a later step failed; the
+            // holder id is random per open, so a corrected restart would
+            // otherwise be refused until the hold goes stale.
+            if let Err(error) = store.release_hold().await {
+                tracing::warn!(%error, "failed to release the store hold after a failed open");
+            }
             store.db.close().await;
         }
         opened.map(|()| store)

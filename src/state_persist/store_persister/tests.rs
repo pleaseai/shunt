@@ -172,6 +172,23 @@ store_contract_test!(flush_now_writes_pending_state, |store| {
     persister.stop().await;
 });
 
+store_contract_test!(
+    stop_and_flush_writes_a_claim_lost_to_an_aborted_flush,
+    |store| {
+        let state = app_state();
+        let persister = PoolPersister::store(
+            state.clone(),
+            Arc::new(store.clone()),
+            Duration::from_secs(3600),
+        );
+        mutate(&state, &[("a", 0.3)]);
+        // An abort inside a flush leaves the flag claimed but nothing written.
+        assert!(state.accounts.take_dirty());
+        persister.stop_and_flush().await.unwrap();
+        assert_eq!(stored(&store).await, exported(&state));
+    }
+);
+
 store_contract_test!(a_lost_hold_halts_flushing_without_retry, |store| {
     let state = app_state();
     let persister = PoolPersister::store(

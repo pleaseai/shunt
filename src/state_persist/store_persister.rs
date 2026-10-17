@@ -145,6 +145,9 @@ impl PoolPersister {
     /// no tick races the final write, then [`Self::flush_now`] once.
     pub async fn stop_and_flush(mut self) -> Result<(), StoreError> {
         self.stop_task().await;
+        // The abort may have landed inside a flush that had already claimed the
+        // dirty flag; re-arm it so the final write is not skipped.
+        self.state.accounts.mark_dirty();
         self.flush_now().await
     }
 
