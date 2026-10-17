@@ -269,14 +269,40 @@ fn sqlite_path(url: &str) -> &str {
     sqlite_split(url).0
 }
 
+/// SQLite opens the name as a URI and percent-decodes it, so the check runs on
+/// the decoded form: `file:%3Amemory%3A` is `:memory:` to SQLite.
 fn sqlite_is_in_memory(url: &str) -> bool {
     let (path, query) = sqlite_split(url);
-    let path = path.to_ascii_lowercase();
+    let path = percent_decoded(path).to_ascii_lowercase();
     path.is_empty()
         || path.contains(":memory:")
-        || query
+        || percent_decoded(query)
             .split('&')
             .any(|pair| pair.eq_ignore_ascii_case("mode=memory"))
+}
+
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escaped = (bytes[index] == b'%')
+            .then(|| bytes.get(index + 1..index + 3))
+            .flatten()
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escaped {
+            Some(byte) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 fn postgres_target(url: &str) -> String {

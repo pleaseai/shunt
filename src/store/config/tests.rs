@@ -57,6 +57,8 @@ fn sqlite_accepts_paths_and_sqlite_urls() {
         "sqlite:store.db",
         "sqlite:///var/lib/shunt/store.db",
         "sqlite:store.db?mode=rwc",
+        "sqlite:my%20store.db",
+        "sqlite:store.db?mode%3Drwc",
     ] {
         sqlite(url)
             .validate()
@@ -74,6 +76,9 @@ fn sqlite_rejects_in_memory_forms() {
         "file::memory:?cache=shared",
         "sqlite:store.db?mode=memory",
         "sqlite:store.db?cache=shared&mode=memory",
+        "file:%3Amemory%3A",
+        "sqlite:file:%3amemory%3a",
+        "sqlite:store.db?mode%3Dmemory",
         "",
         "   ",
     ] {
