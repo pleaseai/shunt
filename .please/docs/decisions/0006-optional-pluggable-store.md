@@ -36,7 +36,7 @@ Three hand-rolled JSON snapshots, each written whole through
 
 | Snapshot | Config | Code |
 | :-- | :-- | :-- |
-| Pool quota / cooldown | `[server.pool] state_path` | `src/state_persist.rs` |
+| Pool quota | `[server.pool] state_path` | `src/state_persist.rs` |
 | Gateway refresh tokens | `[server.gateway] state_path` (default on) | `src/gateway/persist.rs` |
 | Spend limits + mutation audit | `[server.spend]` | `src/gateway/spend/persist.rs` |
 

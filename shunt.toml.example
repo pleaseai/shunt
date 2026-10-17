@@ -126,7 +126,9 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # [store]
 # backend = "sqlite"                         # "sqlite" or "postgres"
 # url = "/home/you/.shunt/shunt.db"          # sqlite: a file path or sqlite: URL
-#                                            # (created 0600; in-memory is rejected)
+#                                            # (a new file is created 0600; an existing file
+#                                            #  keeps its mode; a sqlite: URL path is percent-decoded;
+#                                            #  file: URIs, ?query options and in-memory are rejected)
 #                                            # postgres: "postgres://user@db.example.com/shunt?sslmode=verify-full"
 #                                            # (needs a build with --features store-postgres;
 #                                            #  prebuilt release binaries have it)

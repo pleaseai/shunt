@@ -116,6 +116,7 @@ cargo test --all-features --workspace
   docker run -d --rm --name shunt-pg \
     -e POSTGRES_USER=shunt -e POSTGRES_PASSWORD=shunt-ci -e POSTGRES_DB=shunt_test \
     -p 55432:5432 postgres:16-alpine
+  until docker exec shunt-pg pg_isready -U shunt -d shunt_test; do sleep 1; done
   SHUNT_TEST_POSTGRES_URL=postgres://shunt:shunt-ci@localhost:55432/shunt_test \
     SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --features store-postgres
   ```

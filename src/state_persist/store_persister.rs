@@ -171,7 +171,14 @@ async fn store_loop(sink: Arc<StoreSink>, state: AppState, interval: Duration) {
         // revocation kept in memory through a store outage reaches the store
         // without waiting for another token request. A no-op when no gateway
         // store is attached or nothing differs.
-        let _ = crate::gateway::durable::flush_pending(&state).await;
+        let sessions = crate::gateway::durable::flush_pending(&state).await;
+        if matches!(sessions, Err(StoreError::HoldLost { .. })) && !sink.halted() {
+            // A gateway-only change leaves the pool clean, so the pool flush
+            // above never sees the lost hold; halt here instead of retrying a
+            // fenced write every tick.
+            sink.halted.store(true, Ordering::SeqCst);
+            tracing::error!("store persistence stopped: this instance lost the store hold");
+        }
         if sink.halted() {
             return;
         }

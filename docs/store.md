@@ -35,10 +35,14 @@ store; a source-scan test fails if either ever references `crate::store`.
 ## Backends
 
 - **SQLite** is always compiled in. `url` is a file path or a `sqlite:` /
-  `sqlite://` URL. An in-memory database is rejected at config load. shunt opens
-  exactly one connection in WAL mode with a 5 s busy timeout. A missing file is
-  created with mode `0600` before SQLite sees it (so the `-wal` and `-shm`
-  sidecars inherit it); an existing file keeps whatever mode the operator gave it.
+  `sqlite://` URL. A plain file path is used as written; the path of a
+  `sqlite:` / `sqlite://` URL is percent-decoded, so
+  `sqlite:///data/my%20store.db` opens `/data/my store.db`. SQLite `file:` URIs,
+  URL query options (`?...`), and an in-memory database are rejected at config
+  load. shunt opens exactly one connection in WAL mode with a 5 s busy timeout. A
+  missing file is created with mode `0600` before SQLite sees it (so the `-wal`
+  and `-shm` sidecars inherit it); an existing file keeps whatever mode the
+  operator gave it.
 - **PostgreSQL** is compiled in only with the `store-postgres` Cargo feature.
   Prebuilt release binaries are built with it (`--features ui,store-postgres`);
   `cargo build` and `cargo install` are not, so build with
@@ -134,7 +138,9 @@ holder; acquiring it is one conditional `UPDATE`, identical on both engines.
   A hold that has not been renewed for more than `hold_stale_seconds` (default
   `30`, minimum `3`) is stale; the next opener takes it over and logs a warning
   naming the previous holder. After a crash, a restart is therefore refused for up
-  to `hold_stale_seconds`.
+  to `hold_stale_seconds`. The stale check uses the opening process's local clock
+  and its own `hold_stale_seconds`, so processes with skewed clocks or differing
+  `hold_stale_seconds` values can disagree about when a hold is stale.
 - If a heartbeat finds the hold taken, the process logs an error and refuses every
   later durable write, but keeps serving proxied requests. Every durable write
   transaction also re-checks that it still holds the row, so a holder that stalled
@@ -173,9 +179,11 @@ building the response, as before.
 ## `shunt check`
 
 With `[store]`, `shunt check` prints `config ok`, then opens the store read-only
-and prints one line. It never migrates, never writes, and never creates a missing
-SQLite file. The inspection is bounded at 15 s. It reaches the network for a
-PostgreSQL store, unlike the rest of `check`.
+and prints one line. It never migrates, never modifies the database, and never
+creates a missing SQLite file. SQLite may still create or remove the `-wal` and
+`-shm` sidecar files while it inspects a WAL database. The inspection is bounded
+at 15 s. It reaches the network for a PostgreSQL store, unlike the rest of
+`check`.
 
 ```text
 config ok

@@ -197,12 +197,13 @@ stage 1 接受这些保留设置、`blocked_message`、`group_limit_mode` 和 `f
 | `users_env` | `SHUNT_GATEWAY_USERS` | 保存逗号分隔的 `email:secret` approval user 的 env 变量 |
 | `token_ttl_seconds` | `3600` | access token 生命周期,以 `expires_in` 返回。**已弃用**,单独使用时仍完全受支持 —— 已被 [`session.ttl_hours`](#servergatewaysession可选) 取代,但它仍是表达小于一小时生命周期的唯一方式 |
 | `trust_forwarded_for` | `false` | 将 `X-Forwarded-For`/`X-Real-IP` 信任为 `/device` rate-limit identity;只能在会替换 client 所提供值的 trusted proxy 后启用 |
+| `state_path` | `~/.shunt/gateway-sessions.json` | 跨重启保存 refresh session 的文件;token 以 SHA-256 哈希保存,并以仅所有者可访问的权限(Unix 上为 `0600`)原子写入。设为 `""` 表示仅内存 session(解析不到 home 目录时同样如此)。设置 [`[store]`](#store可选) 后,它只作为导入来源 |
 
 如果 URL 不是不带路径等内容的 HTTPS origin(仅 loopback 允许 `http`)、TTL 为 0、secret 缺失或少于 32 bytes,或者 user list 为空或格式错误,启动会 fail closed。secret 可以包含 `:`,只有第一个 colon 用于分隔 email 与 secret。`jwt_secret_env` 和 `users_env` 的值也和其他配置文件字符串一样,可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。env-backed secret 和 user 的变更会在 config reload 时生效;由于 route tree 在 boot 时固定,添加或移除此表需要 restart。
 
 同时设置一个已弃用的键和其对应的 `[server.gateway.session]` 替代键会导致启动失败,按键分别判断:`jwt_secret_env` 与 `session.jwt_secret` 同时设置是错误;`token_ttl_seconds` 与 `session.ttl_hours` 同时设置也是错误。跨这两组混用(例如同时设置 `session.jwt_secret` 和 `token_ttl_seconds`)则没有问题。只要已弃用的键被显式设置——无论是在配置文件中,还是通过 `SHUNT_*` 环境变量 override——shunt 就会记录一次弃用警告;只有当该键本身完全未被设置、使用默认值时才会保持沉默 —— 不设置 `jwt_secret_env`、只依赖 `SHUNT_GATEWAY_JWT_SECRET` env 变量来保存 secret 的配置仍然不会触发警告,因为该变量保存的是 secret 的值,而不是已弃用的键本身被设置。当某一对中只设置了一侧时,`session.*`(若存在)优先,其次是已弃用的键,最后才是默认值。
 
-颁发的 bearer 会在所选 provider 注入 server-side credential 时认证 `/v1/models`、`/v1/messages` 和 `/v1/messages/count_tokens`。passthrough provider 仍保持 open。如果还存在 `[server.auth]`,任一 credential 都能授权访问。device grant 和 rotating refresh token 是 process-lifetime in-memory state:config reload 会保留它们,但 restart 会使其失效。
+颁发的 bearer 会在所选 provider 注入 server-side credential 时认证 `/v1/models`、`/v1/messages` 和 `/v1/messages/count_tokens`。passthrough provider 仍保持 open。如果还存在 `[server.auth]`,任一 credential 都能授权访问。refresh session 默认会在重启后保留:boot 时会恢复 `state_path`(token 以哈希形式保存),因此用户可继续静默刷新。该文件不得被多个并发的 shunt 进程共享。`state_path = ""` 时 session 仅存于内存:config reload 会保留它们,但重启 shunt 会使其失效,access JWT 过期后用户需要重新登录。Device grant 和 rate-limit counter 始终只存于内存,登录过程中重启只会丢失该次尝试。过期的 grant 和空闲的 rate-limit identity 会被顺带清理;device grant 和 rate-limit identity 各自上限为 4,096 条。已使用的 refresh-token tombstone 每个 family 最多保留 64 条、保留 30 天;闲置 30 天的 active refresh token 会过期。
 
 ### `[server.gateway.session]`(可选)
 
@@ -1207,7 +1208,7 @@ policy = { type = "target_selector", selector = "/target" }
 | 键 | 默认 | 含义 |
 | :-- | :-- | :-- |
 | `backend` | —(必填) | `"sqlite"` 或 `"postgres"`。`"postgres"` 需要带 `store-postgres` Cargo feature 的构建:预构建的发布二进制包含它,`cargo build` 和 `cargo install` 不包含(需用 `--features store-postgres` 构建)。没有该 feature 时配置加载失败,错误信息会指出 feature 名称 |
-| `url` | —(必填) | SQLite:文件路径,或 `sqlite:` / `sqlite://` URL;内存数据库会被拒绝。PostgreSQL:`postgres://` URL。Redacting secret —— 在诊断输出中显示为 `[redacted]`(见 [Secret 引用](#secret-引用)) |
+| `url` | —(必填) | SQLite:文件路径(按原样使用),或 `sqlite:` / `sqlite://` URL(其路径会做百分号解码,因此 `sqlite:///data/my%20store.db` 打开的是 `/data/my store.db`);SQLite 的 `file:` URI、URL 查询选项(`?...`)和内存数据库会在加载配置时被拒绝。PostgreSQL:`postgres://` URL。Redacting secret —— 在诊断输出中显示为 `[redacted]`(见 [Secret 引用](#secret-引用)) |
 | `max_connections` | `4` | PostgreSQL 连接池大小,至少为 `1`。SQLite 始终只用一个连接,设置此项会被拒绝 |
 | `password_env` | 未设置 | 仅 PostgreSQL:保存密码的环境变量名。只在 URL 不含密码时使用(userinfo 和 `?password=` 都没有)。需要它但变量未设置或为空时,启动失败 |
 | `allow_insecure_remote_tls` | `false` | 允许不是 `localhost`、回环 IP 或 unix 套接字的 PostgreSQL 主机不带 `sslmode=verify-full`。会记录一条警告 |
@@ -1227,7 +1228,7 @@ policy = { type = "target_selector", selector = "/target" }
 
 **存储写入失败时。** 代理路径从不等待存储。无法写入的 admin 支出限制修改会返回与以往相同的 Anthropic 格式 `500`,且不会产生任何变更。在网关 `/oauth/token` 端点上,签发 token(device grant)或轮换 refresh token 无法写入时,会返回带 `Cache-Control: no-store` 的 `503` `{"error":"temporarily_unavailable"}`,并回滚此次轮换,客户端重试即可成功;如果 device-grant 签发是在 grant 已被消耗之后失败的,该用户需要重新登录。对已轮换 token 的重放(replay)仍返回 `401` `invalid_grant`,其 family 保持已撤销状态;如果存储无法记录这次撤销,则会在下一次成功的存储写入或下一次 15 秒刷新时写入,若在此之前进程崩溃则会丢失。每次写入失败都会使 `shunt.store.write_failures` 计数器(`subsystem` = `pool`、`spend` 或 `gateway`)加一。
 
-**`shunt check`。** 有 `[store]` 时,[`shunt check`](/zh-cn/reference/cli/#shunt-check) 以只读方式打开存储并报告其 schema 版本;不会执行迁移、写入,也不会创建不存在的 SQLite 文件。
+**`shunt check`。** 有 `[store]` 时,[`shunt check`](/zh-cn/reference/cli/#shunt-check) 以只读方式打开存储并报告其 schema 版本;不会执行迁移、修改数据库,也不会创建不存在的 SQLite 文件(检查 WAL 模式的数据库时,SQLite 可能会创建或删除 `-wal` / `-shm` 辅助文件)。
 
 **安全。** 存储中保存着 refresh token 的哈希(SHA-256,不保存原始 token)、每个 token 所签发给的身份,以及支出审计记录,请限制对数据库的访问和备份。
 

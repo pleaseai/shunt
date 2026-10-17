@@ -18,7 +18,9 @@ pub enum Mode {
     /// `shunt run`: create a missing SQLite file, migrate, and later hold the
     /// instance.
     Serve,
-    /// `shunt check`: read-only. Never creates a file, migrates, or writes.
+    /// `shunt check`: read-only. Never creates the database, migrates, or
+    /// modifies it; SQLite may still create or remove the `-wal`/`-shm`
+    /// sidecars while reading a WAL database.
     Inspect,
 }
 

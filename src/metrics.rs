@@ -163,7 +163,7 @@ fn otel_instruments() -> &'static OtelInstruments {
             store_write_failures: meter
                 .u64_counter("shunt.store.write_failures")
                 .with_description(
-                    "Failed write-behind flushes to the optional store, by subsystem",
+                    "Failed writes to the optional store (pool, spend, gateway), by subsystem",
                 )
                 .build(),
             _pool_utilization: meter

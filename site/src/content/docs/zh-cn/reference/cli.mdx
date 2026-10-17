@@ -47,7 +47,7 @@ shunt check
 
 它还会执行与 `shunt run` 启动时相同的「已路由 Antigravity 凭据」检查:如果配置路由到原生 `antigravity` 上游却没有存储凭据,检查会直接失败并提示 `shunt login antigravity`,而不是先输出 `config ok`、再在启动时失败。该守卫是离线的 —— 只读取路由并探测凭据是否存在(单例文件或具名池候选项均可),既不刷新令牌也不访问后端。仅声明内置 `antigravity` 提供方但没有路由到它的配置不受影响,`kind = "antigravity_cli"` 路由同样不受影响。
 
-配置了 [`[store]`](/zh-cn/reference/configuration/#store可选) 时,检查不再完全离线:在 `config ok` 之后,它会以只读方式打开存储(读取 SQLite 文件,或连接 PostgreSQL),再输出一行。它不会执行迁移、写入,也不会创建不存在的 SQLite 文件。
+配置了 [`[store]`](/zh-cn/reference/configuration/#store可选) 时,检查不再完全离线:在 `config ok` 之后,它会以只读方式打开存储(读取 SQLite 文件,或连接 PostgreSQL),再输出一行。它不会执行迁移、修改数据库,也不会创建不存在的 SQLite 文件;但检查 WAL 模式的数据库时,SQLite 可能会创建或删除 `-wal` / `-shm` 辅助文件。
 
 ```bash
 shunt check

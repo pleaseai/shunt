@@ -205,13 +205,33 @@ impl Tx {
         }
     }
 
-    /// Run a query and return the first row, if any.
+    /// Run a query and return the first row, if any, without collecting the
+    /// rest of the result set.
     pub async fn fetch_optional(
         &mut self,
         sql: &str,
         params: &[Value],
     ) -> Result<Option<Row>, StoreError> {
-        Ok(self.fetch_all(sql, params).await?.into_iter().next())
+        match self {
+            Self::Sqlite(tx) => {
+                let sql = rewrite_placeholders(sql).into_owned();
+                let query = bind_values!(sqlx::query(AssertSqlSafe(sql)), params);
+                let row = query
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .map_err(|e| database_error(&e))?;
+                Ok(row.map(Row::Sqlite))
+            }
+            #[cfg(feature = "store-postgres")]
+            Self::Postgres(tx) => {
+                let query = bind_values!(sqlx::query(AssertSqlSafe(sql.to_string())), params);
+                let row = query
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .map_err(|e| database_error(&e))?;
+                Ok(row.map(Row::Postgres))
+            }
+        }
     }
 
     pub async fn commit(self) -> Result<(), StoreError> {

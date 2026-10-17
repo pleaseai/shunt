@@ -70,6 +70,7 @@ async fn store_unavailable(engine: Engine) {
     assert!(status.success(), "{status}:\n{log}");
     assert!(
         log.contains("failed to persist pool state to the store")
+            || log.contains("final store flush failed at shutdown")
             || log.contains("store shutdown did not finish in time"),
         "the final write must have hit the unavailable store:\n{log}"
     );

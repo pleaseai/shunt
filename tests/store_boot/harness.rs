@@ -27,9 +27,23 @@ pub fn now_secs() -> u64 {
         .as_secs()
 }
 
+/// A loopback port no earlier call in this binary has handed out.
+///
+/// The probe listener is dropped before the child binds, and the OS may hand
+/// the same ephemeral port to the next probe, so two fixtures could otherwise
+/// be given one port. Remembering every port handed out rules that out within
+/// the binary; cargo runs test binaries one after another.
 pub fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-    listener.local_addr().expect("local addr").port()
+    static HANDED_OUT: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut handed_out = HANDED_OUT.lock().unwrap_or_else(|error| error.into_inner());
+    loop {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        if !handed_out.contains(&port) {
+            handed_out.push(port);
+            return port;
+        }
+    }
 }
 
 /// Which store engine a case runs against.
@@ -46,6 +60,9 @@ pub struct Fixture {
     pub upstream: MockServer,
     pub engine: Engine,
     spawned: AtomicU64,
+    /// The environment guard, held until the fixture drops (last field, so it
+    /// is released after everything else).
+    _env: crate::common::EnvVars,
 }
 
 /// Which `state_path`s the config sets.
@@ -57,6 +74,9 @@ pub struct Sections {
 
 impl Fixture {
     pub async fn new(tag: &str, engine: Engine) -> Self {
+        // Every test builds its fixture first, and `spawn` reads `PATH`, so
+        // the fixture holds the environment guard for the rest of the test.
+        let env = crate::common::env_lock().await;
         let dir = std::env::temp_dir().join(format!(
             "shunt-store-boot-{tag}-{}-{}-{}",
             std::process::id(),
@@ -88,6 +108,7 @@ impl Fixture {
             upstream,
             engine,
             spawned: AtomicU64::new(0),
+            _env: env,
         }
     }
 

@@ -272,40 +272,67 @@ pub(crate) async fn load_spend(store: &Store) -> Result<Option<SpendState>, Stor
 
     let mut state = SpendState::default();
     for (ord, opaque, body) in limits {
-        if opaque == 0 {
-            let limit: SpendLimit =
-                serde_json::from_str(&body).map_err(|e| decode_error("spend_limit", ord, &e))?;
-            state.limits.push(limit);
-        } else {
-            let value =
-                serde_json::from_str(&body).map_err(|e| decode_error("spend_limit", ord, &e))?;
-            state.opaque_limits.push(OpaqueRecord {
+        match decode_row::<SpendLimit>("spend_limit", ord, opaque, &body)? {
+            Decoded::Typed(limit) => state.limits.push(limit),
+            Decoded::Opaque(value) => state.opaque_limits.push(OpaqueRecord {
                 typed_before: state.limits.len(),
                 value,
-            });
+            }),
         }
     }
     let mut next_audit_id = u64::try_from(meta).unwrap_or(1);
     for (ord, opaque, body) in audit {
-        if opaque == 0 {
-            let record: AuditRecord =
-                serde_json::from_str(&body).map_err(|e| decode_error("spend_audit", ord, &e))?;
-            next_audit_id = next_audit_id.max(record.id.saturating_add(1));
-            state.audit.push(record);
-        } else {
-            let value: serde_json::Value =
-                serde_json::from_str(&body).map_err(|e| decode_error("spend_audit", ord, &e))?;
-            if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
-                next_audit_id = next_audit_id.max(id.saturating_add(1));
+        match decode_row::<AuditRecord>("spend_audit", ord, opaque, &body)? {
+            Decoded::Typed(record) => {
+                next_audit_id = next_audit_id.max(record.id.saturating_add(1));
+                state.audit.push(record);
             }
-            state.opaque_audit.push(OpaqueRecord {
-                typed_before: state.audit.len(),
-                value,
-            });
+            Decoded::Opaque(value) => {
+                if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
+                    next_audit_id = next_audit_id.max(id.saturating_add(1));
+                }
+                state.opaque_audit.push(OpaqueRecord {
+                    typed_before: state.audit.len(),
+                    value,
+                });
+            }
         }
     }
     state.next_audit_id = next_audit_id;
     Ok(Some(state))
+}
+
+enum Decoded<T> {
+    Typed(T),
+    Opaque(serde_json::Value),
+}
+
+/// One row's body. A typed row (`opaque = 0`) stays typed only when it
+/// re-serializes to the stored JSON, the same rule the state-file loader
+/// applies: serde ignores unknown fields, so a row a newer binary wrote with a
+/// field this one lacks would otherwise decode and lose that field on the next
+/// save. Such a row is kept opaque, verbatim.
+fn decode_row<T>(table: &str, ord: i64, opaque: i64, body: &str) -> Result<Decoded<T>, StoreError>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| decode_error(table, ord, &e))?;
+    if opaque != 0 {
+        return Ok(Decoded::Opaque(value));
+    }
+    let typed: T =
+        serde_json::from_value(value.clone()).map_err(|e| decode_error(table, ord, &e))?;
+    if serde_json::to_value(&typed).map_err(|e| encode_error(&e))? == value {
+        return Ok(Decoded::Typed(typed));
+    }
+    tracing::warn!(
+        target: "shunt::store",
+        table,
+        ord,
+        "preserving a spend record this binary cannot round-trip"
+    );
+    Ok(Decoded::Opaque(value))
 }
 
 type Loaded = (

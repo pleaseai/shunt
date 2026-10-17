@@ -285,3 +285,45 @@ store_contract_test!(an_undecodable_row_fails_loudly, |store| {
     let error = load_spend(&store).await.unwrap_err();
     assert!(matches!(error, StoreError::Database { .. }), "{error:?}");
 });
+
+store_contract_test!(a_typed_row_with_an_unknown_field_loads_opaque, |store| {
+    let saved = step(&store, &fresh(), upsert(fresh(), Period::Monthly, "1", 1)).await;
+    assert_eq!((saved.limits.len(), saved.audit.len()), (1, 1));
+    // What a newer binary would have written: a typed row with a field this
+    // binary's model does not have.
+    for table in ["spend_limit", "spend_audit"] {
+        let mut tx = store.db().begin().await.unwrap();
+        let row = tx
+            .fetch_optional(
+                &format!("SELECT ord, body FROM {table} WHERE opaque = 0"),
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let mut body: serde_json::Value = serde_json::from_str(&row.text(1).unwrap()).unwrap();
+        body["future_field"] = serde_json::json!(true);
+        tx.execute(
+            &format!("UPDATE {table} SET body = $1 WHERE ord = $2"),
+            &[body.to_string().as_str().into(), row.int(0).unwrap().into()],
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    let loaded = load_spend(&store).await.unwrap().unwrap();
+    assert!(
+        loaded.limits.is_empty() && loaded.audit.is_empty(),
+        "{loaded:?}"
+    );
+    assert_eq!(loaded.opaque_limits[0].value["future_field"], true);
+    assert_eq!(loaded.opaque_audit[0].value["future_field"], true);
+
+    // The next mutation keeps both records with the field.
+    let next = upsert(loaded.clone(), Period::Daily, "2", 2);
+    save_spend(&store, &loaded, &next).await.unwrap();
+    let reloaded = load_spend(&store).await.unwrap().unwrap();
+    assert_eq!(reloaded.opaque_limits, loaded.opaque_limits);
+    assert_eq!(reloaded.opaque_audit, loaded.opaque_audit);
+});

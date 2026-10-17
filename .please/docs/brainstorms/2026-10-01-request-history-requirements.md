@@ -17,8 +17,11 @@
   pending-bucket backlog is bounded: when it is full, the oldest buckets are dropped
   and the drop is counted. Pending buckets are flushed on graceful shutdown.
 - Model label policy (closes `dashboard-metrics.md` open question 5 for history only):
-  - Record the id verbatim when it matches a configured `[[models]]` id, a
-    `[[routes]]` model, a Codex inbound route, or the built-in catalog.
+  - Record the id when it matches a configured `[[models]]` id, a
+    `[[routes]]` model, a Codex inbound route, or the built-in catalog, after the
+    same length bound and control-character sanitization that every stored label
+    gets (ADR-0006), so a long or control-character-bearing configured label is
+    never retained as-is.
   - Record every other id under one reserved overflow label.
   - Cap the number of distinct keys per open bucket. Past the cap, new keys go to
     the overflow label and the overflow is counted.
@@ -29,7 +32,7 @@
 - Success: an operator can view at least 7 days of per-provider, per-account,
   per-model history spanning restarts.
 
-## Acceptance criteria to carry (IDs from the original spec)
+## Acceptance criteria to carry (ids from the original spec)
 
 AC-007 recording · AC-008 range read · AC-009 retention delete · AC-010 no content or
 identity · AC-011 configured id verbatim · AC-032 overflow label · AC-033 per-bucket

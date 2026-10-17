@@ -1276,7 +1276,7 @@ policy = { type = "target_selector", selector = "/target" }
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
 | `backend` | — (필수) | `"sqlite"` 또는 `"postgres"`. `"postgres"`는 `store-postgres` Cargo feature로 빌드해야 합니다. 사전 빌드된 릴리스 바이너리에는 포함되어 있고, `cargo build`와 `cargo install`에는 포함되지 않습니다(`--features store-postgres`로 빌드). feature가 없으면 설정 로드가 실패하며 오류에 feature 이름이 나옵니다 |
-| `url` | — (필수) | SQLite: 파일 경로 또는 `sqlite:` / `sqlite://` URL이며, 인메모리 데이터베이스는 거부됩니다. PostgreSQL: `postgres://` URL. Redacting secret — 진단 출력에서 `[redacted]`로 표시됩니다([Secret 참조](#secret-참조) 참고) |
+| `url` | — (필수) | SQLite: 파일 경로(적은 그대로 사용) 또는 `sqlite:` / `sqlite://` URL(경로를 퍼센트 디코딩하므로 `sqlite:///data/my%20store.db`는 `/data/my store.db`를 엽니다)이며, SQLite `file:` URI, URL 쿼리 옵션(`?...`), 인메모리 데이터베이스는 설정 로드 시 거부됩니다. PostgreSQL: `postgres://` URL. Redacting secret — 진단 출력에서 `[redacted]`로 표시됩니다([Secret 참조](#secret-참조) 참고) |
 | `max_connections` | `4` | PostgreSQL 풀 크기이며 `1` 이상이어야 합니다. 항상 연결 하나만 쓰는 SQLite에서는 거부됩니다 |
 | `password_env` | 미설정 | PostgreSQL 전용: 비밀번호를 담은 환경 변수 이름. URL에 비밀번호가 없을 때만 사용합니다(userinfo 또는 `?password=`). 필요한데 변수가 없거나 비어 있으면 시작이 실패합니다 |
 | `allow_insecure_remote_tls` | `false` | `localhost`, 루프백 IP, unix 소켓이 아닌 PostgreSQL 호스트를 `sslmode=verify-full` 없이 허용합니다. 경고를 로그로 남깁니다 |
@@ -1296,7 +1296,7 @@ policy = { type = "target_selector", selector = "/target" }
 
 **저장소 쓰기가 실패할 때.** 프록시 경로는 저장소를 기다리지 않습니다. 쓰지 못한 admin 지출 한도 변경은 기존과 같은 Anthropic 형식의 `500`을 반환하고 아무것도 바뀌지 않습니다. 게이트웨이 `/oauth/token` 엔드포인트에서 token 발급(device grant)이나 refresh token 교체를 기록하지 못하면 `Cache-Control: no-store`와 함께 `503` `{"error":"temporarily_unavailable"}`를 반환하고 교체를 롤백하므로 클라이언트가 재시도하면 정상 동작합니다. grant가 이미 소비된 뒤 device-grant 발급이 실패하면 해당 사용자는 로그인을 다시 시작해야 합니다. 이미 교체된 token의 재사용(replay)은 기존처럼 `401` `invalid_grant`를 반환하고 해당 family는 폐기된 상태로 유지됩니다. 저장소가 이 폐기를 기록하지 못하면 다음 저장소 쓰기 성공 또는 다음 15초 flush에서 기록되며, 그 전에 프로세스가 크래시하면 유실됩니다. 실패한 쓰기마다 `shunt.store.write_failures` 카운터(`subsystem` = `pool`, `spend`, `gateway`)가 증가합니다.
 
-**`shunt check`.** `[store]`가 있으면 [`shunt check`](/ko/reference/cli/#shunt-check)가 저장소를 읽기 전용으로 열어 스키마 버전을 보고합니다. 마이그레이션을 실행하거나, 쓰거나, 없는 SQLite 파일을 만들지 않습니다.
+**`shunt check`.** `[store]`가 있으면 [`shunt check`](/ko/reference/cli/#shunt-check)가 저장소를 읽기 전용으로 열어 스키마 버전을 보고합니다. 마이그레이션을 실행하거나, 데이터베이스를 수정하거나, 없는 SQLite 파일을 만들지 않습니다(WAL 모드 데이터베이스를 검사하는 동안 SQLite가 `-wal` / `-shm` 보조 파일을 만들거나 지울 수 있습니다).
 
 **보안.** 저장소에는 refresh token의 해시(SHA-256, 원본 token은 저장하지 않음)와 각 token이 발급된 대상의 ID, 지출 감사 기록이 들어 있으므로 데이터베이스 접근과 백업을 제한하세요.
 

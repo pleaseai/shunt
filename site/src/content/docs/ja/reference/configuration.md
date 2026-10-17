@@ -197,12 +197,13 @@ rate は upstream ごとに、最も具体的なものから順に一致しま�
 | `users_env` | `SHUNT_GATEWAY_USERS` | カンマ区切りの `email:secret` approval user を保持する env 変数 |
 | `token_ttl_seconds` | `3600` | access token の寿命。`expires_in` として返される。**Deprecated**。単独使用では引き続き完全にサポートされる — [`session.ttl_hours`](#servergatewaysessionオプション) に置き換えられたが、1 時間未満の寿命を指定できる唯一の方法として残る |
 | `trust_forwarded_for` | `false` | `/device` の rate-limit identity として `X-Forwarded-For`／`X-Real-IP` を信頼する。client 提供値を置換する trusted proxy の背後でのみ有効化 |
+| `state_path` | `~/.shunt/gateway-sessions.json` | restart をまたいで refresh session を保持するファイル。token は SHA-256 hash で保存し、アトミックに書き込む（Unix では所有者のみの権限 `0600`）。`""` にすると memory-only session（home directory を解決できない場合も同様）。[`[store]`](#storeオプション) を設定するとインポート元としてだけ使われます |
 
 URL が path 等を含まない HTTPS origin でない場合（`http` は loopback のみ許可）、TTL が 0 の場合、secret がないか 32 bytes 未満の場合、または user list が空・不正な場合、起動は fail closed します。secret には `:` を含められ、最初の colon だけが email と secret を分けます。`jwt_secret_env` と `users_env` の値も、他の設定ファイル文字列と同様に `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。env-backed secret と user の変更は config reload で反映されますが、route tree は boot 時に固定されるため、テーブルの追加・削除には restart が必要です。
 
 Deprecated なキーと、それに対応する `[server.gateway.session]` の置き換えキーを両方設定すると、キーごとに起動が失敗します: `jwt_secret_env` と `session.jwt_secret` を併用するとエラー、`token_ttl_seconds` と `session.ttl_hours` を併用するとエラーです。2 つのペアをまたいで組み合わせる(例: `session.jwt_secret` と `token_ttl_seconds` の併用)のは問題ありません。shunt は、deprecated なキーが設定ファイルであれ `SHUNT_*` 環境変数 override であれ明示的に設定されるたびに deprecation 警告を 1 回記録し、そのキー自体が一切設定されずデフォルトが適用される場合にのみ警告なしのままです — `jwt_secret_env` を設定せず `SHUNT_GATEWAY_JWT_SECRET` env 変数に secret の値だけを入れておく設定は、その変数が deprecated なキー自体ではなく secret の値を保持しているだけなので、引き続き警告しません。ペアの片方だけが設定されている場合、`session.*` があればそちらが優先され、なければ deprecated なキー、どちらもなければデフォルトが使われます。
 
-発行された bearer は、選択された provider が server-side credential を注入する場合に `/v1/models`、`/v1/messages`、`/v1/messages/count_tokens` を認証します。passthrough provider は open のままです。`[server.auth]` もある場合は、どちらかの credential で access できます。device grant と rotating refresh token は process-lifetime の in-memory state です。config reload では維持されますが、restart では無効になります。
+発行された bearer は、選択された provider が server-side credential を注入する場合に `/v1/models`、`/v1/messages`、`/v1/messages/count_tokens` を認証します。passthrough provider は open のままです。`[server.auth]` もある場合は、どちらかの credential で access できます。refresh session はデフォルトで restart をまたいで維持されます。boot 時に `state_path`（token は hash 化して保存）を復元するため、ユーザーは引き続き silent refresh できます。このファイルを複数の shunt process で同時に共有してはいけません。`state_path = ""` の場合 session は memory-only で、config reload では維持されますが、shunt を restart すると無効になり、access JWT の期限切れ後にユーザーは再度サインインします。Device grant と rate-limit counter は常に memory-only なので、ログインの途中で restart するとその試行だけが失われます。期限切れの grant と idle な rate-limit identity は opportunistic に掃除されます。Device grant と rate-limit identity はそれぞれ 4,096 件が上限です。使用済み refresh-token の tombstone は family あたり最大 64 件を 30 日間保持し、30 日間使われなかった active refresh token は失効します。
 
 ### `[server.gateway.session]`（オプション）
 
@@ -1284,7 +1285,7 @@ policy = { type = "target_selector", selector = "/target" }
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |
 | `backend` | —（必須） | `"sqlite"` または `"postgres"`。`"postgres"` には `store-postgres` Cargo feature 付きのビルドが必要です。ビルド済みのリリースバイナリには含まれ、`cargo build` と `cargo install` には含まれません（`--features store-postgres` でビルドします）。feature がないと設定の読み込みが失敗し、エラーに feature 名が表示されます |
-| `url` | —（必須） | SQLite: ファイルパス、または `sqlite:` / `sqlite://` URL。インメモリデータベースは拒否されます。PostgreSQL: `postgres://` URL。Redacting secret — 診断出力では `[redacted]` と表示されます（[Secret 参照](#secret-参照)を参照） |
+| `url` | —（必須） | SQLite: ファイルパス（記述どおりに使用）、または `sqlite:` / `sqlite://` URL（パスはパーセントデコードされるため、`sqlite:///data/my%20store.db` は `/data/my store.db` を開きます）。SQLite の `file:` URI、URL クエリオプション（`?...`）、インメモリデータベースは設定の読み込み時に拒否されます。PostgreSQL: `postgres://` URL。Redacting secret — 診断出力では `[redacted]` と表示されます（[Secret 参照](#secret-参照)を参照） |
 | `max_connections` | `4` | PostgreSQL のプールサイズで、`1` 以上。常に 1 接続を使う SQLite では拒否されます |
 | `password_env` | 未設定 | PostgreSQL のみ: パスワードを保持する環境変数の名前。URL にパスワードがない場合（userinfo にも `?password=` にもない場合）だけ使います。必要なのに変数が未設定または空なら起動に失敗します |
 | `allow_insecure_remote_tls` | `false` | `localhost`、ループバック IP、unix ソケット以外の PostgreSQL ホストを `sslmode=verify-full` なしで許可します。警告をログに出します |
@@ -1304,7 +1305,7 @@ policy = { type = "target_selector", selector = "/target" }
 
 **ストアへの書き込みが失敗したとき。** プロキシ経路はストアを待ちません。書き込めなかった admin の支出上限変更は従来どおり Anthropic 形式の `500` を返し、何も変わりません。ゲートウェイの `/oauth/token` エンドポイントでは、トークンの発行（device grant）や refresh token のローテーションを書き込めないと `Cache-Control: no-store` 付きで `503` `{"error":"temporarily_unavailable"}` を返し、ローテーションはロールバックされるので、クライアントの再試行は成功します。grant を消費した後に device grant の発行が失敗した場合、そのユーザーはログインをやり直す必要があります。ローテーション済みトークンの再利用（replay）は従来どおり `401` `invalid_grant` を返し、そのファミリーは失効したままです。ストアがこの失効を書き込めない場合は、次に成功したストア書き込みか次の 15 秒ごとのフラッシュで書き込まれ、それより前にプロセスがクラッシュすると失われます。失敗した書き込みごとに `shunt.store.write_failures` カウンター（`subsystem` = `pool`、`spend`、`gateway`）が増えます。
 
-**`shunt check`。** `[store]` があると、[`shunt check`](/ja/reference/cli/#shunt-check) はストアを読み取り専用で開き、スキーマバージョンを報告します。マイグレーションの実行、書き込み、存在しない SQLite ファイルの作成は行いません。
+**`shunt check`。** `[store]` があると、[`shunt check`](/ja/reference/cli/#shunt-check) はストアを読み取り専用で開き、スキーマバージョンを報告します。マイグレーションの実行、データベースの変更、存在しない SQLite ファイルの作成は行いません（WAL モードのデータベースを検査する間、SQLite が `-wal` / `-shm` の補助ファイルを作成または削除することがあります）。
 
 **セキュリティ。** ストアには refresh token のハッシュ（SHA-256。生のトークンは保存しません）と、各トークンの発行先のアイデンティティ、支出の監査記録が入っています。データベースへのアクセスとバックアップを制限してください。
 

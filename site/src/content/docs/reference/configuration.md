@@ -1483,7 +1483,7 @@ An optional transactional store for pool quota, gateway refresh tokens, and spen
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
 | `backend` | — (required) | `"sqlite"` or `"postgres"`. `"postgres"` needs a build with the `store-postgres` Cargo feature: prebuilt release binaries have it; `cargo build` and `cargo install` do not (build with `--features store-postgres`). Without the feature, config load fails and names it |
-| `url` | — (required) | SQLite: a file path or a `sqlite:` / `sqlite://` URL; an in-memory database is rejected. PostgreSQL: a `postgres://` URL. Redacting secret — renders as `[redacted]` in diagnostic output; see [Secret references](#secret-references) |
+| `url` | — (required) | SQLite: a file path (used as written) or a `sqlite:` / `sqlite://` URL (its path is percent-decoded, so `sqlite:///data/my%20store.db` opens `/data/my store.db`); SQLite `file:` URIs, URL query options (`?...`), and an in-memory database are rejected at config load. PostgreSQL: a `postgres://` URL. Redacting secret — renders as `[redacted]` in diagnostic output; see [Secret references](#secret-references) |
 | `max_connections` | `4` | PostgreSQL pool size, at least `1`. Rejected for SQLite, which always uses one connection |
 | `password_env` | unset | PostgreSQL only: name of an environment variable holding the password. Used only when the URL has no password (in the userinfo or as `?password=`); if it is needed and the variable is unset or empty, startup fails |
 | `allow_insecure_remote_tls` | `false` | Accept a PostgreSQL host that is not `localhost`, a loopback IP, or a unix socket without `sslmode=verify-full`. Logs a warning |
@@ -1503,7 +1503,7 @@ An optional transactional store for pool quota, gateway refresh tokens, and spen
 
 **When a store write fails.** The proxy path never waits on the store. An admin spend-limit change that cannot be written returns the usual Anthropic-shaped `500`, and nothing changes. On the gateway `/oauth/token` endpoint, issuing a token (device grant) or rotating a refresh token that cannot be written returns `503` `{"error":"temporarily_unavailable"}` with `Cache-Control: no-store`, and the rotation is rolled back so the client's retry still works; a device-grant issue that fails after the grant was consumed means that user restarts the login. A replayed (already rotated) token still gets `401` `invalid_grant` and its family stays revoked; if the store cannot record that revocation, it is written by the next successful store write or the next 15 second flush, and is lost if the process crashes first. Every failed write increments the `shunt.store.write_failures` counter (`subsystem` = `pool`, `spend`, or `gateway`).
 
-**`shunt check`.** With `[store]`, [`shunt check`](/reference/cli/#shunt-check) opens the store read-only and reports its schema version; it never migrates, writes, or creates a missing SQLite file.
+**`shunt check`.** With `[store]`, [`shunt check`](/reference/cli/#shunt-check) opens the store read-only and reports its schema version; it never migrates, modifies the database, or creates a missing SQLite file (SQLite may create or remove the `-wal` / `-shm` sidecar files while inspecting a WAL database).
 
 **Security.** The store holds refresh-token hashes (SHA-256, never the raw token) and the identity each was issued to, and the spend audit trail — restrict database access and backups.
 

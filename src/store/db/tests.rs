@@ -134,3 +134,28 @@ async fn a_fresh_database_has_the_seeded_hold_row() {
     tx.rollback().await.unwrap();
     store.close().await;
 }
+
+#[tokio::test]
+async fn fetch_optional_returns_the_first_of_several_rows_or_none() {
+    let dir = TempDir::new("optional");
+    let store = Store::open(&sqlite_config(&dir.file("s.db")), Mode::Serve)
+        .await
+        .unwrap();
+    let mut tx = store.db().begin().await.unwrap();
+    let first = tx
+        .fetch_optional("SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9", &[])
+        .await
+        .unwrap()
+        .expect("first row");
+    assert_eq!(first.int(0).unwrap(), 7);
+    let none = tx
+        .fetch_optional(
+            "SELECT holder_id FROM instance_hold WHERE id = $1",
+            &[2_i64.into()],
+        )
+        .await
+        .unwrap();
+    assert!(none.is_none());
+    tx.rollback().await.unwrap();
+    store.close().await;
+}

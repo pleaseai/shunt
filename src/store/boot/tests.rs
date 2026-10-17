@@ -35,6 +35,14 @@ fn names_the_store_module(line: &str) -> bool {
     path || grouped
 }
 
+/// `GatewayStores::store()` hands out the attached store without naming the
+/// module, so a path scan misses it. Empty parentheses tell it apart from
+/// `AtomicBool::store(value, ordering)`; a chain split across lines puts
+/// `.store()` on a line of its own, which this still sees.
+fn calls_the_store_accessor(line: &str) -> bool {
+    line.contains(".store()")
+}
+
 /// Offending `(line number, line)` pairs in one file. Inside a multi-line
 /// `use crate::{ ... }` group, a line that starts with `store` is the store
 /// module too (a nested `gateway::{\n store::X` also matches: a false
@@ -51,7 +59,11 @@ fn offending_lines(text: &str, root_level: bool) -> Vec<(usize, String)> {
         // `src/proxy.rs` sits at the crate root, so `super::store` is the
         // store module there too.
         let relative = root_level && line.contains("super::store");
-        if names_the_store_module(line) || group_member || relative {
+        if names_the_store_module(line)
+            || calls_the_store_accessor(line)
+            || group_member
+            || relative
+        {
             offenders.push((index + 1, line.to_string()));
         }
         if line.contains("crate::{") || line.contains("shunt::{") {
@@ -93,9 +105,17 @@ fn the_matcher_flags_this_module_and_only_this_module() {
         "use crate::routing::stage::store::StageStore;",
         "use crate::store_x::Thing;",
         "use crate::{gateway::store::GatewayStores, server};",
-        "let store = state.gateway_stores.store();",
+        "ready.store(true, Ordering::SeqCst);",
     ] {
         assert!(!names_the_store_module(clean), "{clean}");
+        assert!(!calls_the_store_accessor(clean), "{clean}");
+    }
+    for accessor in [
+        "let store = state.gateway_stores.store();",
+        "        .store()",
+    ] {
+        assert!(calls_the_store_accessor(accessor), "{accessor}");
+        assert_eq!(offending_lines(accessor, false).len(), 1, "{accessor}");
     }
     let multi_line = "use crate::{\n    server::AppState,\n    store::Store,\n};\nfn f() {}\n";
     assert_eq!(offending_lines(multi_line, false).len(), 1);
@@ -200,4 +220,42 @@ async fn shutdown_releases_the_hold() {
         .await
         .expect("shutdown released the hold");
     reopened.close().await;
+}
+
+/// An import that outlasts `hold_stale_seconds` keeps the hold: the heartbeat
+/// already runs while the snapshot read blocks (a FIFO with no writer yet), so
+/// a second opener past the stale window is still refused.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hold_is_renewed_while_the_imports_run() {
+    let dir = TempDir::new("boot-slow-import");
+    let snapshot = dir.file("pool.json");
+    let fifo = std::ffi::CString::new(snapshot.to_str().unwrap()).unwrap();
+    // SAFETY: `fifo` is a valid NUL-terminated path for the whole call.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let mut config = Config::default();
+    config.server.pool = Some(PoolConfig {
+        state_path: Some(snapshot.clone()),
+        ..PoolConfig::default()
+    });
+    let mut store_config = sqlite_config(&dir.file("store.db"));
+    store_config.hold_stale_seconds = crate::store::config::MIN_HOLD_STALE_SECONDS;
+    config.store = Some(Box::new(store_config.clone()));
+    let (_router, _shared, state) = crate::server::build_router(config.clone()).unwrap();
+    let boot = tokio::spawn(async move { start(&config, &state).await });
+
+    tokio::time::sleep(Duration::from_secs(store_config.hold_stale_seconds + 2)).await;
+    let rival = Store::open(&store_config, Mode::Serve).await;
+    // Unblock the read before asserting, so a failure ends the test instead
+    // of leaving the boot parked on the FIFO.
+    std::fs::write(&snapshot, br#"{"version":3,"accounts":[]}"#).unwrap();
+    let booted = boot.await.unwrap();
+    assert!(
+        matches!(rival, Err(StoreError::HoldHeld { .. })),
+        "{rival:?}"
+    );
+    let runtime = booted
+        .unwrap()
+        .expect("the boot finishes once the snapshot is readable");
+    runtime.shutdown(Duration::from_secs(5)).await;
 }

@@ -1,5 +1,7 @@
 //! `shunt check` store inspection (FR-008, AC-021): connect read-only, report
-//! the schema version, never migrate, write, or create a missing file.
+//! the schema version, never migrate, modify the database, or create a missing
+//! file. SQLite may still create or remove the `-wal`/`-shm` sidecars while
+//! reading a WAL database.
 
 use std::time::Duration;
 
@@ -27,9 +29,11 @@ pub async fn inspect(config: &StoreConfig) -> Result<String, StoreError> {
                 "{head}, file does not exist yet; it is created with mode 0600 at boot"
             ));
         }
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.located(&config.sanitized_target())),
     };
-    let report = report(&store, &head).await;
+    let report = report(&store, &head)
+        .await
+        .map_err(|error| error.located(store.target()));
     store.close().await;
     report
 }

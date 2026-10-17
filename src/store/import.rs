@@ -147,11 +147,18 @@ enum Prepared {
 }
 
 impl Prepared {
-    fn decode(subsystem: Subsystem, bytes: &[u8], path: &Path) -> Result<Self, LoadIssue> {
+    fn decode(subsystem: Subsystem, bytes: &[u8], path: &Path) -> Result<Self, String> {
+        let issue = |issue: LoadIssue| issue.to_string();
         Ok(match subsystem {
-            Subsystem::Pool => Self::Pool(crate::state_persist::normalized_quotas(bytes)?),
-            Subsystem::Gateway => Self::Gateway(gateway_persist::parse_records(bytes)?),
-            Subsystem::Spend => Self::Spend(Box::new(spend_persist::parse_state(bytes, path)?)),
+            Subsystem::Pool => {
+                Self::Pool(crate::state_persist::normalized_quotas(bytes).map_err(issue)?)
+            }
+            Subsystem::Gateway => Self::Gateway(unique_tokens(
+                gateway_persist::parse_records(bytes).map_err(issue)?,
+            )?),
+            Subsystem::Spend => Self::Spend(Box::new(
+                spend_persist::parse_state(bytes, path).map_err(issue)?,
+            )),
         })
     }
 
@@ -184,6 +191,23 @@ impl Prepared {
                 spend_repo::write_state(tx, &empty, state).await
             }
         }
+    }
+}
+
+/// The write keys records by token hash ([`sessions_repo::index`]), so a
+/// repeated hash would keep whichever copy came last (an active session or its
+/// tombstone, by JSON order) and the recorded row count would overstate the
+/// rows written. A repeat is a malformed snapshot, not one to collapse.
+fn unique_tokens(records: Vec<RefreshRecord>) -> Result<Vec<RefreshRecord>, String> {
+    let mut seen = std::collections::HashSet::with_capacity(records.len());
+    match records
+        .iter()
+        .position(|record| !seen.insert(record.token_sha256.as_str()))
+    {
+        Some(index) => Err(format!(
+            "duplicate token_sha256: refresh_tokens[{index}] repeats an earlier record"
+        )),
+        None => Ok(records),
     }
 }
 

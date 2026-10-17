@@ -103,6 +103,21 @@ impl StoreConfig {
                     .to_string(),
             );
         }
+        // sqlx opens every name with `SQLITE_OPEN_URI`, so SQLite would read a
+        // `file:` name as a URI while the preflight (`exists`, the 0600
+        // pre-create) reads it as a literal path: two different files.
+        if sqlite_path(url).to_ascii_lowercase().starts_with("file:") {
+            return Err(
+                "store.url must be a filesystem path or a sqlite: URL; a file: URI name is not supported"
+                    .to_string(),
+            );
+        }
+        if !sqlite_split(url).1.is_empty() {
+            return Err(
+                "store.url query options are not supported; name the database file only"
+                    .to_string(),
+            );
+        }
         Ok(())
     }
 
@@ -148,7 +163,8 @@ impl StoreConfig {
     }
 
     /// SQLite database file named by `url` (the `sqlite:` / `sqlite://` prefix
-    /// and any `?query` removed). Meaningful for the SQLite backend only.
+    /// and any `?query` removed, a URL's path percent-decoded). Meaningful for
+    /// the SQLite backend only.
     pub(crate) fn sqlite_file(&self) -> std::path::PathBuf {
         std::path::PathBuf::from(sqlite_path(self.url.expose().trim()))
     }
@@ -265,8 +281,17 @@ fn sqlite_split(url: &str) -> (&str, &str) {
     rest.split_once('?').unwrap_or((rest, ""))
 }
 
-fn sqlite_path(url: &str) -> &str {
-    sqlite_split(url).0
+/// The file `url` names. A `sqlite:` URL's path is percent-decoded, as sqlx's
+/// own URL parser (`sqlx-sqlite/src/options/parse.rs`) decodes it, so
+/// `sqlite:///data/my%20store.db` is `/data/my store.db`; a plain path is used
+/// as written, since SQLite only decodes names that start with `file:`.
+fn sqlite_path(url: &str) -> String {
+    let path = sqlite_split(url).0;
+    if url.starts_with("sqlite:") {
+        percent_decoded(path)
+    } else {
+        path.to_string()
+    }
 }
 
 /// SQLite opens the name as a URI and percent-decodes it, so the check runs on

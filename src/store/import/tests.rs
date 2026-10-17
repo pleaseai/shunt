@@ -529,6 +529,21 @@ store_contract_test!(
             ),
             (
                 Subsystem::Gateway,
+                "gw-duplicate",
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1,
+                    "refresh_tokens": [
+                        {"token_sha256": "a".repeat(64), "identity": identity_json("a@x.io"),
+                         "family": "fam-a", "issued_at": 1_000_000},
+                        {"token_sha256": "a".repeat(64), "identity": identity_json("a@x.io"),
+                         "family": "fam-a", "inactive_since": 1_000_500, "issued_at": 1_000_000},
+                    ]
+                }))
+                .unwrap(),
+                "duplicate token_sha256",
+            ),
+            (
+                Subsystem::Gateway,
                 "gw-version",
                 br#"{"version":2,"refresh_tokens":[]}"#.to_vec(),
                 "version mismatch",

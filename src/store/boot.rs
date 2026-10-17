@@ -1,10 +1,11 @@
 //! Boot and graceful shutdown of the optional store (ADR-0006).
 //!
 //! [`start`] runs once in `serve`, after the router is built and before it
-//! serves: open (preflight, hold, migrate) → import the JSON snapshots once →
-//! attach the store to the gateway bundle → restore pool, gateway sessions and
-//! spend from it → spawn the hold heartbeat and the pool store persister. With
-//! no `[store]` it returns `None` and `serve` keeps its file-based path.
+//! serves: open (preflight, hold, migrate) → start the hold heartbeat → import
+//! the JSON snapshots once → attach the store to the gateway bundle → restore
+//! pool, gateway sessions and spend from it → confirm the hold is still ours →
+//! spawn the pool store persister. With no `[store]` it returns `None` and
+//! `serve` keeps its file-based path.
 //!
 //! [`StoreRuntime::shutdown`] runs after the HTTP drain: stop the background
 //! tasks → write pending state once → release the hold → close.
@@ -33,12 +34,25 @@ pub async fn start(config: &Config, state: &AppState) -> Result<Option<StoreRunt
     let Some(store_config) = config.store.as_deref() else {
         return Ok(None);
     };
-    let store = Arc::new(Store::open(store_config, Mode::Serve).await?);
-    let report = match prepare(config, state, &store).await {
+    let store = Arc::new(
+        Store::open(store_config, Mode::Serve)
+            .await
+            .map_err(|error| error.located(&store_config.sanitized_target()))?,
+    );
+    // Renew the hold through the imports and restores: one that outlasts
+    // `hold_stale_seconds` must not let another process take the store while
+    // this one is still starting.
+    let heartbeat = store.spawn_heartbeat();
+    let prepared = match prepare(config, state, &store).await {
+        Ok(report) => confirm_hold(&store).await.map(|()| report),
+        Err(error) => Err(error),
+    };
+    let report = match prepared {
         Ok(report) => report,
         Err(error) => {
+            heartbeat.stop().await;
             release_and_close(&store).await;
-            return Err(error);
+            return Err(error.located(store.target()));
         }
     };
     tracing::info!(
@@ -51,7 +65,6 @@ pub async fn start(config: &Config, state: &AppState) -> Result<Option<StoreRunt
         spend = ?report.spend,
         "store opened; state is served from it"
     );
-    let heartbeat = store.spawn_heartbeat();
     let persister = state_persist::spawn_state_persister(state.clone(), Some(store.clone()));
     Ok(Some(StoreRuntime {
         store,
@@ -83,6 +96,17 @@ async fn prepare(
             })?;
     }
     Ok(report)
+}
+
+/// Renew the hold once more before serving: a takeover the heartbeat has not
+/// seen yet would otherwise surface only as `HoldLost` on the first write.
+async fn confirm_hold(store: &Store) -> Result<(), StoreError> {
+    if store.is_fenced() || !store.heartbeat_once().await? {
+        return Err(StoreError::HoldLost {
+            target: store.target().to_string(),
+        });
+    }
+    Ok(())
 }
 
 async fn release_and_close(store: &Store) {

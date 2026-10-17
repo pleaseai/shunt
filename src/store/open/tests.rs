@@ -199,7 +199,7 @@ async fn inspect_reports_absent_without_creating_the_file() {
 }
 
 #[tokio::test]
-async fn inspect_reads_versions_and_never_writes() {
+async fn inspect_reads_versions_and_never_modifies_the_database_file() {
     let dir = TempDir::new("inspect");
     let data = dir.0.join("data");
     std::fs::create_dir(&data).unwrap();
@@ -211,8 +211,9 @@ async fn inspect_reads_versions_and_never_writes() {
         .close()
         .await;
 
-    // SQLite may create or drop -shm/-wal bookkeeping for a WAL database even
-    // read-only; the invariant is that the database file itself is unchanged.
+    // SQLite may create or drop -shm/-wal sidecars for a WAL database even
+    // read-only, so the contract asserted is that the database file itself is
+    // unchanged; sidecar files are deliberately not compared.
     let before = std::fs::read(&path).unwrap();
     let store = Store::open(&config, Mode::Inspect).await.unwrap();
     assert_eq!(store.check_schema().await.unwrap(), 1);

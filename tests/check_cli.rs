@@ -12,6 +12,8 @@
 //! the *child* process. Writing `SHUNT_ANTIGRAVITY_AUTH_FILE` into this
 //! process would instead race — and leak into — every other test sharing it.
 
+mod common;
+
 use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -350,7 +352,6 @@ mod postgres {
 
     const URL_VAR: &str = "SHUNT_TEST_POSTGRES_URL";
     const REQUIRED_VAR: &str = "SHUNT_TEST_POSTGRES_REQUIRED";
-    const PASSWORD: &str = "shunt-ci";
 
     /// The base URL, or `None` after printing why the arm is skipped; panics
     /// when the URL is required but unset.
@@ -394,7 +395,15 @@ mod postgres {
 
     #[tokio::test]
     async fn check_reports_a_reachable_postgres_store_without_the_password() {
+        // Held for the whole body: `base_url` reads the environment and the
+        // child inherits it.
+        let _env = common::env_lock().await;
         let Some(base) = base_url() else { return };
+        // The password the configured URL really carries.
+        let password = url::Url::parse(&base)
+            .expect("postgres URL")
+            .password()
+            .map(str::to_owned);
         let schema = format!("check_{}", uuid::Uuid::new_v4().simple());
         admin(&base, format!("CREATE SCHEMA {schema}")).await;
         let url = scoped_url(&base, &schema);
@@ -426,13 +435,16 @@ mod postgres {
             "{line}"
         );
         assert_eq!(created, 0, "check must not create any table");
+        let password = password.expect("the test URL carries a password to redact");
+        assert!(!password.is_empty(), "the test URL carries a password");
         for stream in [stdout(&output), stderr(&output)] {
-            assert!(!stream.contains(PASSWORD), "password leaked: {stream}");
+            assert!(!stream.contains(&password), "password leaked: {stream}");
         }
     }
 
     #[test]
     fn check_fails_on_an_unreachable_postgres_store_without_the_password() {
+        let _env = common::set_env_blocking(&[]);
         let dir = TempDir::new("store-pg-down");
         let config = config_for(
             &dir,

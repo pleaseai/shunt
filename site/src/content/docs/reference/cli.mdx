@@ -47,7 +47,7 @@ Reports specific errors: a bad bind address, an unknown provider in a route, a m
 
 It also runs the same routed-Antigravity credential guard `shunt run` boots with: a config that routes to the native `antigravity` upstream with no credential stored fails the check and names [`shunt login antigravity`](#shunt-login-antigravity), instead of reporting `config ok` and then failing at startup. This guard stays offline — it reads the routes and probes whether a credential exists (the singleton file or any named-pool candidate), never refreshing a token or contacting the backend. A config that merely declares the built-in `antigravity` provider without routing to it is unaffected, as is `kind = "antigravity_cli"` routing.
 
-With a [`[store]`](/reference/configuration/#store-optional), the check is no longer entirely offline: after `config ok` it opens the store read-only — it reads the SQLite file, or connects to PostgreSQL — and prints one more line. It never runs migrations, never writes, and never creates a missing SQLite file.
+With a [`[store]`](/reference/configuration/#store-optional), the check is no longer entirely offline: after `config ok` it opens the store read-only — it reads the SQLite file, or connects to PostgreSQL — and prints one more line. It never runs migrations, never modifies the database, and never creates a missing SQLite file. SQLite may still create or remove the `-wal` / `-shm` sidecar files while it inspects a WAL database.
 
 ```bash
 shunt check

@@ -56,13 +56,56 @@ fn sqlite_accepts_paths_and_sqlite_urls() {
         "store.db",
         "sqlite:store.db",
         "sqlite:///var/lib/shunt/store.db",
-        "sqlite:store.db?mode=rwc",
         "sqlite:my%20store.db",
-        "sqlite:store.db?mode%3Drwc",
+        "my%20store.db",
     ] {
         sqlite(url)
             .validate()
             .unwrap_or_else(|e| panic!("{url}: {e}"));
+    }
+}
+
+#[test]
+fn sqlite_url_paths_are_percent_decoded_and_plain_paths_are_literal() {
+    let encoded = sqlite("sqlite:///data/my%20store.db");
+    assert_eq!(
+        encoded.sqlite_file(),
+        std::path::PathBuf::from("/data/my store.db")
+    );
+    assert_eq!(encoded.sanitized_target(), "sqlite:/data/my store.db");
+    assert_eq!(
+        sqlite("my%20store.db").sqlite_file(),
+        std::path::PathBuf::from("my%20store.db")
+    );
+}
+
+#[test]
+fn sqlite_rejects_file_uri_names() {
+    for url in [
+        "file:store.db",
+        "FILE:/data/store.db",
+        "sqlite:file%3Astore.db",
+    ] {
+        let error = sqlite(url).validate().unwrap_err();
+        assert!(
+            error.contains("file: URI name is not supported"),
+            "{url}: {error}"
+        );
+    }
+}
+
+#[test]
+fn sqlite_rejects_query_options() {
+    for url in [
+        "sqlite:store.db?mode=rwc",
+        "sqlite:store.db?mode%3Drwc",
+        "sqlite:///var/lib/shunt/store.db?cache=private",
+    ] {
+        let error = sqlite(url).validate().unwrap_err();
+        assert!(
+            error.contains("query options are not supported"),
+            "{url}: {error}"
+        );
     }
 }
 
@@ -369,6 +412,12 @@ mod postgres_feature {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let name = format!("SHUNT_STORE_TEST_PW_{}", std::process::id());
+        // Declared after the lock so it drops first: whatever happens below,
+        // the variable gets its prior value back while the lock is held.
+        let _restore = RestoreEnv {
+            prior: std::env::var_os(&name),
+            name: name.clone(),
+        };
         let mut config = postgres("postgres://u@localhost/db");
         config.password_env = Some(name.clone());
 
@@ -376,6 +425,20 @@ mod postgres_feature {
         assert!(config.pg_connect_options().is_err());
         std::env::set_var(&name, "from-env");
         config.pg_connect_options().unwrap();
-        std::env::remove_var(&name);
+    }
+
+    /// Puts `name` back to `prior` (set or unset) on drop, panics included.
+    struct RestoreEnv {
+        name: String,
+        prior: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(value) => std::env::set_var(&self.name, value),
+                None => std::env::remove_var(&self.name),
+            }
+        }
     }
 }

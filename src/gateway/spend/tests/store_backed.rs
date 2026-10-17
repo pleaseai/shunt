@@ -92,6 +92,20 @@ store_contract_test!(restore_reproduces_what_save_wrote, |store| {
     assert_eq!(reader.gateway_stores.spend.export(), next);
 });
 
+/// Poll `condition` until it holds; the deadline is far beyond the GREEN
+/// path's cost, so only a real hang reaches it.
+async fn eventually<F, Fut>(what: &str, mut condition: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !condition().await {
+        assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
 store_contract_test!(
     a_dropped_mutation_cannot_split_the_store_from_memory,
     |store| {
@@ -106,12 +120,24 @@ store_contract_test!(
                 post(&router, WRITE_KEY, organization(json!("100"), "monthly")).await
             })
         };
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // The request holds the mutation gate from before its commit task is
+        // spawned until that task finishes, so a held gate means the mutation
+        // is under way and blocked on the durable write.
+        let spend = &state.gateway_stores.spend;
+        eventually("the request takes the mutation gate", || async {
+            tokio::time::timeout(std::time::Duration::ZERO, spend.mutation_gate())
+                .await
+                .is_err()
+        })
+        .await;
         dropped.abort();
         blocker.rollback().await.unwrap();
 
         // The write was in flight: it finishes both halves, or neither.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        eventually("the detached commit replaces memory", || async {
+            !spend.export().limits.is_empty()
+        })
+        .await;
         let memory = state.gateway_stores.spend.export();
         assert_eq!(
             memory.limits.len(),

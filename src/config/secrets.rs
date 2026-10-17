@@ -229,7 +229,7 @@ pub(crate) fn format_literal_path(path: &str) -> String {
 }
 
 /// Closed-form allowlist of the dotted field paths that are actually
-/// `Secret` fields in the config schema: `sentry.dsn`,
+/// `Secret` fields in the config schema: `sentry.dsn`, `store.url`,
 /// `otel.headers.<key>`,
 /// `server.gateway.telemetry.forward_to.<index>.headers.<key>`,
 /// `server.gateway.session.jwt_secret` (scalar or, per array element,
@@ -249,7 +249,7 @@ pub(crate) fn format_literal_path(path: &str) -> String {
 /// than naming it — it must never go silent. Add the new path shape here
 /// when adding a `Secret` field, to keep the warning message precise.
 fn is_secret_field_path(path: &str) -> bool {
-    if path == "sentry.dsn" {
+    if path == "sentry.dsn" || path == "store.url" {
         return true;
     }
     if is_admin_key_path(path) {
@@ -980,6 +980,21 @@ mod tests {
                 "server.gateway.session.jwt_secret.1".to_string(),
             ]
         );
+        assert_eq!(LiteralScope::unattributed_count(), 0);
+    }
+
+    #[test]
+    fn is_secret_field_path_matches_the_store_url() {
+        // `[store] url` is a `Secret` (a PostgreSQL URL commonly embeds a
+        // password); without its arm a literal URL degrades to unattributed.
+        let mut map = HashMap::new();
+        map.insert(
+            "postgres://shunt:pw@db.internal/shunt".to_string(),
+            vec!["store.url".to_string()],
+        );
+        let _scope = LiteralScope::enter(map, HashSet::new());
+        record_literal_hit("postgres://shunt:pw@db.internal/shunt");
+        assert_eq!(LiteralScope::hits(), vec!["store.url".to_string()]);
         assert_eq!(LiteralScope::unattributed_count(), 0);
     }
 

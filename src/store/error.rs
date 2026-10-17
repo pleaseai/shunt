@@ -1,5 +1,10 @@
-//! Store errors. Every `Display` names the reason and the sanitized target
-//! (`sqlite:<path>` / `postgres://host:port/db`), never credentials.
+//! Store errors. Every `Display` names the reason, never credentials. A
+//! variant about the store as a whole names the sanitized target
+//! (`sqlite:<path>` / `postgres://host:port/db`); the statement-level ones
+//! ([`StoreError::Database`], [`StoreError::CommitUncertain`],
+//! [`StoreError::OutOfRange`]) are raised below the layer that knows it, so
+//! boot and `shunt check` wrap them with [`StoreError::located`] before an
+//! operator sees them.
 
 /// Why the store could not be opened or used.
 #[derive(Debug, thiserror::Error)]
@@ -56,9 +61,62 @@ pub enum StoreError {
     /// A `u64` did not fit the store's signed 64-bit columns.
     #[error("value {value} does not fit a signed 64-bit store column")]
     OutOfRange { value: u64 },
+    /// A statement-level error named with the store it came from; see
+    /// [`StoreError::located`].
+    #[error("store {target}: {error}")]
+    Located {
+        target: String,
+        error: Box<StoreError>,
+    },
+}
+
+impl StoreError {
+    /// Name `target` on a statement-level error, which has no target of its
+    /// own. Every other variant already names it (or, for `Import`, the
+    /// snapshot) and is returned unchanged.
+    pub fn located(self, target: &str) -> Self {
+        match self {
+            error @ (Self::Database { .. }
+            | Self::CommitUncertain { .. }
+            | Self::OutOfRange { .. }) => Self::Located {
+                target: target.to_string(),
+                error: Box::new(error),
+            },
+            other => other,
+        }
+    }
 }
 
 /// `u64` to the store's `BIGINT`. Overflow is an error, never a wrap.
 pub fn to_i64(value: u64) -> Result<i64, StoreError> {
     i64::try_from(value).map_err(|_| StoreError::OutOfRange { value })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StoreError;
+
+    #[test]
+    fn located_names_the_target_on_statement_errors_only() {
+        let located = StoreError::Database {
+            reason: "disk I/O error".to_string(),
+        }
+        .located("sqlite:/data/store.db");
+        assert_eq!(
+            located.to_string(),
+            "store sqlite:/data/store.db: store statement failed: disk I/O error"
+        );
+
+        let held = StoreError::HoldLost {
+            target: "sqlite:/data/store.db".to_string(),
+        };
+        let shown = held.to_string();
+        let held = held.located("sqlite:/data/store.db");
+        assert!(matches!(held, StoreError::HoldLost { .. }), "{held:?}");
+        assert_eq!(
+            held.to_string(),
+            shown,
+            "a targeted variant is not wrapped twice"
+        );
+    }
 }

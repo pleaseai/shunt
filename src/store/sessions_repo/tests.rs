@@ -27,21 +27,30 @@ fn map(records: Vec<RefreshRecord>) -> HashMap<String, RefreshRecord> {
     index(records)
 }
 
-static ARMED_FAULTS: std::sync::Mutex<Vec<(usize, &'static str)>> =
-    std::sync::Mutex::new(Vec::new());
+/// Armed faults, keyed by the store's hold state. The key is a `Weak`, not the
+/// raw address: a weak reference keeps the allocation, so a later store can
+/// never be handed an earlier store's address and inherit its unconsumed fault,
+/// and entries whose store is gone are purged.
+static ARMED_FAULTS: std::sync::Mutex<
+    Vec<(std::sync::Weak<crate::store::hold::HoldState>, &'static str)>,
+> = std::sync::Mutex::new(Vec::new());
 
 fn arm(store: &Store, fault: &'static str) {
-    let key = std::sync::Arc::as_ptr(&store.hold) as usize;
-    ARMED_FAULTS.lock().unwrap().push((key, fault));
+    let mut armed = ARMED_FAULTS.lock().unwrap();
+    armed.retain(|(owner, _)| owner.strong_count() > 0);
+    armed.push((std::sync::Arc::downgrade(&store.hold), fault));
 }
 
 /// Consume one armed `fault` for `store`; each fault fires once.
 fn take(store: &Store, fault: &'static str) -> bool {
-    let key = std::sync::Arc::as_ptr(&store.hold) as usize;
+    let owner = std::sync::Arc::downgrade(&store.hold);
     let mut armed = ARMED_FAULTS.lock().unwrap();
+    armed.retain(|(owner, _)| owner.strong_count() > 0);
     armed
         .iter()
-        .position(|entry| *entry == (key, fault))
+        .position(|(armed_owner, armed_fault)| {
+            std::sync::Weak::ptr_eq(armed_owner, &owner) && *armed_fault == fault
+        })
         .is_some_and(|at| {
             armed.remove(at);
             true

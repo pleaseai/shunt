@@ -15,7 +15,7 @@ configured, pool quota state, gateway refresh tokens, and spend limits with thei
 audit trail are kept in one transactional store instead of three last-writer-wins
 files.
 
-Without `[store]`, shunt behaves exactly as it does today.
+Without `[store]`, shunt behaves exactly as it does today, apart from the one-time rollback warning in AC-031 for a snapshot that was previously imported into a store.
 
 This is Phase 1 of
 [ADR-0006](../../../decisions/0006-optional-pluggable-store.md): one shunt process
@@ -33,7 +33,7 @@ to these classes.
 | State | Class | Meaning |
 | :-- | :-- | :-- |
 | Spend limits and audit | **Synchronous** | The admin mutation reports success only after the store has the write. |
-| Gateway refresh tokens (grant, rotation, revocation) | **Synchronous** | The token endpoint responds only after the store has the write. This matches today's JSON path, which awaits its save on that endpoint. |
+| Gateway refresh tokens (grant, rotation, revocation) | **Synchronous** | The token endpoint responds only after the store has the write. This matches today's JSON path, which awaits its save on that endpoint. The one exception is a replay-triggered revocation whose store write fails: it stays in memory and is retried later (see AC-023). |
 | Pool quota | **Write-behind** | Written in the background, and flushed on graceful shutdown. A crash can lose the writes since the last flush. |
 
 None of these classes adds a wait to the proxy path. Gateway token endpoints and
@@ -47,8 +47,8 @@ An operator running one shunt process configures `[store]` with a SQLite file.
 After a graceful restart, pool quota state, gateway sessions (refresh tokens), and
 spend limits with their audit trail are all exactly as they were, held in a single
 store instead of three hand-written files. The store's schema is created and
-upgraded by shunt itself, and a store shunt cannot safely use stops it from
-starting.
+upgraded by shunt itself, and shunt refuses to start when it cannot safely use
+the configured store.
 
 **Why this priority**: it is the foundation every other story builds on, and it
 replaces three bespoke persistence formats with one.
@@ -70,7 +70,11 @@ existing admin and gateway endpoints.
    durably stored.
 4. **AC-023** — When the gateway token endpoint issues, rotates, or revokes a
    refresh token while a store is configured, the system shall respond only
-   after the change is durably stored.
+   after the change is durably stored, except that a revocation caused by a
+   replayed refresh token fails closed in memory when the store write fails: the
+   caller still receives `401 invalid_grant`, the next durable write or store
+   persister tick retries the write, and a crash before then loses it
+   (`src/gateway/durable.rs`).
 5. **AC-024** — When shunt shuts down gracefully, the system shall flush pending
    write-behind pool state to the store before exiting.
 6. **AC-018** — When shunt boots with a configured store, the system shall

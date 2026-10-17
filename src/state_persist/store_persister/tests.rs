@@ -327,3 +327,43 @@ store_contract_test!(the_spawned_loop_flushes_pending_gateway_sessions, |store| 
     assert!(written, "the loop never flushed the pending session");
     persister.stop().await;
 });
+
+store_contract_test!(
+    a_lost_hold_on_a_gateway_only_flush_halts_the_loop,
+    |store| {
+        let state = app_state();
+        assert!(state.gateway_stores.attach_store(Arc::new(store.clone())));
+        let persister = PoolPersister::store(
+            state.clone(),
+            Arc::new(store.clone()),
+            Duration::from_millis(25),
+        );
+        run(
+            &store,
+            &["UPDATE instance_hold SET holder_id = 'ghost' WHERE id = 1"],
+        )
+        .await;
+        // Only a session is pending; the pool stays clean.
+        state
+            .gateway_stores
+            .refresh_tokens
+            .issue(gateway_identity());
+
+        let mut ended = false;
+        for _ in 0..200 {
+            if persister
+                .task
+                .as_ref()
+                .is_some_and(|task| task.is_finished())
+            {
+                ended = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(ended, "the loop kept retrying a fenced gateway write");
+        assert!(persister.sink.as_ref().unwrap().halted());
+        assert!(stored_sessions(&store).await.is_empty());
+        persister.stop().await;
+    }
+);

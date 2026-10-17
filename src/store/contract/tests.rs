@@ -136,16 +136,26 @@ async fn both_engines_migrate_to_the_same_tables_and_columns() {
         return;
     };
     let sqlite = super::Harness::sqlite().await;
-    let from_sqlite = columns(&sqlite.store, SQLITE_COLUMNS).await;
-    let from_postgres = columns(&postgres.store, POSTGRES_COLUMNS).await;
-    assert!(!from_sqlite.is_empty());
-    assert_eq!(
-        from_sqlite
-            .symmetric_difference(&from_postgres)
-            .collect::<Vec<_>>(),
-        Vec::<&(String, String)>::new(),
-        "sqlite and postgres schemas differ"
-    );
+    let (sqlite_store, postgres_store) = (sqlite.store.clone(), postgres.store.clone());
+    // A failing query or assertion must still drop the scratch schema, as the
+    // contract-test macro does.
+    let outcome =
+        ::futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async move {
+            let from_sqlite = columns(&sqlite_store, SQLITE_COLUMNS).await;
+            let from_postgres = columns(&postgres_store, POSTGRES_COLUMNS).await;
+            assert!(!from_sqlite.is_empty());
+            assert_eq!(
+                from_sqlite
+                    .symmetric_difference(&from_postgres)
+                    .collect::<Vec<_>>(),
+                Vec::<&(String, String)>::new(),
+                "sqlite and postgres schemas differ"
+            );
+        }))
+        .await;
     sqlite.finish().await;
     postgres.finish().await;
+    if let Err(payload) = outcome {
+        std::panic::resume_unwind(payload);
+    }
 }
