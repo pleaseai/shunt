@@ -71,9 +71,12 @@ Spend and gateway tokens do not have that window.
    upgrade shunt`) and is not modified.
 2. Acquire the [instance hold](#instance-hold).
 3. Apply pending migrations.
-4. [Import](#import-once) the JSON snapshots that have not been imported yet.
-5. Restore pool quota, gateway tokens, and spend from the store.
-6. Start the hold heartbeat and the pool flush task.
+4. Start the hold heartbeat, so a slow import or restore cannot let the hold go
+   stale.
+5. [Import](#import-once) the JSON snapshots that have not been imported yet.
+6. Restore pool quota, gateway tokens, and spend from the store.
+7. Renew the hold once more, refusing to boot if another process took it, and
+   start the pool flush task.
 
 Any failure before serving exits non-zero with the reason and releases the hold,
 so a corrected restart does not wait out the stale window. On graceful shutdown,

@@ -261,14 +261,22 @@ pub fn rewrite_placeholders(sql: &str) -> Cow<'_, str> {
     }
     let mut out = String::with_capacity(sql.len());
     let mut in_literal = false;
+    let mut in_identifier = false;
     let mut chars = sql.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            '\'' => {
+            '\'' if !in_identifier => {
                 in_literal = !in_literal;
                 out.push(c);
             }
-            '$' if !in_literal && chars.peek().is_some_and(char::is_ascii_digit) => {
+            '"' if !in_literal => {
+                in_identifier = !in_identifier;
+                out.push(c);
+            }
+            '$' if !in_literal
+                && !in_identifier
+                && chars.peek().is_some_and(char::is_ascii_digit) =>
+            {
                 out.push('?');
             }
             _ => out.push(c),

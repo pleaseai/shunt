@@ -399,11 +399,20 @@ mod postgres {
         // child inherits it.
         let _env = common::env_lock().await;
         let Some(base) = base_url() else { return };
-        // The password the configured URL really carries.
-        let password = url::Url::parse(&base)
-            .expect("postgres URL")
+        // The password the configured URL really carries, in the userinfo or
+        // the `password` query parameter. `PGPASSWORD` or passwordless local
+        // auth leaves none, and then there is nothing in the URL to leak.
+        let parsed = url::Url::parse(&base).expect("postgres URL");
+        let password = parsed
             .password()
-            .map(str::to_owned);
+            .map(str::to_owned)
+            .or_else(|| {
+                parsed
+                    .query_pairs()
+                    .find(|(key, _)| key == "password")
+                    .map(|(_, value)| value.into_owned())
+            })
+            .filter(|password| !password.is_empty());
         let schema = format!("check_{}", uuid::Uuid::new_v4().simple());
         admin(&base, format!("CREATE SCHEMA {schema}")).await;
         let url = scoped_url(&base, &schema);
@@ -435,8 +444,10 @@ mod postgres {
             "{line}"
         );
         assert_eq!(created, 0, "check must not create any table");
-        let password = password.expect("the test URL carries a password to redact");
-        assert!(!password.is_empty(), "the test URL carries a password");
+        let Some(password) = password else {
+            eprintln!("SHUNT_TEST_POSTGRES_URL carries no inline password; redaction not checked");
+            return;
+        };
         for stream in [stdout(&output), stderr(&output)] {
             assert!(!stream.contains(&password), "password leaked: {stream}");
         }

@@ -25,6 +25,15 @@ fn placeholders_ignore_dollar_in_string_literals() {
 }
 
 #[test]
+fn placeholders_ignore_dollar_in_quoted_identifiers() {
+    let sql = r#"SELECT "col$1", "it's $2" FROM t WHERE a = $1 AND b = '"$3'"#;
+    assert_eq!(
+        rewrite_placeholders(sql),
+        r#"SELECT "col$1", "it's $2" FROM t WHERE a = ?1 AND b = '"$3'"#
+    );
+}
+
+#[test]
 fn placeholders_leave_a_bare_dollar_alone() {
     assert_eq!(
         rewrite_placeholders("SELECT $a, $ , $1"),
