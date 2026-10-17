@@ -169,7 +169,9 @@ async fn dispatch(
             ))
         }
     };
-    let routes = routing::resolve_target_chain(&state.config, target.as_str(), admitted.router_id);
+    let mut routes =
+        routing::resolve_target_chain(&state.config, target.as_str(), admitted.router_id);
+    crate::proxy::capability::filter_fallbacks(&mut routes, &state.config, body.json());
     let headers = judge_headers(state, admitted.headers);
     // `/v1/messages` because the judge request *is* a Messages request: the
     // codec emits that shape and the adapters route on this path exactly as

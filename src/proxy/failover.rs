@@ -206,6 +206,15 @@ pub(super) async fn forward(
     // must not, for a caller who is about to be refused, since upstream's
     // algorithm writes a session affinity as it decides. So the request is
     // admitted against every target the entry can name (#633).
+    //
+    // Drop incompatible fallbacks before that gate when this chain is the one
+    // admission will see. A router or prefill drive replaces the chain after
+    // admission and is filtered once the replacement exists; filtering the
+    // provisional chain would count exclusions for routes that are never
+    // attempted. `count_tokens` never fails over.
+    if !is_count_tokens(uri) && consult.is_none() && !drive_prefill {
+        super::capability::filter_fallbacks(&mut routes, &state.config, body.json());
+    }
     let envelope;
     let admission: &[routing::Route] = match consult.map(|consult| consult.kind) {
         Some(
@@ -454,6 +463,15 @@ pub(super) async fn forward(
         routed_model: outcome.target.clone(),
         source: outcome.source.as_label(),
     });
+
+    // The chain a router, overlay, or prefill drive installed (or the original
+    // chain, when none of those ran). Filtering here is what the attempt loop
+    // and the committed streaming chain both walk. The pre-admission pass
+    // already removed incompatibles when the chain was not rewritten, so this
+    // is then a no-op and does not double-count `capability_excluded`.
+    if !is_count_tokens(uri) {
+        super::capability::filter_fallbacks(&mut routes, &state.config, body.json());
+    }
 
     let first_route = routes
         .first()
