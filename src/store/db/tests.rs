@@ -3,6 +3,13 @@ use crate::store::error::to_i64;
 use crate::store::test_support::{sqlite_config, TempDir};
 use crate::store::{Mode, Store};
 
+#[cfg(feature = "store-postgres")]
+thread_local! {
+    /// The bound [`super::set_io_timeout`] put in place for this test thread.
+    pub(super) static IO_TIMEOUT: std::cell::Cell<Option<std::time::Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
 #[test]
 fn placeholders_map_dollar_n_to_question_n() {
     assert_eq!(
@@ -171,3 +178,34 @@ async fn fetch_optional_returns_the_first_of_several_rows_or_none() {
     tx.rollback().await.unwrap();
     store.close().await;
 }
+
+crate::store::contract::store_contract_test!(
+    a_postgres_round_trip_that_never_answers_gives_up,
+    |store| {
+        // SQLite is a local file: there is no connection to go half-open.
+        if !matches!(store.db(), Db::Sqlite(_)) {
+            #[cfg(feature = "store-postgres")]
+            {
+                use std::time::Duration;
+                super::set_io_timeout(Some(Duration::from_millis(300)));
+                let mut tx = store.db().begin().await.unwrap();
+                // A statement that has not answered yet stands in for one whose
+                // reply a half-open connection will never deliver.
+                let outcome = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    tx.fetch_optional("SELECT pg_sleep(2)", &[]),
+                )
+                .await
+                .expect("a postgres round trip must give up at its bound");
+                match outcome {
+                    Err(StoreError::Database { reason }) => {
+                        assert!(reason.contains("did not complete"), "{reason}");
+                    }
+                    Err(other) => panic!("expected the round trip to time out, got {other:?}"),
+                    Ok(_) => panic!("the round trip must not answer within its bound"),
+                }
+                super::set_io_timeout(None);
+            }
+        }
+    }
+);

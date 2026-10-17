@@ -311,3 +311,45 @@ store_contract_test!(
         assert_eq!(map(reader.await.unwrap().unwrap()), written);
     }
 );
+
+store_contract_test!(
+    a_commit_that_outlasts_the_bound_is_uncertain_and_settles_once_it_lands,
+    |store| {
+        // Only PostgreSQL bounds a round trip: SQLite is a local file.
+        if !matches!(store.db(), Db::Sqlite(_)) {
+            #[cfg(feature = "store-postgres")]
+            {
+                use std::time::Duration;
+                // A deferred trigger makes COMMIT itself take a second, the way
+                // a COMMIT whose reply is lost looks to the client.
+                run(
+                    &store,
+                    &[
+                        "CREATE OR REPLACE FUNCTION slow_commit_fn() RETURNS trigger AS \
+                         $body$ BEGIN PERFORM pg_sleep(1); RETURN NULL; END $body$ LANGUAGE plpgsql"
+                            .to_string(),
+                        "CREATE CONSTRAINT TRIGGER slow_commit AFTER INSERT ON refresh_token \
+                         DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION slow_commit_fn()"
+                            .to_string(),
+                    ],
+                )
+                .await;
+                let written = map(vec![record("a", "f1", None)]);
+
+                crate::store::db::set_io_timeout(Some(Duration::from_millis(300)));
+                let error = apply_diff(&store, &diff(&HashMap::new(), &written))
+                    .await
+                    .unwrap_err();
+                crate::store::db::set_io_timeout(None);
+                assert!(
+                    matches!(error, StoreError::CommitUncertain { .. }),
+                    "a COMMIT past the bound must be uncertain, not failed: {error:?}"
+                );
+
+                // The server finishes the COMMIT after the client gave up; the
+                // settled read waits for it and sees the write.
+                assert_eq!(map(load_sessions_settled(&store).await.unwrap()), written);
+            }
+        }
+    }
+);
