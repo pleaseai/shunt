@@ -4,7 +4,10 @@
 
 use std::collections::HashMap;
 
-use super::{adds_active, apply_diff, diff, index, load_sessions, SessionsDiff};
+use super::{
+    adds_active, apply_diff, apply_diff_in, diff, index, load_sessions, load_sessions_settled,
+    SessionsDiff,
+};
 use crate::gateway::{approval::Identity, refresh::RefreshRecord};
 use crate::store::contract::store_contract_test;
 use crate::store::{Db, Store, StoreError};
@@ -282,3 +285,29 @@ store_contract_test!(a_negative_timestamp_fails_loading, |store| {
     let error = load_sessions(&store).await.unwrap_err();
     assert!(matches!(error, StoreError::Database { .. }), "{error:?}");
 });
+
+store_contract_test!(
+    a_settled_load_waits_for_the_durable_write_in_flight,
+    |store| {
+        // A durable write that has not committed yet holds the instance-hold row
+        // (and, on SQLite, the only connection).
+        let written = map(vec![record("a", "f1", None)]);
+        let mut tx = store.begin_durable().await.unwrap();
+        apply_diff_in(&mut tx, &diff(&HashMap::new(), &written))
+            .await
+            .unwrap();
+
+        let reader = tokio::spawn({
+            let store = store.clone();
+            async move { load_sessions_settled(&store).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !reader.is_finished(),
+            "a settled load must wait for the write in flight, not read the state before it"
+        );
+
+        tx.commit().await.unwrap();
+        assert_eq!(map(reader.await.unwrap().unwrap()), written);
+    }
+);

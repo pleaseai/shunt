@@ -11,7 +11,7 @@
 //! audit records are only appended and trimmed, which keeps the 10 000-record
 //! audit log from being rewritten on every change.
 
-use super::{to_i64, Store, StoreError, Tx};
+use super::{sessions_repo::injected_load_failure, to_i64, Store, StoreError, Tx};
 use crate::gateway::spend::store::{
     AuditRecord, OpaqueRecord, SpendLimit, SpendState, MAX_AUDIT_RECORDS,
 };
@@ -256,13 +256,19 @@ async fn trim_audit(tx: &mut Tx) -> Result<(), StoreError> {
 /// does not decode is an error, never a skipped record: dropping it would let
 /// the next save erase it.
 pub(crate) async fn load_spend(store: &Store) -> Result<Option<SpendState>, StoreError> {
-    #[cfg(test)]
-    if crate::store::sessions_repo::tests::take_failed_load(store) {
-        return Err(StoreError::Database {
-            reason: "injected: load failed".to_string(),
-        });
-    }
-    let mut tx = store.db().begin().await?;
+    injected_load_failure(store)?;
+    read_spend(store.db().begin().await?).await
+}
+
+/// [`load_spend`] once every durable write in flight has ended
+/// ([`Store::begin_settled`]). This is the read that settles a save whose
+/// commit outcome is unknown.
+pub(crate) async fn load_spend_settled(store: &Store) -> Result<Option<SpendState>, StoreError> {
+    injected_load_failure(store)?;
+    read_spend(store.begin_settled().await?).await
+}
+
+async fn read_spend(mut tx: Tx) -> Result<Option<SpendState>, StoreError> {
     let fetched = fetch_all(&mut tx).await;
     tx.rollback().await?;
     let (meta, limits, audit) = fetched?;

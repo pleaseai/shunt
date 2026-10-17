@@ -2,7 +2,7 @@
 //! Failures are injected inside the engine (a trigger that aborts writes),
 //! then removed.
 
-use super::{load_spend, save_spend};
+use super::{load_spend, load_spend_settled, save_spend, write_state};
 use crate::gateway::spend::store::{
     OpaqueRecord, Period, Scope, SpendState, SpendStore, MAX_AUDIT_RECORDS,
 };
@@ -327,3 +327,27 @@ store_contract_test!(a_typed_row_with_an_unknown_field_loads_opaque, |store| {
     assert_eq!(reloaded.opaque_limits, loaded.opaque_limits);
     assert_eq!(reloaded.opaque_audit, loaded.opaque_audit);
 });
+
+store_contract_test!(
+    a_settled_load_waits_for_the_durable_save_in_flight,
+    |store| {
+        // A durable save that has not committed yet holds the instance-hold row
+        // (and, on SQLite, the only connection).
+        let after = upsert(fresh(), Period::Daily, "1", 1);
+        let mut tx = store.begin_durable().await.unwrap();
+        write_state(&mut tx, &fresh(), &after).await.unwrap();
+
+        let reader = tokio::spawn({
+            let store = store.clone();
+            async move { load_spend_settled(&store).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !reader.is_finished(),
+            "a settled load must wait for the save in flight, not read the state before it"
+        );
+
+        tx.commit().await.unwrap();
+        assert_eq!(reader.await.unwrap().unwrap(), Some(after));
+    }
+);

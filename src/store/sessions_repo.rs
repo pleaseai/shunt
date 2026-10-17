@@ -167,13 +167,32 @@ async fn write(
 /// skipped row: a dropped tombstone would let a replayed token rotate again,
 /// and the next diff would erase the row for good.
 pub(crate) async fn load_sessions(store: &Store) -> Result<Vec<RefreshRecord>, StoreError> {
+    injected_load_failure(store)?;
+    read_sessions(store.db().begin().await?).await
+}
+
+/// [`load_sessions`] once every durable write in flight has ended
+/// ([`Store::begin_settled`]). This is the read that settles a write whose
+/// commit outcome is unknown.
+pub(crate) async fn load_sessions_settled(store: &Store) -> Result<Vec<RefreshRecord>, StoreError> {
+    injected_load_failure(store)?;
+    read_sessions(store.begin_settled().await?).await
+}
+
+/// The armed `fail_next_load` fault in tests; nothing otherwise.
+pub(crate) fn injected_load_failure(store: &Store) -> Result<(), StoreError> {
     #[cfg(test)]
-    if crate::store::sessions_repo::tests::take_failed_load(store) {
+    if tests::take_failed_load(store) {
         return Err(StoreError::Database {
             reason: "injected: load failed".to_string(),
         });
     }
-    let mut tx = store.db().begin().await?;
+    #[cfg(not(test))]
+    let _ = store;
+    Ok(())
+}
+
+async fn read_sessions(mut tx: Tx) -> Result<Vec<RefreshRecord>, StoreError> {
     let fetched = tx
         .fetch_all(
             "SELECT token_sha256, family, identity_json, inactive_since, issued_at \

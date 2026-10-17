@@ -38,7 +38,9 @@ use super::{approval::Identity, refresh::RefreshRecord, store::GatewayStores};
 use crate::{
     server::AppState,
     store::{
-        sessions_repo::{adds_active, apply_diff, diff, index, load_sessions},
+        sessions_repo::{
+            adds_active, apply_diff, diff, index, load_sessions, load_sessions_settled,
+        },
         Store, StoreError,
     },
 };
@@ -125,8 +127,8 @@ async fn commit_locked<T>(
         Err(error) => {
             if matches!(error, StoreError::CommitUncertain { .. }) {
                 // The write may have reached the store: trust what the store
-                // holds over the error.
-                match load_sessions(store).await {
+                // holds over the error, read only once that write has ended.
+                match load_sessions_settled(store).await {
                     Ok(records) if index(records.clone()) == after => {
                         tracing::warn!(%error, "store commit outcome was unknown; the write had landed");
                         *committed = after;
@@ -172,7 +174,7 @@ async fn resync(
     committed: &mut HashMap<String, RefreshRecord>,
 ) -> Result<(), StoreError> {
     if durable.baseline_unknown.load(Ordering::SeqCst) {
-        *committed = index(load_sessions(store).await?);
+        *committed = index(load_sessions_settled(store).await?);
         durable.baseline_unknown.store(false, Ordering::SeqCst);
     }
     Ok(())

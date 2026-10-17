@@ -9,7 +9,7 @@ use crate::{
     server::AppState,
     store::{
         import::LoadIssue,
-        spend_repo::{load_spend, save_spend},
+        spend_repo::{load_spend, load_spend_settled, save_spend},
         Store, StoreError,
     },
 };
@@ -125,8 +125,9 @@ pub(crate) async fn commit(
 }
 
 /// The store half of [`commit`]. A commit whose outcome is unknown is settled
-/// against what the store holds: memory follows the store, so audit ids never
-/// go backwards. If the store cannot be read back, the next mutation resyncs.
+/// against what the store holds, read once that commit has ended
+/// ([`load_spend_settled`]): memory follows the store, so audit ids never go
+/// backwards. If the store cannot be read back, the next mutation resyncs.
 async fn commit_to_store(state: &AppState, store: &Store, next: SpendState) -> Result<(), String> {
     let spend = &state.gateway_stores.spend;
     let Err(error) = save_spend(store, &spend.export(), &next).await else {
@@ -136,7 +137,7 @@ async fn commit_to_store(state: &AppState, store: &Store, next: SpendState) -> R
     crate::metrics::record_store_write_failure("spend");
     tracing::warn!(%error, "failed to persist gateway spend-limit state to the store");
     if matches!(error, StoreError::CommitUncertain { .. }) {
-        match load_spend(store).await {
+        match load_spend_settled(store).await {
             Ok(Some(stored)) if stored == next => {
                 spend.replace(next);
                 return Ok(());
@@ -165,7 +166,7 @@ pub(crate) async fn resync_if_needed(state: &AppState) -> Result<(), String> {
     else {
         return Ok(());
     };
-    let loaded = load_spend(store)
+    let loaded = load_spend_settled(store)
         .await
         .map_err(|error| format!("failed to resync gateway spend-limit state: {error}"))?;
     if let Some(stored) = loaded {

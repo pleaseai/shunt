@@ -243,6 +243,18 @@ impl Store {
         Ok(tx)
     }
 
+    /// Begin a transaction for reading back a write whose commit outcome is
+    /// unknown ([`StoreError::CommitUncertain`]). It starts like
+    /// [`Self::begin_durable`]: the `RENEW` takes the instance-hold row lock,
+    /// which every durable transaction holds from its own `RENEW` until it
+    /// commits or rolls back. So this waits for a durable transaction still in
+    /// flight, and a read made in it sees that transaction's outcome. A plain
+    /// read can run while the server is still committing and return the state
+    /// from before it.
+    pub async fn begin_settled(&self) -> Result<Tx, StoreError> {
+        self.begin_durable().await
+    }
+
     /// Renew the hold once, outside any caller transaction. `Ok(false)` means
     /// the row was taken; the store is then fenced. Database errors do not
     /// fence.
