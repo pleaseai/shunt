@@ -25,6 +25,16 @@ shunt run
 
 该可选功能也使 Codex CLI 的模型发现可被正确解析。`GET /models` 和 `GET /backend-api/codex/models` 返回有效的回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 路径上,`client_version` 查询字段优先于类 Anthropic 的头部并选择 Codex 形状;没有该字段时,现有 Anthropic 发现响应保持不变。这些请求先通过常规模型发现认证门,且 shunt 不会伪造不完整的 Codex 模型行。
 
+## 网页搜索
+
+Codex CLI 的内置网页搜索工具(`web.run`)会向 `{base_url}/alpha/search` 发送 POST 请求,这与它追加 `/responses` 的 base URL 相同。shunt 为每种 base URL 形式都注册了该路径:
+
+- `POST /backend-api/codex/alpha/search`
+- `POST /alpha/search`
+- `POST /v1/alpha/search`
+
+搜索与 Responses 轮次使用相同的 `[server.auth]` 策略和相同的 ChatGPT/Codex 账户池(会话粘性选择、故障转移、刷新),并把请求和响应逐字中继到后端的 `/codex/alpha/search`。搜索不是模型轮次,因此 `[[server.codex_endpoint.routes]]` 不适用,它总是发往 `[server.codex_endpoint].provider`。这些路由只接受 `POST` —— 该工具没有 WebSocket 形式。
+
 ## 客户端分析数据接收端
 
 Codex CLI 还会向 base URL 提交产品分析数据。shunt 接受该 CLI 可能产生的两条路径:

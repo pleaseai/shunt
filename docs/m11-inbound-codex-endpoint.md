@@ -79,6 +79,29 @@ literal path the real ChatGPT backend uses), a base ending in `/v1` produces `/v
 a bare base produces `/responses`. Registering all three lets an operator use either CLI setup
 style (§ "Codex CLI setup" below) without shunt needing to know which one a given client chose.
 
+### Web search relay
+
+The Codex CLI runs its built-in web search tool (`web.run`: `search_query`, `open`, and the other
+commands) by posting to `<base_url>/alpha/search`, so the same opt-in registers one search route
+per base-URL form:
+
+| Method | Path |
+| :-- | :-- |
+| `POST` | `/backend-api/codex/alpha/search` |
+| `POST` | `/alpha/search` |
+| `POST` | `/v1/alpha/search` |
+
+They share the Responses routes' handler pipeline — `[server.auth]`, the request body limit, the
+session-sticky pool key, account selection, failover, refresh, and the OpenAI-shaped gateway errors
+(`concurrency::is_codex_path` classifies them too) — and relay the body and the upstream reply
+verbatim to `<base_url>/codex/alpha/search` (`<base_url>/alpha/search` for a non-ChatGPT base),
+selected by `adapters::responses::CodexOperation`. Two things differ from a turn. A search is not a
+model turn, so `[[server.codex_endpoint.routes]]` never applies: it always goes to
+`[server.codex_endpoint].provider`, and it is labeled `web_search` in metrics and pool selection so
+no per-model cooldown recorded for a turn can block it. And the operation has no WebSocket form, so
+only `POST` is registered. Before these routes existed, every web search from a Codex CLI pointed at
+shunt failed with an empty `404`.
+
 In addition, shunt registers dedicated Codex model discovery routes:
 
 | Method | Path |

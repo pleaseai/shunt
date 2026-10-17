@@ -382,17 +382,29 @@ pub(super) fn request_builder(
 }
 
 pub(super) fn responses_url(config: &crate::config::Config, provider: &str) -> String {
+    codex_backend_url(config, provider, "responses")
+}
+
+/// The upstream URL of the Codex CLI's built-in web-search tool (`web.run`),
+/// laid out like [`responses_url`]: `{base}/codex/alpha/search` on the
+/// ChatGPT/Codex backend.
+pub(super) fn alpha_search_url(config: &crate::config::Config, provider: &str) -> String {
+    codex_backend_url(config, provider, "alpha/search")
+}
+
+fn codex_backend_url(config: &crate::config::Config, provider: &str, operation: &str) -> String {
     let base = config
         .provider(provider)
         .map(|provider| provider.base_url.as_str())
         .unwrap_or("https://api.openai.com/v1")
         .trim_end_matches('/');
-    // The ChatGPT/Codex backend serves the Responses API under /codex/responses;
-    // a plain OpenAI-compatible upstream uses /responses.
+    // The ChatGPT/Codex backend serves its Codex operations under /codex
+    // (/codex/responses, /codex/alpha/search); a plain OpenAI-compatible
+    // upstream serves them directly under its base URL.
     if config.is_chatgpt_backend(provider) {
-        format!("{base}/codex/responses")
+        format!("{base}/codex/{operation}")
     } else {
-        format!("{base}/responses")
+        format!("{base}/{operation}")
     }
 }
 
@@ -553,7 +565,9 @@ mod tests {
 
     use axum::http::{HeaderMap, HeaderValue};
 
-    use super::{build_test_request, codex_delegation, request_builder, responses_url};
+    use super::{
+        alpha_search_url, build_test_request, codex_delegation, request_builder, responses_url,
+    };
 
     fn codex_route() -> Route {
         Route {
@@ -1258,6 +1272,16 @@ mod tests {
             responses_url(&Config::default(), "openai"),
             "https://api.openai.com/v1/responses"
         );
+    }
+
+    #[test]
+    fn builds_codex_alpha_search_url_beside_the_responses_url() {
+        let config = Config::default();
+        assert_eq!(
+            alpha_search_url(&config, "codex"),
+            responses_url(&config, "codex").replace("/codex/responses", "/codex/alpha/search")
+        );
+        assert!(alpha_search_url(&config, "codex").ends_with("/codex/alpha/search"));
     }
 
     fn xai_route() -> Route {

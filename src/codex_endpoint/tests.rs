@@ -1,6 +1,6 @@
 #![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 
-use super::{forward, model_label, pool_sticky_key, UNKNOWN_MODEL};
+use super::{forward, model_label, pool_sticky_key, CodexOperation, UNKNOWN_MODEL};
 
 /// Matches the production default; individual body-limit behavior is tested in
 /// the HTTP tuning layer and handler tests.
@@ -364,6 +364,7 @@ async fn routed_stock_openai_api_key_generates_the_affinity_headers() {
         headers,
         body,
         std::time::Instant::now(),
+        CodexOperation::Responses,
     )
     .await
     {

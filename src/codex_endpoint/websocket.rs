@@ -27,7 +27,7 @@ use crate::{
 use super::frame::{
     build_warmup_completion_frames, build_ws_error_frame, parse_client_frame, ClientFrame,
 };
-use turn::{run_turn, TurnContext};
+use turn::{prepare_body, run_turn, SharedContinuation, TurnContext};
 
 /// GET handler for inbound Responses WebSocket upgrades.
 ///
@@ -124,6 +124,7 @@ async fn handle_socket(
     let (out_tx, mut out_rx) = mpsc::channel::<(u64, Message)>(1);
 
     let current_generation = Arc::new(AtomicU64::new(0));
+    let continuation: SharedContinuation = Arc::new(std::sync::Mutex::new(None));
     let mut active_turn_task: Option<tokio::task::JoinHandle<()>> = None;
 
     loop {
@@ -203,6 +204,12 @@ async fn handle_socket(
                             // client omitted or contradicted the HTTP transport flag.
                             obj.insert("stream".to_string(), serde_json::Value::Bool(true));
                         }
+                        // The HTTP upstream rejects `previous_response_id`; expand an
+                        // incremental frame's delta against this connection's stored
+                        // transcript (see `turn::prepare_body`).
+                        let logical_input = prepare_body(&mut raw_json, &continuation);
+                        let body_signature =
+                            crate::adapters::responses::codex_continuation::signature(&raw_json);
                         let body_bytes = Bytes::from(serde_json::to_vec(&raw_json).unwrap_or_default());
 
                         let mut turn_headers = handshake_headers.clone();
@@ -223,6 +230,7 @@ async fn handle_socket(
                         let admin_header_clone = admin_header.clone();
                         let out_tx_clone = out_tx.clone();
                         let gen_clone = current_generation.clone();
+                        let continuation_clone = continuation.clone();
 
                         active_turn_task = Some(tokio::spawn(async move {
                             run_turn(TurnContext {
@@ -236,6 +244,9 @@ async fn handle_socket(
                                 generation: turn_gen,
                                 current_generation: gen_clone,
                                 out_tx: out_tx_clone,
+                                continuation: continuation_clone,
+                                logical_input,
+                                body_signature,
                             }).await;
                         }));
                     }

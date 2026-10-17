@@ -25,6 +25,16 @@ shunt run
 
 이 옵트인은 Codex CLI 모델 탐색도 파싱 가능하게 만듭니다. `GET /models`와 `GET /backend-api/codex/models`는 유효한 폴백 `{"models":[]}`를 반환합니다. 공유 `GET /v1/models` 경로에서는 `client_version` 쿼리 필드가 Anthropic 형태의 헤더보다 우선하여 Codex 형태를 선택하고, 그 필드가 없으면 기존 Anthropic 탐색 응답은 변경되지 않습니다. 이 요청들은 기존 모델 탐색 인증 게이트를 거치며, shunt는 불완전한 Codex 모델 행을 만들지 않습니다.
 
+## 웹 검색
+
+Codex CLI의 내장 웹 검색 도구(`web.run`)는 `/responses`를 붙이는 것과 같은 base URL의 `{base_url}/alpha/search`로 요청을 보냅니다. shunt는 base URL 형식마다 이 경로를 등록합니다:
+
+- `POST /backend-api/codex/alpha/search`
+- `POST /alpha/search`
+- `POST /v1/alpha/search`
+
+검색은 Responses 턴과 같은 `[server.auth]` 정책과 같은 ChatGPT/Codex 계정 풀(세션 고정 선택, 장애 조치, 갱신)을 사용하며, 요청과 응답을 백엔드의 `/codex/alpha/search`로 그대로 중계합니다. 검색은 모델 턴이 아니므로 `[[server.codex_endpoint.routes]]`가 적용되지 않고 항상 `[server.codex_endpoint].provider`로 전달됩니다. 이 라우트는 `POST`만 받습니다 — 이 도구에는 WebSocket 형식이 없습니다.
+
 ## 클라이언트 analytics sink
 
 Codex CLI는 제품 analytics도 base URL로 전송합니다. shunt는 CLI가 만들 수 있는 두 경로를 모두 받아들입니다:
