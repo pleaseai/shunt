@@ -129,6 +129,49 @@ fn database_error(error: &sqlx::Error) -> StoreError {
     }
 }
 
+/// The longest one PostgreSQL round trip (BEGIN, a statement, COMMIT or
+/// ROLLBACK) may take. Durable writes run under locks that every token
+/// rotation and spend mutation queue behind, and on a half-open connection the
+/// await would otherwise stay pending until the OS gives up on the socket. It
+/// is longer than the settled read's 5 s `lock_timeout`, so that wait still
+/// ends with the server's own error.
+#[cfg(feature = "store-postgres")]
+const POSTGRES_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+#[cfg(feature = "store-postgres")]
+fn io_timeout() -> std::time::Duration {
+    #[cfg(test)]
+    if let Some(timeout) = tests::IO_TIMEOUT.with(std::cell::Cell::get) {
+        return timeout;
+    }
+    POSTGRES_IO_TIMEOUT
+}
+
+/// Replace [`POSTGRES_IO_TIMEOUT`] on the current test thread (`None` restores
+/// it). Each test runs on its own thread, so this never reaches another test.
+#[cfg(all(test, feature = "store-postgres"))]
+pub(crate) fn set_io_timeout(timeout: Option<std::time::Duration>) {
+    tests::IO_TIMEOUT.with(|cell| cell.set(timeout));
+}
+
+/// Await one PostgreSQL round trip, giving up after [`POSTGRES_IO_TIMEOUT`]
+/// with a [`StoreError::Database`]. The gateway token and spend writers report
+/// a COMMIT that times out this way as [`StoreError::CommitUncertain`] and read
+/// the outcome back.
+#[cfg(feature = "store-postgres")]
+async fn bounded<T>(
+    what: &str,
+    io: impl std::future::Future<Output = Result<T, sqlx::Error>>,
+) -> Result<T, StoreError> {
+    let timeout = io_timeout();
+    match tokio::time::timeout(timeout, io).await {
+        Ok(result) => result.map_err(|e| database_error(&e)),
+        Err(_) => Err(StoreError::Database {
+            reason: format!("postgres {what} did not complete within {timeout:?}"),
+        }),
+    }
+}
+
 impl Db {
     /// Start a transaction. SQLite has one connection, so a second concurrent
     /// `begin` waits for the first to finish.
@@ -138,9 +181,7 @@ impl Db {
                 pool.begin().await.map_err(|e| database_error(&e))?,
             )),
             #[cfg(feature = "store-postgres")]
-            Self::Postgres(pool) => Ok(Tx::Postgres(
-                pool.begin().await.map_err(|e| database_error(&e))?,
-            )),
+            Self::Postgres(pool) => Ok(Tx::Postgres(bounded("BEGIN", pool.begin()).await?)),
         }
     }
 
@@ -172,10 +213,7 @@ impl Tx {
             #[cfg(feature = "store-postgres")]
             Self::Postgres(tx) => {
                 let query = bind_values!(sqlx::query(AssertSqlSafe(sql.to_string())), params);
-                let done = query
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(|e| database_error(&e))?;
+                let done = bounded("statement", query.execute(&mut **tx)).await?;
                 Ok(done.rows_affected())
             }
         }
@@ -196,10 +234,7 @@ impl Tx {
             #[cfg(feature = "store-postgres")]
             Self::Postgres(tx) => {
                 let query = bind_values!(sqlx::query(AssertSqlSafe(sql.to_string())), params);
-                let rows = query
-                    .fetch_all(&mut **tx)
-                    .await
-                    .map_err(|e| database_error(&e))?;
+                let rows = bounded("statement", query.fetch_all(&mut **tx)).await?;
                 Ok(rows.into_iter().map(Row::Postgres).collect())
             }
         }
@@ -225,10 +260,7 @@ impl Tx {
             #[cfg(feature = "store-postgres")]
             Self::Postgres(tx) => {
                 let query = bind_values!(sqlx::query(AssertSqlSafe(sql.to_string())), params);
-                let row = query
-                    .fetch_optional(&mut **tx)
-                    .await
-                    .map_err(|e| database_error(&e))?;
+                let row = bounded("statement", query.fetch_optional(&mut **tx)).await?;
                 Ok(row.map(Row::Postgres))
             }
         }
@@ -236,20 +268,18 @@ impl Tx {
 
     pub async fn commit(self) -> Result<(), StoreError> {
         match self {
-            Self::Sqlite(tx) => tx.commit().await,
+            Self::Sqlite(tx) => tx.commit().await.map_err(|e| database_error(&e)),
             #[cfg(feature = "store-postgres")]
-            Self::Postgres(tx) => tx.commit().await,
+            Self::Postgres(tx) => bounded("COMMIT", tx.commit()).await,
         }
-        .map_err(|e| database_error(&e))
     }
 
     pub async fn rollback(self) -> Result<(), StoreError> {
         match self {
-            Self::Sqlite(tx) => tx.rollback().await,
+            Self::Sqlite(tx) => tx.rollback().await.map_err(|e| database_error(&e)),
             #[cfg(feature = "store-postgres")]
-            Self::Postgres(tx) => tx.rollback().await,
+            Self::Postgres(tx) => bounded("ROLLBACK", tx.rollback()).await,
         }
-        .map_err(|e| database_error(&e))
     }
 }
 

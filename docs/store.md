@@ -48,7 +48,14 @@ store; a source-scan test fails if either ever references `crate::store`.
   `cargo build` and `cargo install` are not, so build with
   `--features store-postgres` from source. A build without the feature rejects
   `backend = "postgres"` at config load, naming the feature. The pool defaults
-  to 4 connections (`max_connections`) with a 10 s acquire timeout.
+  to 4 connections (`max_connections`) with a 10 s acquire timeout. Every
+  PostgreSQL round trip (BEGIN, a statement, COMMIT, ROLLBACK) gives up after
+  15 s, so a connection that goes half-open fails that write instead of stalling
+  every write queued behind it. A COMMIT that gives up this way has an unknown
+  outcome. The gateway token and spend writers read the store back to settle it,
+  waiting at most 5 s (a transaction-local `lock_timeout`) for a write still in
+  flight; the pool flush rewrites its state on the next tick either way. The bounds
+  are fixed, not configurable.
 
 ## Durability classes
 
