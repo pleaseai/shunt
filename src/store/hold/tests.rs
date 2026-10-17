@@ -251,6 +251,41 @@ store_contract_test!(release_clears_the_row_and_allows_reacquire, |store| {
     second.close().await;
 });
 
+store_contract_test!(
+    a_settled_begin_gives_up_on_a_write_that_never_ends,
+    |store| {
+        // SQLite has one connection, so a second transaction waits for the pool,
+        // not the row lock: only PostgreSQL reaches the lock timeout.
+        if !matches!(store.db(), Db::Sqlite(_)) {
+            store.set_settled_lock_timeout(Duration::from_millis(200));
+            // A durable transaction that never ends, like a backend left behind by
+            // a connection lost mid-commit, holds the hold row.
+            let stuck = store.begin_durable().await.unwrap();
+
+            let outcome = tokio::time::timeout(Duration::from_secs(5), store.begin_settled())
+                .await
+                .expect("a settled begin must give up on a held hold row, not wait for it");
+            match outcome {
+                Err(StoreError::Database { reason }) => {
+                    assert!(reason.contains("lock timeout"), "{reason}");
+                }
+                Err(other) => panic!("expected a lock timeout, got {other:?}"),
+                Ok(_) => panic!("a settled begin must not get the hold row while it is held"),
+            }
+            assert!(!store.is_fenced(), "a lock timeout is not a lost hold");
+
+            stuck.rollback().await.unwrap();
+            store
+                .begin_settled()
+                .await
+                .unwrap()
+                .rollback()
+                .await
+                .unwrap();
+        }
+    }
+);
+
 #[tokio::test]
 async fn inspect_never_touches_the_hold() {
     use crate::store::test_support::{sqlite_config, TempDir};

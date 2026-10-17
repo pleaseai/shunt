@@ -10,7 +10,7 @@
 //! [`Store::begin_durable`], which re-checks `holder_id = $me` inside its own
 //! transaction.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::task::JoinHandle;
@@ -29,10 +29,21 @@ const CREATE_TABLE: &str = "CREATE TABLE IF NOT EXISTS instance_hold (\
 const SEED_ROW: &str = "INSERT INTO instance_hold (id) VALUES (1) ON CONFLICT DO NOTHING";
 const READ_ROW: &str =
     "SELECT holder_id, holder_label, heartbeat_at FROM instance_hold WHERE id = 1";
+
+/// How long [`Store::begin_settled`] waits for the hold row lock on PostgreSQL.
+/// A durable transaction holds that lock only for its own short write. One
+/// that holds it longer is usually a backend whose client is gone (the
+/// connection broke during COMMIT) and that the server has not yet reaped, and
+/// waiting for it would keep the caller's lock held for just as long.
+const SETTLED_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const ACQUIRE: &str = "UPDATE instance_hold SET holder_id = $1, holder_label = $2, \
     started_at = $3, heartbeat_at = $3 \
     WHERE id = 1 AND (holder_id IS NULL OR holder_id = $1 OR heartbeat_at < $4)";
 const RENEW: &str = "UPDATE instance_hold SET heartbeat_at = $1 WHERE id = 1 AND holder_id = $2";
+/// Scoped to the transaction (`is_local = true`), so the pooled connection
+/// goes back without it.
+#[cfg(feature = "store-postgres")]
+const SET_LOCK_TIMEOUT: &str = "SELECT set_config('lock_timeout', $1, true)";
 const RELEASE: &str = "UPDATE instance_hold SET holder_id = NULL, holder_label = NULL, \
     started_at = NULL, heartbeat_at = NULL WHERE id = 1 AND holder_id = $1";
 
@@ -43,6 +54,9 @@ pub(crate) struct HoldState {
     label: String,
     stale_seconds: u64,
     fenced: AtomicBool,
+    /// Read only by the PostgreSQL arm of [`Store::begin_settled`].
+    #[cfg_attr(not(feature = "store-postgres"), allow(dead_code))]
+    settled_lock_timeout_ms: AtomicU64,
 }
 
 impl HoldState {
@@ -52,6 +66,7 @@ impl HoldState {
             label: holder_label(),
             stale_seconds,
             fenced: AtomicBool::new(false),
+            settled_lock_timeout_ms: AtomicU64::new(millis(SETTLED_LOCK_TIMEOUT)),
         }
     }
 }
@@ -81,6 +96,10 @@ impl Drop for HeartbeatHandle {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn now_secs() -> i64 {
@@ -228,7 +247,13 @@ impl Store {
         if self.is_fenced() {
             return Err(self.hold_lost());
         }
-        let mut tx = self.db().begin().await?;
+        let tx = self.db().begin().await?;
+        self.renew_in(tx).await
+    }
+
+    /// Run `RENEW` as the first write of `tx`, rolling back and fencing when
+    /// the row is no longer ours.
+    async fn renew_in(&self, mut tx: Tx) -> Result<Tx, StoreError> {
         let renewed = tx
             .execute(
                 RENEW,
@@ -251,8 +276,40 @@ impl Store {
     /// flight, and a read made in it sees that transaction's outcome. A plain
     /// read can run while the server is still committing and return the state
     /// from before it.
+    ///
+    /// On PostgreSQL the wait is bounded by [`SETTLED_LOCK_TIMEOUT`]: past it
+    /// the `RENEW` fails with a [`StoreError::Database`], which callers treat
+    /// as a read-back that failed. SQLite has one connection, so this waits
+    /// for the pool instead, bounded by its acquire timeout.
     pub async fn begin_settled(&self) -> Result<Tx, StoreError> {
-        self.begin_durable().await
+        if self.is_fenced() {
+            return Err(self.hold_lost());
+        }
+        let mut tx = self.db().begin().await?;
+        self.bound_lock_wait(&mut tx).await?;
+        self.renew_in(tx).await
+    }
+
+    /// Set the settled lock timeout for the rest of `tx`. A no-op on SQLite.
+    async fn bound_lock_wait(&self, tx: &mut Tx) -> Result<(), StoreError> {
+        match tx {
+            Tx::Sqlite(_) => Ok(()),
+            #[cfg(feature = "store-postgres")]
+            Tx::Postgres(_) => {
+                let timeout = self.hold.settled_lock_timeout_ms.load(Ordering::SeqCst);
+                tx.execute(SET_LOCK_TIMEOUT, &[format!("{timeout}ms").into()])
+                    .await
+                    .map(|_| ())
+            }
+        }
+    }
+
+    /// Shorten [`SETTLED_LOCK_TIMEOUT`] so a test does not wait for it.
+    #[cfg(test)]
+    pub(crate) fn set_settled_lock_timeout(&self, timeout: Duration) {
+        self.hold
+            .settled_lock_timeout_ms
+            .store(millis(timeout), Ordering::SeqCst);
     }
 
     /// Renew the hold once, outside any caller transaction. `Ok(false)` means
