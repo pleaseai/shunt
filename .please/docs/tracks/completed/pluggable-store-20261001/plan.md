@@ -269,11 +269,16 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
 
 ### Automated Tests
 
-- [ ] `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features --workspace` green locally (SQLite) and in CI (SQLite + PostgreSQL, postgres arm required not skipped).
-- [ ] `cargo test --test router_surface --test prefill_router` (default features) green.
-- [ ] NFR-001: with every store statement delayed 3 s, each proxied request completes in under 1 s (T009), on both engines.
-- [ ] Coverage job includes the postgres service; Sonar new-code coverage ≥ 80 %.
-- [ ] CodSpeed: no `AppState` growth; any delta on `main` comparison is checked against the AGENTS.md CodSpeed procedure before being treated as a regression.
+- [x] `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features --workspace` green locally (SQLite) and in CI (SQLite + PostgreSQL, postgres arm required not skipped).
+  Evidence (2026-10-17, head c5180e46): CI run `CI` success; local `cargo test --features store-postgres,bench --workspace --no-fail-fast` with `SHUNT_TEST_POSTGRES_REQUIRED=1` -> 3952 passed, 2 failed (the known `tests/responses_chain_stream.rs` local failures, identical on pristine HEAD), 2 ignored; fmt and `clippy --all-targets --features store-postgres,bench -D warnings` clean.
+- [x] `cargo test --test router_surface --test prefill_router` (default features) green.
+  Evidence: CI step `Test default build (no ui feature)` green on c5180e46; `RUSTFLAGS="-D warnings" cargo check --lib` clean locally.
+- [x] NFR-001: with every store statement delayed 3 s, each proxied request completes in under 1 s (T009), on both engines.
+  Evidence: T009 `store_boot` -> slowest of 50 proxied requests 2.2 ms (sqlite) / 2.4 ms (postgres) while the pool write was held >= 3 s.
+- [x] Coverage job includes the postgres service; Sonar new-code coverage ≥ 80 %.
+  Evidence: SonarCloud quality gate OK for PR #774, `new_coverage` 93.6, `new_duplicated_lines_density` 0.2.
+- [x] CodSpeed: no `AppState` growth; any delta on `main` comparison is checked against the AGENTS.md CodSpeed procedure before being treated as a regression.
+  Evidence: `CodSpeed Performance Analysis` pass on c5180e46 (run 39005568806) and on every earlier head of PR #774.
 
 ### Manual Testing
 
@@ -422,3 +427,16 @@ T001 → T002 → T003 → {T004, T011} ; T004 → {T005, T006, T007, T008} ; {T
   Evidence: `/health` refused for ~3.0 s after spawn in every run; the child's log shows config load -> store opened in 33 ms.
 - Observation: `docs/dashboard-metrics.md` states 18 series and "sixteen of eighteen are write-only", but `src/metrics.rs` already has more counters than the doc's table lists (for example `shunt.router.decisions`), so the counts were stale before this track. T012 added the store row and a note rather than recounting.
   Evidence: `grep -c shunt.router.decisions src/metrics.rs` -> 2; the table has no such row.
+
+## Outcomes & Retrospective
+
+- **Delivered**: an opt-in `[store]` (SQLite always compiled, PostgreSQL behind `store-postgres`) backing the three existing snapshots — pool quota, gateway refresh tokens, and spend limits with their audit — plus a single-instance hold with heartbeat and fencing, import-once from the legacy JSON files, `shunt check` store inspection, and docs across README, `docs/`, and the site in four locales. No `[store]` keeps today's code path (AC-022 regression guard in `store::boot`). ADR-0006 is Accepted; the request-history rollups from its Phase 1 move to a follow-up track.
+- **Review loop (3 iterations, ensemble: gpt, ocr, cubic)**: each round found real concurrency defects in the durable paths, all fixed with mutation-checked tests — a shutdown flush lost to an aborted tick, a failed migration stranding the hold, a dropped request stranding a rotation (f581409e); detached commits left unbounded by the first fix, unknown commit outcomes, spend mutations split from memory (ff12dc04); unreadable unknown commits leaving a stale baseline (c5180e46). The last fix commit was not re-reviewed (loop cap).
+- **Deferred**:
+  - Manual testing — a real Claude Code login through the gateway across a restart, and a second `shunt run` on the same SQLite file — was not run in this track.
+  - Validated-but-plausible review items, left unfixed: `shunt check` creates SQLite `-wal`/`-shm` sidecars, contradicting `docs/store.md`'s "never writes" claim. A missing parent directory on inspect. The hold uses the local clock and judges staleness by the acquirer's config. A SQLite hold read-then-write race surfaces `Database` rather than `HoldHeld`.
+  - TD-003 and TD-004 are in the tech-debt tracker.
+- **Lessons**:
+  - A fix that moves work onto a spawned task must also move the lock that bounded it, or the fix creates a new unbounded queue.
+  - Treat "commit failed" as "outcome unknown" on any network engine, and reconcile against the store rather than memory.
+  - When running the full suite locally, pass `--no-fail-fast`: without it, the known `responses_chain_stream` failure stops every later test binary from running, so the run quietly covers less.
