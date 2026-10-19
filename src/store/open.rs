@@ -233,16 +233,18 @@ async fn connect_postgres(
                 .unwrap_or(DEFAULT_POSTGRES_CONNECTIONS),
         )
         .acquire_timeout(POSTGRES_ACQUIRE_TIMEOUT)
-        // sqlx pings on release with no bound; a half-open connection would
-        // keep its pool slot forever. Closing it frees the slot.
+        // Drains what a cancelled request left on the connection (a pending
+        // reply and the queued ROLLBACK) within the bound, and closes it
+        // otherwise. A healthy connection does no I/O here. sqlx's own release
+        // ping then runs on a connection that just answered, with no bound.
         .after_release(|conn, _meta| {
             Box::pin(async move {
-                match tokio::time::timeout(super::db::release_timeout(), conn.ping()).await {
+                match tokio::time::timeout(super::db::release_timeout(), conn.flush()).await {
                     Ok(Ok(())) => Ok(true),
                     Ok(Err(error)) => Err(error),
                     Err(_) => Err(sqlx::Error::Io(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
-                        "release ping did not complete",
+                        "release drain did not complete",
                     ))),
                 }
             })

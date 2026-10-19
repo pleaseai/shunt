@@ -148,8 +148,9 @@ fn database_error(error: &sqlx::Error) -> StoreError {
 #[cfg(feature = "store-postgres")]
 const POSTGRES_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// The longest the pool's release-time ping may take before the connection is
-/// closed instead of returned. sqlx runs that ping with no bound of its own.
+/// The longest the pool's release-time drain may take before the connection is
+/// closed instead of returned. It drains what a cancelled request left on the
+/// connection; sqlx's own release ping has no bound of its own.
 #[cfg(feature = "store-postgres")]
 pub(crate) fn release_timeout() -> std::time::Duration {
     #[cfg(test)]
@@ -324,6 +325,7 @@ impl Tx {
             Self::Sqlite(tx) => tx.commit().await.map_err(|e| database_error(&e)),
             #[cfg(feature = "store-postgres")]
             Self::Postgres(tx) if tx.timed_out => Err(abandoned("COMMIT")),
+            #[cfg(feature = "store-postgres")]
             Self::Postgres(tx) => bounded("COMMIT", tx.tx.commit()).await,
         }
     }
@@ -334,6 +336,7 @@ impl Tx {
             #[cfg(feature = "store-postgres")]
             // Dropping queues the rollback; the pool's release hook bounds it.
             Self::Postgres(tx) if tx.timed_out => Ok(()),
+            #[cfg(feature = "store-postgres")]
             Self::Postgres(tx) => bounded("ROLLBACK", tx.tx.rollback()).await,
         }
     }
