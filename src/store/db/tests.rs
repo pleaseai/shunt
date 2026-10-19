@@ -10,6 +10,18 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+#[cfg(feature = "store-postgres")]
+static RELEASE_TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Process-wide because the release hook runs in a task on any thread.
+#[cfg(feature = "store-postgres")]
+pub(super) fn release_timeout_override() -> Option<std::time::Duration> {
+    match RELEASE_TIMEOUT_MS.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => None,
+        ms => Some(std::time::Duration::from_millis(ms)),
+    }
+}
+
 #[test]
 fn placeholders_map_dollar_n_to_question_n() {
     assert_eq!(
@@ -206,6 +218,36 @@ crate::store::contract::store_contract_test!(
                 }
                 super::set_io_timeout(None);
             }
+        }
+    }
+);
+
+#[cfg(feature = "store-postgres")]
+crate::store::contract::store_contract_test!(
+    a_timed_out_postgres_connection_is_closed_not_returned_to_the_pool,
+    |store| {
+        // SQLite is a local file: there is no connection to go half-open.
+        if let Db::Postgres(pool) = store.db() {
+            use std::sync::atomic::Ordering;
+            use std::time::Duration;
+            super::set_io_timeout(Some(Duration::from_millis(300)));
+            RELEASE_TIMEOUT_MS.store(300, Ordering::SeqCst);
+            let mut tx = store.db().begin().await.unwrap();
+            let before = pool.size();
+            let outcome = tx.fetch_optional("SELECT pg_sleep(3)", &[]).await;
+            assert!(outcome.is_err());
+            // The abandoned transaction neither waits out another bound nor
+            // commits.
+            let started = std::time::Instant::now();
+            tx.rollback().await.unwrap();
+            assert!(started.elapsed() < Duration::from_millis(200));
+            // The server is still sleeping, so an unbounded release ping would
+            // hold the connection for the remaining ~2.7 s. Bounded, it is closed.
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            let size = pool.size();
+            RELEASE_TIMEOUT_MS.store(0, Ordering::SeqCst);
+            super::set_io_timeout(None);
+            assert_eq!(size, before - 1, "the timed-out connection must be closed");
         }
     }
 );

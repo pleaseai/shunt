@@ -105,7 +105,16 @@ fn decode_error(index: usize, error: &sqlx::Error) -> StoreError {
 pub enum Tx {
     Sqlite(sqlx::Transaction<'static, sqlx::Sqlite>),
     #[cfg(feature = "store-postgres")]
-    Postgres(sqlx::Transaction<'static, sqlx::Postgres>),
+    Postgres(PgTx),
+}
+
+/// A PostgreSQL transaction plus whether one of its round trips timed out. The
+/// cancelled request leaves the connection mid-protocol, so a later ROLLBACK or
+/// COMMIT would only wait out another bound on it.
+#[cfg(feature = "store-postgres")]
+pub struct PgTx {
+    tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    timed_out: bool,
 }
 
 macro_rules! bind_values {
@@ -134,9 +143,21 @@ fn database_error(error: &sqlx::Error) -> StoreError {
 /// rotation and spend mutation queue behind, and on a half-open connection the
 /// await would otherwise stay pending until the OS gives up on the socket. It
 /// is longer than the settled read's 5 s `lock_timeout`, so that wait still
-/// ends with the server's own error.
+/// ends with the server's own error. After a timeout the transaction skips its
+/// remaining COMMIT or ROLLBACK, and the pool closes the connection.
 #[cfg(feature = "store-postgres")]
 const POSTGRES_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The longest the pool's release-time ping may take before the connection is
+/// closed instead of returned. sqlx runs that ping with no bound of its own.
+#[cfg(feature = "store-postgres")]
+pub(crate) fn release_timeout() -> std::time::Duration {
+    #[cfg(test)]
+    if let Some(timeout) = tests::release_timeout_override() {
+        return timeout;
+    }
+    POSTGRES_IO_TIMEOUT
+}
 
 #[cfg(feature = "store-postgres")]
 fn io_timeout() -> std::time::Duration {
@@ -163,12 +184,34 @@ async fn bounded<T>(
     what: &str,
     io: impl std::future::Future<Output = Result<T, sqlx::Error>>,
 ) -> Result<T, StoreError> {
+    bounded_on(&mut false, what, io).await
+}
+
+/// [`bounded`] that records a timeout in `timed_out`.
+#[cfg(feature = "store-postgres")]
+async fn bounded_on<T>(
+    timed_out: &mut bool,
+    what: &str,
+    io: impl std::future::Future<Output = Result<T, sqlx::Error>>,
+) -> Result<T, StoreError> {
     let timeout = io_timeout();
     match tokio::time::timeout(timeout, io).await {
         Ok(result) => result.map_err(|e| database_error(&e)),
-        Err(_) => Err(StoreError::Database {
-            reason: format!("postgres {what} did not complete within {timeout:?}"),
-        }),
+        Err(_) => {
+            *timed_out = true;
+            Err(StoreError::Database {
+                reason: format!("postgres {what} did not complete within {timeout:?}"),
+            })
+        }
+    }
+}
+
+#[cfg(feature = "store-postgres")]
+fn abandoned(what: &str) -> StoreError {
+    StoreError::Database {
+        reason: format!(
+            "postgres {what} skipped: an earlier round trip on this transaction timed out"
+        ),
     }
 }
 
@@ -181,7 +224,10 @@ impl Db {
                 pool.begin().await.map_err(|e| database_error(&e))?,
             )),
             #[cfg(feature = "store-postgres")]
-            Self::Postgres(pool) => Ok(Tx::Postgres(bounded("BEGIN", pool.begin()).await?)),
+            Self::Postgres(pool) => Ok(Tx::Postgres(PgTx {
+                tx: bounded("BEGIN", pool.begin()).await?,
+                timed_out: false,
+            })),
         }
     }
 
@@ -213,7 +259,8 @@ impl Tx {
             #[cfg(feature = "store-postgres")]
             Self::Postgres(tx) => {
                 let query = bind_values!(sqlx::query(AssertSqlSafe(sql.to_string())), params);
-                let done = bounded("statement", query.execute(&mut **tx)).await?;
+                let done =
+                    bounded_on(&mut tx.timed_out, "statement", query.execute(&mut *tx.tx)).await?;
                 Ok(done.rows_affected())
             }
         }
@@ -234,7 +281,8 @@ impl Tx {
             #[cfg(feature = "store-postgres")]
             Self::Postgres(tx) => {
                 let query = bind_values!(sqlx::query(AssertSqlSafe(sql.to_string())), params);
-                let rows = bounded("statement", query.fetch_all(&mut **tx)).await?;
+                let rows = bounded_on(&mut tx.timed_out, "statement", query.fetch_all(&mut *tx.tx))
+                    .await?;
                 Ok(rows.into_iter().map(Row::Postgres).collect())
             }
         }
@@ -260,7 +308,12 @@ impl Tx {
             #[cfg(feature = "store-postgres")]
             Self::Postgres(tx) => {
                 let query = bind_values!(sqlx::query(AssertSqlSafe(sql.to_string())), params);
-                let row = bounded("statement", query.fetch_optional(&mut **tx)).await?;
+                let row = bounded_on(
+                    &mut tx.timed_out,
+                    "statement",
+                    query.fetch_optional(&mut *tx.tx),
+                )
+                .await?;
                 Ok(row.map(Row::Postgres))
             }
         }
@@ -270,7 +323,8 @@ impl Tx {
         match self {
             Self::Sqlite(tx) => tx.commit().await.map_err(|e| database_error(&e)),
             #[cfg(feature = "store-postgres")]
-            Self::Postgres(tx) => bounded("COMMIT", tx.commit()).await,
+            Self::Postgres(tx) if tx.timed_out => Err(abandoned("COMMIT")),
+            Self::Postgres(tx) => bounded("COMMIT", tx.tx.commit()).await,
         }
     }
 
@@ -278,7 +332,9 @@ impl Tx {
         match self {
             Self::Sqlite(tx) => tx.rollback().await.map_err(|e| database_error(&e)),
             #[cfg(feature = "store-postgres")]
-            Self::Postgres(tx) => bounded("ROLLBACK", tx.rollback()).await,
+            // Dropping queues the rollback; the pool's release hook bounds it.
+            Self::Postgres(tx) if tx.timed_out => Ok(()),
+            Self::Postgres(tx) => bounded("ROLLBACK", tx.tx.rollback()).await,
         }
     }
 }

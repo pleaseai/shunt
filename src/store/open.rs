@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+#[cfg(feature = "store-postgres")]
+use sqlx::Connection as _;
 
 use super::config::{StoreBackend, StoreConfig};
 use super::db::Db;
@@ -231,6 +233,20 @@ async fn connect_postgres(
                 .unwrap_or(DEFAULT_POSTGRES_CONNECTIONS),
         )
         .acquire_timeout(POSTGRES_ACQUIRE_TIMEOUT)
+        // sqlx pings on release with no bound; a half-open connection would
+        // keep its pool slot forever. Closing it frees the slot.
+        .after_release(|conn, _meta| {
+            Box::pin(async move {
+                match tokio::time::timeout(super::db::release_timeout(), conn.ping()).await {
+                    Ok(Ok(())) => Ok(true),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Err(sqlx::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "release ping did not complete",
+                    ))),
+                }
+            })
+        })
         .connect_with(options)
         .await
         .map_err(|error| unreachable(target, error))?;
