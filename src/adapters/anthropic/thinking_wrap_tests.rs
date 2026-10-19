@@ -27,13 +27,24 @@ fn provider(base_url: &str, auth: AuthMode) -> ProviderConfig {
     provider
 }
 
+/// The envelope key a third-party provider at `base_url` signs with.
+fn key_of(base_url: &str) -> String {
+    signing_key(&provider(base_url, AuthMode::ApiKey)).expect("a third-party host has a key")
+}
+
 #[test]
 fn only_a_third_party_provider_has_a_signing_key() {
     assert_eq!(
         signing_key(&provider(&format!("{THIRD_PARTY}/"), AuthMode::ApiKey)),
-        Some(THIRD_PARTY),
-        "a third-party host signs its own thinking, keyed on the trimmed base_url"
+        signing_key(&provider(THIRD_PARTY, AuthMode::ApiKey)),
+        "a trailing slash does not change the key"
     );
+    assert_ne!(
+        key_of(THIRD_PARTY),
+        key_of("https://open.bigmodel.cn/api/anthropic"),
+        "a third-party host signs its own thinking, keyed on its own base_url"
+    );
+    assert!(key_of(THIRD_PARTY).len() == 32 && !key_of(THIRD_PARTY).contains("minimax"));
     assert_eq!(
         signing_key(&provider(
             "https://api.anthropic.com",
@@ -47,6 +58,34 @@ fn only_a_third_party_provider_has_a_signing_key() {
         None,
         "a claude_oauth pool is Anthropic whatever base_url it is pointed at"
     );
+}
+
+#[test]
+fn the_signing_key_is_a_pinned_digest_of_the_trimmed_base_url() {
+    // Keys must stay stable across shunt versions: an in-flight transcript
+    // carries envelopes minted by an older build. Changing this value orphans
+    // them, so it must never move silently.
+    let expected = "ab6a8b83b9ed775e5633f5ff0525f5be";
+    assert_eq!(key_of(THIRD_PARTY), expected);
+    assert_eq!(key_of(&format!("{THIRD_PARTY}/")), expected);
+}
+
+#[test]
+fn an_envelope_never_exposes_the_base_url_or_its_credentials() {
+    let base = "https://user:secret@host.example/anthropic?token=abc";
+    let key = key_of(base);
+    let wrapped = wrap_upstream_signature(&key, "mm-sig");
+    let decoded = String::from_utf8(
+        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &wrapped)
+            .unwrap(),
+    )
+    .unwrap();
+    for leaked in ["secret", "user", "token", "host.example"] {
+        assert!(!decoded.contains(leaked), "{leaked} leaked into {decoded}");
+    }
+    // Twin: the same envelope still restores for that provider.
+    let request = outbound(transcript(&wrapped), &provider(base, AuthMode::ApiKey));
+    assert_eq!(first_block(&request)["signature"], "mm-sig");
 }
 
 // ---------------------------------------------------------------- request
@@ -80,7 +119,7 @@ fn outbound(mut request: RequestBody, to: &ProviderConfig) -> RequestBody {
 
 #[test]
 fn an_envelope_going_back_to_its_upstream_carries_the_original_signature() {
-    let wrapped = wrap_upstream_signature(THIRD_PARTY, "mm-sig+/=");
+    let wrapped = wrap_upstream_signature(&key_of(THIRD_PARTY), "mm-sig+/=");
     let request = outbound(
         transcript(&wrapped),
         &provider(THIRD_PARTY, AuthMode::ApiKey),
@@ -95,8 +134,8 @@ fn an_envelope_going_back_to_its_upstream_carries_the_original_signature() {
 
 #[test]
 fn a_nested_envelope_is_unwrapped_one_layer_and_not_stripped() {
-    let inner = wrap_upstream_signature("https://inner.example", "orig");
-    let nested = wrap_upstream_signature(THIRD_PARTY, &inner);
+    let inner = wrap_upstream_signature(&key_of("https://inner.example"), "orig");
+    let nested = wrap_upstream_signature(&key_of(THIRD_PARTY), &inner);
     let request = outbound(
         transcript(&nested),
         &provider(THIRD_PARTY, AuthMode::ApiKey),
@@ -107,7 +146,7 @@ fn a_nested_envelope_is_unwrapped_one_layer_and_not_stripped() {
         "the inner shunt must receive its own envelope intact"
     );
     // Twin: an envelope for a different upstream is still dropped.
-    let other = wrap_upstream_signature("https://other.example", "orig");
+    let other = wrap_upstream_signature(&key_of("https://other.example"), "orig");
     let request = outbound(transcript(&other), &provider(THIRD_PARTY, AuthMode::ApiKey));
     assert_eq!(first_block(&request)["type"], "text");
 }
@@ -115,7 +154,7 @@ fn a_nested_envelope_is_unwrapped_one_layer_and_not_stripped() {
 #[test]
 fn prepare_thinking_strips_foreign_and_keeps_genuine_signatures() {
     let to = provider("https://api.example-gateway.test", AuthMode::ApiKey);
-    let foreign = wrap_upstream_signature(THIRD_PARTY, "mm-sig");
+    let foreign = wrap_upstream_signature(&key_of(THIRD_PARTY), "mm-sig");
     let request = outbound(transcript(&foreign), &to);
     assert_eq!(first_block(&request)["type"], "text");
     let request = outbound(transcript("ErUBCkYIBBgCKkB"), &to);
@@ -124,7 +163,7 @@ fn prepare_thinking_strips_foreign_and_keeps_genuine_signatures() {
 
 #[test]
 fn an_envelope_going_anywhere_else_is_dropped_by_the_strip() {
-    let wrapped = wrap_upstream_signature(THIRD_PARTY, "mm-sig");
+    let wrapped = wrap_upstream_signature(&key_of(THIRD_PARTY), "mm-sig");
     for (name, to) in [
         (
             "another third-party host",
@@ -154,7 +193,7 @@ fn a_genuine_signature_is_untouched_and_the_body_keeps_its_bytes() {
     // re-serialisation by the restore is visible rather than coincidentally equal.
     let raw = br#"{ "messages": [{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"ErUBCkYIBBgCKkB"}]}] }"#;
     let mut request = RequestBody::parse(raw.to_vec()).unwrap();
-    restore_own_signatures(&mut request, &provider(THIRD_PARTY, AuthMode::ApiKey));
+    restore_own_signatures(&mut request, &key_of(THIRD_PARTY));
     assert_eq!(request.into_raw(), raw.to_vec());
 }
 
@@ -397,7 +436,7 @@ async fn relay_response_wraps_third_party_signatures_only() {
     let value: Value = serde_json::from_str(&json_out).unwrap();
     assert_eq!(
         unwrap_upstream_signature(value["content"][0]["signature"].as_str().unwrap()),
-        Some((THIRD_PARTY.to_string(), "orig".to_string()))
+        Some((key_of(THIRD_PARTY), "orig".to_string()))
     );
     let sse_out = relayed("minimax", "text/event-stream", sse_body).await;
     assert_eq!(
@@ -405,7 +444,7 @@ async fn relay_response_wraps_third_party_signatures_only() {
             .into_iter()
             .map(|(_, signature)| unwrap_upstream_signature(&signature))
             .collect::<Vec<_>>(),
-        vec![Some((THIRD_PARTY.to_string(), "orig".to_string()))]
+        vec![Some((key_of(THIRD_PARTY), "orig".to_string()))]
     );
 
     for provider in ["anthropic", "claude"] {
@@ -530,7 +569,7 @@ async fn a_third_party_signature_round_trips_home_and_never_reaches_the_claude_p
         .to_string();
     assert_eq!(
         unwrap_upstream_signature(&wrapped),
-        Some((minimax.uri(), "mm-original".to_string()))
+        Some((key_of(&minimax.uri()), "mm-original".to_string()))
     );
 
     let next_turn = json!({
@@ -617,7 +656,7 @@ async fn chain_attempt_strips_foreign_and_restores_own_signatures() {
     let state = chain_state("minimax", provider(&base, AuthMode::Passthrough));
     let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
 
-    let foreign = wrap_upstream_signature("https://other.example", "other-sig");
+    let foreign = wrap_upstream_signature(&key_of("https://other.example"), "other-sig");
     let attempt = super::super::chain_attempt(
         &state,
         &route("minimax"),
@@ -640,7 +679,7 @@ async fn chain_attempt_strips_foreign_and_restores_own_signatures() {
         "the foreign block is dropped and the genuine one kept"
     );
 
-    let own = wrap_upstream_signature(&base, "mm-original");
+    let own = wrap_upstream_signature(&key_of(&base), "mm-original");
     super::super::chain_attempt(
         &state,
         &route("minimax"),
@@ -699,7 +738,7 @@ async fn chain_attempt_wraps_a_third_party_winning_stream() {
             .into_iter()
             .map(|(_, signature)| unwrap_upstream_signature(&signature))
             .collect::<Vec<_>>(),
-        vec![Some((upstream.uri(), "orig".to_string()))],
+        vec![Some((key_of(&upstream.uri()), "orig".to_string()))],
         "{out}"
     );
 }
@@ -742,7 +781,7 @@ async fn kimi_oauth_restores_its_own_envelope_and_drops_a_foreign_one() {
     };
 
     send(mixed_transcript(&wrap_upstream_signature(
-        &base,
+        &key_of(&base),
         "kimi-original",
     )))
     .await;
@@ -750,7 +789,7 @@ async fn kimi_oauth_restores_its_own_envelope_and_drops_a_foreign_one() {
     assert_eq!(content[0]["signature"], "kimi-original");
     assert_eq!(content[1]["signature"], "genuine");
 
-    let foreign = wrap_upstream_signature("https://other.example", "other-sig");
+    let foreign = wrap_upstream_signature(&key_of("https://other.example"), "other-sig");
     send(mixed_transcript(&foreign)).await;
     let content = last_received(&upstream).await["messages"][1]["content"].clone();
     assert_eq!(content[0]["signature"], "genuine");

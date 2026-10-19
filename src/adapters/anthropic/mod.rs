@@ -1147,11 +1147,8 @@ async fn relay_response(
         // The signature wrap holds at most one incomplete frame, under the
         // same ceiling, and sits inside the pings so they still land only
         // between the frames it emits.
-        let stream = thinking_wrap::wrap_signature_stream(
-            stream,
-            signing_key.map(str::to_owned),
-            max_first_frame,
-        );
+        let stream =
+            thinking_wrap::wrap_signature_stream(stream, signing_key.clone(), max_first_frame);
         Body::from_stream(keepalive::with_pings(
             stream,
             Duration::from_secs(state.config.server.sse_keepalive_seconds),
@@ -1179,7 +1176,7 @@ async fn relay_response(
                 if let Some(alias) = &alias {
                     bytes = model_rewrite::rewrite_response_model(bytes, alias);
                 }
-                if let Some(key) = signing_key.filter(|_| wrap_buffered) {
+                if let Some(key) = signing_key.as_deref().filter(|_| wrap_buffered) {
                     bytes = thinking_wrap::wrap_response_signatures(bytes, key);
                 }
                 Body::from(bytes)
@@ -1649,27 +1646,24 @@ pub(crate) async fn chain_attempt(
     // The client streaming chain carries no cap of its own.
     let ceiling = model_rewrite::first_frame_ceiling(None);
     let frames = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias, ceiling);
-    let frames = thinking_wrap::wrap_signature_stream(
-        frames,
-        thinking_wrap::signing_key(provider).map(str::to_owned),
-        ceiling,
-    )
-    .map(|chunk| {
-        chunk.map_err(|error| {
-            // A pre-terminal mid-relay body failure becomes the terminal
-            // SSE error event (the chain records the failure), never a
-            // silently truncated stream; once the terminal frame has
-            // relayed, the chain ends the relay silently.
-            serde_json::json!({
-                "type": "error",
-                "error": {
-                    "type": "api_error",
-                    "message": error.without_url().to_string()
-                }
+    let frames =
+        thinking_wrap::wrap_signature_stream(frames, thinking_wrap::signing_key(provider), ceiling)
+            .map(|chunk| {
+                chunk.map_err(|error| {
+                    // A pre-terminal mid-relay body failure becomes the terminal
+                    // SSE error event (the chain records the failure), never a
+                    // silently truncated stream; once the terminal frame has
+                    // relayed, the chain ends the relay silently.
+                    serde_json::json!({
+                        "type": "error",
+                        "error": {
+                            "type": "api_error",
+                            "message": error.without_url().to_string()
+                        }
+                    })
+                })
             })
-        })
-    })
-    .boxed();
+            .boxed();
     crate::proxy::chain_stream::Attempt::Winner {
         headers_at,
         relay: crate::proxy::chain_stream::RelayBuild::Ready {

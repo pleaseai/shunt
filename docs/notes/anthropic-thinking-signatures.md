@@ -117,7 +117,7 @@ step with them.
 | Responses / Codex | base64url of `{"id", "enc"}` | shunt's own round-trip envelope for a Responses `reasoning` item |
 | Gemini | `gemini_thinking` | Gemini issues no signature; the literal exists to make the block well-formed |
 | Cursor | `""` | the agent stream carries reasoning text and nothing signature-shaped |
-| Third-party Anthropic-kind upstream | base64url of `{"upstream", "sig"}` | wraps a signature a host other than `api.anthropic.com` issued (issue #783) |
+| Third-party Anthropic-kind upstream | base64url of `{"upstream", "sig"}`, `upstream` a digest of the `base_url` | wraps a signature a host other than `api.anthropic.com` issued (issue #783) |
 
 The last row is the one that is not shunt's invention underneath. A third-party
 Anthropic-kind provider (MiniMax, Kimi, Zhipu, …) is relayed untranslated, so
@@ -126,7 +126,9 @@ Anthropic's and be forwarded to `api.anthropic.com` on a later turn. Whether a
 given host emits one, and whether Anthropic rejects it with a 400, is not yet
 confirmed against a live upstream (issue #783).
 `src/adapters/anthropic/thinking_wrap.rs` wraps it on the response path, keyed
-on the provider's `base_url` with any trailing `/` trimmed — not for `claude_oauth` pools or a
+on a digest of the provider's `base_url` with any trailing `/` trimmed (the first 16 bytes of its SHA-256, in
+lowercase hex; the envelope is client-visible and a `base_url` can carry credentials, so the URL itself is never
+exposed) — not for `claude_oauth` pools or a
 first-party host, whose responses stay passthrough — and restores the original
 only for a request going back to a provider with that same `base_url`. The
 strip runs first and spares that provider's own envelopes, so a restored value

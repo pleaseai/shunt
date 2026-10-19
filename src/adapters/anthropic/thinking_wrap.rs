@@ -13,11 +13,14 @@
 //!
 //! The fix is stateless, mirroring the Responses round-trip encoding: such a
 //! signature leaves shunt wrapped in an envelope naming its upstream
-//! ([`thinking_signature::wrap_upstream_signature`]). The envelope is a
-//! shunt-minted form, so the existing strip drops it on the way to any other
-//! upstream; only a request going back to the provider whose `base_url` the
-//! envelope names gets the original signature back, byte for byte, before that
-//! strip runs ([`prepare_thinking`]). No session state is involved, so
+//! ([`thinking_signature::wrap_upstream_signature`]). The envelope names the
+//! upstream by a digest of its `base_url`, never the URL itself: the envelope
+//! is client-visible and persists in transcripts, and a `base_url` can carry
+//! credentials. The envelope is a shunt-minted form, so the existing strip
+//! drops it on the way to any other upstream; only a request going back to the
+//! provider whose `base_url` digests to the envelope's key gets the original
+//! signature back, byte for byte, before that strip runs
+//! ([`prepare_thinking`]). No session state is involved, so
 //! the round trip holds across reloads and sticky-binding expiry alike.
 //!
 //! **Which responses are wrapped** is [`signing_key`]'s call: not a
@@ -37,10 +40,12 @@
 //! upstream emit one, and the strip does not recognise it either.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use axum::body::Bytes;
 use futures_util::{stream, Stream, StreamExt};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::config::{AuthMode, ProviderConfig};
 use crate::model::thinking_signature::{unwrap_upstream_signature, wrap_upstream_signature};
@@ -54,12 +59,25 @@ use crate::request::RequestBody;
 /// at — and a provider on `api.anthropic.com` is Anthropic by host
 /// ([`super::safeguards::is_first_party`]). Everything else is third-party.
 ///
-/// The key is the `base_url` with any trailing `/` trimmed, so a provider
-/// written either way issues and accepts the same envelopes.
-pub(super) fn signing_key(provider: &ProviderConfig) -> Option<&str> {
+/// The key is a digest of the `base_url` with any trailing `/` trimmed, so a
+/// provider written either way issues and accepts the same envelopes. It is
+/// the lowercase hex of the first 16 bytes of the SHA-256 of that string: the
+/// envelope reaches every client and persists in transcripts, and a `base_url`
+/// can carry userinfo or a path token, so the URL itself must not be exposed.
+/// No secret salt: the key must stay stable across restarts and across shunt
+/// instances sharing a `base_url`.
+pub(super) fn signing_key(provider: &ProviderConfig) -> Option<String> {
     (provider.auth != AuthMode::ClaudeOauth
         && !super::safeguards::is_first_party(&provider.base_url))
-    .then(|| provider.base_url.trim_end_matches('/'))
+    .then(|| {
+        let digest = Sha256::digest(provider.base_url.trim_end_matches('/').as_bytes());
+        digest[..16]
+            .iter()
+            .fold(String::with_capacity(32), |mut key, byte| {
+                let _ = write!(key, "{byte:02x}");
+                key
+            })
+    })
 }
 
 /// Prepare a request's thinking blocks for `provider`: strip every foreign
@@ -75,23 +93,21 @@ pub(super) fn prepare_thinking(body: &mut RequestBody, provider: &ProviderConfig
             super::thinking::strip_foreign_thinking_except(body, |signature| {
                 unwrap_upstream_signature(signature).is_some_and(|(upstream, _)| upstream == key)
             });
-            restore_own_signatures(body, provider);
+            restore_own_signatures(body, &key);
         }
         None => super::thinking::strip_foreign_thinking(body),
     }
 }
 
 /// Restore the original signature on every thinking block whose envelope names
-/// this provider. [`prepare_thinking`] runs it after the strip, which spares
-/// these envelopes and drops the rest.
+/// `key`, a provider's [`signing_key`]. [`prepare_thinking`] runs it after the
+/// strip, which spares these envelopes and drops the rest.
 ///
-/// A first-party or `claude_oauth` provider has no [`signing_key`], so nothing
-/// is restored and every envelope leaves with the strip. An envelope naming any
-/// other upstream is likewise left wrapped for the strip to drop.
-pub(super) fn restore_own_signatures(body: &mut RequestBody, provider: &ProviderConfig) {
-    let Some(key) = signing_key(provider) else {
-        return;
-    };
+/// A first-party or `claude_oauth` provider has no [`signing_key`], so
+/// [`prepare_thinking`] never calls this for it and every envelope leaves with
+/// the strip. An envelope naming any other upstream is likewise left wrapped
+/// for the strip to drop.
+pub(super) fn restore_own_signatures(body: &mut RequestBody, key: &str) {
     // The same clone-avoidance as `thinking::strip_foreign_thinking`: the
     // read-only scan is far cheaper than the `Arc::make_mut` deep copy that
     // `mutate` makes before its closure can report "no change".

@@ -26,7 +26,7 @@
 //! so. Left alone it is indistinguishable from Anthropic's own and would be
 //! forwarded to `api.anthropic.com` on a later turn, to be rejected with a 400
 //! that does not advance the failover chain (issue #783). So the Anthropic
-//! adapter wraps such a signature in an envelope naming the upstream that
+//! adapter wraps such a signature in an envelope naming (by digest) the upstream that
 //! issued it ([`wrap_upstream_signature`]); the strip recognises the envelope
 //! like any other shunt-minted form, and the adapter unwraps it again only for
 //! a request going back to that same upstream.
@@ -46,10 +46,13 @@ pub const CURSOR: &str = "";
 /// upstream, so it can be told apart from Anthropic's and restored for the
 /// host that can verify it.
 ///
-/// `upstream` is the provider's normalized `base_url`, not its config name:
-/// the same host is the same signing authority, so the envelope survives a
-/// provider rename on reload, and two providers pointing at one `base_url`
-/// share signatures the way Anthropic's are valid across pooled accounts.
+/// `upstream` is a digest of the provider's normalized `base_url`, not its
+/// config name and not the URL: the same host is the same signing authority,
+/// so the envelope survives a provider rename on reload, and two providers
+/// pointing at one `base_url` share signatures the way Anthropic's are valid
+/// across pooled accounts. It is a digest because the envelope is
+/// client-visible and persists in transcripts, while a `base_url` can carry
+/// credentials (userinfo, a path token).
 ///
 /// Same encoding as [`encode_reasoning_signature`] — base64url-no-pad JSON —
 /// but with disjoint field names (`upstream`/`sig` against `id`/`enc`), so
