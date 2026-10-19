@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 use axum::{
     body::{to_bytes, Body},
     extract::ConnectInfo,
@@ -20,6 +21,21 @@ use crate::{
 
 use super::{approval::Identity, jwt, GatewayAuth};
 
+/// Takes [`crate::config::CONFIG_ENV_LOCK`], tolerating poisoning as every
+/// other holder does. A test that touches the environment without a
+/// [`GatewayEnv`] holds this for its whole body; one with a `GatewayEnv` must
+/// not, because the env already holds it and the mutex is not reentrant.
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::config::CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The gateway's environment for one test, holding `CONFIG_ENV_LOCK` from
+/// before its first write until after `Drop` removes its variables. The lock
+/// covers `build_router` too, which reads these variables while it resolves
+/// the config. Only one may be alive at a time: drop a test's first
+/// `GatewayEnv` before it creates a second.
 struct GatewayEnv {
     secret_env: String,
     users_env: String,
@@ -27,10 +43,14 @@ struct GatewayEnv {
     /// Extra variables a test set through [`GatewayEnv::set_var`], removed on
     /// drop so a panicking assertion cannot leak them.
     extra_env: Vec<String>,
+    /// Released after `Drop::drop` has removed the variables above: fields
+    /// drop only once that body returns.
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 impl GatewayEnv {
     fn config(label: &str) -> (Config, Self) {
+        let lock = env_lock();
         let suffix = format!("{}_{}", std::process::id(), label);
         let secret_env = format!("SHUNT_GATEWAY_TEST_SECRET_{suffix}");
         let users_env = format!("SHUNT_GATEWAY_TEST_USERS_{suffix}");
@@ -57,6 +77,7 @@ impl GatewayEnv {
                 users_env,
                 oidc_secret_env: None,
                 extra_env: Vec::new(),
+                _lock: lock,
             },
         )
     }
@@ -286,7 +307,7 @@ async fn begin_oidc_callback(router: &Router) -> (Value, String) {
 
 #[tokio::test]
 async fn oidc_device_page_modes_and_disabled_password_post() {
-    let (config, _env) = GatewayEnv::oidc_config(
+    let (config, env) = GatewayEnv::oidc_config(
         "oidc-page-only",
         "https://accounts.google.com".into(),
         false,
@@ -328,6 +349,7 @@ async fn oidc_device_page_modes_and_disabled_password_post() {
     )
     .await;
     assert!(html.contains("Password sign-in is disabled"));
+    drop(env);
 
     let (config, _env) = GatewayEnv::oidc_config(
         "oidc-page-both",
@@ -1466,6 +1488,7 @@ async fn malformed_oauth_forms_use_rfc6749_error_shape() {
 
 #[tokio::test]
 async fn routes_are_absent_without_gateway_config() {
+    let _lock = env_lock();
     let (router, _, _) = build_router(Config::default()).unwrap();
     for path in [
         "/.well-known/oauth-authorization-server",
@@ -2013,6 +2036,7 @@ async fn managed_settings_empty_telemetry_targets_do_not_inject_env() {
 
 #[test]
 fn managed_policy_deserializes_from_real_toml() {
+    let _lock = env_lock();
     let (dir, path, suffix) = temp_config_path("managed-toml");
     let secret_env = format!("SHUNT_REAL_TOML_SECRET_{suffix}");
     let users_env = format!("SHUNT_REAL_TOML_USERS_{suffix}");
@@ -2060,6 +2084,7 @@ allow = ["Read"]
 
 #[tokio::test]
 async fn managed_settings_hot_reload_serves_new_policy_and_etag() {
+    let _lock = env_lock();
     let (dir, path, suffix) = temp_config_path("managed-reload");
     let secret_env = format!("SHUNT_MANAGED_RELOAD_SECRET_{suffix}");
     let users_env = format!("SHUNT_MANAGED_RELOAD_USERS_{suffix}");
@@ -2291,6 +2316,20 @@ fn app_state_can_resolve_gateway_snapshot() {
     let (config, _env) = GatewayEnv::config("state");
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     assert!(state.gateway_auth.is_some());
+}
+
+#[test]
+fn gateway_env_holds_the_config_env_lock_until_it_drops() {
+    let (_, env) = GatewayEnv::config("env-lock");
+    let secret_env = env.secret_env.clone();
+    assert!(std::env::var(&secret_env).is_ok());
+    assert!(matches!(
+        crate::config::CONFIG_ENV_LOCK.try_lock(),
+        Err(std::sync::TryLockError::WouldBlock)
+    ));
+    drop(env);
+    let _lock = env_lock();
+    assert!(std::env::var(&secret_env).is_err());
 }
 
 /// Wait until every relay task has ended, by taking all of the relay permits:

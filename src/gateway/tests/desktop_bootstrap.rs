@@ -154,7 +154,7 @@ async fn desktop_device_flow_without_client_id_signs_in_refreshes_and_revokes_wi
 
 #[tokio::test]
 async fn bootstrap_is_404_without_a_template_and_401_without_a_valid_bearer() {
-    let (config, _env) = GatewayEnv::config("bootstrap-unconfigured");
+    let (config, env) = GatewayEnv::config("bootstrap-unconfigured");
     let (router, _, _) = build_router(config).unwrap();
     let bearer = gateway_bearer("dev@example.com");
     let (status, headers, body) = raw(&router, bootstrap_request(Some(&bearer), None)).await;
@@ -164,6 +164,7 @@ async fn bootstrap_is_404_without_a_template_and_401_without_a_valid_bearer() {
         serde_json::from_slice::<Value>(&body).unwrap()["error"]["type"],
         "not_found_error"
     );
+    drop(env);
 
     let (mut config, _env) = GatewayEnv::config("bootstrap-401");
     let path = write_template("bootstrap-401", &template());
