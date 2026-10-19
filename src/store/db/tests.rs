@@ -251,3 +251,26 @@ crate::store::contract::store_contract_test!(
         }
     }
 );
+
+#[cfg(feature = "store-postgres")]
+crate::store::contract::store_contract_test!(
+    a_connection_that_needed_draining_is_closed_even_when_the_drain_succeeds,
+    |store| {
+        if let Db::Postgres(pool) = store.db() {
+            use std::time::Duration;
+            super::set_io_timeout(Some(Duration::from_millis(100)));
+            let mut tx = store.db().begin().await.unwrap();
+            let before = pool.size();
+            let outcome = tx.fetch_optional("SELECT pg_sleep(0.5)", &[]).await;
+            assert!(outcome.is_err());
+            tx.rollback().await.unwrap();
+            // The drain finishes well within the default bound, yet the
+            // connection must not be returned: a cancelled request may have
+            // left the server inside a transaction sqlx does not know about.
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            let size = pool.size();
+            super::set_io_timeout(None);
+            assert_eq!(size, before - 1, "a drained connection must be closed");
+        }
+    }
+);

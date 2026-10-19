@@ -149,8 +149,9 @@ fn database_error(error: &sqlx::Error) -> StoreError {
 const POSTGRES_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The longest the pool's release-time drain may take before the connection is
-/// closed instead of returned. It drains what a cancelled request left on the
-/// connection; sqlx's own release ping has no bound of its own.
+/// hard-closed. A connection with anything pending is drained for at most this
+/// long and then closed, never returned; sqlx's own release ping has no bound
+/// of its own and runs only on clean connections.
 #[cfg(feature = "store-postgres")]
 pub(crate) fn release_timeout() -> std::time::Duration {
     #[cfg(test)]
