@@ -13,6 +13,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `POST` | `/v1/messages` | 推論 — リクエストの `model` id に従ってルーティング |
 | `POST` | `/v1/messages/count_tokens` | [トークンカウント](/ja/guides/effort-and-context/#トークンカウントcount_tokens) |
 | `GET` | `/managed/settings` | ゲートウェイ JWT ごとの Claude Code managed settings。`ETag`、`If-None-Match`、`304 Not Modified` に対応 |
+| `GET` | `/user/bootstrap` | ゲートウェイ JWT 向けの Claude Desktop bootstrap 構成。`ETag`、`If-None-Match`、`304 Not Modified` をサポート |
 | `GET` | `/v1/organizations/spend_limits` | 保存された支出上限を方向付きカーソルページネーションで一覧表示 |
 | `POST` | `/v1/organizations/spend_limits` | 1 つの `(scope, period)` に対する支出上限を作成または置換 |
 | `GET` | `/v1/organizations/spend_limits/{id}` | 保存された支出上限を 1 件取得 |
@@ -126,6 +127,19 @@ Node ツールチェーンを必要とせず、バンドルも持たず、どち
 認証は変わりません。同じ管理認証情報を同じヘッダーまたは `x-api-key` で送り、読み取り/書き込みの等級も同じです。
 
 spend-limit ルートは、起動時に [`[server.spend]`](/ja/reference/configuration/#serverspendオプション) が設定されていた場合にのみ存在します。[`[server.admin]`](/ja/reference/configuration/#serveradminオプション) の認証情報で認証するため、`[server.gateway]` とは無関係です。その認証情報は設定された管理ヘッダー（デフォルトは `x-shunt-admin-token`）または `x-api-key` で送信します — どちらのスロットも受け付けます。write の認証情報（`write_keys` エントリー、または `tokens_env`/`tokens_file` のペア）はすべての操作を使用でき、`read_keys` の認証情報は GET のみ使用でき、変更操作では `403` を受け取ります。`POST` は `user` と `organization` の scope、`daily`／`weekly`／`monthly` の period、user scope では 1～256 バイトの `user_id`、1～19 桁の USD セント非負整数文字列または `null` の `amount` を受け付け、`(scope, period)` 単位で upsert します。一覧では `limit`（1～1000、デフォルト 20）、`after_id`、`before_id`、`scope_type` を使用でき、2 つのカーソルは同時に指定できません。すべてのレスポンスに `request-id` が含まれ、エラーは Anthropic のエラー形式です。上限と変更監査レコードは、設定したバージョン付き JSON 状態ファイルに一緒に保存され、各変更は `admin-key:<id>` または `admin-token:<name>` に帰属します — 両方のスロットが同じティアの異なる認証情報を保持している場合は、設定された管理ヘッダー側が帰属先になります。ステージ 1 は `/effective` と `/audit` を公開せず、推論リクエストに上限を適用しません。
+
+`/user/bootstrap` ルートは、起動時に [`[server.gateway]`](/ja/reference/configuration/) が有効だった場合にのみ存在し、有効なゲートウェイ bearer JWT を要求します。static な `[server.auth]` トークンでは認証できません。[`[server.gateway.desktop_bootstrap]`](/ja/reference/configuration/#servergatewaydesktop_bootstrapオプション) のテンプレートを `application/json` で返し、文字列値の中の `${user.email}`、`${user.sub}`、`${user.name}` は置換されます。エラーと `304` を含むすべてのレスポンスに `Cache-Control: no-store` が付き、ルートはリダイレクトしません。
+
+| ステータス | エラータイプ | 意味 |
+| :-- | :-- | :-- |
+| `200` | なし | テンプレート本文と、引用符付きの `ETag`（`"sha256:<body-hash>"`） |
+| `304` | なし | `If-None-Match` が現在の `ETag` に一致。本文は空 |
+| `401` | `authentication_error` | ゲートウェイ bearer がない、無効、または期限切れ |
+| `403` | `permission_error` | bearer は有効だが、`[[server.gateway.policies]]` の対象ではない |
+| `404` | `not_found_error` | `desktop_bootstrap` が未設定 |
+| `500` | `api_error` | テンプレートが読み取れなくなった、または JSON オブジェクトではなくなった |
+
+policy がなければサインイン済みの全ユーザーが対象で、policy があれば、policy の `match.emails` に含まれるか、catch-all policy（`match` なし）がある場合に対象になります。デバイスコードのエンドポイントは、`client_id` のないリクエスト（Claude Desktop は送りません）と `client_id=claude-code` のリクエストを受け付け、それ以外の値は拒否します。`client_id` のないリクエストで拒否された refresh トークンは `400 {"error":"invalid_grant"}` を返し、`claude-code` のリクエストは `401` のままです。[Claude Desktop の接続](/ja/guides/connect-claude-desktop/#bootstrap-サインインデバイスコード)を参照してください。
 
 `GET /managed/settings` と `POST /v1/{metrics,logs,traces}` のテレメトリー受信ルートは、起動時に `[server.gateway]` が有効だった場合にのみ存在し、どちらも同じゲートウェイのベアラー JWT を要求します。受信ルートは、管理された Claude Code クライアントが export する OTLP/HTTP ペイロードを受け取り（[`[server.gateway.telemetry]`](/ja/reference/configuration/) がそれらの exporter をゲートウェイへ向けます）、リクエストのバイト列をその signal に opt-in したすべての宛先へそのまま中継します。インバウンドの `content-type` と `content-encoding` は保持され、宛先に設定された headers がその上に適用されます（設定されたキーは転送値を置き換え、ヘッダーを重複させません）。クライアントの `Authorization` ヘッダーが転送されることはなく、中継はリダイレクトに従いません。宛先は signal ごとに opt-in し（`metrics` はデフォルト on、`logs`／`traces` は off）、どの宛先も opt-in していない signal は受理後に破棄されます。中継はデタッチされているため、宛先の状態にかかわらずレスポンスは常に即座の `200` で、成功ボディは OTLP/HTTP に従いリクエストのプロトコルをミラーします（`application/json` には `{}`、それ以外には空の `application/x-protobuf` ボディ）。32 MiB の受信上限を超えるボディは `413` を返します。
 

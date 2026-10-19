@@ -13,6 +13,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `POST` | `/v1/messages` | Inference — routed per the request's `model` id |
 | `POST` | `/v1/messages/count_tokens` | [Token counting](/guides/effort-and-context/#token-counting-count_tokens) |
 | `GET` | `/managed/settings` | Per-user Claude Code managed settings for a gateway JWT; supports `ETag`, `If-None-Match`, and `304 Not Modified` |
+| `GET` | `/user/bootstrap` | Claude Desktop bootstrap configuration for a gateway JWT; supports `ETag`, `If-None-Match`, and `304 Not Modified` |
 | `GET` | `/v1/organizations/spend_limits` | List stored spend caps with directional cursor pagination |
 | `POST` | `/v1/organizations/spend_limits` | Create or replace a spend cap for one `(scope, period)` |
 | `GET` | `/v1/organizations/spend_limits/{id}` | Fetch one stored spend cap |
@@ -80,6 +81,19 @@ The `/managed/settings` route exists only when [`[server.gateway]`](/reference/c
 ```
 
 `ETag` is the quoted checksum (`"sha256:<settings-hash>"`). Send it back in `If-None-Match` to receive `304 Not Modified` with an empty body when settings have not changed; comma-separated validator lists, weak validators, `*`, and legacy unquoted checksum values are accepted. No configured `policies` returns `404`; a policy that resolves to an empty document returns `200` with `settings: {}`.
+
+The `/user/bootstrap` route exists only when [`[server.gateway]`](/reference/configuration/#servergateway-optional) was enabled at boot and requires a valid gateway bearer JWT; static `[server.auth]` tokens do not authenticate it. It returns the [`[server.gateway.desktop_bootstrap]`](/reference/configuration/#servergatewaydesktop_bootstrap-optional) template as `application/json`, with `${user.email}`, `${user.sub}`, and `${user.name}` replaced inside string values. Every response, including errors and `304`, carries `Cache-Control: no-store`, and the route never redirects.
+
+| Status | Error type | Meaning |
+| :-- | :-- | :-- |
+| `200` | n/a | Template body, with a quoted `ETag` (`"sha256:<body-hash>"`) |
+| `304` | n/a | `If-None-Match` matched the current `ETag`; empty body |
+| `401` | `authentication_error` | Gateway bearer missing, invalid, or expired |
+| `403` | `permission_error` | Valid bearer, but the user is not entitled by `[[server.gateway.policies]]` |
+| `404` | `not_found_error` | `desktop_bootstrap` not configured |
+| `500` | `api_error` | The template became unreadable or is no longer a JSON object |
+
+With no policies configured every signed-in user is entitled; with policies, a user is entitled when a policy's `match.emails` lists them or a catch-all policy (no `match`) exists. The device-code endpoints accept requests without a `client_id` (Claude Desktop sends none) as well as `client_id=claude-code`; any other value is rejected. For a request without `client_id`, a rejected refresh token returns `400 {"error":"invalid_grant"}`, while `claude-code` requests keep `401`. See [Connect Claude Desktop](/guides/connect-claude-desktop/#bootstrap-sign-in-device-code).
 
 The `POST /v1/{metrics,logs,traces}` telemetry-ingest routes exist only when [`[server.gateway]`](/reference/configuration/#servergateway-optional) was enabled at boot, and require the same gateway bearer JWT as `/managed/settings`. They accept the OTLP/HTTP payloads managed Claude Code clients export — [`[server.gateway.telemetry]`](/reference/configuration/#servergatewaytelemetry-optional) points those exporters at the gateway — and relay the exact request bytes to every destination that opted in to the signal, preserving the inbound `content-type` and `content-encoding` and applying the destination's own configured headers over them (a configured key replaces the forwarded value rather than duplicating the header). The client's `Authorization` header is never forwarded, and relays do not follow redirects. Destinations opt in per signal (`metrics` on by default, `logs` and `traces` off), and a signal with no opted-in destination is accepted and discarded. Relays are detached, so the response is always an immediate `200` regardless of destination health — the success body mirrors the request protocol per OTLP/HTTP (`{}` for `application/json`, an empty `application/x-protobuf` body otherwise); a body over the 32 MiB inbound cap returns `413`.
 

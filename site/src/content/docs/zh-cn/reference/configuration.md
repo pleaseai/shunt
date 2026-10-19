@@ -237,6 +237,21 @@ jwt_secret = ["new-secret-value", "old-secret-value"]
 
 解析后的 `cli.availableModels` 会应用于 gateway JWT request 的 `/v1/messages` 和 `/v1/messages/count_tokens`。比较前会从 top-level `model` 移除一个末尾 Claude Code context-window hint（`[1m]` 或 `[1M]`）;若剩余 model 不在 list 中,则返回 `400 invalid_request_error`。static `[server.auth]` credential 无法标识 gateway policy user,因此不受此限制。
 
+### `[server.gateway.desktop_bootstrap]`(可选)
+
+提供 `GET /user/bootstrap`，即 Claude Desktop 的 [bootstrap 登录](/zh-cn/guides/connect-claude-desktop/#bootstrap-登录设备码)在设备码登录之后获取配置所用的端点。没有此表时该路由返回 `404`。
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `template` | 必填 | 顶层为对象的 JSON 文件路径。在配置加载和 `shunt check` 时必须存在且可解析；每次请求都会读取，因此修改无需重启即可生效。相对路径以 shunt 的工作目录（而非配置文件所在目录）为基准解析 |
+
+只能是文件路径，不支持 URL。响应就是模板本身，只有字符串值中的 `${user.email}`、`${user.sub}`、`${user.name}` 会替换为已登录用户的值（未知的 `${...}` 标记和对象键保持原样）。没有 `[[server.gateway.policies]]`、某条 policy 的 `match.emails` 列出该用户，或存在 catch-all policy 时，该用户有权获取；其他用户收到 `403`。
+
+```toml
+[server.gateway.desktop_bootstrap]
+template = "/etc/shunt/claude-desktop-bootstrap.json"
+```
+
 ### `[server.gateway.telemetry]`(可选)
 
 `forward_to` 是 destination array,每项具有必需的 base OTLP/HTTP `url`、可选的 string `headers` map,以及每个 signal 的 opt-in boolean(`metrics` 默认 `true`,`logs`/`traces` 默认 `false`)。至少 opt-in 一个 signal 的 list 会向 managed `settings.env` 注入 6 个值:`CLAUDE_CODE_ENABLE_TELEMETRY=1`、每个 `OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER` 在有 destination opt-in 该 signal 时为 `otlp`,否则为 `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`。若没有任何 signal 被 opt-in,则不注入任何值。发生冲突时 policy env value 优先。同一 list 也驱动 inbound ingest(M-C,#189):只要存在 `[server.gateway]` 就会注册的 `POST /v1/{metrics,logs,traces}` route 接收客户端 export 的 OTLP payload,并将其 verbatim relay 到所有 opt-in 该 signal 的 destination;没有任何 destination opt-in 的 signal 会被接收后丢弃。`logs`/`traces` 默认关闭,因为 Claude Code 的 log record 和 span 可能携带 command line、prompt 和文件路径。`headers` 的每个值都是 redacting secret 类型,在诊断输出中显示为 `[redacted]`(见 [Secret 引用](#secret-引用))。

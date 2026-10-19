@@ -320,6 +320,21 @@ No `policies` key makes the endpoint return `404`. With policies configured but 
 
 If the resolved `cli.availableModels` is an array of strings, gateway-JWT requests to `/v1/messages` and `/v1/messages/count_tokens` are rejected with `400 invalid_request_error` when their top-level `model`, after stripping one trailing Claude Code context-window hint (`[1m]` or `[1M]`), is absent from the list. Static `[server.auth]` credentials remain unrestricted because they do not identify a gateway policy user.
 
+### `[server.gateway.desktop_bootstrap]` (optional)
+
+Serves `GET /user/bootstrap`, the configuration endpoint Claude Desktop's [bootstrap sign-in](/guides/connect-claude-desktop/) fetches after the device-code login. Without this table the route returns `404`.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `template` | required | Path to a JSON file whose top level is an object. Must exist and parse at config load and `shunt check`; read on every request, so edits apply without a restart. A relative path resolves against shunt's working directory, not the config file |
+
+The file is a path only, not a URL. The response is the template unchanged, except that `${user.email}`, `${user.sub}`, and `${user.name}` inside string values become the signed-in user's values (unknown `${...}` tokens and object keys are left as-is). A user is entitled when `[[server.gateway.policies]]` is absent, when a policy's `match.emails` lists them, or when a catch-all policy exists; other users get `403`.
+
+```toml
+[server.gateway.desktop_bootstrap]
+template = "/etc/shunt/claude-desktop-bootstrap.json"
+```
+
 ### `[server.gateway.telemetry]` (optional)
 
 `forward_to` is an array of destinations, each with a required base OTLP/HTTP `url`, an optional string `headers` map, and per-signal opt-in booleans.

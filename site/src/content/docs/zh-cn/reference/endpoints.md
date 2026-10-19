@@ -13,6 +13,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `POST` | `/v1/messages` | 推理 —— 按请求的 `model` id 路由 |
 | `POST` | `/v1/messages/count_tokens` | [Token 计数](/zh-cn/guides/effort-and-context/#token-计数count_tokens) |
 | `GET` | `/managed/settings` | 按网关 JWT 提供的 Claude Code managed settings;支持 `ETag`、`If-None-Match` 与 `304 Not Modified` |
+| `GET` | `/user/bootstrap` | 按网关 JWT 提供的 Claude Desktop bootstrap 配置;支持 `ETag`、`If-None-Match` 与 `304 Not Modified` |
 | `GET` | `/v1/organizations/spend_limits` | 使用方向游标分页列出已存储的支出限制 |
 | `POST` | `/v1/organizations/spend_limits` | 为一个 `(scope, period)` 创建或替换支出限制 |
 | `GET` | `/v1/organizations/spend_limits/{id}` | 获取一个已存储的支出限制 |
@@ -119,6 +120,19 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 认证未变:仍是同一份管理员凭据,通过同样的头部或 `x-api-key` 提交,读/写分级也相同。
 
 spend-limit 路由仅在启动时配置了 [`[server.spend]`](/zh-cn/reference/configuration/#serverspend可选) 的情况下存在;它们使用 [`[server.admin]`](/zh-cn/reference/configuration/#serveradmin可选) 凭据认证,因此与 `[server.gateway]` 无关。请通过配置的管理员头部(默认 `x-shunt-admin-token`)或 `x-api-key` 发送该凭据 —— 两个槽位都被接受。write 凭据(`write_keys` 条目,或 `tokens_env`/`tokens_file` 对)可使用全部操作;`read_keys` 凭据只能使用 GET,在修改操作上会收到 `403`。`POST` 接受 `user` 和 `organization` scope、`daily`/`weekly`/`monthly` period、user scope 中 1–256 字节的 `user_id`，以及 1–19 位非负 USD 美分整数字符串或 `null` 的 `amount`，并按 `(scope, period)` 执行 upsert。列表分页接受 `limit`（1–1000，默认 20）、`after_id`、`before_id` 和 `scope_type`；两个游标不能同时使用。每个响应都包含 `request-id`，错误采用 Anthropic 错误形状。限制与修改审计记录一起保存到所配置的带版本 JSON 状态文件中,每次修改归属于 `admin-key:<id>` 或 `admin-token:<name>` —— 当两个槽位携带同一层级的不同凭据时，归属于配置的管理员头部那一个。stage 1 不公开 `/effective` 或 `/audit`，也不对推理请求实施限制。
+
+`/user/bootstrap` 路由仅在启动时启用了 [`[server.gateway]`](/zh-cn/reference/configuration/) 的情况下存在，并要求有效的网关 bearer JWT；静态 `[server.auth]` token 无法通过该端点的认证。它以 `application/json` 返回 [`[server.gateway.desktop_bootstrap]`](/zh-cn/reference/configuration/#servergatewaydesktop_bootstrap可选) 的模板，字符串值中的 `${user.email}`、`${user.sub}`、`${user.name}` 会被替换。包括错误和 `304` 在内的所有响应都带有 `Cache-Control: no-store`，该路由从不重定向。
+
+| 状态码 | 错误类型 | 含义 |
+| :-- | :-- | :-- |
+| `200` | 无 | 模板正文，附带带引号的 `ETag`(`"sha256:<body-hash>"`) |
+| `304` | 无 | `If-None-Match` 与当前 `ETag` 匹配;正文为空 |
+| `401` | `authentication_error` | 网关 bearer 缺失、无效或已过期 |
+| `403` | `permission_error` | bearer 有效，但按 `[[server.gateway.policies]]` 该用户无权获取 |
+| `404` | `not_found_error` | 未配置 `desktop_bootstrap` |
+| `500` | `api_error` | 模板变得不可读，或不再是 JSON 对象 |
+
+没有 policy 时，所有已登录用户都有权获取；有 policy 时，用户被某条 policy 的 `match.emails` 列出，或存在 catch-all policy(无 `match`)，才有权获取。设备码端点接受没有 `client_id` 的请求(Claude Desktop 不发送)以及 `client_id=claude-code` 的请求，其他取值一律拒绝。对于没有 `client_id` 的请求，被拒绝的 refresh token 返回 `400 {"error":"invalid_grant"}`，而 `claude-code` 请求仍返回 `401`。参见[连接 Claude Desktop](/zh-cn/guides/connect-claude-desktop/#bootstrap-登录设备码)。
 
 `GET /managed/settings` 与 `POST /v1/{metrics,logs,traces}` 遥测接收路由仅在启动时启用了 `[server.gateway]` 的情况下存在,二者要求相同的网关 bearer JWT。接收路由接受托管 Claude Code 客户端 export 的 OTLP/HTTP 载荷([`[server.gateway.telemetry]`](/zh-cn/reference/configuration/) 将这些 exporter 指向网关),并把请求字节原样中继到所有 opt-in 该 signal 的目标。入站的 `content-type` 与 `content-encoding` 会被保留,目标配置的 headers 应用在其上(配置的键会替换转发值,而不是重复该 header)。客户端的 `Authorization` 头永远不会被转发,中继也不跟随重定向。目标按 signal opt-in(`metrics` 默认开启,`logs`/`traces` 默认关闭),没有任何目标 opt-in 的 signal 会被接收后丢弃。中继是分离执行的,因此无论目标状态如何,响应始终是立即的 `200`,成功 body 依照 OTLP/HTTP 镜像请求协议(`application/json` 得到 `{}`,其余得到空的 `application/x-protobuf` body)。超过 32 MiB 入站上限的 body 返回 `413`。
 

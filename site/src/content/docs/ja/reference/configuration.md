@@ -237,6 +237,21 @@ jwt_secret = ["new-secret-value", "old-secret-value"]
 
 解決された `cli.availableModels` は gateway JWT request の `/v1/messages` と `/v1/messages/count_tokens` に適用されます。top-level `model` から末尾の Claude Code context-window hint（`[1m]` または `[1M]`）を 1 つ取り除いてから比較し、list にない場合は `400 invalid_request_error` になります。static `[server.auth]` credential は gateway policy user を識別しないため、この制限の対象外です。
 
+### `[server.gateway.desktop_bootstrap]`（オプション）
+
+デバイスコードログインの後に Claude Desktop の [bootstrap サインイン](/ja/guides/connect-claude-desktop/#bootstrap-サインインデバイスコード)が取得する構成エンドポイント `GET /user/bootstrap` を提供します。このテーブルがなければルートは `404` を返します。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `template` | 必須 | トップレベルがオブジェクトの JSON ファイルへのパス。設定のロードと `shunt check` の時点で存在し、パースできる必要があります。リクエストごとに読み込まれるため、編集は再起動なしで反映されます。相対パスは設定ファイルではなく shunt の作業ディレクトリを基準に解決されます |
+
+指定できるのはパスのみで、URL は使えません。レスポンスはテンプレートそのままで、文字列値の中の `${user.email}`、`${user.sub}`、`${user.name}` だけがサインインしたユーザーの値に置き換わります（未知の `${...}` トークンとオブジェクトのキーはそのままです）。`[[server.gateway.policies]]` がない場合、policy の `match.emails` にユーザーが含まれる場合、または catch-all policy がある場合、そのユーザーは対象です。それ以外のユーザーは `403` を受け取ります。
+
+```toml
+[server.gateway.desktop_bootstrap]
+template = "/etc/shunt/claude-desktop-bootstrap.json"
+```
+
 ### `[server.gateway.telemetry]`（オプション）
 
 `forward_to` は、必須の base OTLP/HTTP `url`、任意の string `headers` map、signal ごとの opt-in boolean（`metrics` は既定で `true`、`logs`／`traces` は既定で `false`）を持つ destination の array です。`headers` の各値は redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます([Secret 参照](#secret-参照)を参照)。いずれかの signal を opt-in した list は managed `settings.env` に 6 つの値を注入します。`CLAUDE_CODE_ENABLE_TELEMETRY=1`、各 `OTEL_METRICS_EXPORTER`／`OTEL_LOGS_EXPORTER`／`OTEL_TRACES_EXPORTER` はその signal を opt-in した destination があれば `otlp`、なければ `none`、`OTEL_EXPORTER_OTLP_ENDPOINT=public_url`、`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` です。どの signal も opt-in されていない場合は何も注入しません。競合時は policy の env value が優先します。同じ list は inbound ingest も駆動します（M-C、#189）。`[server.gateway]` があれば常に登録される `POST /v1/{metrics,logs,traces}` route がクライアントの OTLP payload を受け取り、その signal を opt-in したすべての destination に verbatim で relay し、opt-in した destination がない signal は受理後に破棄します。`logs`／`traces` が既定で off なのは、Claude Code の log record と span に command line、prompt、ファイルパスが含まれ得るためです。

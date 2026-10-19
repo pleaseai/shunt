@@ -237,6 +237,21 @@ jwt_secret = ["new-secret-value", "old-secret-value"]
 
 해석된 `cli.availableModels`는 gateway JWT request의 `/v1/messages`와 `/v1/messages/count_tokens`에 적용됩니다. top-level `model` 끝의 Claude Code context-window hint(`[1m]` 또는 `[1M]`) 하나를 제거한 뒤 비교하며, 목록에 없으면 `400 invalid_request_error`로 거부합니다. static `[server.auth]` credential은 gateway policy user를 식별하지 않으므로 이 제한을 받지 않습니다.
 
+### `[server.gateway.desktop_bootstrap]` (선택)
+
+디바이스 코드 로그인 뒤 Claude Desktop의 [bootstrap 로그인](/ko/guides/connect-claude-desktop/#bootstrap-로그인-디바이스-코드)이 가져가는 구성 엔드포인트 `GET /user/bootstrap`을 제공합니다. 이 테이블이 없으면 라우트는 `404`를 반환합니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `template` | 필수 | 최상위가 object인 JSON 파일 경로. 설정 로드와 `shunt check` 때 존재하고 파싱되어야 하며, 요청마다 읽으므로 수정 내용은 재시작 없이 적용됩니다. 상대 경로는 설정 파일이 아니라 shunt의 작업 디렉터리를 기준으로 해석됩니다 |
+
+파일은 경로만 가능하고 URL은 지원하지 않습니다. 응답은 템플릿 그대로이며, 문자열 값 안의 `${user.email}`, `${user.sub}`, `${user.name}`만 로그인한 사용자의 값으로 바뀝니다(알 수 없는 `${...}` 토큰과 객체 키는 그대로 둡니다). `[[server.gateway.policies]]`가 없거나, policy의 `match.emails`에 사용자가 포함되거나, catch-all policy가 있으면 그 사용자는 대상이며, 그 외 사용자는 `403`을 받습니다.
+
+```toml
+[server.gateway.desktop_bootstrap]
+template = "/etc/shunt/claude-desktop-bootstrap.json"
+```
+
 ### `[server.gateway.telemetry]` (선택)
 
 `forward_to`는 필수 base OTLP/HTTP `url`, 선택적 string `headers` map, signal별 opt-in boolean(`metrics` 기본 `true`, `logs`/`traces` 기본 `false`)을 가진 destination array입니다. `headers`의 각 값은 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다([Secret 참조](#secret-참조) 참고). signal을 하나 이상 opt-in한 목록은 managed `settings.env`에 값 6개를 주입합니다. `CLAUDE_CODE_ENABLE_TELEMETRY=1`, 각 `OTEL_METRICS_EXPORTER`/`OTEL_LOGS_EXPORTER`/`OTEL_TRACES_EXPORTER`는 해당 signal을 opt-in한 destination이 있으면 `otlp`, 없으면 `none`, `OTEL_EXPORTER_OTLP_ENDPOINT=public_url`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`입니다. 어떤 signal도 opt-in되지 않았으면 아무것도 주입하지 않습니다. 충돌 시 policy env value가 우선합니다. 같은 목록이 inbound ingest도 구동합니다(M-C, #189). `[server.gateway]`가 있으면 항상 등록되는 `POST /v1/{metrics,logs,traces}` 라우트가 클라이언트의 OTLP payload를 받아 해당 signal을 opt-in한 모든 destination에 verbatim으로 relay하고, opt-in한 destination이 없는 signal은 수신 후 폐기합니다. `logs`/`traces`가 기본 off인 이유는 Claude Code log record와 span에 command line, prompt, 파일 경로가 담길 수 있기 때문입니다.
