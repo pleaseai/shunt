@@ -1408,9 +1408,9 @@ async fn malformed_oauth_forms_use_rfc6749_error_shape() {
     let (router, _, _) = build_router(config).unwrap();
 
     for (path, body) in [
-        ("/oauth/device_authorization", ""),
         ("/oauth/device_authorization", "client_id=other"),
         ("/oauth/token", ""),
+        ("/oauth/token", "grant_type=refresh_token"),
         (
             "/oauth/token",
             "grant_type=refresh_token&client_id=claude-code",
