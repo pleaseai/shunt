@@ -96,10 +96,11 @@ mirroring `auth::antigravity::login::run_named` (`src/auth/antigravity/login.rs:
 
 **Refresh locking: the store does not change.** Each account gets its own `XaiAuthStore` over its
 own path. The refresh and the rotated-pair writeback run in a detached task that owns the
-process-wide single-flight lock, and a waiter re-reads **its own** file (`src/auth/xai/auth.rs:48-53,
-100-147`). This keeps single-flight per file and stays safe when the caller is cancelled. Refreshes
-on different accounts serialize, the trade-off Kimi documents (`docs/m15-kimi-oauth.md` §5,
-`src/auth/kimi/auth.rs:62-69`). A write only reaches the path its store was built with, so two
+single-flight lock for that file, and a waiter re-reads **its own** file (`src/auth/xai/auth.rs`).
+This keeps single-flight per file and stays safe when the caller is cancelled. The lock is per
+credential file (`auth::shared::refresh_lock`, shared with Codex; see Q5), so refreshes on different
+accounts run in parallel; the original process-wide lock, which serialized them as Kimi does
+(`docs/m15-kimi-oauth.md` §5), was replaced during code review. A write only reaches the path its store was built with, so two
 accounts cannot cross-write; T6 adds a concurrent two-account refresh test. Pool resolution does not
 take `AccountPool::refresh_lock`, matching Codex (`pool.rs:1564-1573`, test `pool.rs:3740`).
 

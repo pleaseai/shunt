@@ -118,13 +118,32 @@ fn isolated_xai_store() -> std::path::PathBuf {
     ))
 }
 
+/// The legacy single-account twin of [`isolated_xai_store`], also never
+/// created. An empty store falls back to `~/.shunt/xai-auth.json`, which the
+/// `grok` path would read and refresh, so every guard points that fallback
+/// here too; a test that needs a legacy login overrides it with
+/// [`EnvVars::set`].
+fn isolated_xai_legacy_file() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "shunt-test-xai-auth-{}-absent.json",
+        std::process::id()
+    ))
+}
+
+/// Points both xAI credential sources at [`isolated_xai_store`] and
+/// [`isolated_xai_legacy_file`].
+fn isolate_xai_credentials(guard: &mut EnvVars) {
+    guard.set("SHUNT_XAI_ACCOUNTS_DIR", isolated_xai_store());
+    guard.set("SHUNT_XAI_AUTH_FILE", isolated_xai_legacy_file());
+}
+
 /// Takes [`ENV_LOCK`] and sets `vars` for the rest of the test body.
 pub async fn set_env(vars: &[(&str, &str)]) -> EnvVars {
     let mut guard = EnvVars {
         saved: Vec::with_capacity(vars.len()),
         _lock: ENV_LOCK.lock().await,
     };
-    guard.set("SHUNT_XAI_ACCOUNTS_DIR", isolated_xai_store());
+    isolate_xai_credentials(&mut guard);
     for (name, value) in vars {
         guard.set(name, value);
     }
@@ -147,7 +166,7 @@ pub fn set_env_blocking(vars: &[(&str, &str)]) -> EnvVars {
         saved: Vec::with_capacity(vars.len()),
         _lock: ENV_LOCK.blocking_lock(),
     };
-    guard.set("SHUNT_XAI_ACCOUNTS_DIR", isolated_xai_store());
+    isolate_xai_credentials(&mut guard);
     for (name, value) in vars {
         guard.set(name, value);
     }

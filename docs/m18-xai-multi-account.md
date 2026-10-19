@@ -14,8 +14,8 @@
   named-account directory.
 - A user with only the legacy `~/.shunt/xai-auth.json` sees no change. The legacy file is read
   only while the pool is empty (§3).
-- Out of scope for this spec: quota-aware selection, WebSocket transport, forced refresh on a
-  `401`, and admin provisioning routes. §12 lists them.
+- Out of scope for this spec: quota-aware selection, WebSocket transport, a same-account retry
+  after a `401`, and admin provisioning routes. §12 lists them.
 
 ## 2. Account store
 
@@ -25,9 +25,9 @@ Each named account is one file:
 ~/.shunt/accounts/xai/<name>.json
 ```
 
-Override the directory with `SHUNT_XAI_ACCOUNTS_DIR` (`src/auth/xai/store.rs`). The directory is
-created `0700`. Each file is written `0600`, atomically (temp file and rename), through the shared
-`write_account_file` helper.
+Override the directory with `SHUNT_XAI_ACCOUNTS_DIR` (`src/auth/xai/store.rs`). A directory shunt
+creates is made `0700`; an existing directory keeps its own permissions. Each file is written
+`0600`, atomically (temp file and rename), through the shared `write_account_file` helper.
 
 The file has the same shape as the legacy single-account file (§3 of m6). `shunt login xai --name`
 writes it, and `XaiAuthStore` reads and refreshes it unchanged:
@@ -73,16 +73,20 @@ when the provider's resolved xAI pool is empty**. The pool is empty when all of 
 - `$SHUNT_XAI_ACCOUNTS_DIR` is missing or holds no valid `<name>.json`.
 
 The legacy file is never a pool member. Once the pool has at least one account, shunt does not
-read the legacy file at all. The store directory is scanned on every turn even when the pool is
-empty, so an unreadable store directory (not a missing one) fails the request rather than falling
+read the legacy file at all. Each turn stats the store directory and reuses the last scan while
+the directory's mtime is unchanged; adding or removing an account changes the mtime, so it becomes
+visible on the next turn without a restart. A store directory that cannot be read when a stat or a
+scan is needed (an error other than a missing directory) fails the request rather than falling
 back to the legacy file, the same rule the Codex pool follows.
 
 This is the same rule Codex (M10) and Antigravity already use. Adding a first named account
 therefore moves the provider off the legacy file. The migration is a move, not a copy:
 
 1. Stop shunt.
-2. `mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<account-name>.json`
-3. Start shunt.
+2. `install -d -m 700 ~/.shunt/accounts/xai`. The directory usually does not exist yet when migrating
+   from the single-account setup, and `mv` fails without it.
+3. `mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<account-name>.json`
+4. Start shunt.
 
 Do not copy the file. xAI rotates the refresh token on every refresh (m6 §3), so two copies
 would hold one consumed refresh token and one live one, and the first refresh of either copy
@@ -163,16 +167,18 @@ shared `rotation_reason`.
 | `403` | Relay the mapped xAI error and `mark_healthy(false)`. No rotation. | — | — |
 | `429` | Cool down and rotate. | `retry-after`, clamped to 1–3600 s; default 60 s | `rate_limit` |
 | `5xx` | Cool down and rotate. | 30 s | `server_error` |
-| Other `4xx` (400, 404, 413, …) | Relay the mapped error and `mark_healthy(false)`. The body is never read. | — | — |
+| Other `4xx` (400, 404, 413, …) | Relay the mapped error and `mark_healthy(false)`. Classification does not read the body; the mapped response reads it lazily, only when the client consumes it. | — | — |
 | Credential resolution fails (missing or corrupt file, refresh `400`/`401` `invalid_grant`, refresh `403` tier gate, refresh `5xx`, unset `token_env`) | Cool down and rotate. | 5 min | `auth` |
 | Transport error | Cool down and rotate. | 30 s | `transport` |
 | TTFB timeout | Terminal `504`, unchanged. | — | — |
 | Exhausted after at least one response | Relay the last response, mapped with the `xai_oauth` `401`/`403` texts. | — | `exhausted` |
 | Exhausted with no response | `all xAI OAuth accounts failed before receiving an upstream response`. On `/v1/messages` the outer chain answers `all upstreams failed (N attempted)`. | — | `exhausted` |
 
-**Why `401` rotates.** `XaiAuthStore` has no forced-refresh entry point. Expiry is the JWT `exp`
-claim, read with a 5-minute buffer. A `401` therefore rotates to another account instead of
-refreshing and retrying the same one. This follows the Kimi pool.
+**Why `401` rotates.** Expiry is the JWT `exp` claim, read with a 5-minute buffer, so a token xAI
+rejects with a `401` was revoked early. The current request rotates to another account instead of
+refreshing and retrying the same one, as the Kimi pool does. The pool also calls
+`auth::force_xai_refresh` for the account, which marks its credential file so the account's next
+use refreshes the token even before its `exp` (a `token_env` bearer is static and is not marked).
 
 **Why `402` rotates.** A `402` is an account-specific, persistent refusal (the subscription does not
 cover the request), not a client-fixable one. Rotating lets the healthy accounts serve the request.
@@ -200,10 +206,14 @@ has not been done yet.
   waiter re-reads the file after the lock is released and finds the rotated pair. The lock is keyed
   by the canonicalized path (`auth::shared::refresh_lock`, shared with the Codex store), so
   refreshes on different accounts run in parallel and a stalled refresh on one account never holds
-  up the next.
-- **Bounded refresh.** The refresh client sets no timeout, so the store caps one refresh round trip
-  at 30 seconds (`REFRESH_TIMEOUT`). A token endpoint that never answers fails the refresh, releases
-  the lock, and the pool cools the account down and fails over.
+  up the next. The reads, the rotated-pair writeback, and the forced-refresh mark after a `401` use
+  that same resolved path, so a credential reached through a symlink is written in place and the
+  link survives.
+- **Bounded refresh.** The refresh client sets no timeout, so the store gives each call one
+  30-second deadline (`REFRESH_TIMEOUT`) covering both the wait for the file's lock and the refresh
+  round trip. A token endpoint that never answers fails the refresh and releases the lock, and a
+  caller queued behind it fails at its own deadline instead of starting a fresh 30-second attempt;
+  the pool cools the account down and fails over.
 - **Detached task.** The refresh and the rotated-pair writeback run in a detached task that owns the
   lock, so the write completes even if the caller is cancelled.
 - **Pool resolution does not take `AccountPool::refresh_lock`**, matching the Codex pool.
@@ -222,7 +232,9 @@ as follows:
   account whose credential fails to load (a missing or corrupt file, a refused refresh) is cooled
   down for 5 minutes and skipped, as on the outbound pool, so one dead login cannot block the route.
   The request is then sent once: an upstream failure is relayed, not retried on another account.
-  The pool's `max_utilization` cap exit is not wired here, because xAI caps stay inert (§12).
+  When `max_utilization` caps exclude every account, the route returns the pool's cap-exhaustion
+  `429`, as the ChatGPT inbound path does. It is a guard: §12 keeps xAI caps inert, so it applies
+  only once utilization is recorded for xAI accounts.
 - **Empty pool.** The route uses `~/.shunt/xai-auth.json`, as before (§3).
 
 Errors on this endpoint keep the OpenAI Responses error shape, because `src/codex_endpoint.rs`

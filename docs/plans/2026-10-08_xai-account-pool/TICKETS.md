@@ -5,8 +5,8 @@ classification table. Each ticket below is one implementer pass.
 
 ## Rules for every ticket
 
-- Work only in `/Users/rubenffuertes/repos/open-source/shunt-xai-pool`. The shell cwd resets, so
-  start every command with `cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool &&`.
+- Work only in your checkout of this repository. The shell cwd may reset, so run every command from
+  the repository root (`cd "$(git rev-parse --show-toplevel)" &&`).
 - Touch **only** the files the ticket lists. If something else seems to need a change, stop and
   report instead.
 - Never delete or weaken an existing test. Never edit an existing test unless the ticket says so.
@@ -27,10 +27,10 @@ classification table. Each ticket below is one implementer pass.
 - **Standard gate** (run in order; every step must pass):
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo fmt --all
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo fmt --all --check
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo clippy --all-targets --all-features -- -D warnings
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --workspace
+cargo fmt --all
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features --workspace
 ```
 
 ## Dependency graph
@@ -194,7 +194,7 @@ touches env holds `TEST_ENV_LOCK` and uses `shared::EnvVarGuard`.
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib auth::xai
+cargo test --all-features --lib auth::xai
 ```
 
 The existing `auth::xai::auth` tests (`write_tokens_round_trips_and_rotates_refresh`,
@@ -317,8 +317,8 @@ Then run the standard gate.
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib auth::xai::login
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --bin shunt xai_login
+cargo test --all-features --lib auth::xai::login
+cargo test --all-features --bin shunt xai_login
 ```
 
 The existing `login.rs` tests pass unchanged. Then run the standard gate.
@@ -387,8 +387,8 @@ The existing `login.rs` tests pass unchanged. Then run the standard gate.
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib config::tests::xai
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib config::tests::accounts_require_oauth_provider
+cargo test --all-features --lib config::tests::xai
+cargo test --all-features --lib config::tests::accounts_require_oauth_provider
 ```
 
 Then run the standard gate.
@@ -455,7 +455,7 @@ Then run the standard gate.
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib config::upstreams
+cargo test --all-features --lib config::upstreams
 ```
 
 Then run the standard gate.
@@ -478,9 +478,11 @@ classifier; only 401 and 402 rotate beyond `classify_codex`. The shared `rotatio
    /// account-pool failover. Takes the same `(status, headers)` shape as
    /// [`classify_codex`], which it extends: 401 and 402 rotate too.
    ///
-   /// - 401: `XaiAuthStore` reads expiry from the access token's JWT `exp` and
-   ///   has no forced-refresh entry point, so — like the Kimi pool — a rejected
-   ///   bearer cools down and rotates instead of a same-account refresh retry.
+   /// - 401: expiry comes from the access token's JWT `exp`, so a rejected
+   ///   bearer was revoked early. Like the Kimi pool, the current request cools
+   ///   the account down and rotates instead of a same-account refresh retry;
+   ///   the pool also marks the account for a forced refresh on its next use
+   ///   (`auth::force_xai_refresh`, see `classify_first_xai`).
    /// - 402: a payment/entitlement refusal is account-specific and persistent,
    ///   the Kimi membership case ([`classify_kimi`]).
    /// - 403 relays, as in every other classifier. xAI's documented tier gate
@@ -511,9 +513,9 @@ do not edit that test):
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib accounts::tests::classify_xai
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib accounts::tests::every_classifier_relays_a_403
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib accounts::tests::rotation_reason
+cargo test --all-features --lib accounts::tests::classify_xai
+cargo test --all-features --lib accounts::tests::every_classifier_relays_a_403
+cargo test --all-features --lib accounts::tests::rotation_reason
 ```
 
 `git diff -- src/accounts.rs` shows no change inside `pub fn rotation_reason`. Then run the
@@ -720,8 +722,8 @@ standard gate.
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib xai_account
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib auth::xai::auth
+cargo test --all-features --lib xai_account
+cargo test --all-features --lib auth::xai::auth
 ```
 
 Then run the standard gate.
@@ -843,6 +845,12 @@ bottom-up so earlier positions stay valid.
        match accounts::classify_xai(status, upstream.headers()) {
            FailoverAction::Relay => FirstOutcome::Relay(upstream),
            FailoverAction::Rotate | FailoverAction::RefreshRetry | FailoverAction::PauseSame => {
+               if status == reqwest::StatusCode::UNAUTHORIZED {
+                   // A token is only sent while unexpired, so a 401 means xAI
+                   // revoked it early: refresh on this account's next use rather
+                   // than resend it every cooldown until its `exp`.
+                   auth::force_xai_refresh(account);
+               }
                let cooldown = rotate_cooldown(status, upstream.headers());
                state.accounts.cooldown(
                    &route.provider,
@@ -1082,8 +1090,8 @@ on `expect` — that is the intended signal.
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib adapters::responses::pool
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --test codex_multi_account --test inbound_codex_endpoint
+cargo test --all-features --lib adapters::responses::pool
+cargo test --all-features --test codex_multi_account --test inbound_codex_endpoint
 ```
 
 Every existing `adapters::responses::pool::tests` test passes unchanged. They all route to `codex`,
@@ -1179,7 +1187,7 @@ async fn xai_pool_relays_a_403_from_the_first_account_without_rotating_or_coolin
 ```
 
 - `xai_pool_rotates_off_a_401_without_a_same_account_refresh_retry`: `a` → 401, `b` → 200
-  (the rotation shape: `forward_chatgpt_oauth(…).await.expect(…)` returns Ok(200)).
+  (the rotation shape: `forward_chatgpt_oauth(…).await.expect(…)` returns Ok(200)); account `a`'s credential file is also marked for a forced refresh on its next use).
   Assert exactly 2 requests (no retry on `a`), `x-shunt-account == "xai-b"`, and `a` cooled.
 - `xai_pool_cools_an_unresolvable_account_for_five_minutes_and_rotates`:
   `a = unresolvable_xai_account(&dir, "xai-a")`, `b` → 200. Assert exactly **1** request,
@@ -1188,7 +1196,7 @@ async fn xai_pool_relays_a_403_from_the_first_account_without_rotating_or_coolin
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib adapters::responses::pool::xai_tests
+cargo test --all-features --lib adapters::responses::pool::xai_tests
 ```
 
 Then run the standard gate.
@@ -1223,7 +1231,7 @@ Then run the standard gate.
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib adapters::responses::pool::xai_tests
+cargo test --all-features --lib adapters::responses::pool::xai_tests
 ```
 
 Then run the standard gate.
@@ -1308,8 +1316,8 @@ Every test does `if !can_bind_loopback() { return; }`, then `let mut vars = comm
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --test xai_multi_account
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --test codex_multi_account --test responses_chain_stream --test failover --test env_lock_coverage
+cargo test --all-features --test xai_multi_account
+cargo test --all-features --test codex_multi_account --test responses_chain_stream --test failover --test env_lock_coverage
 ```
 
 Then run the standard gate.
@@ -1416,8 +1424,8 @@ far-future JWT helper like T6's `xai_token`, under
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib adapters::responses::inbound_routed
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --test inbound_codex_routes --test inbound_codex_endpoint
+cargo test --all-features --lib adapters::responses::inbound_routed
+cargo test --all-features --test inbound_codex_routes --test inbound_codex_endpoint
 ```
 
 Then run the standard gate.
@@ -1498,8 +1506,8 @@ assertions.
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --test env_guard --test env_lock_coverage --test admin_surface --test pool_pause_api
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib usage::tests
+cargo test --all-features --test env_guard --test env_lock_coverage --test admin_surface --test pool_pause_api
+cargo test --all-features --lib usage::tests
 ```
 
 `git diff` of the existing tests shows only added isolation lines (no changed assertion). Then run
@@ -1563,9 +1571,9 @@ from T10a).
 **Acceptance**
 
 ```bash
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --test admin_surface
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --test pool_pause_api
-cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --lib usage::tests
+cargo test --all-features --test admin_surface
+cargo test --all-features --test pool_pause_api
+cargo test --all-features --lib usage::tests
 ```
 
 Then run the standard gate.
@@ -1602,7 +1610,7 @@ Then run the standard gate.
    7. *Failover*: the classification table from PLAN §1, with the 401 and 402 reasoning and the
       three reasons a 403 relays (tier gate surfaces at refresh; an inference 403 can be a
       content-policy refusal; nothing shared changes), plus the 403-body follow-up.
-   8. *Refresh and isolation*: per-file store, global single-flight lock, the detached task, and no
+   8. *Refresh and isolation*: per-file store, per-file single-flight lock, the detached task, and no
       cross-write. Pooled accounts refresh through the redirect-hardened client, which refuses a
       redirect to non-loopback `http://`. The single-account file keeps the gateway's client.
    9. *Routed inbound Codex endpoint*: an `xai_oauth` route with a non-empty pool uses the first
@@ -1820,9 +1828,9 @@ Then run the standard gate.
   has hits in all three.
 - `grep -n "xai_oauth" site/src/content/docs/reference/endpoints.md site/src/content/docs/guides/inbound-codex-endpoint.md`
   has hits in both (the endpoints hit in the `/admin/api/pool` row).
-- `cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && cargo test --all-features --test add_cli`
+- `cargo test --all-features --test add_cli`
   (the blueprint is `include_str!`'d).
-- `cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool/site && npm ci && npm run build` succeeds.
+- `cd site && npm ci && npm run build` succeeds.
   If `npm ci` cannot reach the network, say so in the report instead of skipping silently.
 
 ---
@@ -1838,11 +1846,11 @@ Then run the standard gate.
 
 **Instructions**
 
-1. Nothing is committed yet, so the English changes to translate come from `upstream/main`
+1. Nothing is committed yet, so the English changes to translate come from `origin/main`
    (review decision D7):
 
    ```bash
-   cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool && git diff upstream/main -- \
+   git diff origin/main -- \
      site/src/content/docs/guides/xai.mdx site/src/content/docs/guides/providers.mdx \
      site/src/content/docs/guides/inbound-codex-endpoint.md \
      site/src/content/docs/reference/configuration.md site/src/content/docs/reference/cli.mdx \
@@ -1866,14 +1874,14 @@ Then run the standard gate.
 
 **Acceptance**
 
-- `git diff --stat upstream/main -- site/src/content/docs/<l> README.<L>.md` lists only the seven
+- `git diff --stat origin/main -- site/src/content/docs/<l> README.<L>.md` lists only the seven
   files above for that locale.
 - `grep -c "SHUNT_XAI_ACCOUNTS_DIR" site/src/content/docs/<l>/reference/cli.mdx` ≥ 2 (both the
   section and the env table).
 - `grep -n "xai_oauth" site/src/content/docs/<l>/reference/endpoints.md site/src/content/docs/<l>/guides/inbound-codex-endpoint.md`
   has hits in both.
 - `grep -n "accounts/xai" README.<L>.md` has a hit in the `grok` row.
-- `git diff -U0 upstream/main -- site/src/content/docs/<l> | grep -n "](/[^)]*#"` prints nothing (no
+- `git diff -U0 origin/main -- site/src/content/docs/<l> | grep -n "](/[^)]*#"` prints nothing (no
   new cross-page fragment links).
-- `cd /Users/rubenffuertes/repos/open-source/shunt-xai-pool/site && npm run build` succeeds (or report
+- `cd site && npm run build` succeeds (or report
   why it could not run).

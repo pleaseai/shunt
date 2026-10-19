@@ -1289,6 +1289,13 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                         "account_ref".to_string(),
                         Value::String(crate::accounts::account_ref(name, account)),
                     );
+                    // An explicit `credentials` file or `token_env` replaces the
+                    // store file named after the account, so the dashboard must
+                    // not match the store's identity for that name to this row.
+                    map.insert(
+                        "credential_override".to_string(),
+                        Value::Bool(account.credentials.is_some() || account.token_env.is_some()),
+                    );
                     if let Some(plan) = plan {
                         map.insert("plan".to_string(), Value::String(plan));
                     }

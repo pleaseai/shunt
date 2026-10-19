@@ -131,8 +131,11 @@ shunt はセッション（`x-claude-code-session-id`）を 1 つのアカウン
 `~/.shunt/xai-auth.json`（`--name` なしの `shunt login xai` で作成されたもの）は、プールが空のあいだだけ使われます。名前付きアカウントが 1 つでも存在すると、shunt はそのファイルを読まなくなります。そのログインをプールに残すには、shunt を停止してファイルをストアへ移動してください。形式は同じです:
 
 ```bash
+install -d -m 700 ~/.shunt/accounts/xai
 mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<name>.json
 ```
+
+（単一アカウント構成から移行する場合、このディレクトリはまだ存在しないため先に作成してください。`install -d -m 700` なら所有者専用で作成されます。）
 
 コピーしないでください。xAI はリフレッシュのたびにリフレッシュトークンをローテーションするため、同じログインを持つ 2 つのファイルは互いを無効にします。
 
@@ -267,7 +270,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.6"     # /model ピッカーに追�
 | `402 … personal-team-blocked:spending-limit` / *"need a Grok subscription"* | API クレジットのない **`xai`**（開発者 API）パス上。[console.x.ai](https://console.x.ai/) でクレジットを追加するか、**`grok`** へルーティングしてサブスクリプションを使う。 |
 | `403 … not authorized for API access`（サブスクリプション tier のゲート） | **`grok`** パス上で、あなたのサブスクリプション tier に API アクセスが含まれていない — **再ログインしても解決しません**。`XAI_API_KEY` を設定して `xai` パスを使うか、[x.ai/grok](https://x.ai/grok) でアップグレードする。複数アカウントの場合、アカウントのトークンをリフレッシュする際に現れた tier ゲートは、そのアカウントをクールダウンさせ、shunt は次のアカウントへ移ります。リクエスト上の `403` はそのまま返されます。コンテンツポリシーによる拒否の可能性もあるためです。 |
 | `refusing to send a subscription token off-origin`（`shunt check` から） | `xai_oauth` プロバイダーの `base_url` ホストが `x.ai`/`grok.com` でない、HTTPS でない、または `kind = "responses"` でない。ブロックを修正する。 |
-| 名前付き xAI アカウントを使う場合の `all upstreams failed (N attempted)` | どの上流も応答する前に、プール内のすべてのアカウントが失敗しました。各アカウントは、認証情報の読み込みまたはリフレッシュに失敗したか、トランスポートエラーまたはタイムアウトに遭ったかのいずれかです。認証情報の失敗の場合は `shunt login xai --name <account>` を再実行するか、`~/.shunt/accounts/xai/` 配下のファイルを確認してください。アカウントが `401`、`429`、`5xx` で応答していた場合、shunt はこのメッセージの代わりにその最後の応答を返します。すべてのアカウントが `402` を返した場合、クライアントには `502` として届きます。 |
+| 名前付き xAI アカウントを使う場合の `all upstreams failed (N attempted)` | どの上流も応答する前に、プール内のすべてのアカウントが失敗しました。各アカウントは、認証情報の読み込みまたはリフレッシュに失敗したか、トランスポートエラーまたはタイムアウトに遭ったかのいずれかです。認証情報の失敗の場合は `shunt login xai --name <account>` を再実行するか、`~/.shunt/accounts/xai/` 配下のファイルを確認してください。アカウントが `401`、`429`、`5xx` で応答していた場合、shunt は再試行を止め、このメッセージの代わりにその最後の応答をゲートウェイのマッピングを経て返します。すべてのアカウントが `402` を返した場合、クライアントには `502` として届きます。 |
 | `xAI account scope references missing store account "<name>"` | `account`/`accounts` が、ストアにファイルのないアカウント名を指定しています。`shunt login xai --name <name>` でログインするか、名前を修正してください。 |
 | effort を設定すると `400` | その Grok スラッグは `reasoning.effort` を拒否します。それについてはプロバイダー/ルートから `effort` を削除する。 |
 | `model <slug> is not enabled for this account` | entitle されていないスラッグ — xAI のカタログと照合してスラッグを確認する。 |

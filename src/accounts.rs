@@ -3836,9 +3836,11 @@ pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverActio
 /// account-pool failover. Takes the same `(status, headers)` shape as
 /// [`classify_codex`], which it extends: 401 and 402 rotate too.
 ///
-/// - 401: `XaiAuthStore` reads expiry from the access token's JWT `exp` and
-///   has no forced-refresh entry point, so — like the Kimi pool — a rejected
-///   bearer cools down and rotates instead of a same-account refresh retry.
+/// - 401: like the Kimi pool, a rejected bearer cools down and rotates instead
+///   of a same-account refresh retry. The pool also marks the account's file
+///   for a forced refresh (`auth::force_xai_refresh`), so its next use after
+///   the cooldown refreshes rather than resending the rejected token until its
+///   JWT `exp`.
 /// - 402: a payment/entitlement refusal is account-specific and persistent,
 ///   the Kimi membership case ([`classify_kimi`]).
 /// - 403 relays, as in every other classifier. xAI's documented tier gate

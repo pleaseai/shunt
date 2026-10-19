@@ -158,6 +158,34 @@ describe('folding managed accounts and local observations into one row', () => {
     expect(observed().queryByText('Grok · Grok Pro')).toBeNull();
   });
 
+  /**
+   * The store listing is keyed by file name, so an xAI account whose
+   * `credentials` or `token_env` replaces its store file may be a different
+   * user than the store's same-named login. Its row must not absorb that
+   * login's observation.
+   */
+  it('does not apply an xAI store id to an account whose credentials are overridden', async () => {
+    await renderDashboard({
+      observed: [
+        {
+          provider: 'grok',
+          source: 'local credential file',
+          identity: 'Grok · Grok Pro',
+          detail: null,
+          state: 'available',
+          signal: 'quota',
+          uuid: 'xai-user-1',
+        },
+      ],
+      xaiAccounts: [{ name: 'personal', account_id: 'xai-user-1' }],
+      pool: poolWith('xai_oauth', 'grok', { name: 'personal', credential_override: true }),
+    });
+
+    // Two rows: the overridden account was never matched to the store login.
+    expect(observed().getByText('personal')).toBeInTheDocument();
+    expect(observed().getByText('Grok · Grok Pro')).toBeInTheDocument();
+  });
+
   /** An xAI store id must never be applied to a ChatGPT login of the same name. */
   it('does not apply an xAI store id to a chatgpt_oauth account', async () => {
     await renderDashboard({

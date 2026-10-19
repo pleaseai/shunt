@@ -148,8 +148,11 @@ shunt 会把一个会话(`x-claude-code-session-id`)固定在同一个账户上,
 `~/.shunt/xai-auth.json`(来自不带 `--name` 的 `shunt login xai`)只在账户池为空时才会被使用。一旦存在命名账户,shunt 就不再读取它。若要把该登录保留在池中,请先停止 shunt,然后把文件移入存储;格式相同:
 
 ```bash
+install -d -m 700 ~/.shunt/accounts/xai
 mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<name>.json
 ```
+
+(从单账户配置迁移时,该目录尚不存在,因此请先创建;`install -d -m 700` 会将其创建为仅属主可访问。)
 
 不要复制它。xAI 会在每次刷新时轮换刷新 token,因此两个文件持有同一登录会让彼此失效。
 
@@ -308,7 +311,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.6"     # 加入 /model 选择器
 | `402 … personal-team-blocked:spending-limit` / *"need a Grok subscription"* | 在 **`xai`**(开发者 API)路径上且无 API 额度。请在 [console.x.ai](https://console.x.ai/) 充值,或路由到 **`grok`** 以使用你的订阅。 |
 | `403 … not authorized for API access`(订阅层级门控) | 在 **`grok`** 路径上,你的订阅层级不包含 API 访问 —— **重新登录也无济于事**。设置 `XAI_API_KEY` 并使用 `xai` 路径,或在 [x.ai/grok](https://x.ai/grok) 升级。若有多个账户,shunt 刷新某个账户 token 时出现的层级门控会使该账户冷却,然后切换到下一个账户。请求上返回的 `403` 会原样返回,因为它也可能是内容政策拒绝。 |
 | `refusing to send a subscription token off-origin`(来自 `shunt check`) | 一个 `xai_oauth` 提供方的 `base_url` 主机不是 `x.ai`/`grok.com`,不是 HTTPS,或不是 `kind = "responses"`。修正该块。 |
-| `all upstreams failed (N attempted)`(配置了命名 xAI 账户时) | 池中每个账户都在任何上游应答之前失败了:每个账户都无法加载或刷新其 credential,或遇到传输错误或超时。若是 credential 失败,请重新运行 `shunt login xai --name <account>`,或检查 `~/.shunt/accounts/xai/` 下的文件。若某个账户确实返回了 `401`、`429` 或 `5xx`,shunt 会转发最后一次的应答,而不是这条消息。若每个账户都返回 `402`,客户端收到的是 `502`。 |
+| `all upstreams failed (N attempted)`(配置了命名 xAI 账户时) | 池中每个账户都在任何上游应答之前失败了:每个账户都无法加载或刷新其 credential,或遇到传输错误或超时。若是 credential 失败,请重新运行 `shunt login xai --name <account>`,或检查 `~/.shunt/accounts/xai/` 下的文件。若某个账户确实返回了 `401`、`429` 或 `5xx`,shunt 会停止重试,并把最后一次的应答经网关映射后返回,而不是这条消息。若每个账户都返回 `402`,客户端收到的是 `502`。 |
 | `xAI account scope references missing store account "<name>"` | `account`/`accounts` 指向了存储中没有文件的账户。用 `shunt login xai --name <name>` 登录它,或修正名称。 |
 | 设置力度后出现 `400` | 该 Grok slug 拒绝 `reasoning.effort`。为其从提供方/路由中移除 `effort`。 |
 | `model <slug> is not enabled for this account` | 未授权的 slug —— 对照 xAI 的目录确认该 slug。 |

@@ -491,7 +491,7 @@ async fn dispatch_routed(
         )
         .await
     } else {
-        responses::forward_codex_routed(state, route, headers, body, session_id).await
+        responses::forward_codex_routed(state, route, headers, body, pool_key, session_id).await
     };
     Ok((route_config.provider, result))
 }

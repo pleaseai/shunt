@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use serde_json::Value;
-use tokio::time::{sleep, Instant};
+use tokio::time::{sleep, timeout_at, Instant};
 
 use super::auth::{
     parse_token_response, write_tokens, CLIENT_ID, DEVICE_CODE_GRANT_TYPE, DEVICE_CODE_URL, SCOPE,
@@ -150,9 +150,10 @@ fn legacy_notice(legacy: &Path, accounts_dir: &Path) -> Option<String> {
         format!(
             "Note: while any named xAI account exists, shunt pools the accounts in {} and no longer reads {}.\n\
              To keep that older login in the pool, stop shunt and move it into the store:\n    \
-             mv {} {}/<account-name>.json",
+             install -d -m 700 {} && mv {} {}/<account-name>.json",
             accounts_dir.display(),
             legacy.display(),
+            accounts_dir.display(),
             legacy.display(),
             accounts_dir.display(),
         )
@@ -208,20 +209,31 @@ async fn poll_for_tokens(
     token_url: &str,
 ) -> anyhow::Result<super::auth::TokenResponse> {
     let deadline = Instant::now() + Duration::from_secs(device.expires_in);
+    let timed_out =
+        || anyhow!("xAI device authorization timed out; run shunt login xai to try again");
     let mut interval = device.interval.max(MIN_INTERVAL_SECS);
     while Instant::now() < deadline {
-        let response = client
-            .post(token_url)
-            .header("accept", "application/json")
-            .form(&[
-                ("grant_type", DEVICE_CODE_GRANT_TYPE),
-                ("client_id", CLIENT_ID),
-                ("device_code", device.device_code.as_str()),
-            ])
-            .send()
-            .await?;
+        // Both awaits are bounded by the device code's own expiry, so a token
+        // endpoint that stalls mid-poll cannot hang the login past it.
+        let response = timeout_at(
+            deadline,
+            client
+                .post(token_url)
+                .header("accept", "application/json")
+                .form(&[
+                    ("grant_type", DEVICE_CODE_GRANT_TYPE),
+                    ("client_id", CLIENT_ID),
+                    ("device_code", device.device_code.as_str()),
+                ])
+                .send(),
+        )
+        .await
+        .map_err(|_| timed_out())??;
         let success = response.status().is_success();
-        let text = response.text().await.unwrap_or_default();
+        let text = timeout_at(deadline, response.text())
+            .await
+            .map_err(|_| timed_out())?
+            .unwrap_or_default();
         if success {
             let value: Value = serde_json::from_str(&text).context("invalid token response")?;
             let tokens = parse_token_response(&value)
@@ -241,7 +253,7 @@ async fn poll_for_tokens(
         }
         sleep(Duration::from_secs(interval)).await;
     }
-    bail!("xAI device authorization timed out; run shunt login xai to try again")
+    Err(timed_out())
 }
 
 /// Apply the RFC 8628 `slow_down` backoff: bump the poll interval by
@@ -435,7 +447,7 @@ mod tests {
         let notice = legacy_notice(&legacy, &accounts).expect("legacy file exists");
         assert!(notice.contains(&legacy.display().to_string()));
         assert!(notice.contains(&accounts.display().to_string()));
-        assert!(notice.contains("mv "));
+        assert!(notice.contains(&format!("install -d -m 700 {} && mv ", accounts.display())));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -478,5 +490,32 @@ mod tests {
             .await
             .expect_err("poll should time out");
         assert!(error.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn a_stalled_token_poll_times_out_at_the_expiry_deadline() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // The endpoint accepts the poll and never answers: the login must
+        // still give up when the device code expires, not hang on the request.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let device = test_device(1, 1);
+        let token_url = format!("{}/token", server.uri());
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            poll_for_tokens(&client, &device, &token_url),
+        )
+        .await
+        .expect("the poll hung past the device code's expiry")
+        .expect_err("poll should time out");
+        assert!(error.to_string().contains("timed out"), "{error}");
     }
 }

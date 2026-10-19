@@ -204,6 +204,19 @@ function accountIdsByXaiName(
 }
 
 /**
+ * The store identity an xAI pool account is known by. The store listing is
+ * keyed by file name, so it only describes an account that reads its store
+ * file: one whose `credentials` or `token_env` overrides that file may belong
+ * to a different user than the store's same-named login, and stays unmatched.
+ */
+function xaiStoreAccountId(
+  account: PoolAccount,
+  accountIdByXaiName: Map<string, string>,
+): string | undefined {
+  return account.credential_override ? undefined : accountIdByXaiName.get(account.name);
+}
+
+/**
  * Fold managed pool accounts and read-only observations into one row set per
  * provider.
  *
@@ -256,7 +269,7 @@ export function accountGroups(
           : table.auth === 'chatgpt_oauth'
             ? accountIdByCodexName.get(account.name)
             : table.auth === 'xai_oauth'
-              ? accountIdByXaiName.get(account.name)
+              ? xaiStoreAccountId(account, accountIdByXaiName)
               : undefined;
       if (uuid) byUuid.set(uuid, row);
     }

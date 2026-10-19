@@ -2,7 +2,9 @@
 //!
 //! The xai_oauth guard pins the provider to an https grok.com host, so these tests
 //! drive only outcomes that never leave the process (missing or `{}` credential
-//! files). Pool rotation is covered in `src/adapters/responses/pool_xai_tests.rs`.
+//! files, or a valid one whose upstream request stops at a loopback
+//! `HTTPS_PROXY`). Pool rotation is covered in
+//! `src/adapters/responses/pool_xai_tests.rs`.
 
 use std::{io::ErrorKind, net::SocketAddr, path::PathBuf};
 
@@ -155,6 +157,91 @@ async fn legacy_auth_file_answers_non_streaming_turns_when_the_xai_store_is_empt
         body.contains("xAI auth not found; run shunt login xai"),
         "body: {body}"
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A loopback stand-in for an `HTTPS_PROXY`. An HTTPS upstream reaches it as
+/// `CONNECT host:443`; it refuses every tunnel and resolves to the first
+/// request line naming a grok.com host, so a test sees where the gateway was
+/// headed while no request leaves the machine.
+async fn refusing_proxy() -> (String, tokio::task::JoinHandle<String>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+                match socket.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => head.extend_from_slice(&buf[..read]),
+                }
+            }
+            let _ = socket
+                .write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n")
+                .await;
+            let line = String::from_utf8_lossy(&head)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            if line.contains("grok.com") {
+                return line;
+            }
+        }
+    });
+    (url, task)
+}
+
+/// The positive twin of the missing-file tests: with the store empty, a valid
+/// legacy login is resolved and the turn goes upstream (stopped at a loopback
+/// proxy) instead of failing credential resolution.
+#[tokio::test]
+async fn a_valid_legacy_auth_file_serves_turns_when_the_xai_store_is_empty() {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+    if !can_bind_loopback() {
+        return;
+    }
+    let root = temp_root("legacy-valid");
+    std::fs::create_dir_all(&root).unwrap();
+    let legacy = root.join("xai-auth.json");
+    let access_token = format!(
+        "x.{}.y",
+        URL_SAFE_NO_PAD.encode(serde_json::json!({"exp": 4_000_000_000u64}).to_string())
+    );
+    std::fs::write(
+        &legacy,
+        serde_json::json!({
+            "tokens": {"access_token": access_token, "refresh_token": "legacy-refresh"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (proxy, upstream) = refusing_proxy().await;
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_XAI_ACCOUNTS_DIR", root.join("accounts"));
+    vars.set("SHUNT_XAI_AUTH_FILE", &legacy);
+    vars.set("HTTPS_PROXY", &proxy);
+    vars.set("https_proxy", &proxy);
+    vars.unset("NO_PROXY");
+    vars.unset("no_proxy");
+
+    let gateway = start_gateway(grok_config()).await;
+    let (_status, body) = post_messages(&gateway, false).await;
+
+    let request_line = tokio::time::timeout(std::time::Duration::from_secs(5), upstream)
+        .await
+        .expect("the turn never went upstream")
+        .unwrap();
+    assert!(
+        request_line.starts_with("CONNECT ") && request_line.contains("grok.com:443"),
+        "{request_line}"
+    );
+    assert!(!body.contains("xAI auth not found"), "body: {body}");
     let _ = std::fs::remove_dir_all(&root);
 }
 

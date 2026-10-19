@@ -236,9 +236,9 @@ shunt login xai
 shunt login xai --name <account-name>
 ```
 
-不带 `--name` 时,credential 保存到 `~/.shunt/xai-auth.json`(可用 `SHUNT_XAI_AUTH_FILE` 覆盖)。带 `--name` 时,它改为保存到 `~/.shunt/accounts/xai/<account-name>.json`(0600,位于 0700 目录中;`SHUNT_XAI_ACCOUNTS_DIR` 可覆盖存储目录),因此命名登录绝不会覆盖单账户文件。复用名称会替换其文件。`--mode` 和 `--long-lived` 会被拒绝,因为 xAI OAuth token 始终可刷新;`--manual` 仅限 claude 使用。
+不带 `--name` 时,credential 保存到 `~/.shunt/xai-auth.json`(可用 `SHUNT_XAI_AUTH_FILE` 覆盖)。带 `--name` 时,它改为保存到 `~/.shunt/accounts/xai/<account-name>.json`(0600;shunt 新建的存储目录权限为 `0700`,但已存在的目录保持其原有权限;`SHUNT_XAI_ACCOUNTS_DIR` 可覆盖存储目录),因此命名登录绝不会覆盖单账户文件。复用名称会替换其文件。`--mode` 和 `--long-lived` 会被拒绝,因为 xAI OAuth token 始终可刷新;`--manual` 仅限 claude 使用。
 
-在提供方上用 `[[providers.grok.accounts]]` 条目或 `auth = { mode = "xai_oauth", accounts = [...] }` 引用命名账户;若都不配置,则扫描整个存储。若没有配置账户且存储为空,提供方会回退到单账户文件;一旦存在任何命名账户,就不再读取该文件。两个文件使用相同格式,因此在停止 shunt 后,执行 `mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<account-name>.json` 即可把现有登录移入账户池。
+在提供方上用 `[[providers.grok.accounts]]` 条目或 `auth = { mode = "xai_oauth", accounts = [...] }` 引用命名账户;若都不配置,则扫描整个存储。若没有配置账户且存储为空,提供方会回退到单账户文件;一旦存在任何命名账户,就不再读取该文件。两个文件使用相同格式,因此在停止 shunt 后,先以仅属主可访问的方式创建存储目录,再移动文件,即可把现有登录移入账户池:`install -d -m 700 ~/.shunt/accounts/xai && mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<account-name>.json`。从单账户配置迁移时,该目录尚不存在。
 
 xAI 每次刷新都会轮换刷新 token,因此每个可刷新登录只能有一个所有者:绝不要把同一个 credential 文件复制到两个位置,也不要在两个正在运行的 shunt 进程之间共享。
 

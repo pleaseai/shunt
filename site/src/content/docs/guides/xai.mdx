@@ -167,8 +167,11 @@ empty. Once a named account exists, shunt stops reading it. To keep that login i
 shunt and move the file into the store; the format is the same:
 
 ```bash
+install -d -m 700 ~/.shunt/accounts/xai
 mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<name>.json
 ```
+
+(The directory does not exist yet when you migrate from the single-account setup, so create it first; `install -d -m 700` keeps it owner-only.)
 
 Do not copy it. xAI rotates the refresh token on every refresh, so two files holding one login
 invalidate each other.
@@ -328,7 +331,7 @@ only the mapped model's inference is answered by your SuperGrok subscription.
 | `402 … personal-team-blocked:spending-limit` / *"need a Grok subscription"* | On the **`xai`** (developer API) path without API credits. Add credits at [console.x.ai](https://console.x.ai/), or route to **`grok`** to use your subscription. |
 | `403 … not authorized for API access` (subscription tier gate) | On the **`grok`** path your subscription tier doesn't include API access — **re-logging in won't help**. Set `XAI_API_KEY` and use the `xai` path, or upgrade at [x.ai/grok](https://x.ai/grok). With several accounts, a tier gate that shows up when shunt refreshes an account's token cools that account down, and shunt moves to the next one. A `403` on a request is returned as is, because it can also be a content-policy refusal. |
 | `refusing to send a subscription token off-origin` (from `shunt check`) | An `xai_oauth` provider's `base_url` host isn't `x.ai`/`grok.com`, isn't HTTPS, or isn't `kind = "responses"`. Fix the block. |
-| `all upstreams failed (N attempted)` with named xAI accounts | Every pooled account failed before any upstream answered: each one failed to load or refresh its credential, or hit a transport error or timeout. For a credential failure, run `shunt login xai --name <account>` again, or check the files under `~/.shunt/accounts/xai/`. If an account did answer with `401`, `429`, or `5xx`, shunt relays that last answer instead of this message. A `402` from every account reaches the client as `502`. |
+| `all upstreams failed (N attempted)` with named xAI accounts | Every pooled account failed before any upstream answered: each one failed to load or refresh its credential, or hit a transport error or timeout. For a credential failure, run `shunt login xai --name <account>` again, or check the files under `~/.shunt/accounts/xai/`. If an account did answer with `401`, `429`, or `5xx`, shunt stops retrying and returns that last answer, after gateway mapping, instead of this message. A `402` from every account reaches the client as `502`. |
 | `xAI account scope references missing store account "<name>"` | `account`/`accounts` names an account with no file in the store. Log it in with `shunt login xai --name <name>` or fix the name. |
 | `400` when effort is set | That Grok slug rejects `reasoning.effort`. Remove `effort` from the provider/route for it. |
 | `model <slug> is not enabled for this account` | Unentitled slug — confirm the slug against xAI's catalog. |

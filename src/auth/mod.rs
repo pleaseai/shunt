@@ -376,13 +376,6 @@ pub async fn resolve_kimi_account(
         })
 }
 
-/// Resolve one xAI subscription OAuth account for the account pool. Mirrors
-/// [`resolve_kimi_account`]: `token_env` and an explicit `credentials` path
-/// override the default named-account file (`~/.shunt/accounts/xai/<name>.json`,
-/// see [`xai::store`]). A `token_env` token is used verbatim and never
-/// refreshed. Every other account gets its own [`xai::auth::XaiAuthStore`] over
-/// its own file, so the store's single-flight refresh and atomic `0600`
-/// writeback stay per file and two accounts never share a token.
 /// The client a pooled xAI account refreshes with. One definition, so the
 /// redirect-refusal test exercises exactly what `resolve_xai_account` uses.
 fn pooled_xai_client() -> reqwest::Client {
@@ -398,6 +391,13 @@ fn pooled_xai_store_with_token_url(path: PathBuf, token_url: String) -> xai::aut
     xai::auth::XaiAuthStore::with_token_url(path, pooled_xai_client(), token_url)
 }
 
+/// Resolve one xAI subscription OAuth account for the account pool. Mirrors
+/// [`resolve_kimi_account`]: `token_env` and an explicit `credentials` path
+/// override the default named-account file (`~/.shunt/accounts/xai/<name>.json`,
+/// see [`xai::store`]). A `token_env` token is used verbatim and never
+/// refreshed. Every other account gets its own [`xai::auth::XaiAuthStore`] over
+/// its own file, so the store's single-flight refresh and atomic `0600`
+/// writeback stay per file and two accounts never share a token.
 pub async fn resolve_xai_account(
     account: &crate::config::AccountConfig,
     // Unlike the legacy `xai_oauth` arm of `resolve_credential`, the store is
