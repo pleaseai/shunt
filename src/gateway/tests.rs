@@ -24,6 +24,9 @@ struct GatewayEnv {
     secret_env: String,
     users_env: String,
     oidc_secret_env: Option<String>,
+    /// Extra variables a test set through [`GatewayEnv::set_var`], removed on
+    /// drop so a panicking assertion cannot leak them.
+    extra_env: Vec<String>,
 }
 
 impl GatewayEnv {
@@ -53,6 +56,7 @@ impl GatewayEnv {
                 secret_env,
                 users_env,
                 oidc_secret_env: None,
+                extra_env: Vec::new(),
             },
         )
     }
@@ -83,6 +87,11 @@ impl GatewayEnv {
         env.oidc_secret_env = Some(oidc_secret_env);
         (config, env)
     }
+
+    fn set_var(&mut self, name: String, value: &str) {
+        std::env::set_var(&name, value);
+        self.extra_env.push(name);
+    }
 }
 
 impl Drop for GatewayEnv {
@@ -90,6 +99,9 @@ impl Drop for GatewayEnv {
         std::env::remove_var(&self.secret_env);
         std::env::remove_var(&self.users_env);
         if let Some(env) = &self.oidc_secret_env {
+            std::env::remove_var(env);
+        }
+        for env in &self.extra_env {
             std::env::remove_var(env);
         }
     }

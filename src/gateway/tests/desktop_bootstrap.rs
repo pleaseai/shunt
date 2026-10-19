@@ -62,9 +62,9 @@ fn assert_no_store(headers: &axum::http::HeaderMap) {
 
 #[tokio::test]
 async fn desktop_device_flow_without_client_id_signs_in_refreshes_and_revokes_with_400() {
-    let (mut config, _env) = GatewayEnv::config("desktop-flow");
+    let (mut config, mut env) = GatewayEnv::config("desktop-flow");
     let auth_env = format!("SHUNT_GATEWAY_TEST_DESKTOP_CLIENT_{}", std::process::id());
-    std::env::set_var(&auth_env, "static:static-token");
+    env.set_var(auth_env.clone(), "static:static-token");
     config.server.auth = Some(InboundAuthConfig {
         jwt: Vec::new(),
         header: "x-shunt-token".into(),
@@ -125,7 +125,6 @@ async fn desktop_device_flow_without_client_id_signs_in_refreshes_and_revokes_wi
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = json_response(router.clone(), models(Some(&access))).await;
     assert_eq!(status, StatusCode::OK);
-    std::env::remove_var(auth_env);
     let (status, _, _) = raw(&router, bootstrap_request(Some(&access), None)).await;
     assert_eq!(status, StatusCode::OK);
 
