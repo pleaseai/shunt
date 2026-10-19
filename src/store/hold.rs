@@ -171,7 +171,7 @@ impl Store {
     }
 
     async fn create_hold_table(&self) -> Result<(), StoreError> {
-        let mut tx = self.db().begin().await?;
+        let mut tx = self.db().begin_immediate().await?;
         tx.execute(CREATE_TABLE, &[]).await?;
         tx.execute(SEED_ROW, &[]).await?;
         tx.commit().await
@@ -181,9 +181,11 @@ impl Store {
     /// stale holder this acquisition displaced; `HoldHeld` means a live holder
     /// has it.
     pub(crate) async fn acquire_hold(&self) -> Result<Option<Takeover>, StoreError> {
+        let mut tx = self.db().begin_immediate().await?;
+        // Sampled after the begin: on SQLite it can wait out another writer,
+        // and the stale cutoff must reflect when the row is read.
         let now = now_secs();
         let stale = i64::try_from(self.hold.stale_seconds).unwrap_or(i64::MAX);
-        let mut tx = self.db().begin().await?;
         let before = read_row(&mut tx).await?;
         let changed = tx
             .execute(

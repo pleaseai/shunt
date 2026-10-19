@@ -34,6 +34,8 @@ shunt login xai
 
 shunt stores and refreshes the OAuth credential outside the config. Never copy its token into TOML or YAML. xAI may gate this backend by subscription tier; a 403 can mean the account is not entitled, in which case use the metered `xai` preset with an API key instead.
 
+To pool several SuperGrok logins, run `shunt login xai --name <account-name>` for each. shunt stores each one at `~/.shunt/accounts/xai/<account-name>.json` (override the directory with `SHUNT_XAI_ACCOUNTS_DIR`). With no further config the upstream uses every stored account, or scope it with `auth = { mode = "xai_oauth", accounts = ["<a>", "<b>"] }` (or `account = "<a>"`), not both. While any named account exists, the single-account file is not read. Never share a refreshable credential file between concurrently running shunt processes.
+
 ## Optional model routing
 
 ```toml

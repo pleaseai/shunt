@@ -24,6 +24,9 @@ struct GatewayEnv {
     secret_env: String,
     users_env: String,
     oidc_secret_env: Option<String>,
+    /// Extra variables a test set through [`GatewayEnv::set_var`], removed on
+    /// drop so a panicking assertion cannot leak them.
+    extra_env: Vec<String>,
 }
 
 impl GatewayEnv {
@@ -35,6 +38,7 @@ impl GatewayEnv {
         std::env::set_var(&users_env, "dev@example.com:password");
         let mut config = Config::default();
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".into(),
             jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
@@ -52,6 +56,7 @@ impl GatewayEnv {
                 secret_env,
                 users_env,
                 oidc_secret_env: None,
+                extra_env: Vec::new(),
             },
         )
     }
@@ -82,6 +87,11 @@ impl GatewayEnv {
         env.oidc_secret_env = Some(oidc_secret_env);
         (config, env)
     }
+
+    fn set_var(&mut self, name: String, value: &str) {
+        std::env::set_var(&name, value);
+        self.extra_env.push(name);
+    }
 }
 
 impl Drop for GatewayEnv {
@@ -89,6 +99,9 @@ impl Drop for GatewayEnv {
         std::env::remove_var(&self.secret_env);
         std::env::remove_var(&self.users_env);
         if let Some(env) = &self.oidc_secret_env {
+            std::env::remove_var(env);
+        }
+        for env in &self.extra_env {
             std::env::remove_var(env);
         }
     }
@@ -1408,9 +1421,9 @@ async fn malformed_oauth_forms_use_rfc6749_error_shape() {
     let (router, _, _) = build_router(config).unwrap();
 
     for (path, body) in [
-        ("/oauth/device_authorization", ""),
         ("/oauth/device_authorization", "client_id=other"),
         ("/oauth/token", ""),
+        ("/oauth/token", "grant_type=refresh_token"),
         (
             "/oauth/token",
             "grant_type=refresh_token&client_id=claude-code",
@@ -1459,6 +1472,7 @@ async fn routes_are_absent_without_gateway_config() {
         "/device",
         "/device/authorize",
         "/device/callback",
+        "/user/bootstrap",
     ] {
         let response = router
             .clone()
@@ -1716,18 +1730,27 @@ async fn managed_policy_matching_merges_catch_alls_and_uses_first_user_match() {
 }
 
 #[tokio::test]
-async fn managed_policy_email_matching_is_exact_and_case_sensitive() {
-    let (mut config, _env) = GatewayEnv::config("managed-case-sensitive-email");
+async fn managed_policy_email_matching_is_exact_and_case_insensitive() {
+    let (mut config, _env) = GatewayEnv::config("managed-case-insensitive-email");
     config.server.gateway.as_mut().unwrap().policies = Some(vec![policy(
         Some(vec!["alice@example.com"]),
-        toml::toml! { marker = "lowercase-match-only" },
+        toml::toml! { marker = "alice" },
     )]);
     let (router, _, _) = build_router(config).unwrap();
-    let bearer = gateway_bearer("Alice@example.com");
 
-    let (status, body) = json_response(router, managed_request(Some(&bearer), None)).await;
+    let bearer = gateway_bearer("Alice@example.com");
+    let (status, body) = json_response(router.clone(), managed_request(Some(&bearer), None)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["settings"], json!({}));
+    assert_eq!(body["settings"]["marker"], "alice");
+
+    // Still an exact match: no suffix, prefix, or domain-only matching.
+    for email in ["xalice@example.com", "alice@example.co", "bob@example.com"] {
+        let bearer = gateway_bearer(email);
+        let (status, body) =
+            json_response(router.clone(), managed_request(Some(&bearer), None)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["settings"], json!({}), "{email}");
+    }
 }
 
 #[tokio::test]
@@ -3107,4 +3130,5 @@ async fn telemetry_relay_does_not_follow_redirects() {
     );
 }
 
+mod desktop_bootstrap;
 mod store_backed;

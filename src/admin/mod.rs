@@ -30,6 +30,7 @@ mod oidc;
 mod plan;
 #[cfg(feature = "ui")]
 mod ui;
+mod xai;
 
 use std::{collections::HashSet, io, sync::Arc, time::Duration};
 
@@ -288,6 +289,7 @@ pub fn admin_router() -> Router<AppState> {
             "/admin/api/accounts/codex",
             get(codex::list_codex_accounts).post(codex::add_codex_account),
         )
+        .route("/admin/api/accounts/xai", get(xai::list_xai_accounts))
         .route(
             "/admin/api/accounts/codex/{name}/complete",
             post(codex::complete_codex_account),
@@ -1123,6 +1125,11 @@ async fn build_grok_observed_row(
             "provider": provider,
             "identity": snapshot.account_label,
             "detail": snapshot.detail.or(observed.detail),
+            // The xAI user id, so the dashboard can fold this observation into
+            // the pooled xAI account of the same user instead of listing one
+            // account twice. `GET /admin/api/accounts/xai` already returns the
+            // same id to the same caller.
+            "uuid": observed.account_id,
             "source": source,
             "ownership": "observed",
             "signal": "quota",
@@ -1135,6 +1142,7 @@ async fn build_grok_observed_row(
                 "provider": provider,
                 "identity": observed.identity,
                 "detail": observed.detail,
+                "uuid": observed.account_id,
                 "source": source,
                 "ownership": "observed",
                 "signal": "quota",
@@ -1182,6 +1190,7 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 | AuthMode::ChatgptOauth
                 | AuthMode::KimiOauth
                 | AuthMode::AntigravityOauth
+                | AuthMode::XaiOauth
         ) {
             continue;
         }
@@ -1230,6 +1239,9 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 )
                 .await
             }
+            // xAI resolves through the shared per-family helper rather than another
+            // copy of the call above.
+            AuthMode::XaiOauth => provider.resolve_pool_accounts().await,
             _ => unreachable!("provider auth filtered above"),
         };
         let resolved = match resolved {
@@ -1276,6 +1288,13 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                     map.insert(
                         "account_ref".to_string(),
                         Value::String(crate::accounts::account_ref(name, account)),
+                    );
+                    // An explicit `credentials` file or `token_env` replaces the
+                    // store file named after the account, so the dashboard must
+                    // not match the store's identity for that name to this row.
+                    map.insert(
+                        "credential_override".to_string(),
+                        Value::Bool(account.credentials.is_some() || account.token_env.is_some()),
                     );
                     if let Some(plan) = plan {
                         map.insert("plan".to_string(), Value::String(plan));
@@ -1432,6 +1451,7 @@ async fn patch_pool_account(
             )
             .await
         }
+        AuthMode::XaiOauth => provider_cfg.resolve_pool_accounts().await,
         _ => return bad_request("provider does not use a managed pool"),
     };
     let accounts = match resolved {

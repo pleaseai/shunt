@@ -133,6 +133,100 @@ describe('folding managed accounts and local observations into one row', () => {
   });
 
   /**
+   * The Grok CLI login and a pooled xAI account are routinely the same xAI
+   * user; the observed row carries that user id as its `uuid` and the xAI store
+   * exposes it as `account_id`. One subscription, one row.
+   */
+  it('coalesces a Grok CLI observation into the xai_oauth account with the same user id', async () => {
+    await renderDashboard({
+      observed: [
+        {
+          provider: 'grok',
+          source: 'local credential file',
+          identity: 'Grok · Grok Pro',
+          detail: null,
+          state: 'available',
+          signal: 'quota',
+          uuid: 'xai-user-1',
+        },
+      ],
+      xaiAccounts: [{ name: 'personal', account_id: 'xai-user-1' }],
+      pool: poolWith('xai_oauth', 'grok', { name: 'personal' }),
+    });
+
+    expect(observed().getByText('personal')).toBeInTheDocument();
+    expect(observed().queryByText('Grok · Grok Pro')).toBeNull();
+  });
+
+  /**
+   * The store listing is keyed by file name, so an xAI account whose
+   * `credentials` or `token_env` replaces its store file may be a different
+   * user than the store's same-named login. Its row must not absorb that
+   * login's observation.
+   */
+  it('does not apply an xAI store id to an account whose credentials are overridden', async () => {
+    await renderDashboard({
+      observed: [
+        {
+          provider: 'grok',
+          source: 'local credential file',
+          identity: 'Grok · Grok Pro',
+          detail: null,
+          state: 'available',
+          signal: 'quota',
+          uuid: 'xai-user-1',
+        },
+      ],
+      xaiAccounts: [{ name: 'personal', account_id: 'xai-user-1' }],
+      pool: poolWith('xai_oauth', 'grok', { name: 'personal', credential_override: true }),
+    });
+
+    // Two rows: the overridden account was never matched to the store login.
+    expect(observed().getByText('personal')).toBeInTheDocument();
+    expect(observed().getByText('Grok · Grok Pro')).toBeInTheDocument();
+  });
+
+  /**
+   * Store ids are unique only within one auth kind. A Claude login whose uuid
+   * equals an xAI pool account's user id is a different account, so the Claude
+   * observation must not fold into the Grok row.
+   */
+  it('does not coalesce an observation into another provider row with a colliding id', async () => {
+    await renderDashboard({
+      observed: [observedClaude({ uuid: 'shared-id', identity: 'claude-user@example.com' })],
+      xaiAccounts: [{ name: 'personal', account_id: 'shared-id' }],
+      pool: poolWith('xai_oauth', 'grok', { name: 'personal' }),
+    });
+
+    // Two rows: the Claude login stayed its own row beside the xAI account.
+    expect(observed().getByText('personal')).toBeInTheDocument();
+    expect(observed().getByText('claude-user@example.com')).toBeInTheDocument();
+  });
+
+  /** An xAI store id must never be applied to a ChatGPT login of the same name. */
+  it('does not apply an xAI store id to a chatgpt_oauth account', async () => {
+    await renderDashboard({
+      observed: [
+        {
+          provider: 'grok',
+          source: 'local credential file',
+          identity: 'Grok · Grok Pro',
+          detail: null,
+          state: 'available',
+          signal: 'quota',
+          uuid: 'xai-user-1',
+        },
+      ],
+      xaiAccounts: [{ name: 'pool-a', account_id: 'xai-user-1' }],
+      pool: poolWith('chatgpt_oauth', 'codex', {}),
+    });
+
+    // Two rows: the xAI id was never matched against a ChatGPT login.
+    expect(observed().getByText('pool-a')).toBeInTheDocument();
+    expect(observed().getByText('Grok · Grok Pro')).toBeInTheDocument();
+  });
+
+  /**
    * The visible label, the `data-state` the stylesheet colours from, and the
    * remediation note are three renderings of one decision. Deriving them
    * separately is what produced a "Needs login" label beside a green dot with no

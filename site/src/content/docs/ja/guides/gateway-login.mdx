@@ -204,6 +204,10 @@ refresh セッションはデフォルトで shunt の再起動をまたいで�
 
 [`[server.auth]`](/ja/guides/shared-gateway/) と `[server.gateway]` の両方が設定されている場合、両者は組み合わさります。有効な静的クライアントトークンか、有効なゲートウェイのベアラーのいずれかでアクセスが許可されます。これにより、既存のクライアントを壊すことなく段階的に移行できます。
 
+## Claude Desktop
+
+Claude Desktop も同じログインを利用できます。bootstrap モードは shunt に対してデバイスコード grant を実行し、shunt が `GET /user/bootstrap` でそのユーザーの Desktop 構成を返すため、デバイスに CLI は不要です。Desktop は `client_id` を送らないので、ログインのエンドポイントは `client_id` のないリクエストも受け付けます（`client_id=claude-code` も受け付け、それ以外の値は拒否します）。こうしたリクエストで拒否された refresh トークンは、`401` ではなく `400 {"error":"invalid_grant"}` を返します。[Claude Desktop の接続](/ja/guides/connect-claude-desktop/#bootstrap-サインインデバイスコード)を参照してください。
+
 ## この先の予定
 
 管理ポリシー、`ETag` キャッシュ、テレメトリー環境変数の配布、認証済みのインバウンド

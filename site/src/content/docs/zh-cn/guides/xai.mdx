@@ -50,7 +50,7 @@ shunt 将 Claude Code 的 Anthropic Messages 请求转换为 OpenAI **Responses 
 | 方面 | `grok`(订阅) | `xai`(API 密钥) |
 | :-- | :-- | :-- |
 | 端点 | `cli-chat-proxy.grok.com/v1/responses` | `api.x.ai/v1/responses` |
-| 认证 | 来自 `~/.shunt/xai-auth.json` 的 Grok CLI OAuth,自动刷新 | `Bearer $XAI_API_KEY` |
+| 认证 | 来自 `~/.shunt/xai-auth.json` 或 `~/.shunt/accounts/xai/` 下命名账户池的 Grok CLI OAuth,自动刷新 | `Bearer $XAI_API_KEY` |
 | 身份头 | Grok CLI 头(`x-xai-token-auth`、`x-grok-client-identifier`、`x-grok-client-version`),使代理认可该订阅 | 无 |
 
 
@@ -85,7 +85,7 @@ shunt login xai
 
 <Aside type="note" title="一个不同的 auth 文件位置">
 
-为 CI、沙箱或第二个账户用 `$SHUNT_XAI_AUTH_FILE` 覆盖路径:
+为 CI 或沙箱用 `$SHUNT_XAI_AUTH_FILE` 覆盖路径。若要第二个账户,请使用命名登录,见下文 *多个 SuperGrok 账户*:
 
 ```bash
 export SHUNT_XAI_AUTH_FILE=/etc/shunt/xai-auth.json
@@ -116,6 +116,47 @@ model = "grok-4.6"
 provider = "grok"
 # upstream_model = "grok-4.6"   # 可选:向上游转发一个不同的 slug
 ```
+
+## 多个 SuperGrok 账户
+
+shunt 可以在 `grok` 提供方后面汇集多个 SuperGrok 登录,并在它们之间故障转移,方式与汇集 Claude、Codex、Kimi 账户相同。请为每个登录分别起一个名字:
+
+```bash
+shunt login xai --name main
+shunt login xai --name backup
+```
+
+每个登录都保存到 **`~/.shunt/accounts/xai/<name>.json`**(`0600`,位于 `0700` 目录中;可用 `$SHUNT_XAI_ACCOUNTS_DIR` 覆盖该目录)。无需其他配置时,`grok` 会使用该目录中的每个账户。若要挑选其中一部分,请在提供方上列出它们:
+
+```toml
+[[providers.grok.accounts]]
+name = "main"
+
+[[providers.grok.accounts]]
+name = "backup"
+priority = 200          # 可选:越小越优先(默认 100)
+```
+
+在 `[[upstreams]]` 配置中,请改为在 auth 映射里指定账户:`auth = { mode = "xai_oauth", accounts = ["main", "backup"] }`(只用一个账户则写 `account = "main"`)。
+
+shunt 会把一个会话(`x-claude-code-session-id`)固定在同一个账户上,其余情况则轮询分配。当某个账户返回 `401`、`402`、`429` 或 `5xx`,或其 token 无法刷新时,shunt 会让该账户冷却,并把请求重试到下一个账户上。返回 `401` 后,shunt 还会在再次使用该账户之前刷新其 token。其他任何 `4xx`(包括 `403`)都会原样返回:`403` 可能是内容政策拒绝,若把它重发给每个账户,可能导致所有账户都被标记。提供服务的账户会在 `x-shunt-account` 响应头中注明;若是流式回复,则在回复开始之前的 `account` 事件中注明。
+
+设置 [`[server.pool] usage_refresh_seconds`](/zh-cn/reference/configuration/#serverpool可选) 后,shunt 还会读取每个具名账户的 Grok 用量(积分总量,以及 Grok Build 等各产品用量),并在管理仪表盘上显示为该账户的用量条。这些用量条仅供显示,不会改变由哪个账户处理请求。如果你的 Grok CLI 登录(`~/.grok/auth.json`)与某个具名账户属于同一个 xAI 用户,仪表盘会把两者合并为一行,显示在该账户名下。
+
+<Aside type="caution" title="单账户文件会让位">
+
+`~/.shunt/xai-auth.json`(来自不带 `--name` 的 `shunt login xai`)只在账户池为空时才会被使用。一旦存在命名账户,shunt 就不再读取它。若要把该登录保留在池中,请先停止 shunt,然后把文件移入存储;格式相同:
+
+```bash
+install -d -m 700 ~/.shunt/accounts/xai
+mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<name>.json
+```
+
+(从单账户配置迁移时,该目录尚不存在,因此请先创建;`install -d -m 700` 会将其创建为仅属主可访问。)
+
+不要复制它。xAI 会在每次刷新时轮换刷新 token,因此两个文件持有同一登录会让彼此失效。
+
+</Aside>
 
 ## 路径 B —— xAI 开发者 API(`xai`)
 
@@ -268,8 +309,10 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="grok-4.6"     # 加入 /model 选择器
 | 启动时出现 `run shunt login xai` | 没有 `~/.shunt/xai-auth.json`(或 `$SHUNT_XAI_AUTH_FILE` 错误)。运行 `shunt login xai`。 |
 | `xAI refresh response missing refresh_token; run shunt login xai` | 存储的刷新 token 已被消费/轮换掉。重新登录。 |
 | `402 … personal-team-blocked:spending-limit` / *"need a Grok subscription"* | 在 **`xai`**(开发者 API)路径上且无 API 额度。请在 [console.x.ai](https://console.x.ai/) 充值,或路由到 **`grok`** 以使用你的订阅。 |
-| `403 … not authorized for API access`(订阅层级门控) | 在 **`grok`** 路径上,你的订阅层级不包含 API 访问 —— **重新登录也无济于事**。设置 `XAI_API_KEY` 并使用 `xai` 路径,或在 [x.ai/grok](https://x.ai/grok) 升级。 |
+| `403 … not authorized for API access`(订阅层级门控) | 在 **`grok`** 路径上,你的订阅层级不包含 API 访问 —— **重新登录也无济于事**。设置 `XAI_API_KEY` 并使用 `xai` 路径,或在 [x.ai/grok](https://x.ai/grok) 升级。若有多个账户,shunt 刷新某个账户 token 时出现的层级门控会使该账户冷却,然后切换到下一个账户。请求上返回的 `403` 会原样返回,因为它也可能是内容政策拒绝。 |
 | `refusing to send a subscription token off-origin`(来自 `shunt check`) | 一个 `xai_oauth` 提供方的 `base_url` 主机不是 `x.ai`/`grok.com`,不是 HTTPS,或不是 `kind = "responses"`。修正该块。 |
+| `all upstreams failed (N attempted)`(配置了命名 xAI 账户时) | 池中每个账户都在任何上游应答之前失败了:每个账户都无法加载或刷新其 credential,或遇到传输错误或超时。若是 credential 失败,请重新运行 `shunt login xai --name <account>`,或检查 `~/.shunt/accounts/xai/` 下的文件。若某个账户确实返回了 `401`、`429` 或 `5xx`,shunt 会停止重试,并把最后一次的应答经网关映射后返回,而不是这条消息。若每个账户都返回 `402`,客户端收到的是 `502`。 |
+| `xAI account scope references missing store account "<name>"` | `account`/`accounts` 指向了存储中没有文件的账户。用 `shunt login xai --name <name>` 登录它,或修正名称。 |
 | 设置力度后出现 `400` | 该 Grok slug 拒绝 `reasoning.effort`。为其从提供方/路由中移除 `effort`。 |
 | `model <slug> is not enabled for this account` | 未授权的 slug —— 对照 xAI 的目录确认该 slug。 |
 | 网页搜索返回空 | Grok 路由不支持;shunt 会丢弃该工具。请使用 `codex`/`openai` 路由。 |

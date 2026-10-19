@@ -1,5 +1,6 @@
 //! Inbound Responses WebSocket transport handler and session loop.
 
+mod continuation;
 mod turn;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +27,9 @@ use crate::{
 
 use super::frame::{
     build_warmup_completion_frames, build_ws_error_frame, parse_client_frame, ClientFrame,
+};
+use continuation::{
+    prepare_body, prepare_routed_body, resolve_target, SharedContinuation, TurnRecorder,
 };
 use turn::{run_turn, TurnContext};
 
@@ -124,6 +128,7 @@ async fn handle_socket(
     let (out_tx, mut out_rx) = mpsc::channel::<(u64, Message)>(1);
 
     let current_generation = Arc::new(AtomicU64::new(0));
+    let continuation: SharedContinuation = Arc::new(std::sync::Mutex::new(None));
     let mut active_turn_task: Option<tokio::task::JoinHandle<()>> = None;
 
     loop {
@@ -203,6 +208,25 @@ async fn handle_socket(
                             // client omitted or contradicted the HTTP transport flag.
                             obj.insert("stream".to_string(), serde_json::Value::Bool(true));
                         }
+                        // A WebSocket connection may outlive several config reloads.
+                        // Refresh per turn (rather than once at upgrade time) so each
+                        // live turn captures one immutable runtime snapshot while later
+                        // turns observe newer config; the same snapshot decides the
+                        // continuation handling below and routes the turn.
+                        let turn_state = state.refreshed();
+                        // The ChatGPT HTTP upstream rejects `previous_response_id`, so
+                        // an incremental frame's delta is expanded against this
+                        // connection's stored transcript there; a routed Responses
+                        // API honours an id it issued itself and gets the frame
+                        // unchanged.
+                        let target = resolve_target(&turn_state.config, model.as_deref());
+                        let logical_input = if target.chatgpt {
+                            prepare_body(&mut raw_json, &continuation)
+                        } else {
+                            prepare_routed_body(&mut raw_json, &continuation, &target.provider)
+                        };
+                        let body_signature =
+                            crate::adapters::responses::codex_continuation::signature(&raw_json);
                         let body_bytes = Bytes::from(serde_json::to_vec(&raw_json).unwrap_or_default());
 
                         let mut turn_headers = handshake_headers.clone();
@@ -217,16 +241,21 @@ async fn handle_socket(
                         turn_headers.remove("sec-websocket-protocol");
                         http_openai_beta(&mut turn_headers);
 
-                        let state_clone = state.clone();
                         let session_id_clone = session_id.clone();
                         let auth_header_clone = auth_header.clone();
                         let admin_header_clone = admin_header.clone();
                         let out_tx_clone = out_tx.clone();
                         let gen_clone = current_generation.clone();
+                        let recorder = TurnRecorder::new(
+                            continuation.clone(),
+                            target.provider,
+                            logical_input,
+                            body_signature,
+                        );
 
                         active_turn_task = Some(tokio::spawn(async move {
                             run_turn(TurnContext {
-                                state: state_clone,
+                                state: turn_state,
                                 model,
                                 session_id: session_id_clone,
                                 headers: turn_headers,
@@ -236,6 +265,7 @@ async fn handle_socket(
                                 generation: turn_gen,
                                 current_generation: gen_clone,
                                 out_tx: out_tx_clone,
+                                recorder,
                             }).await;
                         }));
                     }

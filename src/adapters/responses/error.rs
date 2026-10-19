@@ -97,7 +97,8 @@ fn upstream_error_value(status: StatusCode, text: &str, auth: crate::config::Aut
     if status == StatusCode::UNAUTHORIZED && auth == crate::config::AuthMode::ChatgptOauth {
         json!({"message": "ChatGPT authentication failed; run codex login"})
     } else if status == StatusCode::UNAUTHORIZED && auth == crate::config::AuthMode::XaiOauth {
-        json!({"message": "xAI authentication failed; run shunt login xai"})
+        json!({"message": "xAI authentication failed; run shunt login xai --name <account> for a \
+                           named account, or shunt login xai for the single-account file"})
     } else if status == StatusCode::FORBIDDEN && auth == crate::config::AuthMode::XaiOauth {
         let hint = "if this is the xAI subscription tier gate, re-logging in will not help — set XAI_API_KEY or upgrade your plan";
         let upstream_message = serde_json::from_str::<Value>(text)
@@ -112,7 +113,11 @@ fn upstream_error_value(status: StatusCode, text: &str, auth: crate::config::Aut
             .filter(|message| !message.is_empty());
         match upstream_message {
             Some(message) => json!({"message": format!("{message} ({hint})")}),
-            None => json!({"message": crate::auth::xai::auth::refresh_error_message(status)}),
+            // The 403 wording names no login, so the command is unused here.
+            None => json!({"message": crate::auth::xai::auth::refresh_error_message(
+                status,
+                crate::auth::xai::auth::DEFAULT_LOGIN_COMMAND,
+            )}),
         }
     } else {
         serde_json::from_str(text).unwrap_or_else(|_| json!({"message": text}))
@@ -261,9 +266,12 @@ pub(super) mod tests {
             mapped_upstream_error(StatusCode::UNAUTHORIZED, upstream, AuthMode::XaiOauth).await;
         assert_eq!(error.response.status(), StatusCode::UNAUTHORIZED);
         let body = body_json(error).await;
+        // This mapping cannot see which pool account answered, and the bare
+        // `shunt login xai` cannot fix a named one, so both logins are named.
         assert_eq!(
             body["error"]["message"],
-            "xAI authentication failed; run shunt login xai"
+            "xAI authentication failed; run shunt login xai --name <account> for a named \
+             account, or shunt login xai for the single-account file"
         );
     }
 

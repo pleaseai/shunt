@@ -25,6 +25,16 @@ shunt run
 
 이 옵트인은 Codex CLI 모델 탐색도 파싱 가능하게 만듭니다. `GET /models`와 `GET /backend-api/codex/models`는 유효한 폴백 `{"models":[]}`를 반환합니다. 공유 `GET /v1/models` 경로에서는 `client_version` 쿼리 필드가 Anthropic 형태의 헤더보다 우선하여 Codex 형태를 선택하고, 그 필드가 없으면 기존 Anthropic 탐색 응답은 변경되지 않습니다. 이 요청들은 기존 모델 탐색 인증 게이트를 거치며, shunt는 불완전한 Codex 모델 행을 만들지 않습니다.
 
+## 웹 검색
+
+Codex CLI의 내장 웹 검색 도구(`web.run`)는 `/responses`를 붙이는 것과 같은 base URL의 `{base_url}/alpha/search`로 요청을 보냅니다. shunt는 base URL 형식마다 이 경로를 등록합니다:
+
+- `POST /backend-api/codex/alpha/search`
+- `POST /alpha/search`
+- `POST /v1/alpha/search`
+
+검색은 Responses 턴과 같은 `[server.auth]` 정책과 같은 ChatGPT/Codex 계정 풀(세션 고정 선택, 장애 조치, 갱신)을 사용하며, 요청 본문과 응답을 백엔드의 `/codex/alpha/search`로 그대로 중계합니다. 검색은 모델 턴이 아니므로 `[[server.codex_endpoint.routes]]`가 적용되지 않고 항상 `[server.codex_endpoint].provider`로 전달됩니다. 이 라우트는 `POST`만 받습니다 — 이 도구에는 WebSocket 형식이 없습니다.
+
 ## 클라이언트 analytics sink
 
 Codex CLI는 제품 analytics도 base URL로 전송합니다. shunt는 CLI가 만들 수 있는 두 경로를 모두 받아들입니다:
@@ -160,7 +170,7 @@ shunt는 Codex CLI 디스커버리 요청에 유효한 폴백인 `{"models":[]}`
 - **헤더 허용 목록.** 새 허용 목록은 먼저 클라이언트의 `content-type`(없으면 `application/json`)과 `accept`만 가져온 뒤, 해석된 자격 증명과 라우팅 대상 업스트림 자체가 요구하는 헤더를 더합니다: xAI/Grok에서는 생략되는 `OpenAI-Beta: responses=experimental`, `xai_oauth` 라우트의 Grok CLI identity 헤더 세트, 그리고 `api_key` 라우트가 정확히 `api.openai.com`을 대상으로 하며 비어 있지 않은 conversation id가 해석된 경우 새로 생성한 네 개의 세션 친화도 헤더(`session-id`, `thread-id`, `x-client-request-id`, `x-codex-window-id`)입니다. 클라이언트가 보낸 `authorization`, `x-api-key`, `chatgpt-account-id`, `originator`, `version`, `user-agent`, `session-id`, `thread-id`, `x-client-request-id`, `x-codex-*`, `x-shunt-*`는 계속 제거되며, 순정 OpenAI용 값도 전달하는 것이 아니라 새로 생성합니다. xAI와 그 밖의 서드파티 OpenAI 호환 호스트에는 세션 친화도 헤더가 추가되지 않습니다. API 키 경로는 `accept: text/event-stream`도 새로 만들지 않습니다.
 - **본문 `model` 재작성.** `upstream_model`이 요청된 모델과 다르면 shunt가 최상위 `model`만 바꾸고 나머지 필드는 그대로 둡니다. JSON 객체가 아닌 본문은 그대로 보내지 않고 `400`으로 거부합니다.
 - **identity 인코딩.** zstd 요청 본문은 먼저 디코딩되며 — 순정 Responses API는 그 인코딩을 받지 않습니다 — `content-encoding`은 전달되지 않습니다.
-- **자격 증명 하나, 페일오버 없음.** 라우팅된 서드파티 뒤에는 풀이 없으므로 429나 5xx는 회전을 유발하지 않고 `retry-after`와 함께 그대로 릴레이됩니다.
+- **자격 증명 하나, 페일오버 없음.** 라우팅된 서드파티 뒤에는 페일오버 풀이 없으므로 429나 5xx는 회전을 유발하지 않고 `retry-after`와 함께 그대로 릴레이됩니다. 풀을 인식하는 유일한 예외는 이름 있는 계정이 있는 `xai_oauth` 라우트입니다. 이 라우트도 요청을 한 번만 보내고(업스트림 실패는 회전하지 않고 릴레이) 자격 증명은 풀 선택 순서에서 로그인을 불러올 수 있는 첫 계정입니다(프로바이더의 `account`/`accounts` 범위를 적용). 로그인을 불러오지 못한 계정은 쿨다운되고 건너뜁니다. 이름 있는 계정이 없으면 `~/.shunt/xai-auth.json`입니다.
 
 매칭은 정확 일치이며 대소문자를 구분하고 문자 집합 제한이 없습니다. 따라서 `MiniMax-M3`, `openai/gpt-5.6-sol`, `~openai/gpt-latest` 같은 벤더 슬러그도 적은 그대로 라우팅됩니다. 다른 `chatgpt_oauth` 프로바이더로 향하는 라우트라면 전체 풀 패스스루가 그대로 유지됩니다. 라우트는 라이브 구성에서 읽으므로 리로드 시점에 반영됩니다.
 

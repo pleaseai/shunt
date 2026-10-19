@@ -1,8 +1,7 @@
 use std::{
-    collections::HashMap,
     env, fs, io,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, Mutex as StdMutex, Weak},
+    sync::Arc,
     time::SystemTime,
 };
 
@@ -11,6 +10,7 @@ use serde_json::{json, Value};
 
 use crate::adapters::AdapterError;
 use crate::auth::auth_error;
+use crate::auth::shared::refresh_lock::{normalized_auth_path, refresh_lock_for};
 use crate::auth::shared::{format_iso8601, is_token_valid_at, jwt_claims, write_auth_file_atomic};
 
 pub(crate) const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -118,40 +118,6 @@ pub struct CodexAuthStore {
     normalized_path: Arc<tokio::sync::OnceCell<PathBuf>>,
     client: reqwest::Client,
     token_url: String,
-}
-
-/// In-process single-flight registry for ChatGPT OAuth refreshes, keyed by
-/// credential path. Stores are constructed per request, so the registry must
-/// be shared across independent instances. Keying by path lets refreshes for
-/// different accounts (different credential files) proceed in parallel while
-/// still serializing concurrent refreshes of the *same* file. Entries are
-/// held `Weak`, so a path's lock is dropped once nothing is refreshing it,
-/// keeping the registry from growing unbounded over the process lifetime.
-/// The refresh task owns the guard through atomic writeback, preventing a
-/// cancelled caller from exposing an already-consumed refresh token to
-/// another request.
-static REFRESH_LOCKS: LazyLock<StdMutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
-    LazyLock::new(|| StdMutex::new(HashMap::new()));
-
-fn normalized_auth_path(path: PathBuf) -> PathBuf {
-    path.canonicalize().unwrap_or(path)
-}
-
-/// Return the single-flight lock for `path`, creating and registering one if
-/// none exists (or the previous one has been dropped). Opportunistically
-/// prunes dead entries so paths that are no longer being refreshed don't
-/// linger in the registry forever.
-fn refresh_lock_for(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
-    let mut locks = REFRESH_LOCKS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
-        return lock;
-    }
-    let lock = Arc::new(tokio::sync::Mutex::new(()));
-    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
-    locks.retain(|_, weak| weak.strong_count() > 0);
-    lock
 }
 
 /// Resolve the Codex OAuth refresh endpoint from a raw `SHUNT_CODEX_TOKEN_URL`
@@ -588,7 +554,7 @@ impl RefreshResponse {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Condvar;
+    use std::sync::{Condvar, Mutex as StdMutex};
     use std::time::{Duration, UNIX_EPOCH};
 
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};

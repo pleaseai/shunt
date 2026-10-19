@@ -28,13 +28,14 @@ shunt는 평문 HTTP를 제공합니다. 루프백을 벗어난 배포에서는 
 
 ## 2. 인증 방식 선택
 
-Claude Desktop은 세 가지 방식을 제공합니다. shunt는 정적 키(및 자격 증명 헬퍼 변형)에 자연스럽게 대응하지만, 사용자별 SSO는 게이트웨이 측 기능이며 shunt는 인바운드에서 이를 구현하지 않습니다.
+Claude Desktop은 여러 방식을 제공합니다. shunt는 정적 키(및 자격 증명 헬퍼 변형)와, shunt 자체가 디바이스 코드 인가 서버가 되는 bootstrap 로그인에 자연스럽게 대응합니다. 외부 IdP의 JWT를 쓰는 SSO는 게이트웨이 측 기능이며 shunt는 인바운드에서 이를 구현하지 않습니다.
 
 | Claude Desktop 방식 | shunt 측 | 참고 |
 | :-- | :-- | :-- |
 | **정적 API 키** (`inferenceGatewayApiKey`) | [`[server.auth]`](/ko/guides/shared-gateway/) 클라이언트 토큰 | 권장. |
 | **자격 증명 헬퍼** (`inferenceCredentialHelper`) | `[server.auth]` 클라이언트 토큰을 출력하는 실행 파일 | 이미 게이트웨이 자격 증명을 발급하는 조직용. |
-| **대화형 SSO** (`inferenceGatewayOidc` + `inferenceCredentialKind: interactive`) | 인바운드에서 지원하지 않음 | shunt는 외부 IdP JWT가 아닌 *정적* 토큰을 검증합니다 — 아래를 참고하세요. |
+| **Bootstrap 로그인** (`bootstrapUrl` + 디바이스 코드, `inferenceCredentialKind: interactive`) | [`[server.gateway]`](/ko/guides/gateway-login/) 로그인과 `[server.gateway.desktop_bootstrap]` | 사용자당 shunt 로그인 한 번, 디바이스에 CLI 불필요 — [Bootstrap 로그인](#bootstrap-로그인-디바이스-코드)을 참고하세요. |
+| **대화형 SSO** (`inferenceGatewayOidc` + `inferenceCredentialKind: interactive`) | 인바운드에서 지원하지 않음 | shunt는 외부 IdP JWT를 검증하지 않습니다 — 아래를 참고하세요. |
 
 ### 정적 API 키(권장)
 
@@ -59,9 +60,61 @@ tokens_env = "SHUNT_CLIENT_TOKENS"
 
 
 
-<Aside type="caution" title="shunt는 Claude Desktop의 SSO 계약을 구현하지 않습니다">
+### Bootstrap 로그인 (디바이스 코드)
 
-Claude Desktop의 **Interactive sign-in**(`inferenceGatewayOidc`)은 앱이 외부 IdP(Entra, Okta 등)에 인증하고 해당 IdP의 JWT를 게이트웨이로 보내게 하며, 게이트웨이는 `iss`/`aud`를 검증해야 합니다. shunt에는 인바운드 JWT 검증기가 없습니다. shunt의 [`[server.gateway]`](/ko/guides/gateway-login/) OAuth 화면은 **Claude Code용으로 구축된 디바이스 플로 로그인**이며 서로 다른 계약입니다. Claude Desktop에서 사용자별 SSO 어트리뷰션을 사용하려면 JWT 검증 프록시(LiteLLM, Kong, Envoy)를 shunt 앞에 두거나 사용자별 정적 토큰을 배포하세요.
+Claude Desktop은 bootstrap URL에서 구성을 가져오고, 같은 서버를 상대로 OAuth 디바이스 코드 grant로 사용자를 로그인시킬 수 있습니다(Anthropic의 [bootstrap 가이드](https://claude.com/docs/third-party/claude-desktop/bootstrap), "Bootstrap server as authorization server (device code)" 모드). shunt는 이 모드를 제공합니다. 사용자는 shunt의 `/device` 페이지에서 비밀번호 또는 OIDC IdP로 한 번 로그인하고, Desktop은 그 bearer를 추론에도 재사용합니다. 디바이스에는 Claude Desktop 외에 설치할 것이 없고, 기기마다 맞춰야 하는 헬퍼 스크립트 경로도 없습니다.
+
+**1. 게이트웨이 로그인 활성화.** `public_url`, 서명 시크릿, 정적 사용자 또는 OIDC IdP와 함께 [`[server.gateway]`](/ko/guides/gateway-login/)를 구성하세요. 이 모드에는 shunt 앞단에 TLS가 적용된 실제 호스트명이 필요합니다. Anthropic 가이드는 bootstrap 엔드포인트를 HTTPS로 설명하고, 패키지된 Desktop 앱은 응답 키에서 루프백 URL(`127.0.0.1`, `localhost`, `[::1]`)을 버립니다.
+
+**2. shunt에 템플릿 지정.**
+
+```toml
+[server.gateway.desktop_bootstrap]
+template = "/etc/shunt/claude-desktop-bootstrap.json"   # 파일 경로만 가능
+```
+
+파일은 존재하는 JSON 객체여야 하며, 그렇지 않으면 설정 로드(및 `shunt check`)가 실패합니다. shunt는 요청마다 파일을 읽으므로 수정 내용은 재시작 없이 적용됩니다. Desktop의 JSON 내보내기가 만드는 중첩 v2 형식 또는 평면 v1 형식으로 작성하세요. shunt는 그대로 전달합니다:
+
+```json
+{
+  "$schemaVersion": 2,
+  "inference": {
+    "provider": "gateway",
+    "baseUrl": "https://shunt.example.corp",
+    "credential": { "kind": "interactive" }
+  },
+  "otlp": {
+    "resourceAttributes": { "user.email": "${user.email}" }
+  }
+}
+```
+
+평면 v1 형식은 `{"inferenceProvider":"gateway","inferenceGatewayBaseUrl":"https://shunt.example.corp","inferenceCredentialKind":"interactive","otlpResourceAttributes":{"user.email":"${user.email}"}}`입니다.
+
+- **게이트웨이 base URL은 shunt의 `public_url`이어야 합니다.** `bootstrapOidc`가 없으면 Desktop은 `bootstrapUrl`과 origin이 같지 않은 게이트웨이 base URL을 버립니다. origin이 같고 `interactive` 자격 증명을 쓸 때 Desktop이 bootstrap bearer를 추론에 재사용하고(1.34493.0부터는 refresh grant로 갱신도 합니다), 사용자는 한 번만 로그인하면 됩니다.
+- **플레이스홀더.** 문자열 값 안의 `${user.email}`, `${user.sub}`, `${user.name}`은 로그인한 사용자의 값으로 바뀝니다. 알 수 없는 `${...}` 토큰은 그대로 두고, 객체 키는 치환하지 않습니다.
+- **적용할 키는 모두 반환하세요.** 응답 키가 곧 유효 구성입니다. 템플릿에서 생략한 키는 MDM에서 상속되지 않고 설정 해제됩니다.
+
+**3. 시드 파일 배포.** 각 사용자는 **Developer → Configure Third-Party Inference… → Import configuration**으로 가져옵니다:
+
+```json
+{
+  "bootstrapUrl": "https://shunt.example.corp/user/bootstrap",
+  "trustBootstrapDelivery": true
+}
+```
+
+`bootstrapUrl`의 origin은 `public_url`의 origin과 같아야 합니다. Desktop은 끝의 `/user/bootstrap`을 떼어 shunt의 OAuth 디스커버리 문서를 찾고, 디바이스 코드 로그인을 실행한 뒤, 발급된 bearer로 `GET /user/bootstrap`을 호출합니다. `trustBootstrapDelivery`는 로컬 파일로 구성된 디바이스에 bootstrap 응답이 base URL, 헬퍼, 마켓플레이스 값을 전달할 때 Desktop이 띄우는 "Apply settings from your organization?" 대화상자를 건너뜁니다. Desktop은 이 키를 MDM 또는 로컬 파일에서만 받아들이며 bootstrap 응답에서는 받아들이지 않습니다.
+
+**누가 구성을 받는가.** 권한 판단은 [`[[server.gateway.policies]]`](/ko/guides/gateway-login/)를 재사용합니다. policy가 없으면 로그인한 모든 사용자가 대상이고, policy가 있으면 policy의 `match.emails`에 포함되거나 catch-all policy(`match` 없음)가 있을 때 대상이 됩니다. 그 외에는 `403`을 받습니다. `desktop_bootstrap`이 없으면 라우트는 `404`로 응답합니다. 응답에는 `ETag`가 있어 Desktop의 백그라운드 재확인(기본 10분마다)은 대개 `304`로 끝납니다.
+
+Desktop은 응답을 메모리에만 보관합니다. 시작할 때 shunt에 도달할 수 없으면 Desktop은 저하된 로그인 상태로 시작하며, 이는 추론이 이미 갖고 있는 의존성과 같습니다. Desktop 로그아웃은 로컬에서만 처리됩니다. shunt는 revocation 엔드포인트를 광고하지 않습니다. 모든 상태 코드는 [엔드포인트 레퍼런스](/ko/reference/endpoints/)를 참고하세요.
+
+
+
+<Aside type="caution" title="shunt는 외부 IdP JWT를 검증하지 않습니다">
+
+Claude Desktop의 `inferenceGatewayOidc`를 쓰는 **Interactive sign-in**은 앱이 외부 IdP(Entra, Okta 등)에 인증하고 해당 IdP의 JWT를 게이트웨이로 보내게 하며, 게이트웨이는 `iss`/`aud`를 검증해야 합니다. shunt에는 그 JWT를 위한 인바운드 검증기가 없으므로 이 변형은 지원하지 않습니다. 위의 [bootstrap 로그인](#bootstrap-로그인-디바이스-코드)이 지원되는 사용자별 경로입니다. 이 경로에서는 shunt가 인가 서버이고, 외부 IdP는 [`[server.gateway.oidc]`](/ko/guides/gateway-login/)를 통해 shunt 자체의 `/device` 페이지 뒤에 놓입니다. 그 밖에는 JWT 검증 프록시(LiteLLM, Kong, Envoy)를 shunt 앞에 두거나 사용자별 정적 토큰을 배포하세요.
 
 </Aside>
 

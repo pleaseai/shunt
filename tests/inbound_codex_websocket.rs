@@ -595,6 +595,56 @@ async fn native_route_matches_http_and_websocket_provider_selection() {
 }
 
 #[tokio::test]
+async fn routed_turn_keeps_previous_response_id_and_its_delta_input() {
+    // Only the ChatGPT HTTP backend rejects `previous_response_id`. A turn
+    // routed to another Responses API, which honours the id itself, must
+    // reach it unchanged — stripping the id there would drop earlier context.
+    let mut env = common::env_lock().await;
+    let completed = |id: &str| Reply::Static {
+        status: StatusCode::OK,
+        content_type: "text/event-stream",
+        body: format!(
+            "data: {{\"type\":\"response.completed\",\
+             \"response\":{{\"id\":\"{id}\",\"output\":[]}}}}\n\n"
+        ),
+        headers: Vec::new(),
+    };
+    let (upstream, state) = start_upstream(vec![completed("resp_1"), completed("resp_2")]).await;
+    let gateway = start_native_gateway(&upstream, "ROUTED_PREVIOUS", &mut env).await;
+    let user = |text: &str| {
+        serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": text}],
+        })
+    };
+
+    let mut socket = connect(&gateway, "/v1/responses").await;
+    for frame in [
+        serde_json::json!({
+            "type": "response.create", "model": "native-ws-model",
+            "input": [user("first")],
+        }),
+        serde_json::json!({
+            "type": "response.create", "model": "native-ws-model",
+            "previous_response_id": "resp_1",
+            "input": [user("second")],
+        }),
+    ] {
+        socket
+            .send(Message::Text(frame.to_string().into()))
+            .await
+            .unwrap();
+        assert_eq!(next_json(&mut socket).await["type"], "response.completed");
+    }
+
+    let requests = state.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1]["previous_response_id"], "resp_1");
+    assert_eq!(requests[1]["input"], serde_json::json!([user("second")]));
+}
+
+#[tokio::test]
 async fn missing_model_websocket_uses_pinned_fallback_even_when_unknown_route_exists() {
     let mut env = common::env_lock().await;
     let body_pinned = "data: {\"type\":\"response.completed\",\"marker\":\"pinned-codex\"}\n\n";

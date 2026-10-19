@@ -22,7 +22,9 @@ const KIMI_USAGE_URL: &str = "https://api.kimi.com/coding/v1/usages";
 const CURSOR_USAGE_URL: &str = "https://cursor.com/api/usage-summary";
 const CURSOR_USER_URL: &str = "https://cursor.com/api/auth/me";
 const CURSOR_APP_ACCESS_TOKEN_KEY: &str = "cursorAuth/accessToken";
-const GROK_API_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
+/// The Grok CLI proxy, where a SuperGrok subscription's billing lives. Shared
+/// with the usage poller, which reads each pooled xAI account's quota here.
+pub(crate) const GROK_API_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 const GROK_CLIENT_MODE: &str = "cli";
 const ANTIGRAVITY_STATUS_PATH: &str = "/exa.language_server_pb.LanguageServerService/GetUserStatus";
 const OBSERVATION_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -792,7 +794,7 @@ pub(crate) async fn fetch_grok_quota(
     fetch_grok_quota_from(client, access_token, GROK_API_BASE_URL).await
 }
 
-async fn fetch_grok_quota_from(
+pub(crate) async fn fetch_grok_quota_from(
     client: &reqwest::Client,
     access_token: &str,
     base_url: &str,
@@ -840,7 +842,14 @@ fn grok_quota_snapshot(
 ) -> GrokQuotaSnapshot {
     let reset_time = billing.billing_period_end;
     let mut buckets = Vec::new();
-    if let Some(used_percent) = billing.credit_usage_percent {
+    // xAI drops a zero-valued field: an account that has used nothing this
+    // period gets no `creditUsagePercent` at all, as an untouched product gets
+    // no `usagePercent` (see `GrokProductUsage`). With the period itself
+    // reported, a missing total is 0% used, not unknown.
+    let credit_used = billing
+        .credit_usage_percent
+        .or_else(|| reset_time.as_ref().map(|_| 0.0));
+    if let Some(used_percent) = credit_used {
         buckets.push(QuotaBucket {
             label: "Credits".to_string(),
             remaining: Some((1.0 - used_percent / 100.0).clamp(0.0, 1.0)),
@@ -935,8 +944,8 @@ fn parse_grok_cli(value: &Value, now: SystemTime) -> Option<ObservedCredential> 
         detail: email,
         source: ObservedSource::File,
         valid: is_token_valid_at(&access_token, now),
+        account_id: crate::auth::xai::auth::jwt_user_id(&access_token),
         access_token,
-        account_id: None,
     })
 }
 
@@ -1316,6 +1325,20 @@ mod tests {
         assert!(observed.valid);
     }
 
+    /// The Grok CLI login and a pooled xAI account are routinely the same xAI
+    /// user. The token's `sub` claim is that user id; carrying it as the
+    /// observation's account id is what lets the dashboard show one row.
+    #[test]
+    fn grok_cli_login_carries_the_xai_user_id_from_its_token() {
+        let value = json!({"https://auth.x.ai::client": {
+            "key": jwt(json!({"exp": 2_000, "sub": "xai-user-1"})),
+            "auth_mode": "oidc"
+        }});
+        let observed = parse_grok_cli(&value, UNIX_EPOCH + Duration::from_secs(1_000)).unwrap();
+
+        assert_eq!(observed.account_id.as_deref(), Some("xai-user-1"));
+    }
+
     #[test]
     fn parses_and_masks_codex_identity() {
         let access = jwt(json!({
@@ -1567,6 +1590,30 @@ mod tests {
         assert_eq!(snapshot.buckets[1].label, "Grok code");
         assert_eq!(snapshot.buckets[1].remaining, Some(0.6));
         assert_eq!(snapshot.buckets[2].remaining, Some(0.9));
+    }
+
+    /// xAI omits a zero-valued field, so an account that has used nothing this
+    /// period gets no credit total at all. With the period reported, that reads
+    /// as 0% used rather than as no usage data.
+    #[test]
+    fn a_reported_period_without_a_credit_total_is_zero_percent_used() {
+        let billing: GrokBillingConfig = serde_json::from_value(json!({
+            "billingPeriodEnd": "2026-10-15T13:21:11Z",
+            "isUnifiedBillingUser": true
+        }))
+        .unwrap();
+        let snapshot = grok_quota_snapshot(billing, None);
+        assert_eq!(snapshot.buckets.len(), 1);
+        assert_eq!(snapshot.buckets[0].label, "Credits");
+        assert_eq!(snapshot.buckets[0].remaining, Some(1.0));
+        assert_eq!(
+            snapshot.buckets[0].reset_time.as_deref(),
+            Some("2026-10-15T13:21:11Z")
+        );
+
+        // Without a period there is nothing to anchor a bar to.
+        let billing: GrokBillingConfig = serde_json::from_value(json!({})).unwrap();
+        assert!(grok_quota_snapshot(billing, None).buckets.is_empty());
     }
 
     #[tokio::test]

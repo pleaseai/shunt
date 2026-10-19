@@ -909,6 +909,21 @@ pub struct GatewayConfig {
     /// `jwt_secret_env` and `token_ttl_seconds` above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<GatewaySessionConfig>,
+    /// `[server.gateway.desktop_bootstrap]` — serves `GET /user/bootstrap`, the
+    /// Claude Desktop bootstrap-config document. Absent ⇒ the route answers 404.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_bootstrap: Option<GatewayDesktopBootstrapConfig>,
+}
+
+/// `[server.gateway.desktop_bootstrap]` — the JSON template file served to
+/// Claude Desktop. It is re-read on every request, so edits apply without a
+/// restart; the path is used as given (like `state_path`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayDesktopBootstrapConfig {
+    /// Path to a JSON object. `${user.email}`, `${user.sub}` and `${user.name}`
+    /// in string values are replaced per signed-in user.
+    pub template: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -964,6 +979,28 @@ fn default_gateway_state_path() -> Option<std::path::PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
         .map(std::path::PathBuf::from)
         .map(|home| home.join(".shunt").join("gateway-sessions.json"))
+}
+
+/// Boot-time check that the Desktop bootstrap template exists and is a JSON
+/// object; the handler re-reads it per request, so this only fails fast on a
+/// misconfigured path or document.
+fn validate_desktop_bootstrap_template(path: &std::path::Path) -> Result<(), ConfigError> {
+    let display = path.display().to_string();
+    let bytes = std::fs::read(path).map_err(|error| ConfigError::UnreadableDesktopBootstrap {
+        path: display.clone(),
+        message: error.to_string(),
+    })?;
+    match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(serde_json::Value::Object(_)) => Ok(()),
+        Ok(_) => Err(ConfigError::InvalidDesktopBootstrap {
+            path: display,
+            message: "expected a JSON object".to_string(),
+        }),
+        Err(error) => Err(ConfigError::InvalidDesktopBootstrap {
+            path: display,
+            message: error.to_string(),
+        }),
+    }
 }
 
 fn default_gateway_jwt_secret_env() -> String {
@@ -1062,6 +1099,9 @@ impl GatewayConfig {
         };
         let policies = resolve_gateway_policies(self.policies.as_deref())?;
         let telemetry_push = validate_gateway_telemetry(self.telemetry.as_ref())?;
+        if let Some(bootstrap) = &self.desktop_bootstrap {
+            validate_desktop_bootstrap_template(&bootstrap.template)?;
+        }
         let mut auth = crate::gateway::GatewayAuth::with_optional_approval(
             public_url.as_str().trim_end_matches('/').to_string(),
             secrets[0].clone(),
@@ -1073,7 +1113,11 @@ impl GatewayConfig {
         if let Some(oidc) = &self.oidc {
             auth = auth.with_oidc(oidc.resolve()?);
         }
-        Ok(auth.with_managed_policies(policies, telemetry_push))
+        auth = auth.with_managed_policies(policies, telemetry_push);
+        if let Some(bootstrap) = &self.desktop_bootstrap {
+            auth = auth.with_desktop_bootstrap(bootstrap.template.clone());
+        }
+        Ok(auth)
     }
 
     /// Boot-time deprecation warnings for the legacy `jwt_secret_env` /
@@ -1172,9 +1216,12 @@ fn validate_gateway_policy_emails(
     if let Some(email_index) = emails.iter().position(|email| email.trim().is_empty()) {
         return Err(ConfigError::EmptyGatewayPolicyEmail { index, email_index });
     }
+    // Lowercased like the OIDC allowlist (`email_allowed`), so a policy written
+    // `alice@example.com` matches an IdP that reports `Alice@Example.com`;
+    // `GatewayAuth` lowercases the token email before every lookup.
     Ok(emails
         .iter()
-        .map(|email| email.trim().to_string())
+        .map(|email| email.trim().to_ascii_lowercase())
         .collect())
 }
 
@@ -1801,14 +1848,16 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub count_tokens: CountTokens,
     /// Explicit OAuth accounts for a `claude_oauth` (Anthropic), `chatgpt_oauth`
-    /// (Codex), or `kimi_oauth` (Kimi Code) provider. An empty list means the
-    /// account store directory will be scanned by the account-pool layer.
+    /// (Codex), `kimi_oauth` (Kimi Code), or `xai_oauth` (xAI) provider. An empty
+    /// list means the account store directory will be scanned by the account-pool
+    /// layer.
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
     /// Names of account-store entries selected by the `[[upstreams]].auth`
     /// scoping syntax. Inline account tables remain in `accounts`; an empty scope
-    /// preserves the existing whole-store scan behavior. For `chatgpt_oauth`, an
-    /// empty store still falls back to `~/.codex/auth.json` as before.
+    /// preserves the existing whole-store scan behavior. For `chatgpt_oauth` and
+    /// `xai_oauth`, an empty store still falls back to the single-account file
+    /// (`~/.codex/auth.json` / `~/.shunt/xai-auth.json`) as before.
     #[serde(skip)]
     pub account_scope: Vec<String>,
     /// Opt in to the Codex Responses WebSocket v2 transport for this provider
@@ -1850,9 +1899,9 @@ pub struct ProviderConfig {
     /// Bounded upstream retry/backoff for transient failures (issue #48).
     /// Applies to this provider's single-credential upstream calls (the
     /// `passthrough`/`api_key` Anthropic path, the single-credential Responses
-    /// path — `api_key`, `xai_oauth`, or an unpooled `chatgpt_oauth` provider —
-    /// and the Cursor path); the `claude_oauth`/`chatgpt_oauth`/`kimi_oauth`
-    /// account pools have their own account-rotation failover and are
+    /// path — `api_key`, or an unpooled `chatgpt_oauth`/`xai_oauth` provider —
+    /// and the Cursor path); the `claude_oauth`/`chatgpt_oauth`/`kimi_oauth`/
+    /// `xai_oauth` account pools have their own account-rotation failover and are
     /// unaffected. On by default with conservative settings — set
     /// `max_retries = 0` to disable.
     #[serde(default)]
@@ -2208,7 +2257,9 @@ pub enum AuthMode {
     /// Inject a Claude subscription OAuth bearer selected from `accounts`.
     ClaudeOauth,
     /// xAI subscription OAuth (SuperGrok / X Premium+), acquired via the
-    /// device-code flow (`shunt login xai`) and stored in ~/.shunt/xai-auth.json.
+    /// device-code flow (`shunt login xai`) and stored in ~/.shunt/xai-auth.json,
+    /// or per-account in `~/.shunt/accounts/xai/<name>.json`
+    /// (`shunt login xai --name <account-name>`), which form an account pool.
     XaiOauth,
     /// Cursor OAuth acquired by `shunt login cursor`.
     CursorOauth,
@@ -2737,7 +2788,7 @@ pub enum ConfigError {
     AntigravityLegacyTableMissingAuth,
     #[error("{0}")]
     AntigravityMigrationRequired(String),
-    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", \"kimi_oauth\", or \"antigravity_oauth\"")]
+    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", \"kimi_oauth\", \"xai_oauth\", or \"antigravity_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
     #[error("providers.{provider}.classifier_model requires kind = \"anthropic\"; it remaps Claude Code's auto-mode classifier request within the provider, and only the anthropic adapter carries that request shape")]
     ClassifierModelWrongKind { provider: String },
@@ -2986,6 +3037,10 @@ pub enum ConfigError {
     MissingAdminOidcAllowlist,
     #[error("[server.gateway] public_url is invalid: {message}")]
     InvalidGatewayPublicUrl { message: String },
+    #[error("[server.gateway.desktop_bootstrap] template {path} could not be read: {message}")]
+    UnreadableDesktopBootstrap { path: String, message: String },
+    #[error("[server.gateway.desktop_bootstrap] template {path} is invalid: {message}")]
+    InvalidDesktopBootstrap { path: String, message: String },
     #[error("[server.gateway] token_ttl_seconds must be greater than zero")]
     InvalidGatewayTokenTtl,
     #[error(
@@ -3168,49 +3223,74 @@ impl ProviderConfig {
             AuthMode::ChatgptOauth => Some(StoreFamily::Chatgpt),
             AuthMode::KimiOauth => Some(StoreFamily::Kimi),
             AuthMode::AntigravityOauth => Some(StoreFamily::Antigravity),
+            AuthMode::XaiOauth => Some(StoreFamily::Xai),
             _ => None,
         }
     }
 
     pub async fn resolve_pool_accounts(&self) -> Result<Vec<AccountConfig>, String> {
-        use crate::auth::{antigravity, claude, codex, kimi};
+        self.pool_scan().await
+    }
 
-        let Some(family) = self.store_family() else {
-            return Ok(Vec::new());
-        };
-        let (label, dir, scan): (_, _, fn() -> std::io::Result<Vec<AccountConfig>>) =
-            match self.auth {
-                AuthMode::ClaudeOauth => (
-                    "Claude",
-                    claude::store::default_accounts_dir(),
-                    claude::store::scan_accounts,
-                ),
-                AuthMode::ChatgptOauth => (
-                    "codex",
-                    codex::store::default_accounts_dir(),
-                    codex::store::scan_accounts,
-                ),
-                AuthMode::KimiOauth => (
-                    "Kimi",
-                    kimi::store::default_accounts_dir(),
-                    kimi::store::scan_accounts,
-                ),
-                AuthMode::AntigravityOauth => (
-                    "Antigravity",
-                    antigravity::store::default_accounts_dir(),
-                    antigravity::store::scan_accounts,
-                ),
-                _ => unreachable!(),
-            };
-        crate::auth::shared::resolve_pool_accounts(
-            label,
-            &self.accounts,
-            &self.account_scope,
-            family,
-            dir,
-            scan,
-        )
-        .await
+    /// The account-pool scan as a `'static` future. It owns clones of only what
+    /// the scan reads (the auth mode, `accounts`, `account_scope`), so a caller
+    /// that defers the scan past a committed response need not clone the whole
+    /// provider.
+    pub fn pool_scan(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<AccountConfig>, String>> + Send + 'static
+    {
+        let auth = self.auth;
+        let accounts = self.accounts.clone();
+        let account_scope = self.account_scope.clone();
+        async move {
+            use crate::accounts::StoreFamily;
+            use crate::auth::{antigravity, claude, codex, kimi, xai};
+
+            let (family, label, dir, scan): (_, _, _, fn() -> std::io::Result<Vec<AccountConfig>>) =
+                match auth {
+                    AuthMode::ClaudeOauth => (
+                        StoreFamily::Claude,
+                        "Claude",
+                        claude::store::default_accounts_dir(),
+                        claude::store::scan_accounts,
+                    ),
+                    AuthMode::ChatgptOauth => (
+                        StoreFamily::Chatgpt,
+                        "codex",
+                        codex::store::default_accounts_dir(),
+                        codex::store::scan_accounts,
+                    ),
+                    AuthMode::KimiOauth => (
+                        StoreFamily::Kimi,
+                        "Kimi",
+                        kimi::store::default_accounts_dir(),
+                        kimi::store::scan_accounts,
+                    ),
+                    AuthMode::AntigravityOauth => (
+                        StoreFamily::Antigravity,
+                        "Antigravity",
+                        antigravity::store::default_accounts_dir(),
+                        antigravity::store::scan_accounts,
+                    ),
+                    AuthMode::XaiOauth => (
+                        StoreFamily::Xai,
+                        "xAI",
+                        xai::store::default_accounts_dir(),
+                        xai::store::scan_accounts,
+                    ),
+                    _ => return Ok(Vec::new()),
+                };
+            crate::auth::shared::resolve_pool_accounts(
+                label,
+                &accounts,
+                &account_scope,
+                family,
+                dir,
+                scan,
+            )
+            .await
+        }
     }
 
     fn anthropic(base_url: &str) -> Self {
@@ -4623,6 +4703,7 @@ impl Config {
                     AuthMode::ClaudeOauth
                         | AuthMode::ChatgptOauth
                         | AuthMode::KimiOauth
+                        | AuthMode::XaiOauth
                         | AuthMode::AntigravityOauth
                 )
             {
@@ -7819,6 +7900,7 @@ provider = "deepseek"
         let secret_env = format!("SHUNT_GATEWAY_CONFIG_SECRET_{suffix}");
         let users_env = format!("SHUNT_GATEWAY_CONFIG_USERS_{suffix}");
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
@@ -8668,6 +8750,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_config_rejects_invalid_public_url_and_zero_ttl() {
         let mut gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "not a URL".to_string(),
             jwt_secret_env: Some("UNUSED_GATEWAY_SECRET".to_string()),
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -8794,6 +8877,7 @@ policy = { type = "target_selector", selector = "/target" }
         std::env::set_var(&jwt_env, "0123456789abcdef0123456789abcdef");
         std::env::set_var(&oidc_env, "client-secret");
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".into(),
             jwt_secret_env: Some(jwt_env.clone()),
             users_env: users_env.clone(),
@@ -8833,6 +8917,7 @@ policy = { type = "target_selector", selector = "/target" }
         std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
         std::env::set_var(&users_env, "dev@example.com:password");
         let base = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
@@ -8950,6 +9035,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_jwt_secret_conflicts_with_legacy_jwt_secret_env() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: Some("UNUSED_GATEWAY_SECRET".to_string()),
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -8973,6 +9059,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_ttl_hours_conflicts_with_legacy_token_ttl_seconds() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9036,6 +9123,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_jwt_secret_rejects_a_short_scalar_secret() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9059,6 +9147,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_jwt_secret_names_the_offending_index_past_zero() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9085,6 +9174,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_jwt_secret_rejects_an_empty_array() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9108,6 +9198,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_ttl_hours_zero_is_rejected() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9131,6 +9222,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_ttl_hours_overflow_is_rejected_not_panicked() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9154,6 +9246,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_deprecations_is_empty_when_legacy_keys_are_unset() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9174,6 +9267,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_deprecations_reports_both_legacy_keys_when_set() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: Some("SHUNT_GATEWAY_JWT_SECRET".to_string()),
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9240,6 +9334,7 @@ policy = { type = "target_selector", selector = "/target" }
         let mut config = Config::default();
         config.server.usage = Some(UsageEndpointConfig::default());
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
@@ -12360,6 +12455,116 @@ target = "judge-alias"
         assert!(matches!(error, ConfigError::XaiOauthNonXaiHost { .. }));
     }
 
+    #[tokio::test]
+    async fn xai_provider_resolves_named_pool_and_leaves_the_legacy_file_to_an_empty_pool() {
+        use crate::accounts::StoreFamily;
+        use crate::auth::{shared::EnvVarGuard, xai::store};
+
+        let _guard = store::TEST_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("shunt-config-xai-{}", uuid::Uuid::new_v4()));
+        let _env = EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        let mut provider = Config::default().providers.remove("grok").unwrap();
+        assert_eq!(provider.auth, AuthMode::XaiOauth);
+        assert_eq!(provider.store_family(), Some(StoreFamily::Xai));
+        assert!(provider.resolve_pool_accounts().await.unwrap().is_empty());
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(provider.resolve_pool_accounts().await.unwrap().is_empty());
+        std::fs::write(store::account_path("primary"), "{}").unwrap();
+        std::fs::write(store::account_path("backup"), "{}").unwrap();
+        let accounts = provider.resolve_pool_accounts().await.unwrap();
+        assert_eq!(
+            accounts.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            ["backup", "primary"]
+        );
+        assert!(accounts.iter().all(|a| a.store_entry
+            && a.store_family == Some(StoreFamily::Xai)
+            && a.uuid.is_none()));
+        provider.account_scope = vec!["primary".into()];
+        provider.accounts = vec![AccountConfig {
+            name: "inline".into(),
+            credentials: Some(dir.join("inline.json").to_string_lossy().into_owned()),
+            priority: 2,
+            disabled: true,
+            ..Default::default()
+        }];
+        let accounts = provider.resolve_pool_accounts().await.unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].name, "primary");
+        assert!(accounts[0].store_entry);
+        assert_eq!(accounts[1].name, "inline");
+        assert!(!accounts[1].store_entry);
+        assert_eq!(accounts[1].store_family, Some(StoreFamily::Xai));
+        assert_eq!(accounts[1].priority, 2);
+        assert!(accounts[1].disabled);
+        provider.account_scope.clear();
+        assert_eq!(provider.resolve_pool_accounts().await.unwrap().len(), 1);
+        provider.account_scope = vec!["missing".into()];
+        assert!(provider
+            .resolve_pool_accounts()
+            .await
+            .unwrap_err()
+            .contains("xAI account scope references missing store account"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn xai_oauth_accepts_pool_accounts_and_keeps_the_off_origin_guard() {
+        let pooled = || {
+            let mut config = Config::default();
+            config.providers.get_mut("grok").unwrap().accounts = vec![account("main")];
+            config
+        };
+        assert!(pooled().validate().is_ok());
+
+        let mut config = pooled();
+        config.providers.get_mut("grok").unwrap().base_url =
+            "http://cli-chat-proxy.grok.com/v1".to_string();
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::XaiOauthNotHttps { .. }
+        ));
+
+        let mut config = pooled();
+        config.providers.get_mut("grok").unwrap().base_url =
+            "https://evil.example.com/v1".to_string();
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::XaiOauthNonXaiHost { .. }
+        ));
+
+        let mut config = pooled();
+        config.providers.get_mut("grok").unwrap().kind = ProviderKind::Anthropic;
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::XaiOauthWrongKind { .. }
+        ));
+    }
+
+    #[test]
+    fn xai_oauth_rejects_invalid_and_duplicate_pool_account_names() {
+        let mut config = Config::default();
+        config.providers.get_mut("grok").unwrap().accounts = vec![account("Bad")];
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::InvalidAccountName { .. }
+        ));
+
+        let mut config = Config::default();
+        config.providers.get_mut("grok").unwrap().accounts = vec![account("a"), account("a")];
+        assert!(matches!(
+            config.validate().unwrap_err(),
+            ConfigError::DuplicateAccountName { .. }
+        ));
+    }
+
+    #[test]
+    fn accounts_require_oauth_provider_error_names_xai_oauth() {
+        let error = ConfigError::AccountsRequireOauthProvider {
+            provider: "anthropic".into(),
+        };
+        assert!(error.to_string().contains("xai_oauth"));
+    }
+
     /// zstd request compression is on by default, but only on the ChatGPT/Codex
     /// flavor — the only backend verified to accept a compressed request body
     /// (issue #285).
@@ -13755,6 +13960,7 @@ routes:
     /// inbound-JWT collision check, which runs before the gateway resolves.
     fn gateway_config() -> GatewayConfig {
         GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gw.example".to_string(),
             jwt_secret_env: Some(format!("SHUNT_TEST_UNSET_GW_SECRET_{}", std::process::id())),
             users_env: format!("SHUNT_TEST_UNSET_GW_USERS_{}", std::process::id()),
@@ -13967,6 +14173,7 @@ routes:
         let mut config = Config::default();
         config.server.auth = Some(auth_with_jwt(vec![entry], &env));
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gw.example/".to_string(),
             ..gateway_config()
         });
@@ -13990,6 +14197,7 @@ routes:
         let mut config = Config::default();
         config.server.auth = Some(auth_with_jwt(vec![entry], &env));
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gw.example".to_string(),
             ..gateway_config()
         });
@@ -14014,6 +14222,7 @@ routes:
         let mut config = Config::default();
         config.server.auth = Some(auth_with_jwt(vec![entry], &env));
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gw.example".to_string(),
             ..gateway_config()
         });
@@ -14034,6 +14243,7 @@ routes:
         let mut config = Config::default();
         config.server.auth = Some(auth_with_jwt(vec![jwt_entry()], &env));
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gw.example/".to_string(),
             ..gateway_config()
         });

@@ -28,13 +28,14 @@ shunt serves plain HTTP; for anything beyond a loopback deployment, terminate TL
 
 ## 2. Choose an authentication approach
 
-Claude Desktop offers three approaches. shunt maps cleanly onto the static key (and its credential-helper variant); per-user SSO is a gateway-side capability shunt does **not** implement inbound.
+Claude Desktop offers several approaches. shunt maps cleanly onto the static key (and its credential-helper variant), and onto bootstrap sign-in, where shunt itself is the device-code authorization server. SSO with an external IdP's JWT is a gateway-side capability shunt does **not** implement inbound.
 
 | Claude Desktop approach | shunt side | Notes |
 | :-- | :-- | :-- |
 | **Static API key** (`inferenceGatewayApiKey`) | [`[server.auth]`](/guides/shared-gateway/) client token | Recommended. |
 | **Credential helper** (`inferenceCredentialHelper`) | an executable printing a `[server.auth]` client token | For orgs that already mint gateway credentials. |
-| **Interactive SSO** (`inferenceGatewayOidc` + `inferenceCredentialKind: interactive`) | not supported inbound | shunt validates *static* tokens, not external-IdP JWTs — see below. |
+| **Bootstrap sign-in** (`bootstrapUrl` + device code, `inferenceCredentialKind: interactive`) | [`[server.gateway]`](/guides/gateway-login/) login plus `[server.gateway.desktop_bootstrap]` | One shunt sign-in per user, no CLI on the device — see [Bootstrap sign-in](#bootstrap-sign-in-device-code). |
+| **Interactive SSO** (`inferenceGatewayOidc` + `inferenceCredentialKind: interactive`) | not supported inbound | shunt does not validate external-IdP JWTs — see below. |
 
 ### Static API key (recommended)
 
@@ -59,9 +60,61 @@ The token gates `GET /v1/models` and injected-credential (mapped/pooled) models;
 
 
 
-<Aside type="caution" title="shunt does not implement Claude Desktop's SSO contract">
+### Bootstrap sign-in (device code)
 
-Claude Desktop's **Interactive sign-in** (`inferenceGatewayOidc`) has the app authenticate against an external IdP (Entra, Okta, …) and send that IdP's JWT to the gateway, which must validate `iss`/`aud`. shunt has no inbound JWT validator — its [`[server.gateway]`](/guides/gateway-login/) OAuth surface is a **device-flow login built for Claude Code**, a different contract. For per-user SSO attribution with Claude Desktop, front shunt with a JWT-validating proxy (LiteLLM, Kong, Envoy), or hand out per-user static tokens.
+Claude Desktop can fetch its configuration from a bootstrap URL and sign the user in with an OAuth device-code grant against that same server (Anthropic's [bootstrap guide](https://claude.com/docs/third-party/claude-desktop/bootstrap), mode "Bootstrap server as authorization server (device code)"). shunt serves this mode: each user signs in once on shunt's `/device` page — with a password or your OIDC IdP — and Desktop reuses that bearer for inference. Nothing is installed on the device besides Claude Desktop, and there is no helper-script path to keep in sync across machines.
+
+**1. Enable gateway login.** Configure [`[server.gateway]`](/guides/gateway-login/) with a `public_url`, a signing secret, and static users or an OIDC IdP. This mode needs a real hostname with TLS in front of shunt: Anthropic's guide describes the bootstrap endpoint as HTTPS, and the packaged Desktop app drops loopback URLs (`127.0.0.1`, `localhost`, `[::1]`) from response keys.
+
+**2. Point shunt at a template.**
+
+```toml
+[server.gateway.desktop_bootstrap]
+template = "/etc/shunt/claude-desktop-bootstrap.json"   # file path only
+```
+
+The file must exist and be a JSON object, or config load (and `shunt check`) fails. shunt reads it on every request, so edits apply without a restart. Write it in the nested v2 format that Desktop's own JSON export produces, or in the flat v1 format; shunt passes it through unchanged:
+
+```json
+{
+  "$schemaVersion": 2,
+  "inference": {
+    "provider": "gateway",
+    "baseUrl": "https://shunt.example.corp",
+    "credential": { "kind": "interactive" }
+  },
+  "otlp": {
+    "resourceAttributes": { "user.email": "${user.email}" }
+  }
+}
+```
+
+The flat v1 equivalent is `{"inferenceProvider":"gateway","inferenceGatewayBaseUrl":"https://shunt.example.corp","inferenceCredentialKind":"interactive","otlpResourceAttributes":{"user.email":"${user.email}"}}`.
+
+- **The gateway base URL must be shunt's `public_url`.** Without `bootstrapOidc`, Desktop drops a gateway base URL that does not share the `bootstrapUrl` origin. Sharing the origin with `interactive` credentials is also what makes Desktop reuse the bootstrap bearer for inference (and, from 1.34493.0, renew it with a refresh grant), so users sign in once.
+- **Placeholders.** Inside string values, `${user.email}`, `${user.sub}`, and `${user.name}` become the signed-in user's values. Unknown `${...}` tokens stay as-is; object keys are never substituted.
+- **Return every key you want applied.** Response keys are the effective configuration: a key the template omits is unset, not inherited from MDM.
+
+**3. Hand out the seed file.** Each user imports it through **Developer → Configure Third-Party Inference… → Import configuration**:
+
+```json
+{
+  "bootstrapUrl": "https://shunt.example.corp/user/bootstrap",
+  "trustBootstrapDelivery": true
+}
+```
+
+The `bootstrapUrl` origin must equal `public_url`'s origin. Desktop strips the trailing `/user/bootstrap` to find shunt's OAuth discovery document, runs the device-code login, and then fetches `GET /user/bootstrap` with the issued bearer. `trustBootstrapDelivery` skips the "Apply settings from your organization?" dialog that Desktop otherwise shows when a bootstrap response delivers a base URL, helper, or marketplace value to a device configured from a local file. Desktop accepts that key only from MDM or the local file, never from the bootstrap response.
+
+**Who gets a configuration.** Entitlement reuses [`[[server.gateway.policies]]`](/guides/gateway-login/#managed-settings-and-model-policy): with no policies, every signed-in user is entitled; with policies, a user is entitled when a policy's `match.emails` lists them or when a catch-all policy (no `match`) exists. Others receive `403`. Without `desktop_bootstrap` the route answers `404`. The response carries an `ETag`, so Desktop's background re-check (every 10 minutes by default) usually costs a `304`.
+
+Desktop keeps the response in memory only. If shunt is unreachable at launch, Desktop starts in a degraded sign-in state — the same dependency inference already has. Signing out of Desktop is local-only: shunt does not advertise a revocation endpoint. See the [endpoint reference](/reference/endpoints/) for every status code.
+
+
+
+<Aside type="caution" title="shunt does not validate external-IdP JWTs">
+
+Claude Desktop's **Interactive sign-in** with `inferenceGatewayOidc` has the app authenticate against an external IdP (Entra, Okta, …) and send that IdP's JWT to the gateway, which must validate `iss`/`aud`. shunt has no inbound validator for those JWTs, so that variant is not supported. The [bootstrap sign-in](#bootstrap-sign-in-device-code) above is the supported per-user path: there shunt is the authorization server, and any external IdP sits behind shunt's own `/device` page through [`[server.gateway.oidc]`](/guides/gateway-login/). Otherwise, front shunt with a JWT-validating proxy (LiteLLM, Kong, Envoy), or hand out per-user static tokens.
 
 </Aside>
 

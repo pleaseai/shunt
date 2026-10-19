@@ -298,3 +298,98 @@ async fn inspect_never_touches_the_hold() {
     assert_eq!(row(&store).await, before);
     store.close().await;
 }
+
+/// A holder and a second opened store that does not hold: the second opened
+/// first and released, then the holder acquired. The second's hold steps can
+/// then be run directly while the holder is mid-write.
+async fn holder_and_rival(dir: &crate::store::test_support::TempDir, stale: u64) -> (Store, Store) {
+    let mut config = crate::store::test_support::sqlite_config(&dir.file("s.db"));
+    config.hold_stale_seconds = stale;
+    let rival = Store::open(&config, Mode::Serve).await.unwrap();
+    rival.release_hold().await.unwrap();
+    let holder = Store::open(&config, Mode::Serve).await.unwrap();
+    assert_eq!(row(&holder).await.0.as_deref(), Some(holder.holder_id()));
+    (holder, rival)
+}
+
+/// Run `attempt` while `holder` keeps a write open for `hold`, then commits
+/// it. Returns the attempt's result and how long it took. The write leaves
+/// `heartbeat_at` as it was. The attempt must wait for that write: a hold
+/// step that read in a deferred transaction and then upgraded to write would
+/// instead fail at once with "database is locked". The time taken shows the
+/// attempt overlapped the write rather than running after it.
+async fn during_holder_write<T>(
+    holder: &Store,
+    hold: Duration,
+    attempt: impl std::future::Future<Output = T>,
+) -> (T, Duration) {
+    let mut write = holder.db().begin().await.unwrap();
+    write
+        .execute(
+            "UPDATE instance_hold SET holder_label = holder_label WHERE id = 1",
+            &[],
+        )
+        .await
+        .unwrap();
+    let (out, ()) = tokio::join!(
+        async {
+            let started = std::time::Instant::now();
+            let out = attempt.await;
+            (out, started.elapsed())
+        },
+        async {
+            tokio::time::sleep(hold).await;
+            write.commit().await.unwrap();
+        }
+    );
+    out
+}
+
+#[tokio::test]
+async fn creating_the_hold_table_waits_for_a_holder_write() {
+    let dir = crate::store::test_support::TempDir::new("hold-race-create");
+    let (holder, rival) = holder_and_rival(&dir, 30).await;
+    let (created, took) =
+        during_holder_write(&holder, Duration::from_secs(1), rival.create_hold_table()).await;
+    created.unwrap();
+    assert!(took >= Duration::from_millis(500), "took {took:?}");
+    holder.close().await;
+    rival.close().await;
+}
+
+#[tokio::test]
+async fn acquiring_during_a_holder_write_waits_and_is_refused() {
+    let dir = crate::store::test_support::TempDir::new("hold-race-acquire");
+    let (holder, rival) = holder_and_rival(&dir, 30).await;
+    let (acquired, took) =
+        during_holder_write(&holder, Duration::from_secs(1), rival.acquire_hold()).await;
+    let error = acquired.unwrap_err();
+    assert!(matches!(error, StoreError::HoldHeld { .. }), "{error:?}");
+    assert!(took >= Duration::from_millis(500), "took {took:?}");
+    assert_eq!(row(&holder).await.0.as_deref(), Some(holder.holder_id()));
+    holder.close().await;
+    rival.close().await;
+}
+
+/// The stale cutoff is taken once the lock is held: a hold that goes stale
+/// while the acquirer waits for the holder's write is taken over.
+#[tokio::test]
+async fn a_hold_that_goes_stale_during_the_wait_is_taken_over() {
+    let dir = crate::store::test_support::TempDir::new("hold-race-stale");
+    let (holder, rival) = holder_and_rival(&dir, 3).await;
+    age_heartbeat(&holder, 2).await;
+    exec(
+        &holder,
+        "UPDATE instance_hold SET holder_label = $1 WHERE id = 1",
+        &["old-host:1".into()],
+    )
+    .await;
+    let (acquired, _) =
+        during_holder_write(&holder, Duration::from_millis(2200), rival.acquire_hold()).await;
+    let takeover = acquired.unwrap().expect("a stale hold is taken over");
+    assert_eq!(takeover.label, "old-host:1");
+    assert!(takeover.age_secs >= 3, "age {}", takeover.age_secs);
+    assert_eq!(row(&holder).await.0.as_deref(), Some(rival.holder_id()));
+    holder.close().await;
+    rival.close().await;
+}

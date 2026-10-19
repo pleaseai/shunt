@@ -28,13 +28,14 @@ shunt 提供纯 HTTP；除回环部署外，都应像[共享网关](/zh-cn/guide
 
 ## 2. 选择认证方式
 
-Claude Desktop 提供三种方式。shunt 可以直接配合静态密钥（以及它的凭据 helper 变体）；按用户 SSO 是网关侧的能力，shunt **不支持**这种入站认证。
+Claude Desktop 提供多种方式。shunt 可以直接配合静态密钥（以及它的凭据 helper 变体），也支持由 shunt 自身充当设备码授权服务器的 bootstrap 登录；使用外部 IdP JWT 的 SSO 是网关侧的能力，shunt **不支持**这种入站认证。
 
 | Claude Desktop 方式 | shunt 侧 | 说明 |
 | :-- | :-- | :-- |
 | **静态 API 密钥**（`inferenceGatewayApiKey`） | [`[server.auth]`](/zh-cn/guides/shared-gateway/) 客户端 token | 推荐。 |
 | **凭据 helper**（`inferenceCredentialHelper`） | 输出 `[server.auth]` 客户端 token 的可执行文件 | 适用于已经签发网关凭据的组织。 |
-| **交互式 SSO**（`inferenceGatewayOidc` + `inferenceCredentialKind: interactive`） | 不支持入站 | shunt 验证*静态* token，而不是外部 IdP JWT —— 见下文。 |
+| **Bootstrap 登录**（`bootstrapUrl` + 设备码，`inferenceCredentialKind: interactive`） | [`[server.gateway]`](/zh-cn/guides/gateway-login/) 登录加 `[server.gateway.desktop_bootstrap]` | 每位用户只需登录 shunt 一次，设备上无需 CLI —— 见 [Bootstrap 登录](#bootstrap-登录设备码)。 |
+| **交互式 SSO**（`inferenceGatewayOidc` + `inferenceCredentialKind: interactive`） | 不支持入站 | shunt 不验证外部 IdP JWT —— 见下文。 |
 
 ### 静态 API 密钥（推荐）
 
@@ -59,9 +60,61 @@ tokens_env = "SHUNT_CLIENT_TOKENS"
 
 
 
-<Aside type="caution" title="shunt 未实现 Claude Desktop 的 SSO 契约">
+### Bootstrap 登录（设备码）
 
-Claude Desktop 的**交互式登录**（`inferenceGatewayOidc`）会让应用通过外部 IdP（Entra、Okta 等）认证，并把该 IdP 的 JWT 发送给网关；网关必须验证 `iss`/`aud`。shunt 没有入站 JWT 验证器 —— 它的 [`[server.gateway]`](/zh-cn/guides/gateway-login/) OAuth 界面是**为 Claude Code 构建的设备流登录**，两者采用不同的契约。若要在 Claude Desktop 中按用户进行 SSO 归属，请在 shunt 前部署能验证 JWT 的代理（LiteLLM、Kong、Envoy），或分发按用户设置的静态 token。
+Claude Desktop 可以从 bootstrap URL 获取配置，并通过针对同一服务器的 OAuth 设备码 grant 让用户登录（Anthropic 的 [bootstrap 指南](https://claude.com/docs/third-party/claude-desktop/bootstrap)，"Bootstrap server as authorization server (device code)" 模式）。shunt 支持该模式：每位用户在 shunt 的 `/device` 页面用密码或你的 OIDC IdP 登录一次，Desktop 随后把这个 bearer 也用于推理。设备上除 Claude Desktop 外无需安装任何东西，也不必在各台机器上维护 helper 脚本路径。
+
+**1. 启用网关登录。** 配置 [`[server.gateway]`](/zh-cn/guides/gateway-login/)，包括 `public_url`、签名密钥，以及静态用户或 OIDC IdP。该模式要求 shunt 前面有带 TLS 的真实主机名：Anthropic 的指南将 bootstrap 端点描述为 HTTPS，而打包发布的 Desktop 应用会从响应键中丢弃回环 URL（`127.0.0.1`、`localhost`、`[::1]`）。
+
+**2. 让 shunt 指向模板。**
+
+```toml
+[server.gateway.desktop_bootstrap]
+template = "/etc/shunt/claude-desktop-bootstrap.json"   # 仅支持文件路径
+```
+
+该文件必须存在且是 JSON 对象，否则配置加载（以及 `shunt check`）会失败。shunt 在每次请求时读取它，因此修改无需重启即可生效。可以使用 Desktop 自己的 JSON 导出所生成的嵌套 v2 格式，也可以使用扁平 v1 格式；shunt 原样返回：
+
+```json
+{
+  "$schemaVersion": 2,
+  "inference": {
+    "provider": "gateway",
+    "baseUrl": "https://shunt.example.corp",
+    "credential": { "kind": "interactive" }
+  },
+  "otlp": {
+    "resourceAttributes": { "user.email": "${user.email}" }
+  }
+}
+```
+
+扁平 v1 的等价写法是 `{"inferenceProvider":"gateway","inferenceGatewayBaseUrl":"https://shunt.example.corp","inferenceCredentialKind":"interactive","otlpResourceAttributes":{"user.email":"${user.email}"}}`。
+
+- **网关 base URL 必须是 shunt 的 `public_url`。** 没有 `bootstrapOidc` 时，Desktop 会丢弃与 `bootstrapUrl` 不同源的网关 base URL。同源并使用 `interactive` 凭据时，Desktop 才会把 bootstrap bearer 复用于推理（从 1.34493.0 起还会用 refresh grant 续期），用户只需登录一次。
+- **占位符。** 字符串值中的 `${user.email}`、`${user.sub}`、`${user.name}` 会替换为已登录用户的值。未知的 `${...}` 标记保持原样，对象键从不替换。
+- **返回所有希望生效的键。** 响应中的键就是实际生效的配置：模板中省略的键会被取消设置，而不是从 MDM 继承。
+
+**3. 分发种子文件。** 每位用户通过 **Developer → Configure Third-Party Inference… → Import configuration** 导入：
+
+```json
+{
+  "bootstrapUrl": "https://shunt.example.corp/user/bootstrap",
+  "trustBootstrapDelivery": true
+}
+```
+
+`bootstrapUrl` 的 origin 必须与 `public_url` 的 origin 相同。Desktop 会去掉末尾的 `/user/bootstrap` 来找到 shunt 的 OAuth 发现文档，执行设备码登录，然后用签发的 bearer 请求 `GET /user/bootstrap`。当 bootstrap 响应向一台由本地文件配置的设备下发 base URL、helper 或 marketplace 值时，Desktop 通常会弹出 "Apply settings from your organization?" 对话框，`trustBootstrapDelivery` 可以跳过它。Desktop 只接受来自 MDM 或本地文件的该键，从不接受来自 bootstrap 响应的值。
+
+**谁会拿到配置。** 授权判断复用 [`[[server.gateway.policies]]`](/zh-cn/guides/gateway-login/)：没有 policy 时，所有已登录用户都有权获取；有 policy 时，用户被某条 policy 的 `match.emails` 列出，或存在 catch-all policy（无 `match`），才有权获取。其他用户收到 `403`。未配置 `desktop_bootstrap` 时该路由返回 `404`。响应带有 `ETag`，因此 Desktop 的后台复查（默认每 10 分钟一次）通常只产生一次 `304`。
+
+Desktop 只在内存中保留响应。如果启动时无法连接 shunt，Desktop 会以降级的登录状态启动 —— 这与推理本来就有的依赖相同。在 Desktop 中退出登录只在本地生效：shunt 不公布 revocation 端点。各状态码见[端点参考](/zh-cn/reference/endpoints/)。
+
+
+
+<Aside type="caution" title="shunt 不验证外部 IdP 的 JWT">
+
+Claude Desktop 使用 `inferenceGatewayOidc` 的**交互式登录**会让应用通过外部 IdP（Entra、Okta 等）认证，并把该 IdP 的 JWT 发送给网关；网关必须验证 `iss`/`aud`。shunt 没有针对这些 JWT 的入站验证器，因此不支持这种变体。上面的 [bootstrap 登录](#bootstrap-登录设备码)是受支持的按用户路径：在这条路径上 shunt 自身是授权服务器，外部 IdP 则通过 [`[server.gateway.oidc]`](/zh-cn/guides/gateway-login/) 位于 shunt 自己的 `/device` 页面之后。除此之外，请在 shunt 前部署能验证 JWT 的代理（LiteLLM、Kong、Envoy），或分发按用户设置的静态 token。
 
 </Aside>
 
