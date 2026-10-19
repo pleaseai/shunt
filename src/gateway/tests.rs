@@ -1485,9 +1485,9 @@ async fn routes_are_absent_without_gateway_config() {
 
 #[tokio::test]
 async fn gateway_jwt_and_static_client_token_compose_on_models() {
-    let (mut config, _env) = GatewayEnv::config("composition");
+    let (mut config, mut env) = GatewayEnv::config("composition");
     let auth_env = format!("SHUNT_GATEWAY_TEST_CLIENT_{}", std::process::id());
-    std::env::set_var(&auth_env, "static:static-token");
+    env.set_var(auth_env.clone(), "static:static-token");
     config.server.auth = Some(InboundAuthConfig {
         jwt: Vec::new(),
         header: "x-shunt-token".into(),
@@ -1545,7 +1545,6 @@ async fn gateway_jwt_and_static_client_token_compose_on_models() {
             .unwrap(),
     )
     .await;
-    std::env::remove_var(auth_env);
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"]["type"], "authentication_error");
 }
