@@ -6,13 +6,14 @@
 //! *something* there, because Claude Code round-trips whole blocks verbatim and
 //! a thinking block is not a thinking block without the field.
 //!
-//! Three producers do that today, and each one's value is defined here rather
-//! than at its own emit site. That is the point of the module: the strip that
+//! Three producers mint a value of their own today, and a fourth form (below)
+//! wraps one shunt did not mint. Each one's value is defined here rather than
+//! at its own emit site. That is the point of the module: the strip that
 //! mirrors them ([`crate::adapters::anthropic::thinking`]) reads these same
-//! predicates, so a fourth provider cannot be added without passing through the
+//! predicates, so a new provider cannot be added without passing through the
 //! one file that decides what a foreign signature looks like. Left at their
-//! emit sites, the constants would be three unrelated literals and the strip a
-//! fourth copy of them — which is how the next provider leaks its signature
+//! emit sites, the constants would be unrelated literals and the strip another
+//! copy of them — which is how the next provider leaks its signature
 //! upstream silently.
 //!
 //! The asymmetry is deliberate: shunt can recognise its own signatures exactly,

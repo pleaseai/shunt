@@ -372,6 +372,44 @@ async fn an_oversized_frame_is_forwarded_verbatim_and_framing_resumes() {
     );
 }
 
+#[tokio::test]
+async fn an_oversized_frame_boundary_is_found_wherever_the_chunks_cut_it() {
+    let big = format!(
+        "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{}\"}}}}\r\n\r\n",
+        "x".repeat(256)
+    );
+    let start = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"SIG\"}}\n\n";
+    let stop = "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\n";
+    let rest = format!("{start}{stop}");
+    let n = big.len();
+    let cuts: [Vec<String>; 2] = [
+        // The boundary lies deep inside a later chunk, past its edge.
+        vec![big[..n - 50].into(), format!("{}{rest}", &big[n - 50..])],
+        // The boundary arrives a byte or two at a time, after a long chunk.
+        vec![
+            big[..n - 40].into(),
+            big[n - 40..n - 3].into(),
+            big[n - 3..n - 2].into(),
+            big[n - 2..n - 1].into(),
+            format!("{}{rest}", &big[n - 1..]),
+        ],
+    ];
+    for chunks in cuts {
+        let out = collect_within(
+            chunks.iter().map(|c| chunk(c)).collect(),
+            Some(THIRD_PARTY),
+            64,
+        )
+        .await;
+        assert!(out.starts_with(&big), "the oversized frame passes verbatim");
+        assert_eq!(
+            signature_deltas(&out).len(),
+            1,
+            "and framing resumes at its boundary"
+        );
+    }
+}
+
 // ------------------------------------------------------------ relay_response
 
 fn relay_state() -> crate::server::AppState {
@@ -399,13 +437,13 @@ fn route(provider: &str) -> crate::routing::Route {
 }
 
 async fn relayed(provider: &str, content_type: &str, body: &str) -> String {
-    let upstream = reqwest::Response::from(
-        axum::http::Response::builder()
-            .status(200)
-            .header("content-type", content_type)
-            .body(reqwest::Body::from(body.to_owned()))
-            .unwrap(),
-    );
+    // An empty `content_type` sends the reply with no content-type at all.
+    let mut builder = axum::http::Response::builder().status(200);
+    if !content_type.is_empty() {
+        builder = builder.header("content-type", content_type);
+    }
+    let upstream =
+        reqwest::Response::from(builder.body(reqwest::Body::from(body.to_owned())).unwrap());
     let (_, response) = super::super::relay_response(
         &relay_state(),
         &route(provider),
@@ -438,6 +476,21 @@ async fn relay_response_wraps_third_party_signatures_only() {
         unwrap_upstream_signature(value["content"][0]["signature"].as_str().unwrap()),
         Some((key_of(THIRD_PARTY), "orig".to_string()))
     );
+    // The media type is matched case-insensitively, and an untyped reply is
+    // wrapped too: either left alone would carry the raw signature out.
+    for content_type in [
+        "Application/JSON; charset=utf-8",
+        "application/vnd.api+json",
+        "",
+    ] {
+        let value: Value =
+            serde_json::from_str(&relayed("minimax", content_type, json_body).await).unwrap();
+        assert_eq!(
+            unwrap_upstream_signature(value["content"][0]["signature"].as_str().unwrap()),
+            Some((key_of(THIRD_PARTY), "orig".to_string())),
+            "{content_type:?}: a buffered body is wrapped"
+        );
+    }
     let sse_out = relayed("minimax", "text/event-stream", sse_body).await;
     assert_eq!(
         signature_deltas(&sse_out)

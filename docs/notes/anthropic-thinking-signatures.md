@@ -128,7 +128,7 @@ confirmed against a live upstream (issue #783).
 `src/adapters/anthropic/thinking_wrap.rs` wraps it on the response path, keyed
 on a digest of the provider's `base_url` with any trailing `/` trimmed (the first 16 bytes of its SHA-256, in
 lowercase hex; the envelope is client-visible and a `base_url` can carry credentials, so the URL itself is never
-exposed) — not for `claude_oauth` pools or a
+exposed; the digest is unsalted, so it still confirms a guess of the whole `base_url`, credentials included) — not for `claude_oauth` pools or a
 first-party host, whose responses stay passthrough — and restores the original
 only for a request going back to a provider with that same `base_url`. The
 strip runs first and spares that provider's own envelopes, so a restored value

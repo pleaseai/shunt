@@ -1090,12 +1090,22 @@ async fn relay_response(
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let status = upstream.status();
     let response_headers = headers::filtered(upstream.headers());
-    let is_sse = upstream
+    // The media type alone, lowercased: it is case-insensitive on the wire.
+    let media_type = upstream
         .headers()
         .get("content-type")
         .and_then(|value| value.to_str().ok())
-        .map(|value| value.starts_with("text/event-stream"))
-        .unwrap_or(false);
+        .map(|value| {
+            let media = value.split(';').next().unwrap_or_default();
+            media.trim().to_ascii_lowercase()
+        });
+    let is_sse = media_type.as_deref() == Some("text/event-stream");
+    // A missing content-type counts as JSON: a compat upstream may omit it on
+    // a perfectly ordinary Messages reply, and leaving that body unwrapped is
+    // the leak the wrap exists to close.
+    let is_json = media_type
+        .as_deref()
+        .is_none_or(|media| media == "application/json" || media.ends_with("+json"));
 
     // Restore the client-facing model alias on the return path. A discovery
     // alias route (`route.model != route.upstream_model`) sends `upstream_model`
@@ -1108,13 +1118,14 @@ async fn relay_response(
     // Wrap a third-party upstream's thinking signatures so a later turn routed
     // to Anthropic drops them instead of failing on them (issue #783). `None`
     // for first-party and `claude_oauth` providers, whose bodies stay
-    // byte-for-byte passthrough. Only a success is rewritten when buffered: an
-    // error body carries no thinking block.
+    // byte-for-byte passthrough. Only a successful JSON (or untyped) body is
+    // read whole to be rewritten: an error body, or one declared as any other
+    // type, carries no thinking block, so it keeps streaming through.
     let signing_key = state
         .config
         .provider(&route.provider)
         .and_then(thinking_wrap::signing_key);
-    let wrap_buffered = signing_key.is_some() && status.is_success();
+    let wrap_buffered = signing_key.is_some() && status.is_success() && is_json;
 
     let mut builder = Response::builder().status(status);
     for (name, value) in response_headers {

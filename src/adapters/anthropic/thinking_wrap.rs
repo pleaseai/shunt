@@ -65,7 +65,9 @@ use crate::request::RequestBody;
 /// envelope reaches every client and persists in transcripts, and a `base_url`
 /// can carry userinfo or a path token, so the URL itself must not be exposed.
 /// No secret salt: the key must stay stable across restarts and across shunt
-/// instances sharing a `base_url`.
+/// instances sharing a `base_url`. The cost is that the digest confirms a
+/// guess: whoever can guess the whole `base_url`, credentials included, can
+/// check it against an envelope.
 pub(super) fn signing_key(provider: &ProviderConfig) -> Option<String> {
     (provider.auth != AuthMode::ClaudeOauth
         && !super::safeguards::is_first_party(&provider.base_url))
@@ -283,31 +285,45 @@ impl SignatureWrap {
     fn push(&mut self, mut chunk: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         if self.skipping {
-            let mut joined = std::mem::take(&mut self.tail);
-            let carried = joined.len();
-            joined.extend_from_slice(chunk);
-            match event_boundary(&joined) {
+            // A boundary straddling the chunk edge ends within the chunk's first
+            // three bytes, so only those are joined to the carried tail; the rest
+            // of the chunk is searched in place rather than copied.
+            let mut edge = std::mem::take(&mut self.tail);
+            let carried = edge.len();
+            edge.extend_from_slice(&chunk[..chunk.len().min(3)]);
+            let end = event_boundary(&edge)
+                .map(|end| end - carried)
+                .or_else(|| event_boundary(chunk));
+            match end {
                 Some(end) => {
-                    let (rest_of_frame, after) = chunk.split_at(end - carried);
+                    let (rest_of_frame, after) = chunk.split_at(end);
                     out.extend_from_slice(rest_of_frame);
                     self.skipping = false;
                     chunk = after;
                 }
                 None => {
                     out.extend_from_slice(chunk);
-                    self.tail = joined[joined.len().saturating_sub(3)..].to_vec();
+                    let last = if chunk.len() >= 3 { chunk } else { &edge };
+                    self.tail = last[last.len().saturating_sub(3)..].to_vec();
                     return out;
                 }
             }
         }
-        self.pending.extend_from_slice(chunk);
-        while let Some(end) = event_boundary(&self.pending) {
-            let frame: Vec<u8> = self.pending.drain(..end).collect();
-            match self.rewrite(&frame) {
+        // Frames are walked by offset and the consumed prefix removed once, so
+        // a chunk of many small frames costs one pass, not one shift per frame.
+        let mut pending = std::mem::take(&mut self.pending);
+        pending.extend_from_slice(chunk);
+        let mut start = 0;
+        while let Some(len) = event_boundary(&pending[start..]) {
+            let frame = &pending[start..start + len];
+            match self.rewrite(frame) {
                 Some(rewritten) => out.extend_from_slice(&rewritten),
-                None => out.extend_from_slice(&frame),
+                None => out.extend_from_slice(frame),
             }
+            start += len;
         }
+        pending.drain(..start);
+        self.pending = pending;
         if self.pending.len() > self.max_frame {
             self.tail = self.pending[self.pending.len().saturating_sub(3)..].to_vec();
             out.append(&mut self.pending);
@@ -393,13 +409,13 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 /// Byte index just past the first SSE event boundary (`\n\n` or `\r\n\r\n`).
+///
+/// Both forms end on a `\n`, so one forward scan that stops at the first
+/// boundary of either kind finds the earliest without reading past it.
 fn event_boundary(buf: &[u8]) -> Option<usize> {
-    let lf = buf.windows(2).position(|w| w == b"\n\n").map(|p| p + 2);
-    let crlf = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4);
-    match (lf, crlf) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    }
+    (0..buf.len())
+        .find(|&i| buf[i] == b'\n' && (buf[..i].ends_with(b"\n") || buf[..i].ends_with(b"\r\n\r")))
+        .map(|i| i + 1)
 }
 
 /// The JSON payload of a frame's `data:` line.
