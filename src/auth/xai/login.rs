@@ -251,7 +251,10 @@ async fn poll_for_tokens(
             }
             PollOutcome::Failed(reason) => bail!("{reason}"),
         }
-        sleep(Duration::from_secs(interval)).await;
+        // Clamped to the time left: a server interval longer than that would
+        // otherwise hold the login past the device code's expiry.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        sleep(remaining.min(Duration::from_secs(interval))).await;
     }
     Err(timed_out())
 }
@@ -515,6 +518,34 @@ mod tests {
         )
         .await
         .expect("the poll hung past the device code's expiry")
+        .expect_err("poll should time out");
+        assert!(error.to_string().contains("timed out"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_poll_interval_longer_than_the_expiry_does_not_outlast_it() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_json(json!({"error": "authorization_pending"})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        // A 30 s interval against a code that expires in 1 s.
+        let device = test_device(30, 1);
+        let token_url = format!("{}/token", server.uri());
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            poll_for_tokens(&client, &device, &token_url),
+        )
+        .await
+        .expect("the poll slept past the device code's expiry")
         .expect_err("poll should time out");
         assert!(error.to_string().contains("timed out"), "{error}");
     }

@@ -65,6 +65,24 @@ export function accountStatus(
  */
 const POOL_PROVIDER_ALIASES: Record<string, string> = { anthropic: 'claude' };
 
+/**
+ * The auth kind whose account store identifies an observed client login, keyed
+ * by the observation's provider. Store ids are only unique within one auth
+ * kind, so coalescing keys on the pair: an xAI user id that happens to equal a
+ * Claude or Codex id must not fold into the other provider's row.
+ */
+const OBSERVED_AUTH_KINDS: Record<string, string> = {
+  claude: 'claude_oauth',
+  anthropic: 'claude_oauth',
+  codex: 'chatgpt_oauth',
+  grok: 'xai_oauth',
+};
+
+/** The coalescing key for a store id under one auth kind. */
+function identityKey(auth: string, id: string): string {
+  return `${auth}:${id}`;
+}
+
 /** The window fields an observation may override on a coalesced row. */
 const WINDOW_KEYS = [
   'utilization_5h',
@@ -271,13 +289,15 @@ export function accountGroups(
             : table.auth === 'xai_oauth'
               ? xaiStoreAccountId(account, accountIdByXaiName)
               : undefined;
-      if (uuid) byUuid.set(uuid, row);
+      if (uuid && table.auth) byUuid.set(identityKey(table.auth, uuid), row);
     }
   }
 
   for (const observation of observed) {
     // A missing uuid means "identity unknown" and must never match.
-    const match = observation.uuid ? byUuid.get(observation.uuid) : undefined;
+    const auth = OBSERVED_AUTH_KINDS[observation.provider];
+    const match =
+      observation.uuid && auth ? byUuid.get(identityKey(auth, observation.uuid)) : undefined;
     if (match) {
       foldObservation(match, observation);
       continue;

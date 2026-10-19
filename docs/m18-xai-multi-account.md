@@ -209,11 +209,14 @@ has not been done yet.
   up the next. The reads, the rotated-pair writeback, and the forced-refresh mark after a `401` use
   that same resolved path, so a credential reached through a symlink is written in place and the
   link survives.
-- **Bounded refresh.** The refresh client sets no timeout, so the store gives each call one
-  30-second deadline (`REFRESH_TIMEOUT`) covering both the wait for the file's lock and the refresh
-  round trip. A token endpoint that never answers fails the refresh and releases the lock, and a
-  caller queued behind it fails at its own deadline instead of starting a fresh 30-second attempt;
-  the pool cools the account down and fails over.
+- **Bounded refresh.** The refresh client sets no timeout, so the store bounds two things with
+  `REFRESH_TIMEOUT` (30 s). Each caller's wait — for the file's lock, then for the refresh task — has
+  one deadline, so a caller queued behind a stalled refresh fails at its own deadline instead of
+  waiting out another full attempt, and the pool cools the account down and fails over. The token
+  POST inside the refresh task has its own full 30 s from when the task starts, not the caller's
+  remaining budget: cutting off a POST xAI may already have honored would consume the refresh
+  token. A caller that gives up first leaves the task running; it still writes the rotated pair,
+  and the next caller reads it.
 - **Detached task.** The refresh and the rotated-pair writeback run in a detached task that owns the
   lock, so the write completes even if the caller is cancelled.
 - **Pool resolution does not take `AccountPool::refresh_lock`**, matching the Codex pool.

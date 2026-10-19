@@ -446,9 +446,9 @@ fn xai_account_file(account: &crate::config::AccountConfig) -> PathBuf {
 /// next [`resolve_xai_account`] refreshes instead of resending that token
 /// until its JWT `exp`. A `token_env` token is static and has nothing to
 /// refresh.
-pub fn force_xai_refresh(account: &crate::config::AccountConfig) {
+pub async fn force_xai_refresh(account: &crate::config::AccountConfig) {
     if account.token_env.is_none() {
-        xai::auth::force_refresh_next(&xai_account_file(account));
+        xai::auth::force_refresh_next(&xai_account_file(account)).await;
     }
 }
 

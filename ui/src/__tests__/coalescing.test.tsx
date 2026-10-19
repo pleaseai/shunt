@@ -186,6 +186,23 @@ describe('folding managed accounts and local observations into one row', () => {
     expect(observed().getByText('Grok · Grok Pro')).toBeInTheDocument();
   });
 
+  /**
+   * Store ids are unique only within one auth kind. A Claude login whose uuid
+   * equals an xAI pool account's user id is a different account, so the Claude
+   * observation must not fold into the Grok row.
+   */
+  it('does not coalesce an observation into another provider row with a colliding id', async () => {
+    await renderDashboard({
+      observed: [observedClaude({ uuid: 'shared-id', identity: 'claude-user@example.com' })],
+      xaiAccounts: [{ name: 'personal', account_id: 'shared-id' }],
+      pool: poolWith('xai_oauth', 'grok', { name: 'personal' }),
+    });
+
+    // Two rows: the Claude login stayed its own row beside the xAI account.
+    expect(observed().getByText('personal')).toBeInTheDocument();
+    expect(observed().getByText('claude-user@example.com')).toBeInTheDocument();
+  });
+
   /** An xAI store id must never be applied to a ChatGPT login of the same name. */
   it('does not apply an xAI store id to a chatgpt_oauth account', async () => {
     await renderDashboard({

@@ -846,9 +846,11 @@ bottom-up so earlier positions stay valid.
            FailoverAction::Relay => FirstOutcome::Relay(upstream),
            FailoverAction::Rotate | FailoverAction::RefreshRetry | FailoverAction::PauseSame => {
                if status == reqwest::StatusCode::UNAUTHORIZED {
-                   // A token is only sent while unexpired, so a 401 means xAI
-                   // revoked it early: refresh on this account's next use rather
-                   // than resend it every cooldown until its `exp`.
+                   // A file-backed OAuth token is only sent while unexpired, so a
+                   // 401 means xAI revoked it early: refresh on this account's
+                   // next use rather than resend it every cooldown until its
+                   // `exp`. `force_xai_refresh` does nothing for a static
+                   // `token_env` bearer, which is never refreshed.
                    auth::force_xai_refresh(account);
                }
                let cooldown = rotate_cooldown(status, upstream.headers());
@@ -1187,8 +1189,10 @@ async fn xai_pool_relays_a_403_from_the_first_account_without_rotating_or_coolin
 ```
 
 - `xai_pool_rotates_off_a_401_without_a_same_account_refresh_retry`: `a` → 401, `b` → 200
-  (the rotation shape: `forward_chatgpt_oauth(…).await.expect(…)` returns Ok(200)); account `a`'s credential file is also marked for a forced refresh on its next use).
-  Assert exactly 2 requests (no retry on `a`), `x-shunt-account == "xai-b"`, and `a` cooled.
+  (the rotation shape: `forward_chatgpt_oauth(…).await.expect(…)` returns Ok(200)).
+  Assert exactly 2 requests (no retry on `a`), `x-shunt-account == "xai-b"`, `a` cooled, and
+  `auth::xai::auth::force_refresh_pending(&a_file)` is true (the 401 marked `a`'s credential file, so
+  its next use refreshes before sending).
 - `xai_pool_cools_an_unresolvable_account_for_five_minutes_and_rotates`:
   `a = unresolvable_xai_account(&dir, "xai-a")`, `b` → 200. Assert exactly **1** request,
   `x-shunt-account == "xai-b"`, and `a`'s `cooldown_secs_remaining` is `Some(secs)` with `secs > 60`.

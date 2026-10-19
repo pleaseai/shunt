@@ -56,13 +56,14 @@ pub struct XaiAuthStore {
 /// re-logged in with `--name` instead (see `auth::resolve_xai_account`).
 pub(crate) const DEFAULT_LOGIN_COMMAND: &str = "shunt login xai";
 
-/// Upper bound on one caller's refresh: the wait for its credential file's
-/// single-flight lock plus the round trip to xAI's token endpoint. A pooled
-/// request waits on that refresh before it can fail over, so a token endpoint
-/// that accepts the connection and never answers would otherwise hang the
-/// request — and every request queued behind it — with no limit (the refresh
-/// client sets none). A healthy refresh is one small form POST, so this only
-/// ever trips on a stalled endpoint.
+/// Upper bound on one caller's refresh — the wait for its credential file's
+/// single-flight lock plus the wait for the refresh — and, separately, on the
+/// refresh's own round trip to xAI's token endpoint. A pooled request waits on
+/// that refresh before it can fail over, so a token endpoint that accepts the
+/// connection and never answers would otherwise hang the request — and every
+/// request queued behind it — with no limit (the refresh client sets none). A
+/// healthy refresh is one small form POST, so this only ever trips on a
+/// stalled endpoint.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Credential files whose current access token xAI rejected (an upstream 401)
@@ -75,11 +76,20 @@ static FORCED_REFRESH: LazyLock<StdMutex<HashSet<PathBuf>>> = LazyLock::new(Defa
 /// Make the next `get_valid` for `path` refresh even an unexpired token. The
 /// mark is keyed by the resolved file, like the refresh lock, so a store that
 /// reaches the same file through another spelling (a symlink) still sees it.
-pub(crate) fn force_refresh_next(path: &Path) {
+/// The path is resolved on the blocking thread pool, since resolving it is
+/// file-system I/O and this runs on the request path of every xAI 401.
+pub(crate) async fn force_refresh_next(path: &Path) {
+    let raw = path.to_path_buf();
+    let resolved = {
+        let raw = raw.clone();
+        tokio::task::spawn_blocking(move || normalized_auth_path(raw))
+    }
+    .await
+    .unwrap_or(raw);
     FORCED_REFRESH
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(normalized_auth_path(path.to_path_buf()));
+        .insert(resolved);
 }
 
 /// Whether `path` is marked by [`force_refresh_next`].
@@ -177,10 +187,11 @@ impl XaiAuthStore {
             });
         }
 
-        // One deadline bounds the whole refresh: the wait for this file's lock
-        // and the token POST. Callers queued behind a stalled refresh then give
-        // up when their own bound runs out, instead of each starting another
+        // One deadline bounds this caller's wait: for this file's lock, then for
+        // the refresh task. Callers queued behind a stalled refresh then give up
+        // when their own bound runs out, instead of each waiting out another
         // full-length attempt in turn, so the pool fails over in bounded time.
+        // The token POST itself is not cut short by it (see the task below).
         let deadline = tokio::time::Instant::now() + self.refresh_timeout;
 
         // Single-flight the refresh per credential file: xAI rotates the refresh
@@ -214,16 +225,22 @@ impl XaiAuthStore {
         // is dropped, so a cancelled request (client disconnect) can no longer
         // release the lock mid-write and let another caller re-refresh with the
         // already-consumed refresh token (token-replay race). The lock is held
-        // until the write completes, regardless of caller cancellation.
+        // until the write completes, regardless of caller cancellation — or of
+        // this caller giving up at its deadline.
         let client = self.client.clone();
         let token_url = self.token_url.clone();
         let login_command = self.login_command.clone();
+        let refresh_timeout = self.refresh_timeout;
         let handle = tokio::spawn(async move {
             let _refreshing = refreshing; // held until the write below completes
-                                          // Bounded so a token endpoint that never answers releases the lock
-                                          // and fails this account over instead of hanging the request.
-            let refreshed = tokio::time::timeout_at(
-                deadline,
+                                          // Bounded so a token endpoint that never answers releases the lock,
+                                          // but by a full `refresh_timeout` of its own rather than the caller's
+                                          // deadline: a caller that spent most of its budget queued must not
+                                          // cut off a POST xAI may already have honored, which would consume
+                                          // the refresh token and lose the rotated pair. If the caller gives
+                                          // up first, this still persists the pair for the next caller.
+            let refreshed = tokio::time::timeout(
+                refresh_timeout,
                 refresh_tokens(&client, &token_url, &tokens.refresh_token, &login_command),
             )
             .await
@@ -252,8 +269,12 @@ impl XaiAuthStore {
             tracing::info!("refreshed xAI OAuth access token");
             Ok::<String, AdapterError>(refreshed.access_token)
         });
-        let access_token = handle
+        // Dropping the handle on timeout detaches the task; it does not cancel it.
+        let access_token = tokio::time::timeout_at(deadline, handle)
             .await
+            .map_err(|_| {
+                auth_error("xAI token refresh timed out; the token endpoint did not answer in time")
+            })?
             .map_err(|error| auth_error(format!("xAI refresh task failed: {error}")))??;
         Ok(XaiCred { access_token })
     }
@@ -729,7 +750,7 @@ mod tests {
         // Unmarked, the unexpired token is used as is.
         assert_eq!(store.get_valid().await.unwrap().access_token, rejected);
 
-        force_refresh_next(&file);
+        force_refresh_next(&file).await;
         assert_eq!(store.get_valid().await.unwrap().access_token, fresh);
         // The mark is cleared: the refreshed token is reused without a second
         // refresh (the mock expects exactly one).
@@ -1050,7 +1071,7 @@ mod tests {
         // The real spelling reuses the rotated token without refreshing again.
         assert_eq!(via_real.get_valid().await.unwrap().access_token, fresh);
 
-        force_refresh_next(&link);
+        force_refresh_next(&link).await;
         assert!(force_refresh_pending(&real));
         assert_eq!(via_real.get_valid().await.unwrap().access_token, fresh);
         assert!(!force_refresh_pending(&link));
@@ -1105,6 +1126,80 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(elapsed < bound * 4, "queued callers took {elapsed:?}");
         assert!(first.await.unwrap().is_err());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// A caller that spent most of its budget queued gives up before a slow
+    /// refresh answers, but the refresh is not cut short with it: xAI consumes
+    /// the old refresh token once it honors the POST, so the rotated pair must
+    /// still be persisted for the next caller, which then needs no new POST.
+    #[tokio::test]
+    async fn a_caller_giving_up_mid_refresh_does_not_lose_the_rotated_pair() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let fresh = jwt(future_exp());
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(700))
+                    .set_body_json(json!({
+                        "access_token": fresh,
+                        "refresh_token": "rotated-refresh",
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let file = temp_path("caller-gives-up");
+        write_tokens(&file, &jwt(0), "old-refresh", None).unwrap();
+        let store = XaiAuthStore::with_token_url(
+            file.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        )
+        .with_refresh_timeout(Duration::from_secs(1));
+
+        // Hold the file's lock so the caller spends ~600 ms of its 1 s queued,
+        // leaving less than the endpoint's 700 ms answer.
+        let held = refresh_lock_for(&normalized_auth_path(file.clone()))
+            .lock_owned()
+            .await;
+        let caller = {
+            let store = store.clone();
+            tokio::spawn(async move { store.get_valid().await })
+        };
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        drop(held);
+
+        let error = caller.await.unwrap().unwrap_err();
+        let bytes = axum::body::to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("timed out"));
+
+        // The detached refresh still lands the rotated pair.
+        let mut stored = None;
+        for _ in 0..300 {
+            let tokens = parse_tokens(&read_auth_value(&file).unwrap()).unwrap();
+            if tokens.refresh_token == "rotated-refresh" {
+                stored = Some(tokens);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            stored.expect("the rotated pair was lost").access_token,
+            fresh
+        );
+        // The next caller reuses it without another POST (the mock expects one).
+        assert_eq!(store.get_valid().await.unwrap().access_token, fresh);
+
+        server.verify().await;
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 }
