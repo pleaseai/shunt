@@ -1661,9 +1661,9 @@ async fn gateway_jwt_is_accepted_on_mapped_messages() {
         .mount(&upstream)
         .await;
 
-    let (mut config, _env) = GatewayEnv::config("messages");
+    let (mut config, mut env) = GatewayEnv::config("messages");
     let upstream_key_env = format!("SHUNT_GATEWAY_TEST_UPSTREAM_KEY_{}", std::process::id());
-    std::env::set_var(&upstream_key_env, "upstream-key");
+    env.set_var(upstream_key_env.clone(), "upstream-key");
     let provider = config.providers.get_mut("openai").unwrap();
     provider.base_url = upstream.uri();
     provider.api_key_env = Some(upstream_key_env.clone());
@@ -1705,7 +1705,6 @@ async fn gateway_jwt_is_accepted_on_mapped_messages() {
         )
         .await
         .unwrap();
-    std::env::remove_var(upstream_key_env);
 
     assert_eq!(response.status(), StatusCode::OK);
     let requests = upstream.received_requests().await.unwrap();
@@ -2036,12 +2035,9 @@ async fn managed_settings_empty_telemetry_targets_do_not_inject_env() {
 
 #[test]
 fn managed_policy_deserializes_from_real_toml() {
-    let _lock = env_lock();
-    let (dir, path, suffix) = temp_config_path("managed-toml");
-    let secret_env = format!("SHUNT_REAL_TOML_SECRET_{suffix}");
-    let users_env = format!("SHUNT_REAL_TOML_USERS_{suffix}");
-    std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
-    std::env::set_var(&users_env, "dev@example.com:password");
+    let (_, env) = GatewayEnv::config("managed-toml");
+    let (secret_env, users_env) = (&env.secret_env, &env.users_env);
+    let (dir, path, _) = temp_config_path("managed-toml");
     std::fs::write(
         &path,
         format!(
@@ -2077,19 +2073,14 @@ allow = ["Read"]
     assert_eq!(policy.cli["permissions"]["allow"][0].as_str(), Some("Read"));
     assert!(config.resolve_gateway_auth().unwrap().is_some());
 
-    std::env::remove_var(secret_env);
-    std::env::remove_var(users_env);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]
 async fn managed_settings_hot_reload_serves_new_policy_and_etag() {
-    let _lock = env_lock();
-    let (dir, path, suffix) = temp_config_path("managed-reload");
-    let secret_env = format!("SHUNT_MANAGED_RELOAD_SECRET_{suffix}");
-    let users_env = format!("SHUNT_MANAGED_RELOAD_USERS_{suffix}");
-    std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
-    std::env::set_var(&users_env, "dev@example.com:password");
+    let (_, env) = GatewayEnv::config("managed-reload");
+    let (secret_env, users_env) = (&env.secret_env, &env.users_env);
+    let (dir, path, _) = temp_config_path("managed-reload");
     let document = |model: &str, telemetry: bool| {
         let telemetry = if telemetry {
             "\n[server.gateway.telemetry]\n[[server.gateway.telemetry.forward_to]]\nurl = \"https://collector.example\"\n"
@@ -2127,8 +2118,6 @@ async fn managed_settings_hot_reload_serves_new_policy_and_etag() {
     assert_eq!(second["settings"]["availableModels"], json!(["second"]));
     assert_eq!(second["settings"]["env"]["OTEL_METRICS_EXPORTER"], "otlp");
 
-    std::env::remove_var(secret_env);
-    std::env::remove_var(users_env);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -2149,9 +2138,9 @@ async fn empty_available_models_denies_all_gateway_inference_routes() {
     use wiremock::MockServer;
 
     let upstream = MockServer::start().await;
-    let (mut config, _env) = GatewayEnv::config("managed-deny-all");
+    let (mut config, mut env) = GatewayEnv::config("managed-deny-all");
     let key_env = format!("SHUNT_GATEWAY_DENY_ALL_{}", std::process::id());
-    std::env::set_var(&key_env, "upstream-key");
+    env.set_var(key_env.clone(), "upstream-key");
     let provider = config.providers.get_mut("openai").unwrap();
     provider.base_url = upstream.uri();
     provider.api_key_env = Some(key_env.clone());
@@ -2189,18 +2178,17 @@ async fn empty_available_models_denies_all_gateway_inference_routes() {
         assert_eq!(response["error"]["type"], "invalid_request_error");
     }
 
-    std::env::remove_var(key_env);
     assert!(upstream.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn available_models_policy_denies_or_allows_gateway_requests() {
     let upstream = responses_upstream().await;
-    let (mut config, _env) = GatewayEnv::config("managed-enforcement");
+    let (mut config, mut env) = GatewayEnv::config("managed-enforcement");
     let key_env = format!("SHUNT_GATEWAY_POLICY_UPSTREAM_{}", std::process::id());
     let client_env = format!("SHUNT_GATEWAY_POLICY_CLIENT_{}", std::process::id());
-    std::env::set_var(&key_env, "upstream-key");
-    std::env::set_var(&client_env, "static-user:static-token");
+    env.set_var(key_env.clone(), "upstream-key");
+    env.set_var(client_env.clone(), "static-user:static-token");
     config.server.auth = Some(InboundAuthConfig {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
@@ -2273,8 +2261,6 @@ async fn available_models_policy_denies_or_allows_gateway_requests() {
         ))
         .await
         .unwrap();
-    std::env::remove_var(key_env);
-    std::env::remove_var(client_env);
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(upstream.received_requests().await.unwrap().len(), 2);
 }
@@ -2282,9 +2268,9 @@ async fn available_models_policy_denies_or_allows_gateway_requests() {
 #[tokio::test]
 async fn gateway_policy_without_available_models_is_unrestricted() {
     let upstream = responses_upstream().await;
-    let (mut config, _env) = GatewayEnv::config("managed-unrestricted");
+    let (mut config, mut env) = GatewayEnv::config("managed-unrestricted");
     let key_env = format!("SHUNT_GATEWAY_UNRESTRICTED_{}", std::process::id());
-    std::env::set_var(&key_env, "upstream-key");
+    env.set_var(key_env.clone(), "upstream-key");
     let provider = config.providers.get_mut("openai").unwrap();
     provider.base_url = upstream.uri();
     provider.api_key_env = Some(key_env.clone());
@@ -2307,7 +2293,6 @@ async fn gateway_policy_without_available_models_is_unrestricted() {
         ))
         .await
         .unwrap();
-    std::env::remove_var(key_env);
     assert_eq!(response.status(), StatusCode::OK);
 }
 
