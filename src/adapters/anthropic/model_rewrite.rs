@@ -18,6 +18,8 @@ use axum::body::Bytes;
 use futures_util::{stream, Stream, StreamExt};
 use serde_json::Value;
 
+use super::sse_data::{frame_data, replace_data};
+
 /// Ceiling on the first frame the rewriter will buffer before giving up and
 /// passing the stream through untouched.
 ///
@@ -164,34 +166,20 @@ fn first_event_boundary(buf: &[u8]) -> Option<usize> {
 /// Returns `Some(frame)` only when the frame is a `message_start` event whose
 /// model differs; any other frame (or an unparseable one) yields `None` so the
 /// caller forwards the original bytes untouched.
+///
+/// The event's data may span several `data:` lines ([`frame_data`]); a
+/// rewritten frame carries it on one.
 fn rewrite_message_start_frame(frame: &str, alias: &str) -> Option<String> {
-    let mut out = String::with_capacity(frame.len() + alias.len());
-    let mut rewritten = false;
-    for segment in frame.split_inclusive('\n') {
-        let content_len = segment.trim_end_matches(['\n', '\r']).len();
-        let (content, ending) = segment.split_at(content_len);
-        if let Some(payload) = content.strip_prefix("data:") {
-            if let Ok(mut value) = serde_json::from_str::<Value>(payload.trim_start()) {
-                let is_start = value.get("type").and_then(Value::as_str) == Some("message_start");
-                if is_start {
-                    if let Some(model) = value.pointer_mut("/message/model") {
-                        if model.as_str() != Some(alias) {
-                            *model = Value::String(alias.to_string());
-                            if let Ok(reserialized) = serde_json::to_string(&value) {
-                                out.push_str("data: ");
-                                out.push_str(&reserialized);
-                                out.push_str(ending);
-                                rewritten = true;
-                                continue;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        out.push_str(segment);
+    let mut event = frame_data(frame)?;
+    if event.get("type").and_then(Value::as_str) != Some("message_start") {
+        return None;
     }
-    rewritten.then_some(out)
+    let model = event.pointer_mut("/message/model")?;
+    if model.as_str() == Some(alias) {
+        return None;
+    }
+    *model = Value::String(alias.to_string());
+    Some(replace_data(frame, &event))
 }
 
 #[cfg(test)]
@@ -275,6 +263,21 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(data).unwrap();
         assert_eq!(value["message"]["model"], "claude-alias");
         assert_eq!(value["message"]["role"], "assistant");
+    }
+
+    /// Valid SSE may spread one event's JSON over several `data:` lines; read
+    /// line by line, this frame would not parse and the raw model would leak.
+    #[test]
+    fn frame_rewrites_a_message_start_split_over_data_lines() {
+        let frame = "event: message_start\ndata: {\"type\":\"message_start\",\ndata: \"message\":{\"model\":\"kimi-k2.7-code\"}}\n\n";
+        let out = rewrite_message_start_frame(frame, "claude-alias").expect("model differs");
+        let lines: Vec<&str> = out.split('\n').collect();
+        assert_eq!(lines.len(), 4, "one event line, one data line: {out:?}");
+        assert_eq!(lines[0], "event: message_start");
+        let value: serde_json::Value =
+            serde_json::from_str(lines[1].strip_prefix("data: ").unwrap()).unwrap();
+        assert_eq!(value["message"]["model"], "claude-alias");
+        assert!(out.ends_with("}\n\n"));
     }
 
     #[test]

@@ -33,7 +33,9 @@
 //! nothing can decode. [`wrap_signature_stream`] instead withholds a block's
 //! signature bytes — only those; text and thinking deltas flow as their frames
 //! complete — and emits the whole signature, wrapped, as one `signature_delta`
-//! immediately before that block's `content_block_stop`.
+//! immediately before that block's `content_block_stop`. Withholding is
+//! bounded ([`signature_ceiling`]); a signature that outgrows the bound ends
+//! the stream with an `error` event rather than leave shunt raw.
 //!
 //! `redacted_thinking` (`data`) is deliberately left alone: it is the same
 //! class of host-bound opaque value, but nothing here has seen a third-party
@@ -48,9 +50,43 @@ use futures_util::{stream, Stream, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use super::sse_data::{frame_data, replace_data};
 use crate::config::{AuthMode, ProviderConfig};
 use crate::model::thinking_signature::{unwrap_upstream_signature, wrap_upstream_signature};
 use crate::request::RequestBody;
+
+/// Ceiling on the signature bytes one stream may withhold at a time.
+///
+/// Callers do not name this directly — they ask [`signature_ceiling`] for the
+/// bound that applies to them.
+///
+/// It is not the first-frame ceiling: Anthropic documents a signature as an
+/// encrypted copy of the full reasoning, so a legitimate one can be far larger
+/// than the 64 KiB a frame is otherwise allowed to grow to. 8 MiB is more than
+/// ten times any plausible signature and still bounds what a stream that never
+/// stops sending signature bytes can make the gateway hold.
+const MAX_SIGNATURE_BYTES: usize = 8 * 1024 * 1024;
+
+/// The withheld-signature ceiling for a caller holding `response_byte_cap`,
+/// mirroring [`super::model_rewrite::first_frame_ceiling`].
+///
+/// The cap matters because withheld bytes are emitted later, wrapped, and
+/// count against it then: holding more than the caller will ever accept is
+/// spending the memory the cap exists to deny. `None` is the client path,
+/// bounded by the constant alone.
+pub(super) fn signature_ceiling(response_byte_cap: Option<usize>) -> usize {
+    response_byte_cap.map_or(MAX_SIGNATURE_BYTES, |cap| cap.min(MAX_SIGNATURE_BYTES))
+}
+
+/// The JSON key that marks a frame as signature-bearing, quotes included so
+/// `"signature_delta"` — a value, and a different word — does not match.
+const SIGNATURE_KEY: &[u8] = b"\"signature\"";
+
+/// Bytes of the forwarded frame carried between chunks while skipping: enough
+/// for a [`SIGNATURE_KEY`] straddling the chunk edge (all but its last byte)
+/// plus the byte before it, which tells a key from an escaped quote. A
+/// straddling event boundary needs only three.
+const SKIP_TAIL: usize = SIGNATURE_KEY.len();
 
 /// The envelope key for a third-party provider's signatures, or `None` when
 /// this provider's responses must not be wrapped.
@@ -215,22 +251,35 @@ pub(super) fn wrap_response_signatures(body: Bytes, key: &str) -> Bytes {
 /// it completes, so only a block's signature bytes — plus at most one
 /// incomplete frame — are ever held.
 ///
-/// `max_frame` bounds that incomplete frame, exactly as
-/// [`super::model_rewrite::rewrite_first_model_stream`]'s ceiling bounds its
-/// scan: a frame that outgrows it is forwarded as it stands, verbatim through
-/// its own boundary, and never inspected. No signature frame comes near the
-/// bound, so the cost of giving up is nothing, and holding an unbounded frame
-/// is what the bound denies.
+/// Two bounds apply, because the two things held differ in size:
+///
+/// - `max_frame` bounds an incomplete frame that carries no signature, exactly
+///   as [`super::model_rewrite::rewrite_first_model_stream`]'s ceiling bounds
+///   its scan: a frame that outgrows it is forwarded as it stands, verbatim
+///   through its own boundary, so a long text or thinking delta keeps
+///   streaming.
+/// - `max_signature` ([`signature_ceiling`]) bounds the signature bytes
+///   withheld across every open block, together with an incomplete frame that
+///   carries a `"signature"` key. Such a frame is not forwarded at `max_frame`
+///   — that would hand the client the raw signature — but held until it
+///   completes.
+///
+/// Neither bound gives way to a raw signature. A signature that outgrows
+/// `max_signature`, or a `"signature"` key turning up in a frame already
+/// being forwarded unread, fails closed: every withheld byte is dropped, the
+/// client gets an Anthropic-shape `error` event (after a blank line, when half
+/// a frame has already reached it), and the stream ends there.
 pub(super) fn wrap_signature_stream<S, E>(
     upstream: S,
     key: Option<String>,
     max_frame: usize,
+    max_signature: usize,
 ) -> impl Stream<Item = Result<Bytes, E>> + Send
 where
     S: Stream<Item = Result<Bytes, E>> + Send + 'static,
     E: Send + 'static,
 {
-    let machine = key.map(|key| SignatureWrap::new(key, max_frame));
+    let machine = key.map(|key| SignatureWrap::new(key, max_frame, max_signature));
     stream::unfold(
         (Box::pin(upstream), machine, false),
         |(mut upstream, machine, done)| async move {
@@ -247,6 +296,11 @@ where
                 match upstream.next().await {
                     Some(Ok(chunk)) => {
                         let out = machine.push(&chunk);
+                        // Closed: `out` ends with the error event, and nothing
+                        // the upstream sends after it reaches the client.
+                        if machine.closed {
+                            return Some((Ok(Bytes::from(out)), (upstream, None, true)));
+                        }
                         if out.is_empty() {
                             continue;
                         }
@@ -272,43 +326,86 @@ where
 struct SignatureWrap {
     key: String,
     max_frame: usize,
+    max_signature: usize,
     /// Bytes of the frame not yet complete.
     pending: Vec<u8>,
+    /// How far into `pending` is known to hold no event boundary, so a large
+    /// frame arriving in small chunks is searched once, not once per chunk.
+    scanned: usize,
+    /// Set while `pending` has outgrown `max_frame` but carries a
+    /// `"signature"` key, so it is held to its boundary instead of forwarded.
+    /// Its bytes count against `max_signature`; the key is looked for once.
+    holding: bool,
     /// Set after an oversized frame was forwarded unfinished: the bytes up to
-    /// its boundary are passed through without being framed.
+    /// its boundary are passed through without being framed, watched only for
+    /// a `"signature"` key and for that boundary.
     skipping: bool,
-    /// The last bytes forwarded while `skipping`, so a boundary split across
-    /// two chunks is still found.
+    /// The last [`SKIP_TAIL`] bytes forwarded while `skipping`, so a key or a
+    /// boundary split across two chunks is still found.
+    ///
+    /// Invariant: it is only ever built from bytes before the skipped frame's
+    /// boundary, so it never holds a complete event boundary. A boundary
+    /// found in `tail` plus the next chunk's head therefore ends inside that
+    /// chunk, and `end - carried` in [`Self::push`] cannot underflow.
     tail: Vec<u8>,
     /// Withheld signature bytes per content block index.
     signatures: HashMap<u64, String>,
+    /// Total length of every value in `signatures`.
+    withheld: usize,
+    /// Set once the stream has failed closed: nothing more is emitted.
+    closed: bool,
 }
 
 impl SignatureWrap {
-    fn new(key: String, max_frame: usize) -> Self {
+    fn new(key: String, max_frame: usize, max_signature: usize) -> Self {
         Self {
             key,
             max_frame,
+            max_signature,
             pending: Vec::new(),
+            scanned: 0,
+            holding: false,
             skipping: false,
             tail: Vec::new(),
             signatures: HashMap::new(),
+            withheld: 0,
+            closed: false,
         }
     }
 
     /// Consume one upstream chunk; return the bytes ready for the client.
     fn push(&mut self, mut chunk: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
+        if self.closed {
+            return out;
+        }
         if self.skipping {
-            // A boundary straddling the chunk edge ends within the chunk's first
-            // three bytes, so only those are joined to the carried tail; the rest
-            // of the chunk is searched in place rather than copied.
+            // A boundary or a key straddling the chunk edge ends within the
+            // chunk's first `SKIP_TAIL - 1` bytes, so only those are joined to
+            // the carried tail; the rest of the chunk is searched in place
+            // rather than copied.
             let mut edge = std::mem::take(&mut self.tail);
             let carried = edge.len();
-            edge.extend_from_slice(&chunk[..chunk.len().min(3)]);
-            let end = event_boundary(&edge)
+            edge.extend_from_slice(&chunk[..chunk.len().min(SKIP_TAIL - 1)]);
+            let edge_end = event_boundary(&edge);
+            let end = edge_end
                 .map(|end| end - carried)
                 .or_else(|| event_boundary(chunk));
+            // Only the skipped frame's own bytes are watched: what follows its
+            // boundary is the next frame's, framed normally below. A key
+            // cannot overlap the boundary, which is all `\r` and `\n`.
+            let straddle_from = carried.saturating_sub(SIGNATURE_KEY.len() - 1);
+            let straddle = &edge[straddle_from..edge_end.unwrap_or(edge.len())];
+            let before_straddle = straddle_from.checked_sub(1).map(|i| edge[i]);
+            if has_signature_key(straddle, before_straddle)
+                || has_signature_key(
+                    &chunk[..end.unwrap_or(chunk.len())],
+                    edge[..carried].last().copied(),
+                )
+            {
+                self.fail(&mut out, true);
+                return out;
+            }
             match end {
                 Some(end) => {
                     let (rest_of_frame, after) = chunk.split_at(end);
@@ -318,39 +415,112 @@ impl SignatureWrap {
                 }
                 None => {
                     out.extend_from_slice(chunk);
-                    let last = if chunk.len() >= 3 { chunk } else { &edge };
-                    self.tail = last[last.len().saturating_sub(3)..].to_vec();
+                    // A chunk shorter than the tail is wholly inside `edge`.
+                    let last = if chunk.len() >= SKIP_TAIL {
+                        chunk
+                    } else {
+                        &edge
+                    };
+                    self.tail = last[last.len().saturating_sub(SKIP_TAIL)..].to_vec();
                     return out;
                 }
             }
         }
         // Frames are walked by offset and the consumed prefix removed once, so
         // a chunk of many small frames costs one pass, not one shift per frame.
+        // The first search resumes where the last push stopped, backed up by
+        // the three bytes a `\r\n\r\n` straddling that point can start with.
         let mut pending = std::mem::take(&mut self.pending);
         pending.extend_from_slice(chunk);
         let mut start = 0;
-        while let Some(len) = event_boundary(&pending[start..]) {
-            let frame = &pending[start..start + len];
+        let mut from = self.scanned.saturating_sub(3);
+        while let Some(len) = event_boundary(&pending[start + from..]) {
+            let end = start + from + len;
+            let frame = &pending[start..end];
             match self.rewrite(frame) {
                 Some(rewritten) => out.extend_from_slice(&rewritten),
                 None => out.extend_from_slice(frame),
             }
-            start += len;
+            if self.closed {
+                self.fail(&mut out, false);
+                return out;
+            }
+            start = end;
+            from = 0;
+        }
+        if start > 0 {
+            // The frame being held, if any, has completed.
+            self.holding = false;
         }
         pending.drain(..start);
         self.pending = pending;
+        self.scanned = self.pending.len();
         if self.pending.len() > self.max_frame {
-            self.tail = self.pending[self.pending.len().saturating_sub(3)..].to_vec();
-            out.append(&mut self.pending);
-            self.skipping = true;
+            if !self.holding && has_signature_key(&self.pending, None) {
+                self.holding = true;
+            }
+            if !self.holding {
+                self.tail = self.pending[self.pending.len().saturating_sub(SKIP_TAIL)..].to_vec();
+                out.append(&mut self.pending);
+                self.scanned = 0;
+                self.skipping = true;
+            } else if self.pending.len() + self.withheld > self.max_signature {
+                self.fail(&mut out, false);
+            }
         }
         out
     }
 
     /// The stream ended: whatever incomplete frame is held goes out verbatim,
-    /// so no byte the upstream sent is lost.
+    /// so no byte the upstream sent is lost — unless it carries a
+    /// `"signature"` key, which would hand the client a raw signature, or the
+    /// stream already failed closed, after which nothing goes out. A frame
+    /// cut off before its boundary is never dispatched by an SSE client, so
+    /// dropping one costs the client nothing.
     fn finish(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.pending)
+        let pending = std::mem::take(&mut self.pending);
+        if has_signature_key(&pending, None) {
+            return Vec::new();
+        }
+        pending
+    }
+
+    /// Fail closed: drop every withheld byte, append the error event to `out`,
+    /// and emit nothing after it. `mid_frame` is set when part of a frame has
+    /// already reached the client, which a blank line then terminates so the
+    /// error is not read as the rest of that frame.
+    fn fail(&mut self, out: &mut Vec<u8>, mid_frame: bool) {
+        self.closed = true;
+        self.pending = Vec::new();
+        self.scanned = 0;
+        self.holding = false;
+        self.skipping = false;
+        self.tail = Vec::new();
+        self.signatures = HashMap::new();
+        self.withheld = 0;
+        if mid_frame {
+            out.extend_from_slice(b"\n\n");
+        }
+        let error = json!({
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": "an upstream thinking signature exceeded the gateway's signature bound",
+            },
+        });
+        out.extend_from_slice(format!("event: error\ndata: {error}\n\n").as_bytes());
+    }
+
+    /// Withhold `fragment` as part of block `index`'s signature, or fail closed
+    /// (`false`) when that would take the stream past `max_signature`.
+    fn withhold(&mut self, index: u64, fragment: &str) -> bool {
+        if self.withheld + fragment.len() > self.max_signature {
+            self.closed = true;
+            return false;
+        }
+        self.withheld += fragment.len();
+        self.signatures.entry(index).or_default().push_str(fragment);
+        true
     }
 
     /// The bytes to forward in place of one complete frame, or `None` to
@@ -376,10 +546,9 @@ impl SignatureWrap {
                 if signature.is_empty() {
                     return None;
                 }
-                self.signatures
-                    .entry(index)
-                    .or_default()
-                    .push_str(signature);
+                if !self.withhold(index, signature) {
+                    return Some(Vec::new());
+                }
                 block["signature"] = Value::String(String::new());
                 Some(replace_data(text, &event).into_bytes())
             }
@@ -389,11 +558,13 @@ impl SignatureWrap {
                     return None;
                 }
                 let fragment = delta.get("signature").and_then(Value::as_str)?;
-                self.signatures.entry(index).or_default().push_str(fragment);
+                // Withheld or failed closed, nothing of this frame goes out.
+                self.withhold(index, fragment);
                 Some(Vec::new())
             }
             "content_block_stop" => {
                 let signature = self.signatures.remove(&index)?;
+                self.withheld -= signature.len();
                 if signature.is_empty() {
                     return None;
                 }
@@ -433,32 +604,21 @@ fn event_boundary(buf: &[u8]) -> Option<usize> {
         .map(|i| i + 1)
 }
 
-/// The JSON payload of a frame's `data:` line.
-fn frame_data(frame: &str) -> Option<Value> {
-    frame.lines().find_map(|line| {
-        let payload = line.trim_end_matches('\r').strip_prefix("data:")?;
-        serde_json::from_str(payload.trim_start()).ok()
-    })
-}
-
-/// The frame with its `data:` line replaced by `event`, every other line and
-/// every line ending kept as it was.
-fn replace_data(frame: &str, event: &Value) -> String {
-    let mut out = String::with_capacity(frame.len());
-    let mut replaced = false;
-    for segment in frame.split_inclusive('\n') {
-        let content_len = segment.trim_end_matches(['\n', '\r']).len();
-        let (content, ending) = segment.split_at(content_len);
-        if !replaced && content.starts_with("data:") {
-            out.push_str("data: ");
-            out.push_str(&event.to_string());
-            out.push_str(ending);
-            replaced = true;
-        } else {
-            out.push_str(segment);
-        }
-    }
-    out
+/// Whether `buf` holds a [`SIGNATURE_KEY`] whose opening quote is not escaped.
+///
+/// `before` is the byte preceding `buf`, when there is one. Inside a JSON
+/// string the word can only appear quoted as `\"signature\"`, which the key
+/// does not match, or as a string ending `\"signature`, whose own closing
+/// quote completes the eleven bytes after a backslash. Both are text — the
+/// prose of a delta — and not a key, whose opening quote follows `{`, `,` or
+/// whitespace instead.
+fn has_signature_key(buf: &[u8], before: Option<u8>) -> bool {
+    buf.windows(SIGNATURE_KEY.len())
+        .enumerate()
+        .any(|(i, window)| {
+            let preceding = if i == 0 { before } else { Some(buf[i - 1]) };
+            window == SIGNATURE_KEY && preceding != Some(b'\\')
+        })
 }
 
 #[cfg(test)]
