@@ -336,11 +336,13 @@ store_contract_test!(
                 .await;
                 let written = map(vec![record("a", "f1", None)]);
 
-                crate::store::db::set_io_timeout(Some(Duration::from_millis(300)));
+                // Only COMMIT gets the short bound, so a slow BEGIN or INSERT on
+                // a loaded runner cannot time out first.
+                let bound = crate::store::db::set_commit_timeout(Duration::from_millis(300));
                 let error = apply_diff(&store, &diff(&HashMap::new(), &written))
                     .await
                     .unwrap_err();
-                crate::store::db::set_io_timeout(None);
+                drop(bound);
                 assert!(
                     matches!(error, StoreError::CommitUncertain { .. }),
                     "a COMMIT past the bound must be uncertain, not failed: {error:?}"

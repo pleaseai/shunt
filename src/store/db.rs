@@ -161,20 +161,29 @@ pub(crate) fn release_timeout() -> std::time::Duration {
     POSTGRES_IO_TIMEOUT
 }
 
+#[cfg_attr(not(test), allow(unused_variables))]
 #[cfg(feature = "store-postgres")]
-fn io_timeout() -> std::time::Duration {
+fn io_timeout(what: &str) -> std::time::Duration {
     #[cfg(test)]
-    if let Some(timeout) = tests::IO_TIMEOUT.with(std::cell::Cell::get) {
+    if let Some(timeout) = tests::io_timeout_override(what) {
         return timeout;
     }
     POSTGRES_IO_TIMEOUT
 }
 
-/// Replace [`POSTGRES_IO_TIMEOUT`] on the current test thread (`None` restores
-/// it). Each test runs on its own thread, so this never reaches another test.
+/// Replace [`POSTGRES_IO_TIMEOUT`] for every round trip on the current test
+/// thread until the returned guard drops. Each test runs on its own thread, so
+/// this never reaches another test.
 #[cfg(all(test, feature = "store-postgres"))]
-pub(crate) fn set_io_timeout(timeout: Option<std::time::Duration>) {
-    tests::IO_TIMEOUT.with(|cell| cell.set(timeout));
+pub(crate) fn set_io_timeout(timeout: std::time::Duration) -> tests::IoTimeoutGuard {
+    tests::IoTimeoutGuard::install(timeout, false)
+}
+
+/// [`set_io_timeout`] for COMMIT alone: BEGIN and every statement keep
+/// [`POSTGRES_IO_TIMEOUT`].
+#[cfg(all(test, feature = "store-postgres"))]
+pub(crate) fn set_commit_timeout(timeout: std::time::Duration) -> tests::IoTimeoutGuard {
+    tests::IoTimeoutGuard::install(timeout, true)
 }
 
 /// Await one PostgreSQL round trip, giving up after [`POSTGRES_IO_TIMEOUT`]
@@ -196,7 +205,7 @@ async fn bounded_on<T>(
     what: &str,
     io: impl std::future::Future<Output = Result<T, sqlx::Error>>,
 ) -> Result<T, StoreError> {
-    let timeout = io_timeout();
+    let timeout = io_timeout(what);
     match tokio::time::timeout(timeout, io).await {
         Ok(result) => result.map_err(|e| database_error(&e)),
         Err(_) => {

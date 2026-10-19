@@ -3,11 +3,46 @@ use crate::store::error::to_i64;
 use crate::store::test_support::{sqlite_config, TempDir};
 use crate::store::{Mode, Store};
 
+/// A bound [`super::set_io_timeout`] or [`super::set_commit_timeout`] put in
+/// place: the timeout, and whether it covers COMMIT alone.
+#[cfg(feature = "store-postgres")]
+type IoTimeoutOverride = Option<(std::time::Duration, bool)>;
+
 #[cfg(feature = "store-postgres")]
 thread_local! {
-    /// The bound [`super::set_io_timeout`] put in place for this test thread.
-    pub(super) static IO_TIMEOUT: std::cell::Cell<Option<std::time::Duration>> =
-        const { std::cell::Cell::new(None) };
+    static IO_TIMEOUT: std::cell::Cell<IoTimeoutOverride> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(feature = "store-postgres")]
+pub(super) fn io_timeout_override(what: &str) -> Option<std::time::Duration> {
+    match IO_TIMEOUT.with(std::cell::Cell::get) {
+        Some((timeout, commit_only)) if !commit_only || what == "COMMIT" => Some(timeout),
+        _ => None,
+    }
+}
+
+/// Restores the bound in place before it was installed, so a panicking test
+/// does not leave its bound on the thread.
+#[cfg(feature = "store-postgres")]
+#[must_use = "the bound is restored when the guard drops"]
+pub(crate) struct IoTimeoutGuard {
+    previous: IoTimeoutOverride,
+}
+
+#[cfg(feature = "store-postgres")]
+impl IoTimeoutGuard {
+    pub(super) fn install(timeout: std::time::Duration, commit_only: bool) -> Self {
+        Self {
+            previous: IO_TIMEOUT.with(|cell| cell.replace(Some((timeout, commit_only)))),
+        }
+    }
+}
+
+#[cfg(feature = "store-postgres")]
+impl Drop for IoTimeoutGuard {
+    fn drop(&mut self) {
+        IO_TIMEOUT.with(|cell| cell.set(self.previous));
+    }
 }
 
 #[cfg(feature = "store-postgres")]
@@ -19,6 +54,32 @@ pub(super) fn release_timeout_override() -> Option<std::time::Duration> {
     match RELEASE_TIMEOUT_MS.load(std::sync::atomic::Ordering::SeqCst) {
         0 => None,
         ms => Some(std::time::Duration::from_millis(ms)),
+    }
+}
+
+/// Replaces the release bound until the guard drops, panicking tests included.
+#[cfg(feature = "store-postgres")]
+#[must_use = "the bound is restored when the guard drops"]
+struct ReleaseTimeoutGuard {
+    previous: u64,
+}
+
+#[cfg(feature = "store-postgres")]
+impl ReleaseTimeoutGuard {
+    fn install(timeout: std::time::Duration) -> Self {
+        let ms = u64::try_from(timeout.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        Self {
+            previous: RELEASE_TIMEOUT_MS.swap(ms, std::sync::atomic::Ordering::SeqCst),
+        }
+    }
+}
+
+#[cfg(feature = "store-postgres")]
+impl Drop for ReleaseTimeoutGuard {
+    fn drop(&mut self) {
+        RELEASE_TIMEOUT_MS.store(self.previous, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -199,7 +260,7 @@ crate::store::contract::store_contract_test!(
             #[cfg(feature = "store-postgres")]
             {
                 use std::time::Duration;
-                super::set_io_timeout(Some(Duration::from_millis(300)));
+                let _bound = super::set_io_timeout(Duration::from_millis(300));
                 let mut tx = store.db().begin().await.unwrap();
                 // A statement that has not answered yet stands in for one whose
                 // reply a half-open connection will never deliver.
@@ -216,7 +277,6 @@ crate::store::contract::store_contract_test!(
                     Err(other) => panic!("expected the round trip to time out, got {other:?}"),
                     Ok(_) => panic!("the round trip must not answer within its bound"),
                 }
-                super::set_io_timeout(None);
             }
         }
     }
@@ -228,10 +288,9 @@ crate::store::contract::store_contract_test!(
     |store| {
         // SQLite is a local file: there is no connection to go half-open.
         if let Db::Postgres(pool) = store.db() {
-            use std::sync::atomic::Ordering;
             use std::time::Duration;
-            super::set_io_timeout(Some(Duration::from_millis(300)));
-            RELEASE_TIMEOUT_MS.store(300, Ordering::SeqCst);
+            let _bound = super::set_io_timeout(Duration::from_millis(300));
+            let _release_bound = ReleaseTimeoutGuard::install(Duration::from_millis(300));
             let mut tx = store.db().begin().await.unwrap();
             let before = pool.size();
             let outcome = tx.fetch_optional("SELECT pg_sleep(3)", &[]).await;
@@ -244,10 +303,11 @@ crate::store::contract::store_contract_test!(
             // The server is still sleeping, so an unbounded release ping would
             // hold the connection for the remaining ~2.7 s. Bounded, it is closed.
             tokio::time::sleep(Duration::from_millis(1200)).await;
-            let size = pool.size();
-            RELEASE_TIMEOUT_MS.store(0, Ordering::SeqCst);
-            super::set_io_timeout(None);
-            assert_eq!(size, before - 1, "the timed-out connection must be closed");
+            assert_eq!(
+                pool.size(),
+                before - 1,
+                "the timed-out connection must be closed"
+            );
         }
     }
 );
@@ -258,7 +318,7 @@ crate::store::contract::store_contract_test!(
     |store| {
         if let Db::Postgres(pool) = store.db() {
             use std::time::Duration;
-            super::set_io_timeout(Some(Duration::from_millis(100)));
+            let _bound = super::set_io_timeout(Duration::from_millis(100));
             let mut tx = store.db().begin().await.unwrap();
             let before = pool.size();
             let outcome = tx.fetch_optional("SELECT pg_sleep(0.5)", &[]).await;
@@ -268,9 +328,11 @@ crate::store::contract::store_contract_test!(
             // connection must not be returned: a cancelled request may have
             // left the server inside a transaction sqlx does not know about.
             tokio::time::sleep(Duration::from_millis(1200)).await;
-            let size = pool.size();
-            super::set_io_timeout(None);
-            assert_eq!(size, before - 1, "a drained connection must be closed");
+            assert_eq!(
+                pool.size(),
+                before - 1,
+                "a drained connection must be closed"
+            );
         }
     }
 );
