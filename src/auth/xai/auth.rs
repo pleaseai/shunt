@@ -9,7 +9,7 @@
 //! [`super::login`]) and owned solely by shunt.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
     sync::{LazyLock, Mutex as StdMutex, PoisonError},
@@ -71,7 +71,24 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 /// refreshes instead of handing that token out again until it expires; a
 /// successful refresh clears the mark, and a failed one leaves it set.
 /// Process-local, like the refresh locks.
-static FORCED_REFRESH: LazyLock<StdMutex<HashSet<PathBuf>>> = LazyLock::new(Default::default);
+static FORCED_REFRESH: LazyLock<StdMutex<ForcedRefresh>> = LazyLock::new(Default::default);
+
+/// The forced-refresh marks, plus the resolved file each marked spelling was
+/// found to name. The aliases let a refresh clear every spelling of its file
+/// without resolving anyone else's marked paths, which is file-system I/O
+/// that a hung mount under another account could stall.
+#[derive(Default)]
+struct ForcedRefresh {
+    marked: HashSet<PathBuf>,
+    /// Spelling as marked -> the resolved file it names.
+    aliases: HashMap<PathBuf, PathBuf>,
+}
+
+fn forced_refresh() -> std::sync::MutexGuard<'static, ForcedRefresh> {
+    FORCED_REFRESH
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Make the next `get_valid` for `path` refresh even an unexpired token. The
 /// mark is keyed by the resolved file, like the refresh lock, so a store that
@@ -82,23 +99,29 @@ static FORCED_REFRESH: LazyLock<StdMutex<HashSet<PathBuf>>> = LazyLock::new(Defa
 /// account at once (a single-account pool keeps a cooled account eligible as a
 /// last resort) refreshes instead of resending the rejected token. Resolving
 /// the path is file-system I/O on the request path of every xAI 401, so the
-/// resolved mark is added from the blocking thread pool. That task runs to
-/// completion whether or not anyone awaits it, so a caller cancelled
-/// mid-request (a disconnecting client) cannot lose it. The request path drops
-/// the handle; tests await it.
+/// resolved mark is added from the blocking thread pool ([`record_resolved_mark`]).
+/// That task runs to completion whether or not anyone awaits it, so a caller
+/// cancelled mid-request (a disconnecting client) cannot lose it. The request
+/// path drops the handle; tests await it.
 pub(crate) fn force_refresh_next(path: &Path) -> tokio::task::JoinHandle<()> {
     let raw = path.to_path_buf();
-    FORCED_REFRESH
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(raw.clone());
+    forced_refresh().marked.insert(raw.clone());
     tokio::task::spawn_blocking(move || {
-        let resolved = normalized_auth_path(raw);
-        FORCED_REFRESH
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(resolved);
+        let resolved = normalized_auth_path(raw.clone());
+        record_resolved_mark(raw, resolved);
     })
+}
+
+/// Add the resolved mark for `raw`, and remember which file `raw` names — but
+/// only while `raw` is still marked. A refresh that already consumed the raw
+/// mark replaced the rejected token, so re-adding it would cost a needless
+/// second refresh.
+fn record_resolved_mark(raw: PathBuf, resolved: PathBuf) {
+    let mut forced = forced_refresh();
+    if forced.marked.contains(&raw) {
+        forced.marked.insert(resolved.clone());
+        forced.aliases.insert(raw, resolved);
+    }
 }
 
 /// Whether `path` is marked by [`force_refresh_next`], as given or resolved.
@@ -109,32 +132,26 @@ pub(crate) fn force_refresh_pending(path: &Path) -> bool {
 
 /// Whether exactly `path` is marked by [`force_refresh_next`].
 fn forced_refresh_marked(path: &Path) -> bool {
-    FORCED_REFRESH
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .contains(path)
+    forced_refresh().marked.contains(path)
 }
 
-/// Clear every mark for the file `resolved`: the resolved path and any
-/// spelling that resolves to it. Resolving each spelling is file-system I/O,
-/// so this runs on the blocking thread pool, and outside the set's lock.
-fn clear_forced_refresh(resolved: &Path) {
-    let marked: Vec<PathBuf> = FORCED_REFRESH
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .iter()
-        .cloned()
-        .collect();
-    let stale: Vec<PathBuf> = marked
-        .into_iter()
-        .filter(|path| path == resolved || normalized_auth_path(path.clone()) == resolved)
-        .collect();
-    let mut set = FORCED_REFRESH
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    for path in &stale {
-        set.remove(path);
-    }
+/// Clear every mark for the file `resolved` after its refresh: the resolved
+/// path, the refreshing store's own `configured` spelling, and every spelling
+/// recorded as naming `resolved`. No path is resolved here, so other accounts'
+/// marks cost nothing. A spelling marked so recently that its alias is not yet
+/// recorded may survive, costing at most one extra refresh.
+fn clear_forced_refresh(resolved: &Path, configured: &Path) {
+    let mut forced = forced_refresh();
+    let ForcedRefresh { marked, aliases } = &mut *forced;
+    marked.remove(resolved);
+    marked.remove(configured);
+    aliases.retain(|raw, target| {
+        let stale = target == resolved || raw == configured;
+        if stale {
+            marked.remove(raw);
+        }
+        !stale
+    });
 }
 
 /// Tokens as stored on disk under the `tokens` object.
@@ -254,6 +271,7 @@ impl XaiAuthStore {
         let client = self.client.clone();
         let token_url = self.token_url.clone();
         let login_command = self.login_command.clone();
+        let configured = self.path.clone();
         let refresh_timeout = self.refresh_timeout;
         let handle = tokio::spawn(async move {
             let _refreshing = refreshing; // held until the write below completes
@@ -289,10 +307,7 @@ impl XaiAuthStore {
             )
             .await
             .map_err(|error| auth_error(format!("failed to update xAI auth file: {error}")))?;
-            {
-                let path = path.clone();
-                let _ = tokio::task::spawn_blocking(move || clear_forced_refresh(&path)).await;
-            }
+            clear_forced_refresh(&path, &configured);
             tracing::info!("refreshed xAI OAuth access token");
             Ok::<String, AdapterError>(refreshed.access_token)
         });
@@ -1290,6 +1305,67 @@ mod tests {
         let _pending = force_refresh_next(&file);
         assert_eq!(store.get_valid().await.unwrap().access_token, fresh);
 
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// The resolved mark lands from a blocking task, possibly after a refresh
+    /// already consumed the raw mark. It must not re-add a mark that refresh
+    /// cleared, which would cost a needless second refresh.
+    #[test]
+    fn a_resolved_mark_landing_after_its_refresh_is_not_re_added() {
+        let raw = temp_path("late-alias");
+        let resolved = raw.with_file_name("resolved.json");
+        forced_refresh().marked.insert(raw.clone());
+        // The refresh consumes the raw mark before the blocking task resolves it.
+        clear_forced_refresh(&resolved, &raw);
+
+        record_resolved_mark(raw.clone(), resolved.clone());
+
+        assert!(!forced_refresh_marked(&raw));
+        assert!(!forced_refresh_marked(&resolved));
+        assert!(!forced_refresh().aliases.contains_key(&raw));
+    }
+
+    /// Clearing after a refresh touches only its own file's marks: another
+    /// account's mark, even under a directory that cannot be resolved, is left
+    /// as it is and does not hold the refresh up.
+    #[tokio::test]
+    async fn a_refresh_clears_only_its_own_files_marks() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let fresh = jwt(future_exp() + 60);
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": fresh,
+                "refresh_token": "rotated-refresh",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let unrelated = temp_path("unresolvable").join("missing").join("other.json");
+        force_refresh_next(&unrelated).await.unwrap();
+        let file = temp_path("own-marks");
+        write_tokens(&file, &jwt(future_exp()), "old-refresh", None).unwrap();
+        force_refresh_next(&file).await.unwrap();
+        let store = XaiAuthStore::with_token_url(
+            file.clone(),
+            reqwest::Client::new(),
+            format!("{}/token", server.uri()),
+        );
+
+        let refreshed = tokio::time::timeout(std::time::Duration::from_secs(5), store.get_valid())
+            .await
+            .expect("the refresh stalled on another account's mark");
+        assert_eq!(refreshed.unwrap().access_token, fresh);
+        assert!(!force_refresh_pending(&file));
+        assert!(forced_refresh_marked(&unrelated));
+
+        clear_forced_refresh(&unrelated, &unrelated);
         server.verify().await;
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
