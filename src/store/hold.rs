@@ -29,9 +29,14 @@ const CREATE_TABLE: &str = "CREATE TABLE IF NOT EXISTS instance_hold (\
 const SEED_ROW: &str = "INSERT INTO instance_hold (id) VALUES (1) ON CONFLICT DO NOTHING";
 const READ_ROW: &str =
     "SELECT holder_id, holder_label, heartbeat_at FROM instance_hold WHERE id = 1";
+/// [`READ_ROW`] taking the row lock, for [`Store::acquire_hold`] on PostgreSQL.
+#[cfg(feature = "store-postgres")]
+const READ_ROW_FOR_UPDATE: &str =
+    "SELECT holder_id, holder_label, heartbeat_at FROM instance_hold WHERE id = 1 FOR UPDATE";
 
-/// How long [`Store::begin_settled`] waits for the hold row lock on PostgreSQL.
-/// A durable transaction holds that lock only for its own short write. One
+/// How long [`Store::begin_settled`] and [`Store::acquire_hold`] wait for the
+/// hold row lock on PostgreSQL. A durable transaction holds that lock only for
+/// its own short write. One
 /// that holds it longer is usually a backend whose client is gone (the
 /// connection broke during COMMIT) and that the server has not yet reaped, and
 /// waiting for it would keep the caller's lock held for just as long.
@@ -54,7 +59,8 @@ pub(crate) struct HoldState {
     label: String,
     stale_seconds: u64,
     fenced: AtomicBool,
-    /// Read only by the PostgreSQL arm of [`Store::begin_settled`].
+    /// Read only by the PostgreSQL arms of [`Store::begin_settled`] and
+    /// [`Store::acquire_hold`].
     #[cfg_attr(not(feature = "store-postgres"), allow(dead_code))]
     settled_lock_timeout_ms: AtomicU64,
 }
@@ -182,11 +188,11 @@ impl Store {
     /// has it.
     pub(crate) async fn acquire_hold(&self) -> Result<Option<Takeover>, StoreError> {
         let mut tx = self.db().begin_immediate().await?;
-        // Sampled after the begin: on SQLite it can wait out another writer,
-        // and the stale cutoff must reflect when the row is read.
+        let before = self.read_row_locked(&mut tx).await?;
+        // Sampled once the row lock is held: taking it can wait out another
+        // writer, and the stale cutoff must reflect when the row is read.
         let now = now_secs();
         let stale = i64::try_from(self.hold.stale_seconds).unwrap_or(i64::MAX);
-        let before = read_row(&mut tx).await?;
         let changed = tx
             .execute(
                 ACQUIRE,
@@ -292,6 +298,23 @@ impl Store {
         self.renew_in(tx).await
     }
 
+    /// Read the hold row with its lock held for the rest of `tx`. SQLite's
+    /// `BEGIN IMMEDIATE` already holds the write lock, so a plain read does.
+    /// PostgreSQL takes the row lock here (`FOR UPDATE`), bounded like
+    /// [`Self::begin_settled`]; without it the `ACQUIRE` update would wait for
+    /// the lock with a stale cutoff computed before the wait, and the row read
+    /// could name an earlier holder than the one the update displaces.
+    async fn read_row_locked(&self, tx: &mut Tx) -> Result<Option<HoldRow>, StoreError> {
+        match tx {
+            Tx::Sqlite(_) => read_row(tx).await,
+            #[cfg(feature = "store-postgres")]
+            Tx::Postgres(_) => {
+                self.bound_lock_wait(tx).await?;
+                read_row_with(tx, READ_ROW_FOR_UPDATE).await
+            }
+        }
+    }
+
     /// Set the settled lock timeout for the rest of `tx`. A no-op on SQLite.
     async fn bound_lock_wait(&self, tx: &mut Tx) -> Result<(), StoreError> {
         match tx {
@@ -394,8 +417,12 @@ impl HoldRow {
 }
 
 async fn read_row(tx: &mut Tx) -> Result<Option<HoldRow>, StoreError> {
+    read_row_with(tx, READ_ROW).await
+}
+
+async fn read_row_with(tx: &mut Tx, sql: &str) -> Result<Option<HoldRow>, StoreError> {
     let params: [Value; 0] = [];
-    match tx.fetch_optional(READ_ROW, &params).await? {
+    match tx.fetch_optional(sql, &params).await? {
         Some(row) => Ok(Some(HoldRow {
             holder_id: row.opt_text(0)?,
             label: row.opt_text(1)?,

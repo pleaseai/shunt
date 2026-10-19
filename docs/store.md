@@ -130,6 +130,11 @@ export store state back to JSON.
 
 One store is for one shunt process. A single `instance_hold` row names the
 holder; acquiring it is one conditional `UPDATE`, identical on both engines.
+Before that `UPDATE`, the opener takes the row's lock: SQLite starts the
+transaction with `BEGIN IMMEDIATE`, and PostgreSQL reads the row `FOR UPDATE`,
+waiting at most 5 s (`lock_timeout`). The stale check and the takeover warning
+then use the row as it is once the lock is held, so a hold that goes stale while
+the opener waits for a holder's write is taken over rather than refused.
 
 - The holder label is `{HOSTNAME}:{pid}`: the `HOSTNAME` environment variable,
   else the operating-system hostname, else `unknown-host`.
@@ -137,6 +142,9 @@ holder; acquiring it is one conditional `UPDATE`, identical on both engines.
   held by another shunt instance (<label>), last renewed Ns ago; only one shunt
   process can use a store at a time`. It is refused before it migrates anything,
   so a newer binary in a rolling deploy cannot change a live holder's schema.
+  On PostgreSQL, an opener that cannot get the row lock within 5 s (a holder's
+  transaction left open, typically by a backend whose client is gone) fails with
+  a database error naming the lock timeout instead.
 - The holder renews the hold every `hold_stale_seconds / 3` seconds (at least 1).
   A hold that has not been renewed for more than `hold_stale_seconds` (default
   `30`, minimum `3`) is stale; the next opener takes it over and logs a warning
