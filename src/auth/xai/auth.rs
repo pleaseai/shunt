@@ -76,20 +76,21 @@ static FORCED_REFRESH: LazyLock<StdMutex<HashSet<PathBuf>>> = LazyLock::new(Defa
 /// Make the next `get_valid` for `path` refresh even an unexpired token. The
 /// mark is keyed by the resolved file, like the refresh lock, so a store that
 /// reaches the same file through another spelling (a symlink) still sees it.
-/// The path is resolved on the blocking thread pool, since resolving it is
-/// file-system I/O and this runs on the request path of every xAI 401.
-pub(crate) async fn force_refresh_next(path: &Path) {
+///
+/// Resolving the path is file-system I/O on the request path of every xAI
+/// 401, so both the resolution and the insert run on the blocking thread pool.
+/// That task runs to completion whether or not anyone awaits it, so a caller
+/// cancelled mid-request (a disconnecting client) cannot lose the mark. The
+/// request path drops the handle; tests await it.
+pub(crate) fn force_refresh_next(path: &Path) -> tokio::task::JoinHandle<()> {
     let raw = path.to_path_buf();
-    let resolved = {
-        let raw = raw.clone();
-        tokio::task::spawn_blocking(move || normalized_auth_path(raw))
-    }
-    .await
-    .unwrap_or(raw);
-    FORCED_REFRESH
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(resolved);
+    tokio::task::spawn_blocking(move || {
+        let resolved = normalized_auth_path(raw);
+        FORCED_REFRESH
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(resolved);
+    })
 }
 
 /// Whether `path` is marked by [`force_refresh_next`].
@@ -750,7 +751,7 @@ mod tests {
         // Unmarked, the unexpired token is used as is.
         assert_eq!(store.get_valid().await.unwrap().access_token, rejected);
 
-        force_refresh_next(&file).await;
+        force_refresh_next(&file).await.unwrap();
         assert_eq!(store.get_valid().await.unwrap().access_token, fresh);
         // The mark is cleared: the refreshed token is reused without a second
         // refresh (the mock expects exactly one).
@@ -1071,7 +1072,7 @@ mod tests {
         // The real spelling reuses the rotated token without refreshing again.
         assert_eq!(via_real.get_valid().await.unwrap().access_token, fresh);
 
-        force_refresh_next(&link).await;
+        force_refresh_next(&link).await.unwrap();
         assert!(force_refresh_pending(&real));
         assert_eq!(via_real.get_valid().await.unwrap().access_token, fresh);
         assert!(!force_refresh_pending(&link));
@@ -1200,6 +1201,28 @@ mod tests {
         assert_eq!(store.get_valid().await.unwrap().access_token, fresh);
 
         server.verify().await;
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// The request path never awaits the mark, and a caller dropped right after
+    /// asking for it (a disconnecting client) must not lose it: the blocking
+    /// task still resolves the path and records the mark.
+    #[tokio::test]
+    async fn a_forced_refresh_mark_survives_its_caller_going_away() {
+        let file = temp_path("mark-detached");
+        write_tokens(&file, &jwt(future_exp()), "refresh", None).unwrap();
+
+        drop(force_refresh_next(&file));
+
+        let mut marked = false;
+        for _ in 0..200 {
+            if force_refresh_pending(&file) {
+                marked = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(marked, "the mark was lost with its dropped handle");
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 }

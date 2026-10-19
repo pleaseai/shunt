@@ -1947,7 +1947,7 @@ pub(super) async fn classify_first(
     verbatim: bool,
 ) -> Result<FirstOutcome, AdapterError> {
     if account.store_family == Some(accounts::StoreFamily::Xai) {
-        return Ok(classify_first_xai(state, route, account, upstream).await);
+        return Ok(classify_first_xai(state, route, account, upstream));
     }
     let status = upstream.status();
     match accounts::classify_codex(status, upstream.headers()) {
@@ -1985,7 +1985,7 @@ pub(super) async fn classify_first(
 /// bookkeeping, classified with [`accounts::classify_xai`] and without the
 /// Codex-only 400 model-refusal read, so a relayed 4xx keeps its body unread.
 /// `classify_xai` never asks for a refresh retry; the defensive arms rotate.
-async fn classify_first_xai(
+fn classify_first_xai(
     state: &AppState,
     route: &Route,
     account: &AccountConfig,
@@ -1998,8 +1998,10 @@ async fn classify_first_xai(
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 // A token is only sent while unexpired, so a 401 means xAI
                 // revoked it early: refresh on this account's next use rather
-                // than resend it every cooldown until its `exp`.
-                auth::force_xai_refresh(account).await;
+                // than resend it every cooldown until its `exp`. Not awaited:
+                // the mark lands even if this request is cancelled, and nothing
+                // here waits, so the cooldown below cannot be skipped either.
+                let _ = auth::force_xai_refresh(account);
             }
             let cooldown = rotate_cooldown(status, upstream.headers());
             state.accounts.cooldown(

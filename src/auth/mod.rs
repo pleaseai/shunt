@@ -445,11 +445,16 @@ fn xai_account_file(account: &crate::config::AccountConfig) -> PathBuf {
 /// Mark a pooled xAI account whose token xAI rejected (an upstream 401) so its
 /// next [`resolve_xai_account`] refreshes instead of resending that token
 /// until its JWT `exp`. A `token_env` token is static and has nothing to
-/// refresh.
-pub async fn force_xai_refresh(account: &crate::config::AccountConfig) {
-    if account.token_env.is_none() {
-        xai::auth::force_refresh_next(&xai_account_file(account)).await;
-    }
+/// refresh, so it gets no handle. The mark lands in a blocking task that runs
+/// to completion on its own ([`xai::auth::force_refresh_next`]), so the caller
+/// need not await the handle.
+pub fn force_xai_refresh(
+    account: &crate::config::AccountConfig,
+) -> Option<tokio::task::JoinHandle<()>> {
+    account
+        .token_env
+        .is_none()
+        .then(|| xai::auth::force_refresh_next(&xai_account_file(account)))
 }
 
 /// Resolve one ChatGPT (Codex) OAuth account for the account pool. Unlike
