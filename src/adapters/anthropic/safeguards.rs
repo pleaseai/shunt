@@ -91,7 +91,7 @@ fn is_safeguard_beta(token: &str) -> bool {
 /// True only for a provider whose `base_url` host is `api.anthropic.com`. An
 /// unparseable or host-less base URL is treated as third-party: stripping a
 /// field the host may not accept is recoverable, sending one it rejects is not.
-fn is_first_party(base_url: &str) -> bool {
+pub(super) fn is_first_party(base_url: &str) -> bool {
     url::Url::parse(base_url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_ascii_lowercase))

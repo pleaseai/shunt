@@ -27,6 +27,7 @@ mod deferral;
 mod model_rewrite;
 mod safeguards;
 mod thinking;
+mod thinking_wrap;
 
 pub struct AnthropicAdapter;
 
@@ -92,6 +93,9 @@ async fn forward(
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
     safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
+    // Before the strip: a third-party provider gets its own wrapped signatures
+    // back, and the strip then drops every envelope naming anyone else.
+    thinking_wrap::restore_own_signatures(&mut body, provider);
     thinking::strip_foreign_thinking(&mut body);
     let body = body.into_raw();
     // Bounded transient retry (issue #48) for this single-credential path. Kept
@@ -784,6 +788,9 @@ async fn forward_kimi_oauth(
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
     safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
+    // Kimi is a third-party signing host: its own envelopes are restored before
+    // the strip, as on the API-key path.
+    thinking_wrap::restore_own_signatures(&mut body, provider);
     thinking::strip_foreign_thinking(&mut body);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
@@ -1100,6 +1107,16 @@ async fn relay_response(
     // When alias == upstream_model there is nothing to restore: `None` keeps the
     // body byte-for-byte, preserving passthrough for api.anthropic.com routes.
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
+    // Wrap a third-party upstream's thinking signatures so a later turn routed
+    // to Anthropic drops them instead of failing on them (issue #783). `None`
+    // for first-party and `claude_oauth` providers, whose bodies stay
+    // byte-for-byte passthrough. Only a success is rewritten when buffered: an
+    // error body carries no thinking block.
+    let signing_key = state
+        .config
+        .provider(&route.provider)
+        .and_then(thinking_wrap::signing_key);
+    let wrap_buffered = signing_key.is_some() && status.is_success();
 
     let mut builder = Response::builder().status(status);
     for (name, value) in response_headers {
@@ -1129,14 +1146,22 @@ async fn relay_response(
             alias,
             max_first_frame,
         );
+        // The signature wrap holds at most one incomplete frame, under the
+        // same ceiling, and sits inside the pings so they still land only
+        // between the frames it emits.
+        let stream = thinking_wrap::wrap_signature_stream(
+            stream,
+            signing_key.map(str::to_owned),
+            max_first_frame,
+        );
         Body::from_stream(keepalive::with_pings(
             stream,
             Duration::from_secs(state.config.server.sse_keepalive_seconds),
         ))
-    } else if let Some(alias) = alias {
+    } else if alias.is_some() || wrap_buffered {
         // Non-streaming JSON: the client asked for a buffered response, so
-        // reading it whole to rewrite the top-level `model` respects the
-        // "don't buffer SSE unless non-streaming" rule.
+        // reading it whole to rewrite the top-level `model` or the thinking
+        // signatures respects the "don't buffer SSE unless non-streaming" rule.
         //
         // `bounds` is what keeps that read from being unbounded on an internal
         // call. A judge or gated target is an alias route by construction —
@@ -1152,7 +1177,15 @@ async fn relay_response(
         // `reqwest`'s own `bytes()`.
         match crate::adapters::collect_upstream_body(upstream, bounds.max_bytes, bounds.idle).await
         {
-            Ok(bytes) => Body::from(model_rewrite::rewrite_response_model(bytes, &alias)),
+            Ok(mut bytes) => {
+                if let Some(alias) = &alias {
+                    bytes = model_rewrite::rewrite_response_model(bytes, alias);
+                }
+                if let Some(key) = signing_key.filter(|_| wrap_buffered) {
+                    bytes = thinking_wrap::wrap_response_signatures(bytes, key);
+                }
+                Body::from(bytes)
+            }
             // A successful reply cut mid-body is a turn that ended before its
             // terminal marker; a relayed refusal cut mid-body stays a refusal.
             Err(crate::adapters::UpstreamBodyError::Transport(error)) => {
@@ -1505,6 +1538,10 @@ pub(crate) async fn chain_attempt(
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
     safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
+    // This path wraps a third-party winner's signatures like `relay_response`
+    // does, so it has to restore them for that same upstream too, or a turn
+    // served here twice running would hand the host its own signature wrapped.
+    thinking_wrap::restore_own_signatures(&mut body, provider);
     let body = bytes::Bytes::from(body.into_raw());
     let policy = provider.retry.policy();
     let url = upstream_url(state, route, uri);
@@ -1610,11 +1647,13 @@ pub(crate) async fn chain_attempt(
         };
     }
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
-    let frames = model_rewrite::rewrite_first_model_stream(
-        upstream.bytes_stream(),
-        alias,
-        // The client streaming chain carries no cap of its own.
-        model_rewrite::first_frame_ceiling(None),
+    // The client streaming chain carries no cap of its own.
+    let ceiling = model_rewrite::first_frame_ceiling(None);
+    let frames = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias, ceiling);
+    let frames = thinking_wrap::wrap_signature_stream(
+        frames,
+        thinking_wrap::signing_key(provider).map(str::to_owned),
+        ceiling,
     )
     .map(|chunk| {
         chunk.map_err(|error| {
