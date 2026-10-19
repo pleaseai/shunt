@@ -99,7 +99,9 @@ pub(crate) fn is_codex_request(uri: &Uri, codex_endpoint_enabled: bool) -> bool 
 /// Classify the unambiguous, path-only Codex routes shared by middleware that
 /// has no boot-time catalog negotiation state.
 pub(crate) fn is_codex_path(path: &str) -> bool {
-    crate::codex_endpoint::PATHS.contains(&path) || crate::codex_analytics::PATHS.contains(&path)
+    crate::codex_endpoint::PATHS.contains(&path)
+        || crate::codex_endpoint::search::PATHS.contains(&path)
+        || crate::codex_analytics::PATHS.contains(&path)
 }
 
 async fn overloaded_response(codex_shape: bool) -> Response {
@@ -287,6 +289,7 @@ mod tests {
         // covers every real Codex route rather than a copy that could drift.
         for path in crate::codex_endpoint::PATHS
             .into_iter()
+            .chain(crate::codex_endpoint::search::PATHS)
             .chain(crate::codex_analytics::PATHS)
         {
             let response = limited_router_with_calls(path, 0, calls.clone())

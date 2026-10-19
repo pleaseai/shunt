@@ -52,7 +52,7 @@ use self::early_stream::{
 };
 use self::error::{adapter_error_envelope, own_error, transport_error};
 use self::http::forward_http;
-pub(crate) use self::inbound::forward_codex_inbound;
+pub(crate) use self::inbound::{forward_codex_inbound, CodexOperation};
 pub(crate) use self::inbound_routed::forward_codex_routed;
 use self::pool::{
     forward_chatgpt_oauth, forward_chatgpt_oauth_stream, pool_events_stream, PoolForwardStream,
