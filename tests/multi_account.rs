@@ -727,15 +727,18 @@ async fn read_raw_request(stream: &mut tokio::net::TcpStream) -> String {
         let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
             continue;
         };
-        let head = String::from_utf8_lossy(&buffer[..end]).to_ascii_lowercase();
-        let length = head
-            .lines()
-            .find_map(|line| line.strip_prefix("content-length:"))
-            .map_or(0, |value| value.trim().parse::<usize>().unwrap());
+        // Header names are case-insensitive; values (the bearer) are not.
+        let head = String::from_utf8_lossy(&buffer[..end]);
+        let header = |name: &str| {
+            head.lines().find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.trim().eq_ignore_ascii_case(name).then(|| value.trim())
+            })
+        };
+        let length = header("content-length").map_or(0, |value| value.parse::<usize>().unwrap());
         if buffer.len() >= end + 4 + length {
-            return head
-                .lines()
-                .find_map(|line| line.strip_prefix("authorization: bearer "))
+            return header("authorization")
+                .and_then(|value| value.strip_prefix("Bearer "))
                 .unwrap_or_default()
                 .to_string();
         }
@@ -816,7 +819,7 @@ async fn transport_failure_retries_the_same_account_once_before_rotating() {
     };
     assert_eq!(
         *bearers.lock().unwrap(),
-        vec![token.to_ascii_lowercase(), token.to_ascii_lowercase()],
+        vec![token.clone(), token.clone()],
         "both sends go to {served_by}; the other account is never tried"
     );
     upstream.abort();
@@ -845,7 +848,7 @@ async fn repeated_transport_failure_cools_down_and_rotates() {
     let bearers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let upstream = {
         let bearers = std::sync::Arc::clone(&bearers);
-        let failing = token_a.to_ascii_lowercase();
+        let failing = token_a.clone();
         tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -891,7 +894,7 @@ async fn repeated_transport_failure_cools_down_and_rotates() {
         "account-b"
     );
 
-    let (a, b) = (token_a.to_ascii_lowercase(), token_b.to_ascii_lowercase());
+    let (a, b) = (token_a, token_b);
     assert_eq!(*bearers.lock().unwrap(), vec![a.clone(), a, b.clone(), b]);
     upstream.abort();
 }
@@ -967,7 +970,7 @@ async fn throttle_retry_transport_failure_resends_to_the_same_account() {
         response.headers().get("x-shunt-account").unwrap(),
         "account-a"
     );
-    let a = token_a.to_ascii_lowercase();
+    let a = token_a;
     assert_eq!(*bearers.lock().unwrap(), vec![a.clone(), a.clone(), a]);
     upstream.abort();
 }
