@@ -171,7 +171,7 @@ impl Store {
     }
 
     async fn create_hold_table(&self) -> Result<(), StoreError> {
-        let mut tx = self.db().begin().await?;
+        let mut tx = self.db().begin_immediate().await?;
         tx.execute(CREATE_TABLE, &[]).await?;
         tx.execute(SEED_ROW, &[]).await?;
         tx.commit().await
@@ -183,7 +183,7 @@ impl Store {
     pub(crate) async fn acquire_hold(&self) -> Result<Option<Takeover>, StoreError> {
         let now = now_secs();
         let stale = i64::try_from(self.hold.stale_seconds).unwrap_or(i64::MAX);
-        let mut tx = self.db().begin().await?;
+        let mut tx = self.db().begin_immediate().await?;
         let before = read_row(&mut tx).await?;
         let changed = tx
             .execute(

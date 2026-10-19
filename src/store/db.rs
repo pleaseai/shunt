@@ -144,6 +144,23 @@ impl Db {
         }
     }
 
+    /// Start a transaction that reads before it writes. SQLite refuses a
+    /// deferred transaction's read-to-write upgrade at once when another
+    /// process holds or has just committed a write, without waiting out the
+    /// busy timeout; `BEGIN IMMEDIATE` takes the write lock up front, so it
+    /// waits instead. PostgreSQL needs no such lock and starts a plain one.
+    pub async fn begin_immediate(&self) -> Result<Tx, StoreError> {
+        match self {
+            Self::Sqlite(pool) => Ok(Tx::Sqlite(
+                pool.begin_with("BEGIN IMMEDIATE")
+                    .await
+                    .map_err(|e| database_error(&e))?,
+            )),
+            #[cfg(feature = "store-postgres")]
+            Self::Postgres(_) => self.begin().await,
+        }
+    }
+
     /// Close the pool, waiting for the connection to be released. For SQLite
     /// this checkpoints the WAL when the last connection closes.
     pub async fn close(&self) {

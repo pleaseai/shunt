@@ -298,3 +298,30 @@ async fn inspect_never_touches_the_hold() {
     assert_eq!(row(&store).await, before);
     store.close().await;
 }
+
+/// A second opener that arrives while the holder is mid-write (a heartbeat
+/// renewal) must wait for the lock and be refused with `HoldHeld`, not fail
+/// with SQLite's "database is locked": a deferred transaction that read the
+/// row and then upgrades to write is refused at once, the busy timeout never
+/// applies to it.
+#[tokio::test]
+async fn opener_racing_a_holder_write_is_refused_not_locked() {
+    use crate::store::test_support::{sqlite_config, TempDir};
+    let dir = TempDir::new("hold-race");
+    let store = Store::open(&sqlite_config(&dir.file("s.db")), Mode::Serve)
+        .await
+        .unwrap();
+    let mut renewal = store.db().begin().await.unwrap();
+    renewal
+        .execute(RENEW, &[now_secs().into(), store.holder_id().into()])
+        .await
+        .unwrap();
+    let (opened, ()) = tokio::join!(open_second(&store, 30), async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        renewal.commit().await.unwrap();
+    });
+    let error = opened.unwrap_err();
+    assert!(matches!(error, StoreError::HoldHeld { .. }), "{error:?}");
+    assert_eq!(row(&store).await.0.as_deref(), Some(store.holder_id()));
+    store.close().await;
+}
