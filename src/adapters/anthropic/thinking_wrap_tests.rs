@@ -521,6 +521,15 @@ async fn last_received(server: &wiremock::MockServer) -> Value {
     serde_json::from_slice(&requests.last().unwrap().body).unwrap()
 }
 
+/// The `Accept-Encoding` the upstream last received.
+async fn last_accept_encoding(server: &wiremock::MockServer) -> Option<String> {
+    let requests = server.received_requests().await.unwrap();
+    let headers = &requests.last().unwrap().headers;
+    headers
+        .get("accept-encoding")
+        .map(|value| value.to_str().unwrap().to_string())
+}
+
 /// The whole round trip through `forward`, against wiremock upstreams: a
 /// third-party response leaves wrapped, the wrapped transcript goes back to
 /// that provider carrying the original signature, and the same transcript sent
@@ -582,6 +591,7 @@ async fn a_third_party_signature_round_trips_home_and_never_reaches_the_claude_p
     let mut headers = axum::http::HeaderMap::new();
     headers.insert("x-api-key", "client-key".parse().unwrap());
     headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+    headers.insert("accept-encoding", "gzip, br".parse().unwrap());
     let bounds = || crate::adapters::ResponseBounds {
         max_bytes: None,
         idle: None,
@@ -624,6 +634,12 @@ async fn a_third_party_signature_round_trips_home_and_never_reaches_the_claude_p
         unwrap_upstream_signature(&wrapped),
         Some((key_of(&minimax.uri()), "mm-original".to_string()))
     );
+    // shunt decodes no content coding, so a compressed reply could not be
+    // wrapped: the third-party host is asked for an uncompressed one.
+    assert_eq!(
+        last_accept_encoding(&minimax).await.as_deref(),
+        Some("identity")
+    );
 
     let next_turn = json!({
         "model": "m",
@@ -647,6 +663,11 @@ async fn a_third_party_signature_round_trips_home_and_never_reaches_the_claude_p
     let away = last_received(&claude).await;
     let _ = std::fs::remove_file(&credentials);
     assert_eq!(
+        last_accept_encoding(&claude).await.as_deref(),
+        Some("gzip, br"),
+        "a first-party request keeps the client's header"
+    );
+    assert_eq!(
         away["messages"][1]["content"],
         json!([{"type": "text", "text": "done"}]),
         "a signature Anthropic cannot verify never reaches it"
@@ -665,6 +686,7 @@ fn client_headers() -> axum::http::HeaderMap {
     let mut headers = axum::http::HeaderMap::new();
     headers.insert("x-api-key", "client-key".parse().unwrap());
     headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+    headers.insert("accept-encoding", "gzip, br".parse().unwrap());
     headers
 }
 
@@ -744,6 +766,10 @@ async fn chain_attempt_strips_foreign_and_restores_own_signatures() {
     let content = last_received(&upstream).await["messages"][1]["content"].clone();
     assert_eq!(content[0]["signature"], "mm-original");
     assert_eq!(content[1]["signature"], "genuine");
+    assert_eq!(
+        last_accept_encoding(&upstream).await.as_deref(),
+        Some("identity")
+    );
 }
 
 /// The streamed response of a chain attempt leaves wrapped for a third-party
@@ -841,6 +867,10 @@ async fn kimi_oauth_restores_its_own_envelope_and_drops_a_foreign_one() {
     let content = last_received(&upstream).await["messages"][1]["content"].clone();
     assert_eq!(content[0]["signature"], "kimi-original");
     assert_eq!(content[1]["signature"], "genuine");
+    assert_eq!(
+        last_accept_encoding(&upstream).await.as_deref(),
+        Some("identity")
+    );
 
     let foreign = wrap_upstream_signature(&key_of("https://other.example"), "other-sig");
     send(mixed_transcript(&foreign)).await;

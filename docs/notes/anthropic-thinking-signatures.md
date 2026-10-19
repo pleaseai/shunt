@@ -135,6 +135,9 @@ strip runs first and spares that provider's own envelopes, so a restored value
 that is itself another shunt's envelope survives the hop. Everywhere else the envelope is recognised as shunt-minted and
 dropped. The field names are disjoint from the Responses form's, so neither
 decoder accepts the other's value.
+A request to such a provider also carries `Accept-Encoding: identity` in place
+of the client's value: shunt's HTTP client decodes no content coding, so a
+compressed reply could not be parsed to wrap and would pass through raw.
 
 The empty string is the one to watch, because Anthropic's own streaming shape
 uses it too: [the thinking page][thinking]'s worked event sequence opens the

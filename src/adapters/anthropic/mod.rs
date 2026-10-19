@@ -79,6 +79,7 @@ async fn forward(
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
     let mut request_headers = outbound_headers(headers, &credential);
     safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
+    thinking_wrap::request_identity_encoding(&mut request_headers, provider);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
     // Only a subscription-OAuth bearer faces the client-shape gate; an API-key
     // Anthropic-compatible provider keeps byte-for-byte passthrough except for
@@ -839,6 +840,7 @@ async fn forward_kimi_oauth(
         };
         let mut request_headers = outbound_headers(headers, &credential);
         safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
+        thinking_wrap::request_identity_encoding(&mut request_headers, provider);
         let request_body = base_body.clone().into_raw();
 
         let upstream = match post_upstream(&state, &url, request_headers, request_body)
@@ -1537,6 +1539,7 @@ pub(crate) async fn chain_attempt(
     };
     let mut request_headers = outbound_headers(headers, &credential);
     safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
+    thinking_wrap::request_identity_encoding(&mut request_headers, provider);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
     if oauth_client {
         auto_mode_classifier::restore_claude_code_identity(&mut body);

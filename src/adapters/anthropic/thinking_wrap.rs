@@ -43,6 +43,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use axum::body::Bytes;
+use axum::http::{header::ACCEPT_ENCODING, HeaderMap, HeaderValue};
 use futures_util::{stream, Stream, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -80,6 +81,20 @@ pub(super) fn signing_key(provider: &ProviderConfig) -> Option<String> {
                 key
             })
     })
+}
+
+/// Ask a third-party upstream for an uncompressed reply.
+///
+/// The client's `Accept-Encoding` is otherwise forwarded, and shunt's HTTP
+/// client decodes no content coding, so a compressed reply would reach the
+/// wrap still encoded: unparseable, it would pass through with its signature
+/// raw. `identity` rather than removing the header, since a request without
+/// one leaves the coding to the server. Every other provider keeps the
+/// client's header, as passthrough.
+pub(super) fn request_identity_encoding(headers: &mut HeaderMap, provider: &ProviderConfig) {
+    if signing_key(provider).is_some() {
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+    }
 }
 
 /// Prepare a request's thinking blocks for `provider`: strip every foreign
