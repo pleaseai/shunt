@@ -72,10 +72,9 @@ fn first_block(request: &RequestBody) -> Value {
     request.json()["messages"][1]["content"][0].clone()
 }
 
-/// Restore, then strip — the order both non-`claude_oauth` paths run them in.
+/// What every non-`claude_oauth` path runs on its way upstream.
 fn outbound(mut request: RequestBody, to: &ProviderConfig) -> RequestBody {
-    restore_own_signatures(&mut request, to);
-    super::super::thinking::strip_foreign_thinking(&mut request);
+    prepare_thinking(&mut request, to);
     request
 }
 
@@ -92,6 +91,35 @@ fn an_envelope_going_back_to_its_upstream_carries_the_original_signature() {
         block["signature"], "mm-sig+/=",
         "the host that issued the signature gets it back byte for byte"
     );
+}
+
+#[test]
+fn a_nested_envelope_is_unwrapped_one_layer_and_not_stripped() {
+    let inner = wrap_upstream_signature("https://inner.example", "orig");
+    let nested = wrap_upstream_signature(THIRD_PARTY, &inner);
+    let request = outbound(
+        transcript(&nested),
+        &provider(THIRD_PARTY, AuthMode::ApiKey),
+    );
+    assert_eq!(
+        first_block(&request)["signature"],
+        inner,
+        "the inner shunt must receive its own envelope intact"
+    );
+    // Twin: an envelope for a different upstream is still dropped.
+    let other = wrap_upstream_signature("https://other.example", "orig");
+    let request = outbound(transcript(&other), &provider(THIRD_PARTY, AuthMode::ApiKey));
+    assert_eq!(first_block(&request)["type"], "text");
+}
+
+#[test]
+fn prepare_thinking_strips_foreign_and_keeps_genuine_signatures() {
+    let to = provider("https://api.example-gateway.test", AuthMode::ApiKey);
+    let foreign = wrap_upstream_signature(THIRD_PARTY, "mm-sig");
+    let request = outbound(transcript(&foreign), &to);
+    assert_eq!(first_block(&request)["type"], "text");
+    let request = outbound(transcript("ErUBCkYIBBgCKkB"), &to);
+    assert_eq!(first_block(&request)["signature"], "ErUBCkYIBBgCKkB");
 }
 
 #[test]

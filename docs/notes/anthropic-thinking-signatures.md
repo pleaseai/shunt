@@ -128,8 +128,9 @@ confirmed against a live upstream (issue #783).
 `src/adapters/anthropic/thinking_wrap.rs` wraps it on the response path, keyed
 on the provider's `base_url` with any trailing `/` trimmed — not for `claude_oauth` pools or a
 first-party host, whose responses stay passthrough — and restores the original
-only for a request going back to a provider with that same `base_url`, before
-the strip runs. Everywhere else the envelope is recognised as shunt-minted and
+only for a request going back to a provider with that same `base_url`. The
+strip runs first and spares that provider's own envelopes, so a restored value
+that is itself another shunt's envelope survives the hop. Everywhere else the envelope is recognised as shunt-minted and
 dropped. The field names are disjoint from the Responses form's, so neither
 decoder accepts the other's value.
 

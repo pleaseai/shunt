@@ -93,10 +93,9 @@ async fn forward(
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
     safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
-    // Before the strip: a third-party provider gets its own wrapped signatures
-    // back, and the strip then drops every envelope naming anyone else.
-    thinking_wrap::restore_own_signatures(&mut body, provider);
-    thinking::strip_foreign_thinking(&mut body);
+    // A third-party provider gets its own wrapped signatures back; every
+    // envelope naming anyone else is dropped.
+    thinking_wrap::prepare_thinking(&mut body, provider);
     let body = body.into_raw();
     // Bounded transient retry (issue #48) for this single-credential path. Kept
     // off `count_tokens`, which passes through here for Anthropic-kind providers
@@ -788,10 +787,9 @@ async fn forward_kimi_oauth(
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
     safeguards::strip_unsupported_safeguards(&mut body, &provider.base_url);
-    // Kimi is a third-party signing host: its own envelopes are restored before
-    // the strip, as on the API-key path.
-    thinking_wrap::restore_own_signatures(&mut body, provider);
-    thinking::strip_foreign_thinking(&mut body);
+    // Kimi is a third-party signing host: its own envelopes are restored, as on
+    // the API-key path.
+    thinking_wrap::prepare_thinking(&mut body, provider);
     let base_body = body;
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
@@ -1541,7 +1539,8 @@ pub(crate) async fn chain_attempt(
     // This path wraps a third-party winner's signatures like `relay_response`
     // does, so it has to restore them for that same upstream too, or a turn
     // served here twice running would hand the host its own signature wrapped.
-    thinking_wrap::restore_own_signatures(&mut body, provider);
+    // Foreign signatures are stripped as on every other path.
+    thinking_wrap::prepare_thinking(&mut body, provider);
     let body = bytes::Bytes::from(body.into_raw());
     let policy = provider.retry.policy();
     let url = upstream_url(state, route, uri);

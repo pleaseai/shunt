@@ -17,7 +17,7 @@
 //! shunt-minted form, so the existing strip drops it on the way to any other
 //! upstream; only a request going back to the provider whose `base_url` the
 //! envelope names gets the original signature back, byte for byte, before that
-//! strip runs ([`restore_own_signatures`]). No session state is involved, so
+//! strip runs ([`prepare_thinking`]). No session state is involved, so
 //! the round trip holds across reloads and sticky-binding expiry alike.
 //!
 //! **Which responses are wrapped** is [`signing_key`]'s call: not a
@@ -62,8 +62,28 @@ pub(super) fn signing_key(provider: &ProviderConfig) -> Option<&str> {
     .then(|| provider.base_url.trim_end_matches('/'))
 }
 
+/// Prepare a request's thinking blocks for `provider`: strip every foreign
+/// signature except this provider's own envelopes, then restore those.
+///
+/// The strip runs first so a restored value that is itself shunt-minted — this
+/// upstream being another shunt that wrapped its own third-party signature —
+/// survives to reach the upstream that can unwrap it. Envelopes naming any
+/// other upstream, and every other shunt-minted signature, are still dropped.
+pub(super) fn prepare_thinking(body: &mut RequestBody, provider: &ProviderConfig) {
+    match signing_key(provider) {
+        Some(key) => {
+            super::thinking::strip_foreign_thinking_except(body, |signature| {
+                unwrap_upstream_signature(signature).is_some_and(|(upstream, _)| upstream == key)
+            });
+            restore_own_signatures(body, provider);
+        }
+        None => super::thinking::strip_foreign_thinking(body),
+    }
+}
+
 /// Restore the original signature on every thinking block whose envelope names
-/// this provider, before the strip drops the rest.
+/// this provider. [`prepare_thinking`] runs it after the strip, which spares
+/// these envelopes and drops the rest.
 ///
 /// A first-party or `claude_oauth` provider has no [`signing_key`], so nothing
 /// is restored and every envelope leaves with the strip. An envelope naming any
