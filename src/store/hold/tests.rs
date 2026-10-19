@@ -314,7 +314,8 @@ async fn rival_of(store: &Store, stale: u64) -> Store {
 
 /// Run `attempt` while `holder` keeps a write open for `hold`, then commits
 /// it. Returns the attempt's result and how long it took. The write leaves
-/// `heartbeat_at` as it was, and holds the row lock (PostgreSQL) or the
+/// `heartbeat_at` as it was and sets `holder_label` to `relabel` (or to
+/// itself), and holds the row lock (PostgreSQL) or the
 /// write lock (SQLite) until the commit. The attempt must wait for that write:
 /// on SQLite a hold step that read in a deferred transaction and then upgraded
 /// to write would instead fail at once with "database is locked". The time
@@ -322,16 +323,21 @@ async fn rival_of(store: &Store, stale: u64) -> Store {
 async fn during_holder_write<T>(
     holder: &Store,
     hold: Duration,
+    relabel: Option<&str>,
     attempt: impl std::future::Future<Output = T>,
 ) -> (T, Duration) {
     let mut write = holder.db().begin().await.unwrap();
-    write
-        .execute(
+    let (sql, params): (&str, Vec<Value>) = match relabel {
+        Some(label) => (
+            "UPDATE instance_hold SET holder_label = $1 WHERE id = 1",
+            vec![label.into()],
+        ),
+        None => (
             "UPDATE instance_hold SET holder_label = holder_label WHERE id = 1",
-            &[],
-        )
-        .await
-        .unwrap();
+            Vec::new(),
+        ),
+    };
+    write.execute(sql, &params).await.unwrap();
     let (out, ()) = tokio::join!(
         async {
             let started = std::time::Instant::now();
@@ -353,8 +359,13 @@ async fn creating_the_hold_table_waits_for_a_holder_write() {
     let harness = crate::store::contract::Harness::sqlite().await;
     let holder = harness.store.clone();
     let rival = rival_of(&holder, 30).await;
-    let (created, took) =
-        during_holder_write(&holder, Duration::from_secs(1), rival.create_hold_table()).await;
+    let (created, took) = during_holder_write(
+        &holder,
+        Duration::from_secs(1),
+        None,
+        rival.create_hold_table(),
+    )
+    .await;
     created.unwrap();
     assert!(took >= Duration::from_millis(500), "took {took:?}");
     rival.close().await;
@@ -366,7 +377,7 @@ store_contract_test!(
     |store| {
         let rival = rival_of(&store, 30).await;
         let (acquired, took) =
-            during_holder_write(&store, Duration::from_secs(1), rival.acquire_hold()).await;
+            during_holder_write(&store, Duration::from_secs(1), None, rival.acquire_hold()).await;
         let error = acquired.unwrap_err();
         assert!(matches!(error, StoreError::HoldHeld { .. }), "{error:?}");
         assert!(took >= Duration::from_millis(500), "took {took:?}");
@@ -377,7 +388,8 @@ store_contract_test!(
 
 // The stale cutoff is taken once the row lock is held: a hold that goes stale
 // while the acquirer waits for the holder's write is taken over, and the
-// takeover names the holder the update actually displaced.
+// takeover names the holder the update actually displaced: the label the
+// holder's write commits while the acquirer waits, not the one before it.
 store_contract_test!(
     a_hold_that_goes_stale_during_the_wait_is_taken_over,
     |store| {
@@ -389,10 +401,15 @@ store_contract_test!(
             &["old-host:1".into()],
         )
         .await;
-        let (acquired, _) =
-            during_holder_write(&store, Duration::from_millis(2200), rival.acquire_hold()).await;
+        let (acquired, _) = during_holder_write(
+            &store,
+            Duration::from_millis(2200),
+            Some("new-host:2"),
+            rival.acquire_hold(),
+        )
+        .await;
         let takeover = acquired.unwrap().expect("a stale hold is taken over");
-        assert_eq!(takeover.label, "old-host:1");
+        assert_eq!(takeover.label, "new-host:2");
         assert!(takeover.age_secs >= 3, "age {}", takeover.age_secs);
         assert_eq!(row(&store).await.0.as_deref(), Some(rival.holder_id()));
         rival.close().await;
@@ -408,7 +425,8 @@ store_contract_test!(
             let rival = rival_of(&store, 30).await;
             rival.set_settled_lock_timeout(Duration::from_millis(200));
             let (acquired, took) =
-                during_holder_write(&store, Duration::from_secs(3), rival.acquire_hold()).await;
+                during_holder_write(&store, Duration::from_secs(3), None, rival.acquire_hold())
+                    .await;
             match acquired {
                 Err(StoreError::Database { reason }) => {
                     assert!(reason.contains("lock timeout"), "{reason}");

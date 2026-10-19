@@ -1239,7 +1239,7 @@ policy = { type = "target_selector", selector = "/target" }
 
 **回退。** 导入是复制,不是同步。之后移除 `[store]`,会从导入时刻的快照启动,可能让此后在存储中撤销的会话重新生效,并撤销在存储中所做的支出限制修改。无存储的启动若读到与已导入内容完全相同的快照,会记录一条相应的警告;该次启动重写文件后警告即停止。
 
-**每个存储一个进程。** 存储带有实例 hold。对一个 hold 仍有效的存储再运行第二个 `shunt run`,会以非零状态退出,并指出持有者(`{HOSTNAME}:{pid}`)以及距上次续期过去了多久。超过 `hold_stale_seconds` 未续期的 hold 会被接管,接管会记入日志,因此崩溃后重启最多可能被拒绝这么长时间。运行中的进程发现 hold 被夺走后,会拒绝之后的存储写入,但继续处理代理请求。正常关闭时释放 hold。
+**每个存储一个进程。** 存储带有实例 hold。对一个 hold 仍有效的存储再运行第二个 `shunt run`,会以非零状态退出,并指出持有者(`{HOSTNAME}:{pid}`)以及距上次续期过去了多久。在 PostgreSQL 上,若一个未结束的事务(通常来自客户端已断开的后端)占着 hold 行,使第二个进程在 5 秒内拿不到该行的锁,则该进程改为以 lock timeout 错误退出。超过 `hold_stale_seconds` 未续期的 hold 会被接管,接管会记入日志,因此崩溃后重启最多可能被拒绝这么长时间。运行中的进程发现 hold 被夺走后,会拒绝之后的存储写入,但继续处理代理请求。正常关闭时释放 hold。
 
 **存储写入失败时。** 代理路径从不等待存储。无法写入的 admin 支出限制修改会返回与以往相同的 Anthropic 格式 `500`,且不会产生任何变更。在网关 `/oauth/token` 端点上,签发 token(device grant)或轮换 refresh token 无法写入时,会返回带 `Cache-Control: no-store` 的 `503` `{"error":"temporarily_unavailable"}`,并回滚此次轮换,客户端重试即可成功;如果 device-grant 签发是在 grant 已被消耗之后失败的,该用户需要重新登录。对已轮换 token 的重放(replay)仍返回 `401` `invalid_grant`,其 family 保持已撤销状态;如果存储无法记录这次撤销,则会在下一次成功的存储写入或下一次 15 秒刷新时写入,若在此之前进程崩溃则会丢失。每次写入失败都会使 `shunt.store.write_failures` 计数器(`subsystem` = `pool`、`spend` 或 `gateway`)加一。
 
