@@ -1,7 +1,5 @@
 use std::{
-    collections::hash_map::DefaultHasher,
     fs,
-    hash::{Hash, Hasher},
     io::ErrorKind,
     net::SocketAddr,
     path::PathBuf,
@@ -237,13 +235,18 @@ fn can_bind_loopback() -> bool {
     }
 }
 
+/// A session id that maps to `index` under the real bucket assignment
+/// (`accounts::stable_session_index`: first 8 bytes of SHA-256, big-endian,
+/// mod count).
 fn session_id_for_account(index: usize, account_count: usize) -> String {
+    use sha2::{Digest, Sha256};
+
     (0..1000)
         .map(|candidate| format!("session-{candidate}"))
         .find(|session_id| {
-            let mut hasher = DefaultHasher::new();
-            session_id.hash(&mut hasher);
-            hasher.finish() as usize % account_count == index
+            let digest = Sha256::digest(session_id.as_bytes());
+            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
+            prefix % account_count as u64 == index as u64
         })
         .expect("a session id should map to the requested account")
 }
@@ -1747,19 +1750,8 @@ async fn storm_control_spills_concurrent_request_to_next_account() {
     });
     let gateway = start_gateway_with(config).await;
 
-    // Both requests carry a session id that maps to account-a under the REAL
-    // bucket assignment (`accounts::stable_session_index`: first 8 bytes of
-    // SHA-256, big-endian, mod count) — this file's `session_id_for_account`
-    // helper hashes with `DefaultHasher` and would land on the wrong account.
-    let session_id = (0..1000)
-        .map(|candidate| format!("session-{candidate}"))
-        .find(|session_id| {
-            use sha2::{Digest, Sha256};
-            let digest = Sha256::digest(session_id.as_bytes());
-            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
-            prefix % 2 == 0
-        })
-        .expect("a session id should map to account-a");
+    // Both requests carry a session id that maps to account-a.
+    let session_id = session_id_for_account(0, 2);
 
     let first = {
         let gateway_url = gateway.base_url.clone();
