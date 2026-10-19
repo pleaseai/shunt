@@ -156,7 +156,7 @@ const UI_PROBE_PATHS: [(&str, &str); 2] = [
     ("/admin/{*path}", "GET,HEAD"),
 ];
 
-const GATEWAY_PATHS: [(&str, &str); 10] = [
+const GATEWAY_PATHS: [(&str, &str); 11] = [
     ("/.well-known/oauth-authorization-server", "GET,HEAD"),
     ("/oauth/device_authorization", "POST"),
     ("/oauth/token", "POST"),
@@ -164,6 +164,7 @@ const GATEWAY_PATHS: [(&str, &str); 10] = [
     ("/device/authorize", "POST"),
     ("/device/callback", "GET,HEAD"),
     ("/managed/settings", "GET,HEAD"),
+    ("/user/bootstrap", "GET,HEAD"),
     ("/v1/metrics", "POST"),
     ("/v1/logs", "POST"),
     ("/v1/traces", "POST"),
@@ -305,6 +306,7 @@ async fn all_surfaces_config(label: &str) -> (Config, common::EnvVars) {
     });
 
     config.server.gateway = Some(GatewayConfig {
+        desktop_bootstrap: None,
         public_url: "https://gateway.example".to_string(),
         jwt_secret_env: Some(jwt_env),
         users_env,
@@ -707,8 +709,8 @@ fn the_source_scan_finds_every_literal_registration() {
     // this scan reads source text, and `#[cfg(feature = "ui")]` does not
     // remove the `.route("…"` literals from it.
     assert_eq!(
-        found, 47,
-        "the literal-path scan found {found} registrations, not 47; either a route was added or \
+        found, 48,
+        "the literal-path scan found {found} registrations, not 48; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }

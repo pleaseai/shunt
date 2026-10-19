@@ -1,4 +1,5 @@
 pub mod approval;
+mod desktop_bootstrap;
 pub(crate) mod device;
 pub mod durable;
 mod idp;
@@ -91,6 +92,11 @@ pub struct GatewayAuth {
     oidc: Option<Arc<ResolvedIdp>>,
     managed_default: Option<Value>,
     managed_by_email: HashMap<String, Value>,
+    /// Whether `[[server.gateway.policies]]` was configured at all.
+    policies_configured: bool,
+    /// Whether any configured policy lacks a `match.emails` (applies to all).
+    has_catch_all_policy: bool,
+    desktop_bootstrap: Option<std::path::PathBuf>,
 }
 
 impl GatewayAuth {
@@ -142,6 +148,9 @@ impl GatewayAuth {
             oidc: None,
             managed_default: None,
             managed_by_email: HashMap::new(),
+            policies_configured: false,
+            has_catch_all_policy: false,
+            desktop_bootstrap: None,
         }
     }
 
@@ -171,12 +180,33 @@ impl GatewayAuth {
         telemetry_push: managed::TelemetryPush,
     ) -> Self {
         if let Some(policies) = policies {
+            self.policies_configured = true;
+            self.has_catch_all_policy = policies.iter().any(|policy| policy.emails.is_none());
             let (managed_default, managed_by_email) =
                 managed::resolve_all(&policies, telemetry_push, &self.public_url);
             self.managed_default = Some(managed_default);
             self.managed_by_email = managed_by_email;
         }
         self
+    }
+
+    pub(crate) fn with_desktop_bootstrap(mut self, template: std::path::PathBuf) -> Self {
+        self.desktop_bootstrap = Some(template);
+        self
+    }
+
+    pub(crate) fn desktop_bootstrap_template(&self) -> Option<&std::path::Path> {
+        self.desktop_bootstrap.as_deref()
+    }
+
+    /// Whether `email` may fetch the Desktop bootstrap config: always when no
+    /// managed policies are configured, otherwise only a user a policy names
+    /// (the same lookup `managed_settings` uses) or anyone when a catch-all
+    /// policy exists.
+    pub(crate) fn entitled(&self, email: &str) -> bool {
+        !self.policies_configured
+            || self.has_catch_all_policy
+            || self.managed_by_email.contains_key(email)
     }
 
     pub(crate) fn managed_settings(&self, email: &str) -> Option<&Value> {
@@ -270,6 +300,7 @@ pub fn gateway_router() -> Router<AppState> {
         .route("/device/authorize", post(idp::authorize))
         .route("/device/callback", get(idp::callback))
         .route("/managed/settings", get(managed::get))
+        .route("/user/bootstrap", get(desktop_bootstrap::get))
         // Inbound OTLP/HTTP ingest (M-C). Registered on the gateway surface
         // because M-B's managed settings point client exporters at
         // `public_url`; no conflict with the base router, whose `/v1/models` is

@@ -35,6 +35,7 @@ impl GatewayEnv {
         std::env::set_var(&users_env, "dev@example.com:password");
         let mut config = Config::default();
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".into(),
             jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
@@ -1459,6 +1460,7 @@ async fn routes_are_absent_without_gateway_config() {
         "/device",
         "/device/authorize",
         "/device/callback",
+        "/user/bootstrap",
     ] {
         let response = router
             .clone()
@@ -3107,4 +3109,5 @@ async fn telemetry_relay_does_not_follow_redirects() {
     );
 }
 
+mod desktop_bootstrap;
 mod store_backed;

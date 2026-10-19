@@ -909,6 +909,21 @@ pub struct GatewayConfig {
     /// `jwt_secret_env` and `token_ttl_seconds` above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<GatewaySessionConfig>,
+    /// `[server.gateway.desktop_bootstrap]` — serves `GET /user/bootstrap`, the
+    /// Claude Desktop bootstrap-config document. Absent ⇒ the route answers 404.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_bootstrap: Option<GatewayDesktopBootstrapConfig>,
+}
+
+/// `[server.gateway.desktop_bootstrap]` — the JSON template file served to
+/// Claude Desktop. It is re-read on every request, so edits apply without a
+/// restart; the path is used as given (like `state_path`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayDesktopBootstrapConfig {
+    /// Path to a JSON object. `${user.email}`, `${user.sub}` and `${user.name}`
+    /// in string values are replaced per signed-in user.
+    pub template: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -964,6 +979,28 @@ fn default_gateway_state_path() -> Option<std::path::PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE").filter(|home| !home.is_empty()))
         .map(std::path::PathBuf::from)
         .map(|home| home.join(".shunt").join("gateway-sessions.json"))
+}
+
+/// Boot-time check that the Desktop bootstrap template exists and is a JSON
+/// object; the handler re-reads it per request, so this only fails fast on a
+/// misconfigured path or document.
+fn validate_desktop_bootstrap_template(path: &std::path::Path) -> Result<(), ConfigError> {
+    let display = path.display().to_string();
+    let bytes = std::fs::read(path).map_err(|error| ConfigError::UnreadableDesktopBootstrap {
+        path: display.clone(),
+        message: error.to_string(),
+    })?;
+    match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(serde_json::Value::Object(_)) => Ok(()),
+        Ok(_) => Err(ConfigError::InvalidDesktopBootstrap {
+            path: display,
+            message: "expected a JSON object".to_string(),
+        }),
+        Err(error) => Err(ConfigError::InvalidDesktopBootstrap {
+            path: display,
+            message: error.to_string(),
+        }),
+    }
 }
 
 fn default_gateway_jwt_secret_env() -> String {
@@ -1062,6 +1099,9 @@ impl GatewayConfig {
         };
         let policies = resolve_gateway_policies(self.policies.as_deref())?;
         let telemetry_push = validate_gateway_telemetry(self.telemetry.as_ref())?;
+        if let Some(bootstrap) = &self.desktop_bootstrap {
+            validate_desktop_bootstrap_template(&bootstrap.template)?;
+        }
         let mut auth = crate::gateway::GatewayAuth::with_optional_approval(
             public_url.as_str().trim_end_matches('/').to_string(),
             secrets[0].clone(),
@@ -1073,7 +1113,11 @@ impl GatewayConfig {
         if let Some(oidc) = &self.oidc {
             auth = auth.with_oidc(oidc.resolve()?);
         }
-        Ok(auth.with_managed_policies(policies, telemetry_push))
+        auth = auth.with_managed_policies(policies, telemetry_push);
+        if let Some(bootstrap) = &self.desktop_bootstrap {
+            auth = auth.with_desktop_bootstrap(bootstrap.template.clone());
+        }
+        Ok(auth)
     }
 
     /// Boot-time deprecation warnings for the legacy `jwt_secret_env` /
@@ -2986,6 +3030,10 @@ pub enum ConfigError {
     MissingAdminOidcAllowlist,
     #[error("[server.gateway] public_url is invalid: {message}")]
     InvalidGatewayPublicUrl { message: String },
+    #[error("[server.gateway.desktop_bootstrap] template {path} could not be read: {message}")]
+    UnreadableDesktopBootstrap { path: String, message: String },
+    #[error("[server.gateway.desktop_bootstrap] template {path} is invalid: {message}")]
+    InvalidDesktopBootstrap { path: String, message: String },
     #[error("[server.gateway] token_ttl_seconds must be greater than zero")]
     InvalidGatewayTokenTtl,
     #[error(
@@ -7819,6 +7867,7 @@ provider = "deepseek"
         let secret_env = format!("SHUNT_GATEWAY_CONFIG_SECRET_{suffix}");
         let users_env = format!("SHUNT_GATEWAY_CONFIG_USERS_{suffix}");
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
@@ -8668,6 +8717,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_config_rejects_invalid_public_url_and_zero_ttl() {
         let mut gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "not a URL".to_string(),
             jwt_secret_env: Some("UNUSED_GATEWAY_SECRET".to_string()),
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -8794,6 +8844,7 @@ policy = { type = "target_selector", selector = "/target" }
         std::env::set_var(&jwt_env, "0123456789abcdef0123456789abcdef");
         std::env::set_var(&oidc_env, "client-secret");
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".into(),
             jwt_secret_env: Some(jwt_env.clone()),
             users_env: users_env.clone(),
@@ -8833,6 +8884,7 @@ policy = { type = "target_selector", selector = "/target" }
         std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
         std::env::set_var(&users_env, "dev@example.com:password");
         let base = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
@@ -8950,6 +9002,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_jwt_secret_conflicts_with_legacy_jwt_secret_env() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: Some("UNUSED_GATEWAY_SECRET".to_string()),
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -8973,6 +9026,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_ttl_hours_conflicts_with_legacy_token_ttl_seconds() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9036,6 +9090,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_jwt_secret_rejects_a_short_scalar_secret() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9059,6 +9114,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_jwt_secret_names_the_offending_index_past_zero() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9085,6 +9141,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_jwt_secret_rejects_an_empty_array() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9108,6 +9165,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_ttl_hours_zero_is_rejected() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9131,6 +9189,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_session_ttl_hours_overflow_is_rejected_not_panicked() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9154,6 +9213,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_deprecations_is_empty_when_legacy_keys_are_unset() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: None,
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9174,6 +9234,7 @@ policy = { type = "target_selector", selector = "/target" }
     #[test]
     fn gateway_deprecations_reports_both_legacy_keys_when_set() {
         let gateway = GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: Some("SHUNT_GATEWAY_JWT_SECRET".to_string()),
             users_env: "UNUSED_GATEWAY_USERS".to_string(),
@@ -9240,6 +9301,7 @@ policy = { type = "target_selector", selector = "/target" }
         let mut config = Config::default();
         config.server.usage = Some(UsageEndpointConfig::default());
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),
@@ -13755,6 +13817,7 @@ routes:
     /// inbound-JWT collision check, which runs before the gateway resolves.
     fn gateway_config() -> GatewayConfig {
         GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gw.example".to_string(),
             jwt_secret_env: Some(format!("SHUNT_TEST_UNSET_GW_SECRET_{}", std::process::id())),
             users_env: format!("SHUNT_TEST_UNSET_GW_USERS_{}", std::process::id()),
@@ -13967,6 +14030,7 @@ routes:
         let mut config = Config::default();
         config.server.auth = Some(auth_with_jwt(vec![entry], &env));
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gw.example/".to_string(),
             ..gateway_config()
         });
@@ -13990,6 +14054,7 @@ routes:
         let mut config = Config::default();
         config.server.auth = Some(auth_with_jwt(vec![entry], &env));
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gw.example".to_string(),
             ..gateway_config()
         });
@@ -14014,6 +14079,7 @@ routes:
         let mut config = Config::default();
         config.server.auth = Some(auth_with_jwt(vec![entry], &env));
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gw.example".to_string(),
             ..gateway_config()
         });
@@ -14034,6 +14100,7 @@ routes:
         let mut config = Config::default();
         config.server.auth = Some(auth_with_jwt(vec![jwt_entry()], &env));
         config.server.gateway = Some(GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gw.example/".to_string(),
             ..gateway_config()
         });

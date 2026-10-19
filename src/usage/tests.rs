@@ -441,6 +441,7 @@ fn add_gateway(config: &mut Config, label: &str) -> [String; 2] {
     std::env::set_var(&secret_env, std::str::from_utf8(GATEWAY_SECRET).unwrap());
     std::env::set_var(&users_env, "dev@example.com:password");
     config.server.gateway = Some(GatewayConfig {
+        desktop_bootstrap: None,
         public_url: GATEWAY_URL.to_string(),
         jwt_secret_env: Some(secret_env.clone()),
         users_env: users_env.clone(),
