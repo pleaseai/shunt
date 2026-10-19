@@ -711,8 +711,8 @@ fn the_source_scan_finds_every_literal_registration() {
     // this scan reads source text, and `#[cfg(feature = "ui")]` does not
     // remove the `.route("…"` literals from it.
     assert_eq!(
-        found, 48,
-        "the literal-path scan found {found} registrations, not 48; either a route was added or \
+        found, 49,
+        "the literal-path scan found {found} registrations, not 49; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }
