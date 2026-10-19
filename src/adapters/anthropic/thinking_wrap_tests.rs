@@ -560,3 +560,199 @@ async fn a_third_party_signature_round_trips_home_and_never_reaches_the_claude_p
         "a signature Anthropic cannot verify never reaches it"
     );
 }
+
+// ------------------------------------------- chain_attempt / forward_kimi_oauth
+
+fn chain_state(provider_name: &str, provider: ProviderConfig) -> crate::server::AppState {
+    let mut config = Config::default();
+    config.providers.insert(provider_name.into(), provider);
+    crate::server::AppState::new(config, reqwest::Client::new()).unwrap()
+}
+
+fn client_headers() -> axum::http::HeaderMap {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-api-key", "client-key".parse().unwrap());
+    headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+    headers
+}
+
+async fn mock_messages(content_type: &str, body: &str) -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body.to_owned(), content_type))
+        .mount(&server)
+        .await;
+    server
+}
+
+/// A two-block transcript: the first assistant block is `signature`, the second
+/// a genuine Anthropic one, so a strip that drops too much shows up too.
+fn mixed_transcript(signature: &str) -> RequestBody {
+    body(json!({
+        "model": "m",
+        "stream": true,
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "a", "signature": signature},
+                {"type": "thinking", "thinking": "b", "signature": "genuine"},
+                {"type": "text", "text": "done"},
+            ]},
+        ],
+    }))
+}
+
+/// The request the failover chain's Anthropic entry sends upstream: foreign
+/// envelopes dropped, genuine signatures intact, this provider's own envelope
+/// restored. Deleting `prepare_thinking` from `chain_attempt` turns both halves
+/// red.
+#[tokio::test]
+async fn chain_attempt_strips_foreign_and_restores_own_signatures() {
+    let upstream = mock_messages("text/event-stream", "").await;
+    let base = upstream.uri();
+    let state = chain_state("minimax", provider(&base, AuthMode::Passthrough));
+    let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
+
+    let foreign = wrap_upstream_signature("https://other.example", "other-sig");
+    let attempt = super::super::chain_attempt(
+        &state,
+        &route("minimax"),
+        &uri,
+        &client_headers(),
+        mixed_transcript(&foreign),
+    )
+    .await;
+    assert!(matches!(
+        attempt,
+        crate::proxy::chain_stream::Attempt::Winner { .. }
+    ));
+    let content = last_received(&upstream).await["messages"][1]["content"].clone();
+    assert_eq!(
+        content,
+        json!([
+            {"type": "thinking", "thinking": "b", "signature": "genuine"},
+            {"type": "text", "text": "done"},
+        ]),
+        "the foreign block is dropped and the genuine one kept"
+    );
+
+    let own = wrap_upstream_signature(&base, "mm-original");
+    super::super::chain_attempt(
+        &state,
+        &route("minimax"),
+        &uri,
+        &client_headers(),
+        mixed_transcript(&own),
+    )
+    .await;
+    let content = last_received(&upstream).await["messages"][1]["content"].clone();
+    assert_eq!(content[0]["signature"], "mm-original");
+    assert_eq!(content[1]["signature"], "genuine");
+}
+
+/// The streamed response of a chain attempt leaves wrapped for a third-party
+/// winner. Deleting the `wrap_signature_stream` layering turns this red; the
+/// first-party side of the pair is `relay_response_wraps_third_party_signatures_only`
+/// (`chain_attempt` cannot reach a `claude_oauth` pool without its credential store).
+#[tokio::test]
+async fn chain_attempt_wraps_a_third_party_winning_stream() {
+    let sse = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"orig\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n";
+    let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
+
+    let streamed = |state: crate::server::AppState, name: &'static str| {
+        let uri = uri.clone();
+        async move {
+            let attempt = super::super::chain_attempt(
+                &state,
+                &route(name),
+                &uri,
+                &client_headers(),
+                mixed_transcript("genuine"),
+            )
+            .await;
+            let crate::proxy::chain_stream::Attempt::Winner {
+                relay: crate::proxy::chain_stream::RelayBuild::Ready { frames, .. },
+                ..
+            } = attempt
+            else {
+                panic!("expected a ready winner");
+            };
+            frames
+                .map(|frame| String::from_utf8(frame.unwrap().to_vec()).unwrap())
+                .collect::<String>()
+                .await
+        }
+    };
+
+    let upstream = mock_messages("text/event-stream", sse).await;
+    let out = streamed(
+        chain_state("minimax", provider(&upstream.uri(), AuthMode::Passthrough)),
+        "minimax",
+    )
+    .await;
+    assert_eq!(
+        signature_deltas(&out)
+            .into_iter()
+            .map(|(_, signature)| unwrap_upstream_signature(&signature))
+            .collect::<Vec<_>>(),
+        vec![Some((upstream.uri(), "orig".to_string()))],
+        "{out}"
+    );
+}
+
+/// `forward_kimi_oauth` is a third-party signing host too: its own envelope
+/// comes back as the original signature, a foreign one is dropped. A
+/// `token_env` account needs no credential file or network.
+#[tokio::test]
+async fn kimi_oauth_restores_its_own_envelope_and_drops_a_foreign_one() {
+    let upstream = mock_messages("application/json", r#"{"content":[]}"#).await;
+    let base = upstream.uri();
+    let env = format!("SHUNT_THINKING_WRAP_KIMI_TOKEN_{}", std::process::id());
+    std::env::set_var(&env, "kimi-token");
+    let mut kimi = provider(&base, AuthMode::KimiOauth);
+    kimi.accounts = vec![crate::config::AccountConfig {
+        name: "acct".to_string(),
+        token_env: Some(env),
+        ..Default::default()
+    }];
+    let state = chain_state("kimi", kimi);
+    let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
+    let send = |request: RequestBody| {
+        let state = state.clone();
+        let uri = uri.clone();
+        async move {
+            super::super::forward(
+                state,
+                route("kimi"),
+                &uri,
+                &client_headers(),
+                request,
+                crate::adapters::ResponseBounds {
+                    max_bytes: None,
+                    idle: None,
+                },
+            )
+            .await
+            .unwrap_or_else(|_| panic!("kimi relays"));
+        }
+    };
+
+    send(mixed_transcript(&wrap_upstream_signature(
+        &base,
+        "kimi-original",
+    )))
+    .await;
+    let content = last_received(&upstream).await["messages"][1]["content"].clone();
+    assert_eq!(content[0]["signature"], "kimi-original");
+    assert_eq!(content[1]["signature"], "genuine");
+
+    let foreign = wrap_upstream_signature("https://other.example", "other-sig");
+    send(mixed_transcript(&foreign)).await;
+    let content = last_received(&upstream).await["messages"][1]["content"].clone();
+    assert_eq!(content[0]["signature"], "genuine");
+    assert_eq!(content[1]["type"], "text");
+}
