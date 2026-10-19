@@ -1718,18 +1718,27 @@ async fn managed_policy_matching_merges_catch_alls_and_uses_first_user_match() {
 }
 
 #[tokio::test]
-async fn managed_policy_email_matching_is_exact_and_case_sensitive() {
-    let (mut config, _env) = GatewayEnv::config("managed-case-sensitive-email");
+async fn managed_policy_email_matching_is_exact_and_case_insensitive() {
+    let (mut config, _env) = GatewayEnv::config("managed-case-insensitive-email");
     config.server.gateway.as_mut().unwrap().policies = Some(vec![policy(
         Some(vec!["alice@example.com"]),
-        toml::toml! { marker = "lowercase-match-only" },
+        toml::toml! { marker = "alice" },
     )]);
     let (router, _, _) = build_router(config).unwrap();
-    let bearer = gateway_bearer("Alice@example.com");
 
-    let (status, body) = json_response(router, managed_request(Some(&bearer), None)).await;
+    let bearer = gateway_bearer("Alice@example.com");
+    let (status, body) = json_response(router.clone(), managed_request(Some(&bearer), None)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["settings"], json!({}));
+    assert_eq!(body["settings"]["marker"], "alice");
+
+    // Still an exact match: no suffix, prefix, or domain-only matching.
+    for email in ["xalice@example.com", "alice@example.co", "bob@example.com"] {
+        let bearer = gateway_bearer(email);
+        let (status, body) =
+            json_response(router.clone(), managed_request(Some(&bearer), None)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["settings"], json!({}), "{email}");
+    }
 }
 
 #[tokio::test]

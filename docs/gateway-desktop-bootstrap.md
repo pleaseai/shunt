@@ -59,8 +59,9 @@ redirects, because Desktop treats a `3xx` as an error.
 Entitlement reuses `[[server.gateway.policies]]`:
 
 - with no policies configured, every signed-in user is entitled;
-- with policies, a user is entitled when a policy's `match.emails` lists them, or
-  when any catch-all policy (no `match`) exists.
+- with policies, a user is entitled when a policy's `match.emails` lists them
+  (compared case-insensitively), or when any catch-all policy (no `match`)
+  exists.
 
 Only entitlement is evaluated. The policies' `cli` settings are not merged into
 the bootstrap response.

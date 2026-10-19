@@ -204,15 +204,18 @@ impl GatewayAuth {
     /// (the same lookup `managed_settings` uses) or anyone when a catch-all
     /// policy exists.
     pub(crate) fn entitled(&self, email: &str) -> bool {
-        !self.policies_configured
-            || self.has_catch_all_policy
-            || self.managed_by_email.contains_key(email)
+        !self.policies_configured || self.has_catch_all_policy || self.policy_for(email).is_some()
     }
 
     pub(crate) fn managed_settings(&self, email: &str) -> Option<&Value> {
-        self.managed_by_email
-            .get(email)
-            .or(self.managed_default.as_ref())
+        self.policy_for(email).or(self.managed_default.as_ref())
+    }
+
+    /// The email-matched policy, compared case-insensitively: config
+    /// resolution lowercases `match.emails`, and the token email is lowercased
+    /// here, matching `email_allowed`.
+    fn policy_for(&self, email: &str) -> Option<&Value> {
+        self.managed_by_email.get(&email.to_ascii_lowercase())
     }
 
     pub fn public_url(&self) -> &str {

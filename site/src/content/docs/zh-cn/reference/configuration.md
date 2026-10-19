@@ -231,7 +231,7 @@ jwt_secret = ["new-secret-value", "old-secret-value"]
 
 存在 `[server.gateway]` 即会注册经过认证的 `GET /managed/settings`;有序且非空的 policy list 为其提供 managed document。每条 policy 都有可选的 `[server.gateway.policies.match]` 和必需的 open-schema `[server.gateway.policies.cli]` object。省略 `match`、使用 `match = {}` 或不设置 `emails` 都表示 catch-all。显式空 `emails` list 或空白 entry 会导致启动错误。
 
-所有 catch-all policy 按顺序 merge,然后在其上 merge 第一个 email 精确匹配(case-sensitive)的 policy。object 递归 merge;array 通常替换,但 key 包含 `deny` 的 array 会做无重复 union。已知 key 会在启动和 hot reload 时验证:`availableModels` 必须是仅包含 string 的 array;`env` 必须是仅包含 string、number 或 boolean scalar value 的 table。未知 key 保持 open-schema,但所有 value 都必须可用 JSON 表示;非有限 float 会被拒绝。
+所有 catch-all policy 按顺序 merge,然后在其上 merge 第一个 email 精确匹配(不区分大小写)的 policy(`match.emails` 各项与登录用户的 email 都会先转为小写再比较)。object 递归 merge;array 通常替换,但 key 包含 `deny` 的 array 会做无重复 union。已知 key 会在启动和 hot reload 时验证:`availableModels` 必须是仅包含 string 的 array;`env` 必须是仅包含 string、number 或 boolean scalar value 的 table。未知 key 保持 open-schema,但所有 value 都必须可用 JSON 表示;非有限 float 会被拒绝。
 
 没有 `policies` 时 endpoint 返回 `404`。已配置 policy 但没有匹配的 user-specific 或 catch-all settings 时,若 telemetry 已启用则返回带有仅 telemetry `settings.env` 的 `200`,否则返回带有 `settings: {}` 的 `200`。response 包含 `uuid`、`checksum` 和保存 checksum 的 quoted `ETag`;匹配的 `If-None-Match` 返回 `304`。
 

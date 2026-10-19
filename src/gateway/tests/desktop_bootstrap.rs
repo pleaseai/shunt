@@ -290,6 +290,30 @@ async fn bootstrap_is_403_for_users_no_managed_policy_covers() {
     assert_eq!(status, StatusCode::OK);
 }
 
+#[tokio::test]
+async fn policy_emails_match_the_token_email_case_insensitively() {
+    let (mut config, _env) = GatewayEnv::config("bootstrap-mixed-case");
+    let path = write_template("bootstrap-mixed-case", &template());
+    set_template(&mut config, &path);
+    config.server.gateway.as_mut().unwrap().policies = Some(vec![policy(
+        Some(vec!["Alice@Example.com"]),
+        toml::toml! { marker = "alice" },
+    )]);
+    let (router, _, _) = build_router(config).unwrap();
+
+    // Policy written in mixed case, IdP reporting yet another casing.
+    let alice = gateway_bearer("ALICE@example.COM");
+    let (status, _, _) = raw(&router, bootstrap_request(Some(&alice), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = json_response(router.clone(), managed_request(Some(&alice), None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["settings"]["marker"], "alice");
+
+    let bob = gateway_bearer("Bob@Example.com");
+    let (status, _, _) = raw(&router, bootstrap_request(Some(&bob), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
 #[test]
 fn config_rejects_a_missing_or_non_object_bootstrap_template() {
     let (mut config, _env) = GatewayEnv::config("bootstrap-config");

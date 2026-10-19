@@ -1216,9 +1216,12 @@ fn validate_gateway_policy_emails(
     if let Some(email_index) = emails.iter().position(|email| email.trim().is_empty()) {
         return Err(ConfigError::EmptyGatewayPolicyEmail { index, email_index });
     }
+    // Lowercased like the OIDC allowlist (`email_allowed`), so a policy written
+    // `alice@example.com` matches an IdP that reports `Alice@Example.com`;
+    // `GatewayAuth` lowercases the token email before every lookup.
     Ok(emails
         .iter()
-        .map(|email| email.trim().to_string())
+        .map(|email| email.trim().to_ascii_lowercase())
         .collect())
 }
 
