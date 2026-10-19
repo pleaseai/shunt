@@ -212,7 +212,7 @@ The file is a best-effort cache, not a source of truth — quota is re-derived f
 | 401 with `credentials` | Force-refresh, retry the same account once; if still 401, cooldown 5 minutes and rotate. |
 | 401 with `token_env` or a store-managed setup token | Cannot refresh: cooldown 5 minutes and rotate. |
 | 5xx | Cooldown 30 seconds and rotate. |
-| Transport failure (no response, such as a dropped connection or TLS error) | Resend to the **same** account once; if that also fails, cooldown 30 seconds and rotate. |
+| Transport failure (no response, such as a dropped connection or TLS error) | Resend to the **same** account once, including during a throttle or refresh retry; only a second transport failure cools down 30 seconds and rotates. A timeout is not resent. The resend is a full re-POST, so in rare cases the turn runs twice. |
 | Other status | Relay without failover. |
 
 Classification happens before the response body streams, so a mid-stream failure is never replayed. If the pool exhausts its attempts after receiving responses, the client gets the last real upstream status and body. If every account fails before any upstream response, shunt returns a gateway-owned error.

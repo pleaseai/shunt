@@ -819,6 +819,156 @@ async fn transport_failure_retries_the_same_account_once_before_rotating() {
     upstream.abort();
 }
 
+/// The resend is a single one: when it fails too, the account is cooled down
+/// and the request rotates, so a later request that hashes to the failing
+/// account is served by the healthy one without touching it again.
+#[tokio::test]
+async fn repeated_transport_failure_cools_down_and_rotates() {
+    use tokio::io::AsyncWriteExt;
+
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "transport-repeat-a"].concat();
+    let token_b = ["fake-oauth-", "transport-repeat-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_TRANSPORT_REPEAT_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_TRANSPORT_REPEAT_B", &token_b);
+
+    // Every request carrying account-a's bearer is read in full and its
+    // connection dropped with no response; account-b's are answered 200.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = listener.local_addr().unwrap();
+    let bearers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let upstream = {
+        let bearers = std::sync::Arc::clone(&bearers);
+        let failing = token_a.to_ascii_lowercase();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let bearer = read_raw_request(&mut stream).await;
+                bearers.lock().unwrap().push(bearer.clone());
+                if bearer == failing {
+                    drop(stream);
+                    continue;
+                }
+                let body = r#"{"account":"b"}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.ok();
+            }
+        })
+    };
+
+    let gateway = start_gateway_with(test_config(
+        &format!("http://{upstream_addr}"),
+        account("account-a", "SHUNT_TEST_MULTI_TRANSPORT_REPEAT_A", "uuid-a"),
+        account("account-b", "SHUNT_TEST_MULTI_TRANSPORT_REPEAT_B", "uuid-b"),
+    ))
+    .await;
+
+    // Round-robin starts on account-a: it is sent twice, then the pool rotates.
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    // A session that hashes to account-a lands on account-b because account-a
+    // is cooled down; the upstream sees no third account-a send.
+    let session_id = session_id_for_account(0, 2);
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    let (a, b) = (token_a.to_ascii_lowercase(), token_b.to_ascii_lowercase());
+    assert_eq!(*bearers.lock().unwrap(), vec![a.clone(), a, b.clone(), b]);
+    upstream.abort();
+}
+
+/// The status-driven same-account retries get the same single resend: a plain
+/// 429's throttle retry that hits a dropped connection is sent again to the
+/// throttled account instead of cooling it and rotating.
+#[tokio::test]
+async fn throttle_retry_transport_failure_resends_to_the_same_account() {
+    use tokio::io::AsyncWriteExt;
+
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "throttle-transport-a"].concat();
+    let token_b = ["fake-oauth-", "throttle-transport-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_THROTTLE_TRANSPORT_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_THROTTLE_TRANSPORT_B", &token_b);
+
+    // The first request gets a plain 429 with no wait, the throttle retry's
+    // connection is dropped with no response, and the resend is answered 200.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = listener.local_addr().unwrap();
+    let bearers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let upstream = {
+        let bearers = std::sync::Arc::clone(&bearers);
+        tokio::spawn(async move {
+            for served in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let bearer = read_raw_request(&mut stream).await;
+                bearers.lock().unwrap().push(bearer);
+                let (status, extra, body) = match served {
+                    0 => (
+                        "429 Too Many Requests",
+                        "retry-after: 0\r\n",
+                        r#"{"type":"error"}"#,
+                    ),
+                    1 => {
+                        drop(stream);
+                        continue;
+                    }
+                    _ => ("200 OK", "", r#"{"ok":true}"#),
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.ok();
+            }
+        })
+    };
+
+    let gateway = start_gateway_with(test_config(
+        &format!("http://{upstream_addr}"),
+        account(
+            "account-a",
+            "SHUNT_TEST_MULTI_THROTTLE_TRANSPORT_A",
+            "uuid-a",
+        ),
+        account(
+            "account-b",
+            "SHUNT_TEST_MULTI_THROTTLE_TRANSPORT_B",
+            "uuid-b",
+        ),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+    let a = token_a.to_ascii_lowercase();
+    assert_eq!(*bearers.lock().unwrap(), vec![a.clone(), a.clone(), a]);
+    upstream.abort();
+}
+
 #[tokio::test]
 async fn exhausted_pool_relays_the_last_upstream_body_verbatim() {
     if !can_bind_loopback() {
