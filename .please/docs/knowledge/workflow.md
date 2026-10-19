@@ -103,6 +103,24 @@ cargo test --all-features --workspace
 - Verify streaming (SSE) and non-streaming paths
 - Test auth/credential and multi-account pooling behavior
 
+### Store Contract Testing
+
+- Store tests use `store_contract_test!` (`src/store/contract.rs`): each test runs once
+  on SQLite and once on PostgreSQL (`--features store-postgres`)
+- The PostgreSQL arm reads `SHUNT_TEST_POSTGRES_URL` and creates a per-test schema; it
+  skips when the URL is unset unless `SHUNT_TEST_POSTGRES_REQUIRED=1` (set in CI, which
+  runs a `postgres:16-alpine` service)
+- Local PostgreSQL:
+
+  ```bash
+  docker run -d --rm --name shunt-pg \
+    -e POSTGRES_USER=shunt -e POSTGRES_PASSWORD=shunt-ci -e POSTGRES_DB=shunt_test \
+    -p 55432:5432 postgres:16-alpine
+  until docker exec shunt-pg pg_isready -U shunt -d shunt_test; do sleep 1; done
+  SHUNT_TEST_POSTGRES_URL=postgres://shunt:shunt-ci@localhost:55432/shunt_test \
+    SHUNT_TEST_POSTGRES_REQUIRED=1 cargo test --features store-postgres
+  ```
+
 ## Commit Guidelines
 
 Follow conventional commits. See `Skill("standards:commit-convention")` for details.

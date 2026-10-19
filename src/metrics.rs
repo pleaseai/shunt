@@ -52,6 +52,7 @@ struct OtelInstruments {
     judge_calls: Counter<u64>,
     stage_flips: Counter<u64>,
     requests_shed: Counter<u64>,
+    store_write_failures: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
     pool_reprobes: Counter<u64>,
@@ -158,6 +159,12 @@ fn otel_instruments() -> &'static OtelInstruments {
             requests_shed: meter
                 .u64_counter("shunt.requests_shed")
                 .with_description("Inbound requests rejected at the concurrency limit (issue #260)")
+                .build(),
+            store_write_failures: meter
+                .u64_counter("shunt.store.write_failures")
+                .with_description(
+                    "Failed writes to the optional store (pool, spend, gateway), by subsystem",
+                )
                 .build(),
             _pool_utilization: meter
                 .f64_observable_gauge("shunt.pool.quota_utilization")
@@ -831,6 +838,41 @@ pub fn record_request_shed() {
     otel_instruments().requests_shed.add(1, &[]);
 }
 
+/// Record one failed write-behind flush to the optional store, tagged with the
+/// owning `subsystem` (for example `pool`). The state stays in memory and the
+/// next tick retries, so this counter is the operator's signal that the store
+/// is unwritable. Emitted to Sentry and OpenTelemetry; each sink is inert
+/// unless configured.
+pub fn record_store_write_failure(subsystem: &'static str) {
+    sentry::metrics::counter("shunt.store.write_failures", 1)
+        .attribute("subsystem", subsystem)
+        .capture();
+
+    #[cfg(test)]
+    TEST_STORE_WRITE_FAILURES.with(|counts| {
+        *counts.borrow_mut().entry(subsystem).or_insert(0) += 1;
+    });
+
+    otel_instruments()
+        .store_write_failures
+        .add(1, &[KeyValue::new("subsystem", subsystem)]);
+}
+
+// Per test thread: `#[tokio::test]` runs its future on the test's own thread,
+// so a count is never shared with a parallel test.
+#[cfg(test)]
+thread_local! {
+    static TEST_STORE_WRITE_FAILURES: std::cell::RefCell<HashMap<&'static str, u64>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Test-only observation point for [`record_store_write_failure`], scoped to
+/// the calling thread.
+#[cfg(test)]
+pub fn store_write_failures_for_tests(subsystem: &'static str) -> u64 {
+    TEST_STORE_WRITE_FAILURES.with(|counts| *counts.borrow().get(subsystem).unwrap_or(&0))
+}
+
 /// The outcome of a Codex WebSocket dedicated-overflow admission decision
 /// (issue #248): a concurrent turn found the session's pooled connection
 /// already streaming and either opened a one-shot dedicated socket, or was
@@ -1048,6 +1090,20 @@ mod tests {
         super::record_stage_decision("claude-auto", "capable", "override");
         super::record_stage_decision("claude-auto", "efficient", "no_signal");
         super::record_stage_flip("claude-auto", "efficient", "capable");
+    }
+
+    /// The store write-failure counter honors the opt-in no-op contract and is
+    /// observable per subsystem on the calling thread.
+    #[test]
+    fn record_store_write_failure_counts_per_subsystem() {
+        use super::{record_store_write_failure, store_write_failures_for_tests};
+
+        assert_eq!(store_write_failures_for_tests("pool"), 0);
+        record_store_write_failure("pool");
+        record_store_write_failure("pool");
+        record_store_write_failure("spend");
+        assert_eq!(store_write_failures_for_tests("pool"), 2);
+        assert_eq!(store_write_failures_for_tests("spend"), 1);
     }
 
     /// The Codex WebSocket overflow counter honors the same opt-in no-op

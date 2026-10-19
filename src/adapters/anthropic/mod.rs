@@ -286,30 +286,18 @@ async fn forward_claude_oauth(
         }
         let request_body = request_body.into_raw();
 
-        let send = post_upstream(&state, &url, request_headers.clone(), request_body.clone());
-        let upstream = match send
-            .count_attempt(&state.accounts, &route.provider, account)
-            .await
-        {
-            Ok(response) => response,
-            Err(error @ crate::upstream_timeout::SendError::Timeout) => {
-                return Err(error.into_adapter_error(upstream_error));
-            }
-            Err(crate::upstream_timeout::SendError::Transport(error)) => {
-                state.accounts.cooldown(
-                    &route.provider,
-                    account,
-                    Duration::from_secs(30),
-                    "transport",
-                );
-                tracing::warn!(
-                    provider = %route.provider,
-                    account = %account.name,
-                    error = %error.without_url(),
-                    "Claude OAuth upstream request failed"
-                );
-                continue;
-            }
+        let Some(upstream) = send_to_account(
+            &state,
+            &route,
+            account,
+            &url,
+            &request_headers,
+            &request_body,
+            "Claude OAuth upstream request failed",
+        )
+        .await?
+        else {
+            continue;
         };
 
         state
@@ -393,8 +381,8 @@ async fn forward_claude_oauth(
                     &route,
                     account,
                     &url,
-                    request_headers,
-                    request_body,
+                    &request_headers,
+                    &request_body,
                     "Claude OAuth throttle retry failed",
                 )
                 .await?
@@ -559,8 +547,8 @@ async fn forward_claude_oauth(
                     &route,
                     account,
                     &url,
-                    retry_headers,
-                    request_body,
+                    &retry_headers,
+                    &request_body,
                     "Claude OAuth refresh retry failed",
                 )
                 .await?
@@ -1001,50 +989,79 @@ async fn post_upstream(
     .await
 }
 
-/// Send a per-account retry POST, noting quota headers on success. On a
-/// transport error it cools the account down for 30s, logs `fail_msg`, and
-/// returns `None` so the caller fails over to the next account. A TTFB timeout
+/// Send one Claude OAuth POST to `account`. A transport failure (a TLS record
+/// error or reset on a reused connection) says nothing about the account, so
+/// it gets one immediate resend before rotating. Rotating straight away hands
+/// the request to the next candidate, which in a pool where every other
+/// account is quota-exhausted relays that account's 429 instead of the answer
+/// the healthy account would have given on a second send. Every transport
+/// failure logs `fail_msg` with a `retrying` field; only a repeated one cools
+/// the account down for 30s and returns `None` so the caller fails over to the
+/// next account. A TTFB timeout
 /// is returned directly as a 504 instead of being classified as transport
-/// failover. Shared by the throttle-retry and refresh-retry arms.
+/// failover.
+async fn send_to_account(
+    state: &AppState,
+    route: &Route,
+    account: &crate::config::AccountConfig,
+    url: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    fail_msg: &str,
+) -> Result<Option<reqwest::Response>, AdapterError> {
+    let mut transport_retry_left = true;
+    loop {
+        match post_upstream(state, url, headers.clone(), body.to_vec())
+            .count_attempt(&state.accounts, &route.provider, account)
+            .await
+        {
+            Ok(response) => return Ok(Some(response)),
+            Err(error @ crate::upstream_timeout::SendError::Timeout) => {
+                return Err(error.into_adapter_error(upstream_error));
+            }
+            Err(crate::upstream_timeout::SendError::Transport(error)) => {
+                let retrying = std::mem::take(&mut transport_retry_left);
+                tracing::warn!(
+                    provider = %route.provider,
+                    account = %account.name,
+                    retrying,
+                    error = %error.without_url(),
+                    "{}",
+                    fail_msg
+                );
+                if retrying {
+                    continue;
+                }
+                state.accounts.cooldown(
+                    &route.provider,
+                    account,
+                    Duration::from_secs(30),
+                    "transport",
+                );
+                return Ok(None);
+            }
+        }
+    }
+}
+
+/// Send a per-account retry POST through [`send_to_account`], noting quota
+/// headers on success. Shared by the throttle-retry and refresh-retry arms.
 async fn retry_upstream(
     state: &AppState,
     route: &Route,
     account: &crate::config::AccountConfig,
     url: &str,
-    headers: HeaderMap,
-    body: Vec<u8>,
+    headers: &HeaderMap,
+    body: &[u8],
     fail_msg: &str,
 ) -> Result<Option<reqwest::Response>, AdapterError> {
-    match post_upstream(state, url, headers, body)
-        .count_attempt(&state.accounts, &route.provider, account)
-        .await
-    {
-        Ok(response) => {
-            state
-                .accounts
-                .note_quota(&route.provider, account, response.headers());
-            Ok(Some(response))
-        }
-        Err(error @ crate::upstream_timeout::SendError::Timeout) => {
-            Err(error.into_adapter_error(upstream_error))
-        }
-        Err(crate::upstream_timeout::SendError::Transport(error)) => {
-            state.accounts.cooldown(
-                &route.provider,
-                account,
-                Duration::from_secs(30),
-                "transport",
-            );
-            tracing::warn!(
-                provider = %route.provider,
-                account = %account.name,
-                error = %error.without_url(),
-                "{}",
-                fail_msg
-            );
-            Ok(None)
-        }
+    let response = send_to_account(state, route, account, url, headers, body, fail_msg).await?;
+    if let Some(response) = &response {
+        state
+            .accounts
+            .note_quota(&route.provider, account, response.headers());
     }
+    Ok(response)
 }
 
 fn hold_admission_on_success(
@@ -1818,8 +1835,8 @@ mod tests {
             &claude_route(),
             &claude_account(),
             &server.uri(),
-            HeaderMap::new(),
-            Vec::new(),
+            &HeaderMap::new(),
+            &[],
             "retry failed",
         )
         .await
@@ -2007,15 +2024,16 @@ mod tests {
         let state =
             super::AppState::new(crate::config::Config::default(), reqwest::Client::new()).unwrap();
 
-        // Port 1 refuses immediately, so post_upstream returns a transport error
-        // and the helper must cool the account down and return None (fail over).
+        // Port 1 refuses immediately, so the send and its one resend both return a
+        // transport error and the helper must cool the account down and return
+        // None (fail over).
         let outcome = super::retry_upstream(
             &state,
             &claude_route(),
             &claude_account(),
             "http://127.0.0.1:1/v1/messages",
-            HeaderMap::new(),
-            Vec::new(),
+            &HeaderMap::new(),
+            &[],
             "retry failed",
         )
         .await

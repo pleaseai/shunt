@@ -27,7 +27,10 @@ use axum::{
 use tracing::Instrument;
 
 use crate::{
-    adapters::{responses, AdapterError},
+    adapters::{
+        responses::{self, CodexOperation},
+        AdapterError,
+    },
     auth::{gate, inbound::InboundAuth, inbound_jwt::JwksCache},
     config::CodexRouteConfig,
     error::ShuntError,
@@ -38,6 +41,7 @@ use crate::{
 pub mod frame;
 mod model;
 mod routing;
+pub mod search;
 pub mod websocket;
 
 #[cfg(test)]
@@ -69,6 +73,20 @@ pub async fn post(
     headers: HeaderMap,
     body: Body,
 ) -> axum::response::Response {
+    serve(state, method, uri, headers, body, CodexOperation::Responses).await
+}
+
+/// The body of every inbound Codex HTTP handler ([`post`] and
+/// [`search::post`]): authenticate, read the body, relay it to `operation`
+/// over the pool, and re-shape a gateway-owned error for an OpenAI client.
+async fn serve(
+    state: AppState,
+    method: Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Body,
+    operation: CodexOperation,
+) -> axum::response::Response {
     let state = state.refreshed();
     let started_at = Instant::now();
     let path = uri.path().to_string();
@@ -98,7 +116,7 @@ pub async fn post(
     );
 
     async move {
-        match forward(state, session_id, headers, body, started_at).await {
+        match forward(state, session_id, headers, body, started_at, operation).await {
             Ok((status, response)) => {
                 tracing::info!(
                     upstream_status = status.as_u16(),
@@ -158,6 +176,7 @@ async fn forward(
     headers: HeaderMap,
     body: Body,
     started_at: Instant,
+    operation: CodexOperation,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     // The routes are only registered when `[server.codex_endpoint]` is set, but
     // read the snapshot defensively; config validation guarantees the named
@@ -216,7 +235,14 @@ async fn forward(
     // `adapters/responses/mod.rs`). The raw `session_id` is still what the tracing
     // span records above; only the pool key is namespaced.
     let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id.clone());
-    forward_turn(state, None, pool_key, session_id, headers, body, started_at).await
+    match operation {
+        CodexOperation::Responses => {
+            forward_turn(state, None, pool_key, session_id, headers, body, started_at).await
+        }
+        CodexOperation::AlphaSearch => {
+            search::forward(state, provider, pool_key, headers, body, started_at).await
+        }
+    }
 }
 
 pub(crate) fn extract_session_id(headers: &HeaderMap) -> Option<String> {
@@ -357,8 +383,15 @@ pub(crate) async fn forward_turn(
                 effort: None,
                 service_tier: None,
             };
-            let result =
-                responses::forward_codex_inbound(state, route, pool_key, headers, body).await;
+            let result = responses::forward_codex_inbound(
+                state,
+                route,
+                pool_key,
+                headers,
+                body,
+                CodexOperation::Responses,
+            )
+            .await;
             (default_provider, result)
         }
     };
@@ -448,7 +481,15 @@ async fn dispatch_routed(
     };
 
     let result = if chatgpt_backend {
-        responses::forward_codex_inbound(state, route, pool_key, headers, body).await
+        responses::forward_codex_inbound(
+            state,
+            route,
+            pool_key,
+            headers,
+            body,
+            CodexOperation::Responses,
+        )
+        .await
     } else {
         responses::forward_codex_routed(state, route, headers, body, session_id).await
     };

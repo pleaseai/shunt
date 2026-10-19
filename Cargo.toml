@@ -7,7 +7,7 @@ name = "shunt-gateway"
 # unpublishable (issue #292). Remove this restriction with the pins once upstream
 # snapview/tungstenite-rs#426 ships in a crates.io release.
 publish = false
-version = "0.55.1"
+version = "0.56.0"
 edition = "2021"
 description = "Claude Code LLM gateway — an Anthropic Messages proxy that routes models to OpenAI/Codex and Anthropic-compatible backends"
 license = "MIT OR Apache-2.0"
@@ -16,7 +16,7 @@ readme = "README.md"
 keywords = ["claude", "gateway", "proxy", "anthropic", "openai"]
 categories = ["command-line-utilities", "web-programming::http-server"]
 # Keep the published tarball to what's needed to build and use the crate.
-include = ["src/**", "blueprints/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "shunt.toml.example", "shunt.yaml.example"]
+include = ["src/**", "build.rs", "migrations/**", "blueprints/**", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "shunt.toml.example", "shunt.yaml.example"]
 
 [lib]
 name = "shunt"
@@ -50,6 +50,12 @@ prefill-router = ["dep:prefill-router"]
 # reach the crate-private stage-router path (issue #554). Off by default so the
 # public API of a normal build is unchanged; `cargo bench --features bench`.
 bench = []
+
+# PostgreSQL backend for the optional pluggable store (ADR-0006). SQLite is
+# always compiled; this adds sqlx's Postgres driver and its rustls TLS, using
+# the aws-lc-rs provider that `ensure_crypto_provider` already installs
+# process-wide. Release CI enables it (`--features ui,store-postgres`).
+store-postgres = ["sqlx/postgres", "sqlx/tls-rustls-aws-lc-rs"]
 
 [dependencies]
 anyhow = "1"
@@ -131,6 +137,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+# Optional pluggable store (ADR-0006). `default-features = false` keeps sqlx's
+# `any` driver out. `sqlite-bundled` links the same `libsqlite3-sys` that
+# `rusqlite` (Cursor reader) already uses, so exactly one SQLite is built.
+# Postgres and TLS come from the `store-postgres` feature.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "migrate", "macros"] }
 # Stage-router scoring (`switchyard_libsy::{ToolSignals, pick_tier, ...}`), and
 # the base for the routing-algorithm work in ADR-0005.
 #

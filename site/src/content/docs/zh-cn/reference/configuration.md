@@ -137,7 +137,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | `spend_retention_months` | `13` | 用于后续的支出数据保留清理 |
 | `identity_retention_days` | `90` | 用于后续的身份保留清理 |
 | `group_limit_mode` | `min` | `min` 或 `max`;用于后续的组限制解析 |
-| `state_path` | `~/.shunt/gateway-spend.json` | 保存限制与审计记录的带版本 JSON 文件;`""` 表示仅内存 |
+| `state_path` | `~/.shunt/gateway-spend.json` | 保存限制与审计记录的带版本 JSON 文件;`""` 表示仅内存。设置 [`[store]`](#store可选) 后,它只作为导入来源 |
 
 请通过配置的 `[server.admin] header` 或 `x-api-key` 发送管理员凭据;`read_keys` 凭据只能使用 `GET`。每次修改都会通过私有临时文件原子替换状态文件。无法解析 home 目录时,默认仅使用内存。该表的增删与状态路径都在启动时固定,配置重载只会记录警告而不会应用。
 
@@ -197,12 +197,13 @@ stage 1 接受这些保留设置、`blocked_message`、`group_limit_mode` 和 `f
 | `users_env` | `SHUNT_GATEWAY_USERS` | 保存逗号分隔的 `email:secret` approval user 的 env 变量 |
 | `token_ttl_seconds` | `3600` | access token 生命周期,以 `expires_in` 返回。**已弃用**,单独使用时仍完全受支持 —— 已被 [`session.ttl_hours`](#servergatewaysession可选) 取代,但它仍是表达小于一小时生命周期的唯一方式 |
 | `trust_forwarded_for` | `false` | 将 `X-Forwarded-For`/`X-Real-IP` 信任为 `/device` rate-limit identity;只能在会替换 client 所提供值的 trusted proxy 后启用 |
+| `state_path` | `~/.shunt/gateway-sessions.json` | 跨重启保存 refresh session 的文件;token 以 SHA-256 哈希保存,并以仅所有者可访问的权限(Unix 上为 `0600`)原子写入。设为 `""` 表示仅内存 session(解析不到 home 目录时同样如此)。设置 [`[store]`](#store可选) 后,它只作为导入来源 |
 
 如果 URL 不是不带路径等内容的 HTTPS origin(仅 loopback 允许 `http`)、TTL 为 0、secret 缺失或少于 32 bytes,或者 user list 为空或格式错误,启动会 fail closed。secret 可以包含 `:`,只有第一个 colon 用于分隔 email 与 secret。`jwt_secret_env` 和 `users_env` 的值也和其他配置文件字符串一样,可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。env-backed secret 和 user 的变更会在 config reload 时生效;由于 route tree 在 boot 时固定,添加或移除此表需要 restart。
 
 同时设置一个已弃用的键和其对应的 `[server.gateway.session]` 替代键会导致启动失败,按键分别判断:`jwt_secret_env` 与 `session.jwt_secret` 同时设置是错误;`token_ttl_seconds` 与 `session.ttl_hours` 同时设置也是错误。跨这两组混用(例如同时设置 `session.jwt_secret` 和 `token_ttl_seconds`)则没有问题。只要已弃用的键被显式设置——无论是在配置文件中,还是通过 `SHUNT_*` 环境变量 override——shunt 就会记录一次弃用警告;只有当该键本身完全未被设置、使用默认值时才会保持沉默 —— 不设置 `jwt_secret_env`、只依赖 `SHUNT_GATEWAY_JWT_SECRET` env 变量来保存 secret 的配置仍然不会触发警告,因为该变量保存的是 secret 的值,而不是已弃用的键本身被设置。当某一对中只设置了一侧时,`session.*`(若存在)优先,其次是已弃用的键,最后才是默认值。
 
-颁发的 bearer 会在所选 provider 注入 server-side credential 时认证 `/v1/models`、`/v1/messages` 和 `/v1/messages/count_tokens`。passthrough provider 仍保持 open。如果还存在 `[server.auth]`,任一 credential 都能授权访问。device grant 和 rotating refresh token 是 process-lifetime in-memory state:config reload 会保留它们,但 restart 会使其失效。
+颁发的 bearer 会在所选 provider 注入 server-side credential 时认证 `/v1/models`、`/v1/messages` 和 `/v1/messages/count_tokens`。passthrough provider 仍保持 open。如果还存在 `[server.auth]`,任一 credential 都能授权访问。refresh session 默认会在重启后保留:boot 时会恢复 `state_path`(token 以哈希形式保存),因此用户可继续静默刷新。该文件不得被多个并发的 shunt 进程共享。`state_path = ""` 时 session 仅存于内存:config reload 会保留它们,但重启 shunt 会使其失效,access JWT 过期后用户需要重新登录。Device grant 和 rate-limit counter 始终只存于内存,登录过程中重启只会丢失该次尝试。过期的 grant 和空闲的 rate-limit identity 会被顺带清理;device grant 和 rate-limit identity 各自上限为 4,096 条。已使用的 refresh-token tombstone 每个 family 最多保留 64 条、保留 30 天;闲置 30 天的 active refresh token 会过期。
 
 ### `[server.gateway.session]`(可选)
 
@@ -311,7 +312,7 @@ headers = { "x-api-key" = "..." }
 | `burn_rate_avoidance` | `false` | 同时避开按预测会在窗口重置之前耗尽其软阈值的账户 |
 | `sort_by_reset` | `false` | 按配额重置时间最早排序(升序;未知重置排最后)可用账户,而不是按燃烧速率余量排序。可在不编辑 `shunt.toml` 的情况下,通过管理仪表盘或 `PATCH /admin/api/pool` 在运行时切换 —— 参见[账户池控制](/zh-cn/guides/pool-account-controls/) |
 | `usage_refresh_seconds` | 禁用(`0`/未设置) | Claude `GET /api/oauth/usage`、Codex `GET /wham/usage`、Antigravity `POST :retrieveUserQuotaSummary` 和池中 xAI(Grok)账户的 `GET /billing` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
-| `state_path` | 未设置 | 用于持久化池中按账户配额状态的文件;重启时从最后观测到的使用率热启动,而非从空池开始。未设置则禁用持久化(默认) |
+| `state_path` | 未设置 | 用于持久化池中按账户配额状态的文件;重启时从最后观测到的使用率热启动,而非从空池开始。未设置则禁用持久化(默认)。设置 [`[store]`](#store可选) 后,配额保存在存储中,此文件只作为导入来源 |
 | `ramp_initial_concurrency` | 禁用(`0`/未设置) | 风暴控制:对刚开始承接流量的账户身份的初始并发准入额度。`0` 或未设置则禁用准入门控 |
 | `reprobe_seconds` | 只要该表存在就是 `900`;`0` 则禁用 | 对陈旧的近配额 Codex/ChatGPT 账户进行机会性重新探测的间隔(秒);低于 60 的正值会向上取到 60 秒下限。`0` 禁用重新探测;若 `[server.pool]` 本身不存在,无论该值为何都禁用重新探测(#135 之前的行为)。非 WebSocket 的 outbound Responses 选择和可选的 inbound Codex HTTP 端点会保留重新探测;WebSocket 启用时的 outbound 选择会禁用重新探测 |
 
@@ -1199,6 +1200,51 @@ policy = { type = "target_selector", selector = "/target" }
 
 六个[每次调用的上限](#每次调用的上限)放在这张表上,因为发起调用的正是它。裁判受与别处
 相同的约束:一跳、不能是 passthrough 路由。
+
+## `[store]`(可选)
+
+用于保存池配额、网关 refresh token、支出限制及其审计记录的可选事务型存储,支持 SQLite 或 PostgreSQL。没有这个表时一切照旧:这三个子系统继续使用 JSON `state_path` 快照及其恢复路径。设置后,存储取代这些快照,已有快照只导入一次。完整行为见 [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)(英文)。`[store]` 仅在重启后生效:配置重载时修改它会记录一条警告,重启后才会应用。
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `backend` | —(必填) | `"sqlite"` 或 `"postgres"`。`"postgres"` 需要带 `store-postgres` Cargo feature 的构建:预构建的发布二进制包含它,`cargo build` 和 `cargo install` 不包含(需用 `--features store-postgres` 构建)。没有该 feature 时配置加载失败,错误信息会指出 feature 名称 |
+| `url` | —(必填) | SQLite:文件路径(按原样使用),或 `sqlite:` / `sqlite://` URL(其路径会做百分号解码,因此 `sqlite:///data/my%20store.db` 打开的是 `/data/my store.db`);SQLite 的 `file:` URI、URL 查询选项(`?...`)和内存数据库会在加载配置时被拒绝。PostgreSQL:`postgres://` URL。Redacting secret —— 在诊断输出中显示为 `[redacted]`(见 [Secret 引用](#secret-引用)) |
+| `max_connections` | `4` | PostgreSQL 连接池大小,至少为 `1`。SQLite 始终只用一个连接,设置此项会被拒绝 |
+| `password_env` | 未设置 | 仅 PostgreSQL:保存密码的环境变量名。只在 URL 不含密码时使用(userinfo 和 `?password=` 都没有)。需要它但变量未设置或为空时,启动失败 |
+| `allow_insecure_remote_tls` | `false` | 允许不是 `localhost`、回环 IP 或 unix 套接字的 PostgreSQL 主机不带 `sslmode=verify-full`。会记录一条警告 |
+| `hold_stale_seconds` | `30` | 超过这么多秒没有心跳,实例 hold 就变为 stale,下一个进程可以接管。至少为 `3`;持有者每 `hold_stale_seconds / 3` 秒续期一次 |
+
+**TLS 规则。** 非回环的 PostgreSQL 主机必须在 URL 中带 `sslmode=verify-full`,除非设置了 `allow_insecure_remote_tls = true`,否则配置加载(以及 `shunt check`)会失败。该规则依据 sqlx 从 URL 解析出的主机和 `sslmode` 判定,因此 `?host=`、`?hostaddr=` 无法绕过。TLS 客户端用内置的 Mozilla 根证书集验证,而不是操作系统的证书库;使用私有 CA 时,请在 URL 中加上 `sslrootcert=/path/ca.pem`。
+
+**SQLite 文件。** 文件不存在时,启动时以 `0600` 权限创建(`-wal` 和 `-shm` 辅助文件继承该权限);已有文件的权限保持不变。shunt 以 WAL 模式打开一个连接。
+
+**持久性。** 支出限制和网关 refresh token 在 admin API 调用或 token 响应返回之前同步写入。池配额采用 write-behind:每 15 秒写入一次,并在正常关闭时再写一次,因此硬崩溃最多会丢失最近 15 秒的配额;配额会从上游响应中重新得出。
+
+**只导入一次。** 首次启动时,池、网关(已配置 `[server.gateway]`)和支出(已配置 `[server.spend]`)的快照会按各自的 `state_path`(网关和支出使用默认路径)复制进存储,每个子系统一个事务,并同时写入一条导入记录。已有记录的子系统不会再次导入,即使其数据后来被删除;之后才出现的快照会被忽略。shunt 不会修改快照,只会在已导入的快照旁写一个 `<state_path>.imported` 附属文件。格式错误或版本不匹配的快照会让启动失败,错误中会指出子系统和文件,且该子系统不导入任何内容。挂载存储后,`state_path` 只是导入来源。
+
+**回退。** 导入是复制,不是同步。之后移除 `[store]`,会从导入时刻的快照启动,可能让此后在存储中撤销的会话重新生效,并撤销在存储中所做的支出限制修改。无存储的启动若读到与已导入内容完全相同的快照,会记录一条相应的警告;该次启动重写文件后警告即停止。
+
+**每个存储一个进程。** 存储带有实例 hold。对一个 hold 仍有效的存储再运行第二个 `shunt run`,会以非零状态退出,并指出持有者(`{HOSTNAME}:{pid}`)以及距上次续期过去了多久。超过 `hold_stale_seconds` 未续期的 hold 会被接管,接管会记入日志,因此崩溃后重启最多可能被拒绝这么长时间。运行中的进程发现 hold 被夺走后,会拒绝之后的存储写入,但继续处理代理请求。正常关闭时释放 hold。
+
+**存储写入失败时。** 代理路径从不等待存储。无法写入的 admin 支出限制修改会返回与以往相同的 Anthropic 格式 `500`,且不会产生任何变更。在网关 `/oauth/token` 端点上,签发 token(device grant)或轮换 refresh token 无法写入时,会返回带 `Cache-Control: no-store` 的 `503` `{"error":"temporarily_unavailable"}`,并回滚此次轮换,客户端重试即可成功;如果 device-grant 签发是在 grant 已被消耗之后失败的,该用户需要重新登录。对已轮换 token 的重放(replay)仍返回 `401` `invalid_grant`,其 family 保持已撤销状态;如果存储无法记录这次撤销,则会在下一次成功的存储写入或下一次 15 秒刷新时写入,若在此之前进程崩溃则会丢失。每次写入失败都会使 `shunt.store.write_failures` 计数器(`subsystem` = `pool`、`spend` 或 `gateway`)加一。
+
+**`shunt check`。** 有 `[store]` 时,[`shunt check`](/zh-cn/reference/cli/#shunt-check) 以只读方式打开存储并报告其 schema 版本;不会执行迁移、修改数据库,也不会创建不存在的 SQLite 文件(检查 WAL 模式的数据库时,SQLite 可能会创建或删除 `-wal` / `-shm` 辅助文件)。
+
+**安全。** 存储中保存着 refresh token 的哈希(SHA-256,不保存原始 token)、每个 token 所签发给的身份,以及支出审计记录,请限制对数据库的访问和备份。
+
+```toml
+# SQLite(始终可用)
+[store]
+backend = "sqlite"
+url = "/var/lib/shunt/shunt.db"
+
+# PostgreSQL(需要 store-postgres feature)
+# [store]
+# backend = "postgres"
+# url = "postgres://shunt@db.example.com:5432/shunt?sslmode=verify-full"
+# password_env = "SHUNT_STORE_PASSWORD"
+# max_connections = 4
+```
 
 ## `[sentry]`(可选)
 

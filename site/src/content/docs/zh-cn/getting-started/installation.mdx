@@ -1,6 +1,6 @@
 ---
 title: 安装
-description: 通过 Homebrew、Git 仓库中的 Cargo、预构建二进制文件或从源码安装 shunt。
+description: 通过 Homebrew、安装脚本、Git 仓库中的 Cargo、预构建二进制文件或从源码安装 shunt。
 ---
 
 
@@ -31,6 +31,21 @@ shunt 会先耗尽正在处理的请求再退出 —— 最多等待 `[server] s
 [热重载](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)该文件。
 更多细节(如配置查找路径)参见 [Running as a
 service](https://github.com/pleaseai/shunt/blob/main/docs/running.md#run-as-a-background-service-homebrew)。
+
+## 安装脚本 (macOS / Linux)
+
+```bash
+curl -fsSL https://shunt.sh/install.sh | sh
+```
+
+该脚本从 [GitHub release](https://github.com/pleaseai/shunt/releases) 下载与你的操作系统和 CPU 匹配的预构建二进制文件，用该 release 的 `SHA256SUMS` 校验后安装为 `~/.local/bin/shunt`。可通过两个环境变量调整：
+
+- `SHUNT_VERSION` —— 要安装的 release（例如 `0.55.0`）。默认是脚本发布时对应的 release，即最新版本。
+- `SHUNT_INSTALL_DIR` —— 安装目录（默认 `~/.local/bin`）。如果它不在 `PATH` 中，脚本会打印需要添加的那一行。
+
+```bash
+curl -fsSL https://shunt.sh/install.sh | SHUNT_VERSION=0.55.0 sh
+```
 
 ## Cargo（Git 仓库）
 

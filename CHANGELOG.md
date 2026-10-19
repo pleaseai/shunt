@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.56.0](https://github.com/pleaseai/shunt/compare/v0.55.1...v0.56.0) (2026-10-16)
+
+
+### Features
+
+* **install:** add install.sh that installs the GitHub release binary ([#767](https://github.com/pleaseai/shunt/issues/767)) ([c1e1230](https://github.com/pleaseai/shunt/commit/c1e123043e1707b0da4abdcb6320b5b00b662fcc))
+
+
+### Bug Fixes
+
+* **responses:** defer every output item behind an unfinished function call ([#771](https://github.com/pleaseai/shunt/issues/771)) ([a790051](https://github.com/pleaseai/shunt/commit/a790051a58311c6a7ca322bb187d173b698a7b61))
+* **responses:** deliver function-call arguments sent only in done events, closes [#765](https://github.com/pleaseai/shunt/issues/765) ([#769](https://github.com/pleaseai/shunt/issues/769)) ([e09bcfd](https://github.com/pleaseai/shunt/commit/e09bcfd1be340beaca7007afd781c16e7788889c))
+
 ## [0.55.1](https://github.com/pleaseai/shunt/compare/v0.55.0...v0.55.1) (2026-10-08)
 
 

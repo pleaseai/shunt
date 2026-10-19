@@ -68,6 +68,7 @@ authorization = "Bearer <token>"
 | `shunt.pool.quota_utilization` | ゲージ | `provider`, `window` | `5h`, `7d`, `7d_oi` ごとに、有効で観測済みかつ期限切れでない quota 値の最小 utilization。 |
 | `shunt.pool.rotations` | カウンター | `provider`, `reason` | アカウントからの切り替えと pool exhaustion の回数。 |
 | `shunt.pool.reprobes` | カウンター | `provider` | 陳腐化した近接クォータの Codex/ChatGPT アカウントで、最初の HTTP 送信時にコミットされた再プローブ。WebSocket 有効プロバイダーは inbound HTTP のみを数える。 |
+| `shunt.store.write_failures` | カウンター | `subsystem` | オプションの [`[store]`](/ja/reference/configuration/#storeオプション) への書き込み失敗を `subsystem` ごとに集計: `pool`（write-behind フラッシュ）、`spend`、`gateway`（トークンエンドポイント）。失敗したプールのフラッシュは次の 15 秒周期で再試行されるが、このプロセスがストアの hold を失うとプールのフラッシュは停止する。失敗した支出の書き込みは管理者の呼び出し元に、失敗したトークンエンドポイントの書き込みはクライアントに報告され、バックグラウンドのゲートウェイのフラッシュ失敗は呼び出し元がないためログにのみ記録される。 |
 | `shunt.upstream.status` | ゲージ | `provider` | 観測された [`[server.status]`](/reference/configuration/#serverstatus-optional) Statuspage severity: `0` none、`1` minor、`2` major、`3` critical。現在 `unknown`（信号なし）の provider は `0` として報告されるのではなく、この系列から完全に除外される。 |
 
 ## プライバシー

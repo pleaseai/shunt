@@ -11,6 +11,8 @@ use serde_json::json;
 use crate::{admin::session::random_id, server::AppState};
 
 use super::{
+    approval::Identity,
+    durable::{self, Rotation},
     jwt,
     store::{DevicePoll, DEVICE_CODE_TTL, INITIAL_POLL_INTERVAL},
 };
@@ -154,26 +156,54 @@ pub async fn token(
             DevicePoll::SlowDown => oauth_error(StatusCode::BAD_REQUEST, "slow_down"),
             DevicePoll::Denied => oauth_error(StatusCode::BAD_REQUEST, "access_denied"),
             DevicePoll::Expired => oauth_error(StatusCode::BAD_REQUEST, "expired_token"),
-            DevicePoll::Approved(identity) => {
-                let refresh_token = state.gateway_stores.refresh_tokens.issue(identity.clone());
+            DevicePoll::Approved(identity) => match issue_refresh_token(&state, &identity).await {
+                Some(refresh_token) => token_response(&auth, &identity, refresh_token),
+                None => oauth_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+            },
+        },
+        "refresh_token" => match rotate_refresh_token(&state, &form.refresh_token).await {
+            Rotation::Rotated(identity, refresh_token) => {
                 token_response(&auth, &identity, refresh_token)
             }
-        },
-        "refresh_token" => match state
-            .gateway_stores
-            .refresh_tokens
-            .rotate(&form.refresh_token)
-        {
-            Some((identity, refresh_token)) => token_response(&auth, &identity, refresh_token),
-            None => oauth_error(StatusCode::UNAUTHORIZED, "invalid_grant"),
+            Rotation::Rejected => oauth_error(StatusCode::UNAUTHORIZED, "invalid_grant"),
+            Rotation::Unavailable => {
+                oauth_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
+            }
         },
         _ => oauth_error(StatusCode::BAD_REQUEST, "unsupported_grant_type"),
     };
     // Opt-in `[server.gateway] state_path`: put any refresh-token mutation
     // (grant, rotation, or replay revocation) on disk before responding. A
     // no-op when the key is unset or nothing changed (e.g. pending polls).
-    super::persist::save_if_dirty(&state).await;
+    // With a store attached the mutation was already committed (or rolled
+    // back) above, so the file path stays out of it.
+    if state.gateway_stores.store().is_none() {
+        super::persist::save_if_dirty(&state).await;
+    }
     no_store(response)
+}
+
+/// Issue a refresh token. `None` only when a store is attached and the token
+/// could not be committed (memory is rolled back, nothing was issued).
+async fn issue_refresh_token(state: &AppState, identity: &Identity) -> Option<String> {
+    let stores = &state.gateway_stores;
+    match stores.store() {
+        Some(store) => durable::issue(stores.clone(), store.clone(), identity.clone())
+            .await
+            .ok(),
+        None => Some(stores.refresh_tokens.issue(identity.clone())),
+    }
+}
+
+async fn rotate_refresh_token(state: &AppState, presented: &str) -> Rotation {
+    let stores = &state.gateway_stores;
+    match stores.store() {
+        Some(store) => durable::rotate(stores.clone(), store.clone(), presented).await,
+        None => match stores.refresh_tokens.rotate(presented) {
+            Some((identity, token)) => Rotation::Rotated(identity, token),
+            None => Rotation::Rejected,
+        },
+    }
 }
 
 fn token_response(

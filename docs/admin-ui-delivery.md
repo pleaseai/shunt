@@ -105,12 +105,13 @@ here because a dashboard is the surface where an operator first notices it.
 | Pending login (`PendingStore`) | in-process, single-use, TTL-bound | Provisioning **breaks**: start on A, complete on B ⇒ expired/absent. |
 | Admin OIDC state (`OidcStateStore`, `src/admin/session.rs:265`) | in-process | Authorize on A, callback on B ⇒ state mismatch. |
 | Admin rate limiters | in-process, documented as process-global | Effective limit relaxes to N× the configured value. |
-| `AccountPool` quota/cooldown | memory + optional `[server.pool] state_path` | Per-instance view. `/admin/api/pool` reports one replica, not the fleet. |
-| Gateway refresh tokens (`GatewayStores.refresh_tokens`) | memory + optional `[server.gateway] state_path` | Per-instance view. The **only** thing that `state_path` persists — `PersistedSessions` carries `refresh_tokens` and nothing else (`src/gateway/persist.rs:35-37`). |
+| `AccountPool` quota/cooldown | memory + optional `[server.pool] state_path`, **or** the optional `[store]` (quota only, write-behind every 15 s; cooldowns never persist) | Per-instance view. `/admin/api/pool` reports one replica, not the fleet. A `[store]` is held by one process at a time ([`store.md`](store.md#instance-hold)); it does not make replicas share a pool. |
+| Gateway refresh tokens (`GatewayStores.refresh_tokens`) | memory + optional `[server.gateway] state_path`, **or** the optional `[store]` (committed before the token response) | Per-instance view. The **only** thing that `state_path` persists — `PersistedSessions` carries `refresh_tokens` and nothing else (`src/gateway/persist.rs:35-37`). The store persists the same set and no device state. |
 | Gateway device grants (`GatewayStores.device_grants`) | in-process, **no persistence path at all** | Device login **breaks**: `/oauth/device_authorization` on A, `/device` on B ⇒ unknown code. Survives no restart either. |
 | Gateway OIDC state (`GatewayStores.oidc_states`) | in-process, no persistence | A separate store from the admin one above; same split-brain failure on `/device/callback`. |
 | Gateway device-flow rate limiters (`device_authorization_rate`, `device_verify_rate`) | in-process per-IP | Effective limit relaxes to N× the configured value. |
-| Either `state_path` | `atomic_file::write_private_atomic` | Atomic per write, but **last-writer-wins across processes**. No lock, no merge — a shared path is silently clobbered. |
+| Either `state_path` | `atomic_file::write_private_atomic` | Atomic per write, but **last-writer-wins across processes**. No lock, no merge — a shared path is silently clobbered. With a `[store]` the `state_path`s are import sources only, and the store's instance hold refuses a second process. |
+| Spend limits and audit (`[server.spend]`) | memory + `[server.spend] state_path` (default `~/.shunt/gateway-spend.json`), **or** the optional `[store]` (synchronous) | Per-instance view; same last-writer-wins hazard on a shared `state_path`. With a store, the instance hold refuses a second process. |
 | Credential refresh | a `REFRESH_LOCK` per provider (Claude, Cursor, Google, xAI) / `REFRESH_LOCKS` (Codex) | In-process single-flight only, in **all five** refreshable stores. See below. |
 | `max_concurrent_requests` | per process | Fleet ceiling is N× the configured value. |
 
@@ -169,6 +170,13 @@ this is not a tuning problem. Scaling out safely needs a shared store for pool
 state, sessions, and refresh coordination — which is why the upstream gateway
 puts its spend, audit, and identity tables in Postgres.
 
+The optional `[store]` ([`store.md`](store.md)) makes the single-instance rows above
+durable in one transactional database, with an enforced single-instance hold. It
+does not change this topology: it addresses neither the memory-only rows (admin
+sessions, pending logins, device grants, OIDC state, rate limiters) nor refresh
+coordination, and a second process against the same store is refused rather than
+coordinated.
+
 Supported today: **one instance**. Running several means giving each its own
 `state_path` and its own account-store directory — separate gateways that happen
 to share a config shape, not one horizontally-scaled gateway. Reaching the admin
@@ -180,7 +188,9 @@ balancer, which Decision 2 makes natural.
 The topology above says scaling out needs a shared store, and history that
 outlives a restart needs durable storage. Both are storage questions that
 outgrew this document; they are recorded in [`storage.md`](storage.md), which evaluates
-SQLite, Turso, and PostgreSQL and adopts none of them.
+SQLite, Turso, and PostgreSQL. Its single-instance outcome, the optional `[store]`,
+is described in [`store.md`](store.md); request history and multi-instance
+coordination remain unbuilt.
 
 Two conclusions from there bear on the decisions below:
 

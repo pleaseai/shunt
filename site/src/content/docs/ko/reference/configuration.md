@@ -137,7 +137,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | `spend_retention_months` | `13` | 향후 지출 데이터 보존 개월 수 |
 | `identity_retention_days` | `90` | 향후 아이덴티티 보존 일수 |
 | `group_limit_mode` | `min` | 향후 그룹 제한 결정 모드. `min` 또는 `max` |
-| `state_path` | `~/.shunt/gateway-spend.json` | 제한과 감사 레코드를 저장하는 버전이 있는 JSON. `""`은 메모리 전용 |
+| `state_path` | `~/.shunt/gateway-spend.json` | 제한과 감사 레코드를 저장하는 버전이 있는 JSON. `""`은 메모리 전용. [`[store]`](#store-선택)를 설정하면 가져오기 원본으로만 쓰입니다 |
 
 관리자 자격 증명은 구성된 `[server.admin] header` 또는 `x-api-key`로 보냅니다. `read_keys` 자격 증명은 `GET`만 사용할 수 있습니다. 상태 파일은 변경할 때마다 비공개 임시 파일로 원자적으로 교체됩니다. 홈 디렉터리를 확인할 수 없으면 기본값은 메모리 전용입니다. 테이블의 추가·제거와 상태 경로는 모두 부팅 시 고정되며, 구성 리로드는 적용 대신 경고를 기록합니다.
 
@@ -197,7 +197,7 @@ stage 1은 이 보존 설정, `blocked_message`, `group_limit_mode`, `fail_close
 | `users_env` | `SHUNT_GATEWAY_USERS` | 쉼표로 구분된 `email:secret` approval user를 담는 env 변수 |
 | `token_ttl_seconds` | `3600` | access token 수명. `expires_in`으로 반환. **Deprecated**, 단독 사용 시 계속 완전히 지원됨 — [`session.ttl_hours`](#servergatewaysession-선택)로 대체됨. 다만 시간 미만 수명을 지정할 수 있는 유일한 방법으로는 계속 남아 있음 |
 | `trust_forwarded_for` | `false` | `/device` rate-limit identity로 `X-Forwarded-For`/`X-Real-IP`를 신뢰. client 제공 값을 교체하는 trusted proxy 뒤에서만 활성화 |
-| `state_path` | `~/.shunt/gateway-sessions.json` | 재시작 후에도 refresh session을 유지하는 파일. token은 SHA-256 hash로 저장하고 Unix에서는 소유자 전용 권한(`0600`)으로 원자적으로 기록. `""`로 설정하면 memory-only session 사용(home directory를 찾지 못한 경우에도 동일) |
+| `state_path` | `~/.shunt/gateway-sessions.json` | 재시작 후에도 refresh session을 유지하는 파일. token은 SHA-256 hash로 저장하고 Unix에서는 소유자 전용 권한(`0600`)으로 원자적으로 기록. `""`로 설정하면 memory-only session 사용(home directory를 찾지 못한 경우에도 동일). [`[store]`](#store-선택)를 설정하면 가져오기 원본으로만 쓰입니다 |
 
 URL이 경로 등을 포함하지 않은 HTTPS origin이 아니거나(`http`는 loopback에서만 허용), TTL이 0이거나, secret이 없거나 32 bytes 미만이거나, user list가 비었거나 잘못되면 시작은 fail closed합니다. secret에는 `:`를 포함할 수 있으며 첫 번째 colon만 email과 secret을 구분합니다. `jwt_secret_env`와 `users_env`의 값도 다른 설정 파일 문자열과 마찬가지로 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고). env-backed secret과 user 변경은 config reload 시 반영되지만, route tree는 boot 시 고정되므로 테이블 추가·제거에는 restart가 필요합니다.
 
@@ -310,7 +310,7 @@ headers = { "x-api-key" = "..." }
 | `burn_rate_avoidance` | `false` | 창이 리셋되기 전에 소프트 임계값을 소진할 것으로 예측되는 계정도 함께 회피 |
 | `sort_by_reset` | `false` | 번-레이트 헤드룸 대신 사용 가능한 계정을 쿼터 리셋이 가장 빠른 순(오름차순; 알 수 없는 리셋은 맨 뒤)으로 정렬. `shunt.toml`을 편집하지 않고 관리자 대시보드나 `PATCH /admin/api/pool`로 런타임에 토글 가능 — [풀 계정 제어](/ko/guides/pool-account-controls/) 참고 |
 | `usage_refresh_seconds` | 비활성(`0`/미설정) | Claude `GET /api/oauth/usage`, Codex `GET /wham/usage`, Antigravity `POST :retrieveUserQuotaSummary`, 풀에 등록된 xAI(Grok) 계정의 `GET /billing` 폴링 간격(초); 60 미만의 양수 값은 60초 하한으로 올림 |
-| `state_path` | 미설정 | 풀의 계정별 쿼터 상태를 저장할 파일; 재시작 시 빈 풀 대신 마지막으로 관측된 사용률에서 워밍업. 미설정이면 영속화 비활성(기본값) |
+| `state_path` | 미설정 | 풀의 계정별 쿼터 상태를 저장할 파일; 재시작 시 빈 풀 대신 마지막으로 관측된 사용률에서 워밍업. 미설정이면 영속화 비활성(기본값). [`[store]`](#store-선택)를 설정하면 저장소가 쿼터를 보관하고 이 파일은 가져오기 원본으로만 쓰입니다 |
 | `ramp_initial_concurrency` | 비활성(`0`/미설정) | 폭주 제어: 방금 트래픽을 받기 시작한 계정 아이덴티티의 초기 동시 허용치. `0` 또는 미설정이면 허용 게이팅 비활성 |
 | `reprobe_seconds` | 이 테이블이 존재하면 `900`; `0`이면 비활성 | 오래된 근접 쿼터 Codex/ChatGPT 계정을 위한 기회적 재탐침 간격(초); 60 미만의 양수 값은 60초 하한으로 올림. `0`이면 재탐침 비활성; `[server.pool]` 자체가 없으면 이 값과 무관하게 재탐침 비활성(#135 이전 동작). 비WS outbound Responses 선택과 선택형 inbound Codex HTTP 엔드포인트는 재탐침을 유지하며, WebSocket을 켠 outbound 선택은 비활성화 |
 
@@ -1268,6 +1268,51 @@ policy = { type = "target_selector", selector = "/target" }
 
 여섯 개 [호출당 한도](#호출당-한도)는 호출을 만드는 주체인 이 테이블에 놓습니다. 판정
 모델은 다른 곳과 같은 규칙을 지킵니다 — 한 홉, 그리고 passthrough 라우트 금지입니다.
+
+## `[store]` (선택)
+
+풀 쿼터, 게이트웨이 refresh token, 지출 한도와 감사 기록을 위한 선택적 트랜잭션 저장소로, SQLite 또는 PostgreSQL을 사용합니다. 이 테이블이 없으면 아무것도 바뀌지 않습니다. 세 하위 시스템은 기존과 똑같이 JSON `state_path` 스냅샷과 복원 경로를 유지합니다. 이 테이블을 설정하면 저장소가 스냅샷을 대체하고, 기존 스냅샷은 한 번만 가져옵니다. 전체 동작은 [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)(영문)에 있습니다. `[store]`는 재시작 전용입니다. 설정 reload 중에 바꾸면 경고를 로그로 남기고, 재시작한 뒤에 적용됩니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `backend` | — (필수) | `"sqlite"` 또는 `"postgres"`. `"postgres"`는 `store-postgres` Cargo feature로 빌드해야 합니다. 사전 빌드된 릴리스 바이너리에는 포함되어 있고, `cargo build`와 `cargo install`에는 포함되지 않습니다(`--features store-postgres`로 빌드). feature가 없으면 설정 로드가 실패하며 오류에 feature 이름이 나옵니다 |
+| `url` | — (필수) | SQLite: 파일 경로(적은 그대로 사용) 또는 `sqlite:` / `sqlite://` URL(경로를 퍼센트 디코딩하므로 `sqlite:///data/my%20store.db`는 `/data/my store.db`를 엽니다)이며, SQLite `file:` URI, URL 쿼리 옵션(`?...`), 인메모리 데이터베이스는 설정 로드 시 거부됩니다. PostgreSQL: `postgres://` URL. Redacting secret — 진단 출력에서 `[redacted]`로 표시됩니다([Secret 참조](#secret-참조) 참고) |
+| `max_connections` | `4` | PostgreSQL 풀 크기이며 `1` 이상이어야 합니다. 항상 연결 하나만 쓰는 SQLite에서는 거부됩니다 |
+| `password_env` | 미설정 | PostgreSQL 전용: 비밀번호를 담은 환경 변수 이름. URL에 비밀번호가 없을 때만 사용합니다(userinfo 또는 `?password=`). 필요한데 변수가 없거나 비어 있으면 시작이 실패합니다 |
+| `allow_insecure_remote_tls` | `false` | `localhost`, 루프백 IP, unix 소켓이 아닌 PostgreSQL 호스트를 `sslmode=verify-full` 없이 허용합니다. 경고를 로그로 남깁니다 |
+| `hold_stale_seconds` | `30` | heartbeat가 없는 채로 이 시간(초)이 지나면 인스턴스 hold가 stale이 되어 다음 프로세스가 가져갈 수 있습니다. `3` 이상이어야 하며, 보유 프로세스는 `hold_stale_seconds / 3`초마다 hold를 갱신합니다 |
+
+**TLS 규칙.** 루프백이 아닌 PostgreSQL 호스트는 `allow_insecure_remote_tls = true`가 아니면 URL에 `sslmode=verify-full`이 있어야 하며, 없으면 설정 로드(와 `shunt check`)가 실패합니다. 이 규칙은 sqlx가 URL에서 파싱한 호스트와 `sslmode`를 기준으로 판정하므로 `?host=`나 `?hostaddr=`로 우회할 수 없습니다. TLS 클라이언트는 운영체제 저장소가 아니라 내장된 Mozilla 루트 인증서 집합으로 검증합니다. 사설 CA를 쓰려면 URL에 `sslrootcert=/path/ca.pem`을 추가하세요.
+
+**SQLite 파일.** 파일이 없으면 부팅할 때 `0600` 권한으로 만들고(`-wal`, `-shm` 보조 파일도 같은 권한을 물려받습니다), 이미 있는 파일의 권한은 그대로 둡니다. shunt는 WAL 모드로 연결 하나를 엽니다.
+
+**내구성.** 지출 한도와 게이트웨이 refresh token은 admin API 호출이나 token 응답이 반환되기 전에 동기적으로 기록합니다. 풀 쿼터는 write-behind 방식으로 15초마다, 그리고 정상 종료 시 한 번 더 기록하므로 비정상 종료 시 마지막 최대 15초의 쿼터를 잃을 수 있습니다. 쿼터는 업스트림 응답에서 다시 도출됩니다.
+
+**한 번만 가져오기.** 첫 부팅에서 풀, 게이트웨이(`[server.gateway]` 설정 시), 지출(`[server.spend]` 설정 시) 스냅샷을 각 `state_path`(게이트웨이와 지출은 기본 경로 적용)에서 하위 시스템당 하나의 트랜잭션으로 저장소에 복사하고, 복사했다는 기록을 함께 남깁니다. 기록이 있는 하위 시스템은 이후 데이터를 지웠더라도 다시 가져오지 않으며, 나중에 생긴 스냅샷도 무시합니다. shunt는 스냅샷을 수정하지 않고, 가져온 스냅샷 옆에 `<state_path>.imported` 사이드카 파일을 만듭니다. 형식이 잘못되었거나 버전이 맞지 않는 스냅샷은 부팅을 실패시키며, 오류에 하위 시스템과 파일이 나오고 해당 하위 시스템은 아무것도 가져오지 않습니다. 저장소를 붙인 동안 `state_path`는 가져오기 원본으로만 쓰입니다.
+
+**되돌리기.** 가져오기는 동기화가 아니라 복사입니다. 나중에 `[store]`를 제거하면 가져온 시점의 스냅샷에서 시작하므로, 그 뒤 저장소에서 폐기한 세션이 되살아나거나 변경한 지출 한도가 되돌아갈 수 있습니다. 가져온 스냅샷과 같은 파일을 읽는 저장소 없는 부팅은 이를 알리는 경고를 로그로 남기며, 그 부팅이 파일을 다시 쓰면 경고는 멈춥니다.
+
+**저장소당 프로세스 하나.** 저장소에는 인스턴스 hold가 있습니다. 이미 hold가 살아 있는 저장소에 두 번째 `shunt run`을 실행하면 보유 프로세스(`{HOSTNAME}:{pid}`)와 마지막 갱신 후 경과 시간을 알리며 비정상 종료합니다. `hold_stale_seconds` 동안 갱신되지 않은 hold는 가져가며 그 사실을 로그로 남기므로, 크래시 후에는 최대 그 시간 동안 재시작이 거부될 수 있습니다. 실행 중인 프로세스가 hold를 빼앗긴 것을 알게 되면 이후 저장소 쓰기를 거부하지만 프록시 요청은 계속 처리합니다. 정상 종료 시 hold를 반납합니다.
+
+**저장소 쓰기가 실패할 때.** 프록시 경로는 저장소를 기다리지 않습니다. 쓰지 못한 admin 지출 한도 변경은 기존과 같은 Anthropic 형식의 `500`을 반환하고 아무것도 바뀌지 않습니다. 게이트웨이 `/oauth/token` 엔드포인트에서 token 발급(device grant)이나 refresh token 교체를 기록하지 못하면 `Cache-Control: no-store`와 함께 `503` `{"error":"temporarily_unavailable"}`를 반환하고 교체를 롤백하므로 클라이언트가 재시도하면 정상 동작합니다. grant가 이미 소비된 뒤 device-grant 발급이 실패하면 해당 사용자는 로그인을 다시 시작해야 합니다. 이미 교체된 token의 재사용(replay)은 기존처럼 `401` `invalid_grant`를 반환하고 해당 family는 폐기된 상태로 유지됩니다. 저장소가 이 폐기를 기록하지 못하면 다음 저장소 쓰기 성공 또는 다음 15초 flush에서 기록되며, 그 전에 프로세스가 크래시하면 유실됩니다. 실패한 쓰기마다 `shunt.store.write_failures` 카운터(`subsystem` = `pool`, `spend`, `gateway`)가 증가합니다.
+
+**`shunt check`.** `[store]`가 있으면 [`shunt check`](/ko/reference/cli/#shunt-check)가 저장소를 읽기 전용으로 열어 스키마 버전을 보고합니다. 마이그레이션을 실행하거나, 데이터베이스를 수정하거나, 없는 SQLite 파일을 만들지 않습니다(WAL 모드 데이터베이스를 검사하는 동안 SQLite가 `-wal` / `-shm` 보조 파일을 만들거나 지울 수 있습니다).
+
+**보안.** 저장소에는 refresh token의 해시(SHA-256, 원본 token은 저장하지 않음)와 각 token이 발급된 대상의 ID, 지출 감사 기록이 들어 있으므로 데이터베이스 접근과 백업을 제한하세요.
+
+```toml
+# SQLite (항상 사용 가능)
+[store]
+backend = "sqlite"
+url = "/var/lib/shunt/shunt.db"
+
+# PostgreSQL (store-postgres feature 필요)
+# [store]
+# backend = "postgres"
+# url = "postgres://shunt@db.example.com:5432/shunt?sslmode=verify-full"
+# password_env = "SHUNT_STORE_PASSWORD"
+# max_connections = 4
+```
 
 ## `[sentry]` (선택)
 

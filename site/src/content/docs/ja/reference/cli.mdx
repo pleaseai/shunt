@@ -45,7 +45,25 @@ shunt check
 
 具体的なエラーを報告します: 不正なバインドアドレス、ルート内の未知のプロバイダー、`api_key_env` の欠落、不正な `base_url`、誤ったアダプター/認証の組み合わせ。
 
-`shunt run` の起動時と同じ、ルーティング済み Antigravity 資格情報ガードも実行します: ネイティブ `antigravity` アップストリームへルーティングしていて資格情報が保存されていない設定は、`config ok` を出力してから起動時に失敗するのではなく、このチェックで失敗し `shunt login antigravity` を案内します。チェックはオフラインのままです — ルートを読み、資格情報の有無（シングルトンファイルまたは名前付きプール候補）を確認するだけで、トークンの更新もバックエンドへの接続も行いません。組み込みの `antigravity` プロバイダーを宣言しているだけでルーティングしていない設定は影響を受けず、`kind = "antigravity_cli"` のルーティングも同様です。
+`shunt run` の起動時と同じ、ルーティング済み Antigravity 資格情報ガードも実行します: ネイティブ `antigravity` アップストリームへルーティングしていて資格情報が保存されていない設定は、`config ok` を出力してから起動時に失敗するのではなく、このチェックで失敗し `shunt login antigravity` を案内します。このガードはオフラインです — ルートを読み、資格情報の有無（シングルトンファイルまたは名前付きプール候補）を確認するだけで、トークンの更新もバックエンドへの接続も行いません。組み込みの `antigravity` プロバイダーを宣言しているだけでルーティングしていない設定は影響を受けず、`kind = "antigravity_cli"` のルーティングも同様です。
+
+[`[store]`](/ja/reference/configuration/#storeオプション) がある場合、チェックは完全なオフラインではなくなります。`config ok` の後にストアを読み取り専用で開き（SQLite ファイルを読むか、PostgreSQL に接続します）、もう 1 行出力します。マイグレーションの実行、データベースの変更、存在しない SQLite ファイルの作成は行いません。ただし、WAL モードのデータベースを検査している間に、SQLite が `-wal` / `-shm` の補助ファイルを作成または削除することがあります。
+
+```bash
+shunt check
+# -> config ok
+# -> store ok: sqlite sqlite:/var/lib/shunt/shunt.db, schema v1 (binary supports v1)
+```
+
+| ストアの状態 | `config ok` の後の出力 | 終了コード |
+| :-- | :-- | :-- |
+| 最新 | `store ok: <backend> <target>, schema vN (binary supports vM)` | `0` |
+| スキーマがバイナリより古い | 同じ行の末尾に `; 1 pending migration applies at boot`（K > 1 なら `; K pending migrations apply at boot`） | `0` |
+| SQLite ファイルが存在しない | `store ok: sqlite sqlite:<path>, file does not exist yet; it is created with mode 0600 at boot` | `0` |
+| 接続できない | `store check failed`、原因は `store <target> is unreachable: <reason>` | `1` |
+| スキーマがバイナリより新しい | `store check failed`、原因は `store <target> is at schema version N, newer than the M this binary supports; upgrade shunt` | `1` |
+
+`<target>` は `sqlite:<path>` または `postgres://host:port/db` で、認証情報は出力されません。検査は最大 15 秒で打ち切られます。検証に失敗する `[store]`（例: `sslmode=verify-full` のないリモートの PostgreSQL ホスト）は、それより前に `config check failed` で失敗します。
 
 ## `shunt init`
 

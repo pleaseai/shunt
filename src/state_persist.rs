@@ -31,14 +31,19 @@
 //! (not portable across a restart) and short-lived, so they are intentionally
 //! left to lapse on boot.
 
-use std::{fs, io, path::Path, time::Duration};
+use std::{fs, io, path::Path, sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    accounts::{AccountKey, QuotaState},
+    accounts::{AccountKey, AccountPool, QuotaState},
     server::AppState,
+    store::{import::LoadIssue, Store},
 };
+
+mod store_persister;
+
+pub use store_persister::{restore_from_store, PoolPersister};
 
 /// Version 2 replaces the provider-name key with the physical-account key.
 /// Version 3 separates utilization and per-window status freshness.
@@ -122,19 +127,29 @@ pub async fn restore(state: &AppState) {
     }
 }
 
-/// Spawn the background flush loop if `state_path` is configured. A no-op
-/// otherwise, so the default deployment adds no background work. Whether the
-/// task exists is decided once from the boot config (like the usage poller); a
+/// Spawn the background flush loop. With a `store`, quota is written to it
+/// (write-behind, same 15 s dirty-flag protocol) and `state_path` is not used;
+/// otherwise the loop writes the `state_path` file, and without one this is a
+/// no-op so the default deployment adds no background work. Whether the task
+/// exists is decided once from the boot config (like the usage poller); a
 /// reload does not start or stop it.
-pub fn spawn_state_persister(state: AppState) {
+pub fn spawn_state_persister(state: AppState, store: Option<Arc<Store>>) -> PoolPersister {
+    if let Some(store) = store {
+        tracing::info!(
+            interval_secs = FLUSH_INTERVAL.as_secs(),
+            "pool state persistence enabled (store)"
+        );
+        return PoolPersister::store(state, store, FLUSH_INTERVAL);
+    }
     if state_path(&state).is_none() {
-        return;
+        return PoolPersister::idle(state);
     }
     tracing::info!(
         interval_secs = FLUSH_INTERVAL.as_secs(),
         "pool state persistence enabled"
     );
-    tokio::spawn(async move {
+    let flush_state = state.clone();
+    let task = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The first tick fires immediately; consume it so the first real flush
@@ -142,9 +157,10 @@ pub fn spawn_state_persister(state: AppState) {
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            flush(&state).await;
+            flush(&flush_state).await;
         }
     });
+    PoolPersister::file(state, task)
 }
 
 /// Write the pool's quota to disk if it changed since the last flush. Atomically
@@ -195,27 +211,62 @@ fn load(path: &Path) -> io::Result<Option<PersistedPool>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let persisted: PersistedPool = match serde_json::from_slice(&bytes) {
-        Ok(persisted) => persisted,
-        Err(error) => {
+    crate::store::marker::warn_if_imported("pool", path, &bytes);
+    match parse(&bytes) {
+        Ok(persisted) => Ok(Some(persisted)),
+        Err(LoadIssue::NotJson(error)) => {
             tracing::warn!(
                 path = %path.display(),
                 %error,
                 "pool state file is not valid json; ignoring"
             );
-            return Ok(None);
+            Ok(None)
         }
-    };
-    if persisted.version != STATE_VERSION && persisted.version != LEGACY_STATE_VERSION {
-        tracing::warn!(
-            path = %path.display(),
-            found = persisted.version,
-            expected = format!("{STATE_VERSION} or {LEGACY_STATE_VERSION}"),
-            "pool state file version mismatch; ignoring"
-        );
-        return Ok(None);
+        Err(LoadIssue::Version { found, expected }) => {
+            tracing::warn!(
+                path = %path.display(),
+                found,
+                expected,
+                "pool state file version mismatch; ignoring"
+            );
+            Ok(None)
+        }
     }
-    Ok(Some(persisted))
+}
+
+/// Decode and version-check a state file's bytes. Shared by the lenient
+/// [`load`] (which turns an issue into a cold start) and the store import
+/// (which refuses to boot on one).
+fn parse(bytes: &[u8]) -> Result<PersistedPool, LoadIssue> {
+    let persisted: PersistedPool =
+        serde_json::from_slice(bytes).map_err(|error| LoadIssue::NotJson(error.to_string()))?;
+    if persisted.version != STATE_VERSION && persisted.version != LEGACY_STATE_VERSION {
+        return Err(LoadIssue::Version {
+            found: persisted.version,
+            expected: format!("{STATE_VERSION} or {LEGACY_STATE_VERSION}"),
+        });
+    }
+    Ok(persisted)
+}
+
+/// The quotas a snapshot would restore, normalized exactly as a store-less
+/// boot normalizes them: both versions run through a scratch [`AccountPool`]
+/// (`import_quotas` / `import_quotas_legacy`, then `export_quotas`), so the
+/// v2 to v3 rules are reused rather than reimplemented. Strict: an unreadable
+/// or incompatible snapshot is an error.
+pub(crate) fn normalized_quotas(bytes: &[u8]) -> Result<Vec<(AccountKey, QuotaState)>, LoadIssue> {
+    let persisted = parse(bytes)?;
+    let scratch = AccountPool::new();
+    let quotas = persisted
+        .accounts
+        .into_iter()
+        .map(|account| (account.key, account.quota));
+    if persisted.version == LEGACY_STATE_VERSION {
+        scratch.import_quotas_legacy(quotas);
+    } else {
+        scratch.import_quotas(quotas);
+    }
+    Ok(scratch.export_quotas())
 }
 
 /// Write the state atomically via [`crate::atomic_file::write_private_atomic`]:
@@ -328,6 +379,40 @@ mod tests {
             .raw_quota_for_test(&key)
             .map(|(_, quota)| quota);
         (first, second, rewritten)
+    }
+
+    #[test]
+    fn store_less_load_warns_only_while_the_imported_snapshot_is_unchanged() {
+        use crate::store::{marker, test_support::capture_logs};
+
+        let path = temp_file("imported");
+        save(&path, &sample_pool()).expect("save succeeds");
+        let sha = marker::sha256_hex(&fs::read(&path).expect("read snapshot"));
+        marker::write(
+            &path,
+            &marker::ImportMarker {
+                backend: "sqlite".to_string(),
+                imported_at: 1_700_000_321,
+                source_sha256: sha,
+            },
+        )
+        .expect("write sidecar");
+
+        let logs = capture_logs(|| {
+            load(&path).expect("load succeeds").expect("file present");
+        });
+        assert!(logs.contains("imported into a store"), "{logs}");
+        assert!(logs.contains("1700000321"), "{logs}");
+
+        // A store-less run rewrites the snapshot; the warning stops.
+        let mut changed = sample_pool();
+        changed.accounts.clear();
+        save(&path, &changed).expect("rewrite succeeds");
+        let logs = capture_logs(|| {
+            load(&path).expect("load succeeds").expect("file present");
+        });
+        assert!(logs.is_empty(), "{logs}");
+        remove_test_dir(&path);
     }
 
     #[test]

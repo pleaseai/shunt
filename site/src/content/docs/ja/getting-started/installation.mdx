@@ -1,6 +1,6 @@
 ---
 title: インストール
-description: Homebrew、Git リポジトリからの Cargo、ビルド済みバイナリ、またはソースから shunt をインストールする。
+description: Homebrew、インストールスクリプト、Git リポジトリからの Cargo、ビルド済みバイナリ、またはソースから shunt をインストールする。
 ---
 
 
@@ -33,6 +33,21 @@ brew services start shunt
 詳細（設定探索パスなど）は [Running as a
 service](https://github.com/pleaseai/shunt/blob/main/docs/running.md#run-as-a-background-service-homebrew)
 を参照してください。
+
+## インストールスクリプト (macOS / Linux)
+
+```bash
+curl -fsSL https://shunt.sh/install.sh | sh
+```
+
+スクリプトは OS と CPU に合ったビルド済みバイナリを [GitHub リリース](https://github.com/pleaseai/shunt/releases)からダウンロードし、リリースの `SHA256SUMS` で検証してから `~/.local/bin/shunt` にインストールします。2 つの環境変数で動作を変更できます:
+
+- `SHUNT_VERSION` — インストールするリリース（例: `0.55.0`）。デフォルトはスクリプトが公開された時点のリリース、つまり最新リリースです。
+- `SHUNT_INSTALL_DIR` — インストール先ディレクトリ（デフォルト `~/.local/bin`）。このディレクトリが `PATH` にない場合、スクリプトが追加すべき行を表示します。
+
+```bash
+curl -fsSL https://shunt.sh/install.sh | SHUNT_VERSION=0.55.0 sh
+```
 
 ## Cargo（Git リポジトリ）
 

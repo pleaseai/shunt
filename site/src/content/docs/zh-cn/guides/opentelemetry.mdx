@@ -68,6 +68,7 @@ authorization = "Bearer <token>"
 | `shunt.pool.quota_utilization` | 仪表 | `provider`, `window` | `5h`、`7d` 或 `7d_oi` 窗口中已启用、已观测且未过期的 quota 值的最小使用率。 |
 | `shunt.pool.rotations` | 计数器 | `provider`, `reason` | 离开账户的切换次数以及 pool 耗尽的请求数。 |
 | `shunt.pool.reprobes` | 计数器 | `provider` | 在陈旧近配额 Codex/ChatGPT 账户的首次 HTTP 发送时提交的重新探测；启用 WebSocket 的提供方只统计 inbound HTTP 探测。 |
+| `shunt.store.write_failures` | 计数器 | `subsystem` | 对可选 [`[store]`](/zh-cn/reference/configuration/#store可选) 的写入失败,按 `subsystem` 统计:`pool`(write-behind 刷新)、`spend` 或 `gateway`(token 端点)。失败的池刷新会在下一个 15 秒周期重试,但若本进程丢失了存储 hold,池刷新会停止。失败的支出写入会报告给管理端调用方,失败的 token 端点写入会报告给客户端;后台网关刷新失败没有调用方,只记录日志。 |
 | `shunt.upstream.status` | 仪表 | `provider` | 观测到的 [`[server.status]`](/reference/configuration/#serverstatus-optional) Statuspage severity：`0` none、`1` minor、`2` major、`3` critical。当前处于 `unknown`（无信号）状态的 provider 不会以 `0` 上报，而是从该序列中完全省略。 |
 
 ## 隐私

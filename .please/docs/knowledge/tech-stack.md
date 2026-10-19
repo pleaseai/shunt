@@ -38,6 +38,19 @@ unchanged.
 - **Formats**: TOML (`shunt.toml.example`) and YAML (`shunt.yaml.example`)
 - **Principle**: table-driven provider config over hardcoded provider logic
 
+## Storage
+
+- **Optional durable store** (opt-in `[store]`, ADR-0006): `sqlx` 0.9 — SQLite
+  (`sqlite-bundled`, default build) and PostgreSQL (`store-postgres` feature, rustls
+  aws-lc; release binaries enable it). No `[store]` keeps the in-memory + JSON
+  `state_path` snapshots (`src/state_persist.rs`, `src/gateway/persist.rs`,
+  `src/gateway/spend/persist.rs`)
+- **Code**: `src/store/` — one `Db` enum over both engines (`$N` placeholders,
+  rewritten to `?N` for SQLite); embedded migrations in `migrations/{sqlite,postgres}/`
+- **Single instance**: an instance hold row fences every durable write; multi-instance
+  sharing is Phase 2 (separate track). Turso/libSQL was evaluated and left out
+- User-facing reference: `docs/store.md`
+
 ## Serialization & Protocol Translation
 
 - `serde` / `serde_json` — Anthropic Messages ⇄ OpenAI Responses translation (`src/model/`)

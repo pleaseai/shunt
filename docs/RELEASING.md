@@ -6,6 +6,7 @@ shunt releases are distributed through the Homebrew tap and prebuilt GitHub rele
 
 - **Release metadata:** release-please (`.github/workflows/release-please.yml`) maintains the release PR, version in `Cargo.toml`/`Cargo.lock`, and `CHANGELOG.md`. Merging the release PR creates the `v<version>` tag and GitHub release.
 - **Binary release:** `.github/workflows/release.yml` builds native `shunt` binaries for macOS (arm64/x64) and Linux (arm64/x64, musl), creates `SHA256SUMS`, and attaches all five assets to the GitHub release.
+- **Install script:** `site/public/install.sh` is served at `https://shunt.sh/install.sh`. It downloads the matching binary from the GitHub release and verifies it against `SHA256SUMS`. Its default version line carries an `x-release-please-version` marker, listed in `extra-files` in `release-please-config.json`, so the release PR bumps it. `deploy-docs.yml` skips the release-please merge commit on push and refuses every deploy whose default version is missing any release asset; the Release workflow's `deploy-docs` job publishes the `main` tip after the assets are uploaded. The script therefore never defaults to a version without binaries. Until a failed Release workflow is fixed, docs deploys fail at that check and the site keeps the previous default.
 - **Homebrew:** after the assets are uploaded, the same workflow updates `shunt.rb` in `pleaseai/homebrew-tap`. A manual `workflow_dispatch` can backfill the formula for an existing release tag.
 - **Cargo metadata:** `Cargo.toml` sets `publish = false`. Per issue #292, permessage-deflate currently requires `[patch.crates-io]` fork pins. Cargo omits patches from packaged manifests, and a dependent cannot inherit them, so this configuration cannot be published correctly.
 
@@ -18,7 +19,9 @@ All third-party GitHub Actions must remain pinned to full commit SHAs.
 3. Confirm that the tag-triggered Release workflow succeeds:
    - all four target builds complete;
    - the GitHub release contains the four binaries plus `SHA256SUMS`;
-   - `pleaseai/homebrew-tap` receives the matching formula update.
+   - the `deploy docs` job publishes the site;
+   - `pleaseai/homebrew-tap` receives the matching formula update;
+   - `curl -fsSL https://shunt.sh/install.sh | sh` installs the new version.
 4. Smoke-test the formula:
 
    ```bash

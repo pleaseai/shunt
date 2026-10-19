@@ -28,6 +28,9 @@
 # Homebrew (macOS / Linux)
 brew install pleaseai/tap/shunt
 
+# 安装脚本 (macOS / Linux) —— 来自 GitHub release 的预构建二进制文件
+curl -fsSL https://shunt.sh/install.sh | sh
+
 # Cargo —— 直接从源码仓库安装
 cargo install --git https://github.com/pleaseai/shunt
 ```
@@ -207,6 +210,7 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 | 有界的上游重试 —— **默认开启**,保守,且绝不在流中途重试 | `[providers.<name>.retry]` | [参考(英文)](https://shunt.sh/reference/configuration/#providersnameretry) |
 | 共享部署限制 —— **默认启用**(并发 1024、请求体 32 MiB、TTFB 120 秒、设备流限速),CIDR、请求头与 URL 限制需显式配置 | `[server] max_concurrent_requests`、`[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [指南](https://shunt.sh/zh-cn/guides/shared-gateway/) |
 | 密钥引用 —— 任意字符串值可写成 `${VAR}` 或 `${file:/abs/path}`,每次热重载重新解析(`[sentry]`/`[otel]` 除外,启动时构建一次,需重启) | 配置中的任意字符串(**始终启用**) | [参考](https://shunt.sh/zh-cn/reference/configuration/) |
+| 可选存储 —— 用 SQLite 或 PostgreSQL 保存池配额、网关 refresh token 以及支出限制与审计记录,取代 JSON 快照;已有快照只导入一次。每个存储只能有一个 shunt 进程。存储中保存着 refresh token 的哈希,请限制对数据库的访问和备份 | 带 `backend` 和 `url` 的 `[store]`;`backend = "postgres"` 需要带 `store-postgres` 的构建(预构建的发布二进制包含,`cargo build` 不包含) | [参考](https://shunt.sh/zh-cn/reference/configuration/#store可选) |
 | OpenTelemetry 指标与链路追踪 | `endpoint` 非空的 `[otel]` | [指南](https://shunt.sh/zh-cn/guides/opentelemetry/) |
 
 ## 文档

@@ -1,4 +1,10 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -119,7 +125,10 @@ pub(crate) struct SpendState {
 
 pub struct SpendStore {
     state: Mutex<SpendState>,
-    mutation_gate: tokio::sync::Mutex<()>,
+    mutation_gate: Arc<tokio::sync::Mutex<()>>,
+    /// A store write's outcome stayed unknown and could not be read back, so
+    /// memory may be behind the store. Cleared by the next mutation's resync.
+    needs_resync: AtomicBool,
     state_path: Option<PathBuf>,
 }
 
@@ -130,13 +139,23 @@ impl SpendStore {
                 next_audit_id: 1,
                 ..SpendState::default()
             }),
-            mutation_gate: tokio::sync::Mutex::new(()),
+            mutation_gate: Arc::new(tokio::sync::Mutex::new(())),
+            needs_resync: AtomicBool::new(false),
             state_path,
         }
     }
 
-    pub(crate) async fn mutation_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.mutation_gate.lock().await
+    /// Owned, so a mutation can move it into the task that commits and replaces.
+    pub(crate) async fn mutation_gate(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.mutation_gate.clone().lock_owned().await
+    }
+
+    pub(crate) fn set_needs_resync(&self, needed: bool) {
+        self.needs_resync.store(needed, Ordering::SeqCst);
+    }
+
+    pub(crate) fn needs_resync(&self) -> bool {
+        self.needs_resync.load(Ordering::SeqCst)
     }
 
     pub fn get(&self, id: &str) -> Option<SpendLimit> {

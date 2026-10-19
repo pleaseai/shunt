@@ -198,7 +198,7 @@ Presence of this table registers the spend-limit Admin API under `/v1/organizati
 | `spend_retention_months` | `13` | Accepted for the later spend retention sweep |
 | `identity_retention_days` | `90` | Accepted for the later identity retention sweep |
 | `group_limit_mode` | `min` | `min` or `max`; accepted for later group-limit resolution |
-| `state_path` | `~/.shunt/gateway-spend.json` | Versioned JSON file containing caps and audit records; `""` selects memory-only storage |
+| `state_path` | `~/.shunt/gateway-spend.json` | Versioned JSON file containing caps and audit records; `""` selects memory-only storage. With [`[store]`](#store-optional) set, it is only an import source |
 
 Send the admin credential in the configured `[server.admin] header` or in `x-api-key`; a `read_keys` credential can use `GET` only. The state file is replaced atomically with private permissions after each mutation. When no home directory resolves, the default is memory-only. Adding or removing the table, and the state path itself, are both fixed at boot; configuration reloads log a warning instead of applying them.
 
@@ -258,7 +258,7 @@ Presence of this table enables the [OAuth device-flow gateway login](/guides/gat
 | `users_env` | `SHUNT_GATEWAY_USERS` | Env var holding comma-separated `email:secret` approval users; optional when `[server.gateway.oidc]` is configured |
 | `token_ttl_seconds` | `3600` | Access-token lifetime; returned as `expires_in`. **Deprecated**, still fully supported — superseded by [`session.ttl_hours`](#servergatewaysession-optional), except that this key remains the only way to express a sub-hour lifetime |
 | `trust_forwarded_for` | `false` | Trust `X-Forwarded-For`/`X-Real-IP` as the `/device` rate-limit identity; enable only behind a trusted proxy that replaces client-supplied values |
-| `state_path` | `~/.shunt/gateway-sessions.json` | File persisting refresh sessions across restarts; tokens are stored as SHA-256 hashes and written atomically with owner-only permissions (0600 on Unix). Set `""` for memory-only sessions (also the fallback when no home directory resolves) |
+| `state_path` | `~/.shunt/gateway-sessions.json` | File persisting refresh sessions across restarts; tokens are stored as SHA-256 hashes and written atomically with owner-only permissions (0600 on Unix). Set `""` for memory-only sessions (also the fallback when no home directory resolves). With [`[store]`](#store-optional) set, it is only an import source |
 
 Startup fails closed when the URL is not a bare HTTPS origin (`http` is allowed only on loopback), the TTL is zero, the secret is missing or shorter than 32 bytes, or neither a valid static-user list nor a valid external IdP is configured. Static-user secrets may contain `:` because only the first colon separates the email and secret. Changes to the environment-backed secrets, users, and IdP configuration hot-apply on config reload; adding or removing the gateway table requires a restart because the route tree is fixed at boot.
 
@@ -414,7 +414,7 @@ Quota-aware load-balancing tuning for the account pools — Claude (Anthropic) (
 | `burn_rate_avoidance` | `false` | Also avoid accounts projected to exhaust a window's soft threshold before that window resets |
 | `sort_by_reset` | `false` | Rank available accounts by soonest quota reset (ascending; unknown resets sort last) instead of burn-rate headroom. Toggleable at runtime from the admin dashboard or `PATCH /admin/api/pool` without editing this file — see [Pausing a pool account](/guides/pool-account-controls/) |
 | `usage_refresh_seconds` | disabled (`0`/absent) | Poll interval, in seconds, for Claude `GET /api/oauth/usage`, Codex `GET /wham/usage`, Antigravity `POST :retrieveUserQuotaSummary`, and pooled xAI (Grok) accounts' `GET /billing`; a positive value below 60 is clamped up to a 60-second floor |
-| `state_path` | unset | File the pool's per-account quota state is persisted to, so a restart warm-starts from the last observed utilization instead of an empty pool. Absent disables persistence (the default) |
+| `state_path` | unset | File the pool's per-account quota state is persisted to, so a restart warm-starts from the last observed utilization instead of an empty pool. Absent disables persistence (the default). With [`[store]`](#store-optional) set, the store holds the quota and this file is only an import source |
 | `ramp_initial_concurrency` | disabled (`0`/absent) | Storm control: initial concurrent-admission allowance for an account identity that just started taking traffic. `0` or absent disables admission gating |
 | `reprobe_seconds` | `900` once this table is present; `0` disables | Opportunistic-reprobe interval, in seconds, for a stale near-quota Codex/ChatGPT account; a positive value below 60 is clamped up to a 60-second floor. `0` disables re-probing; when `[server.pool]` itself is absent, re-probing is disabled regardless of this value (pre-issue-#135 behavior). Non-WebSocket outbound Responses selection and the optional inbound Codex HTTP endpoint retain re-probing; WebSocket-enabled outbound selection disables it |
 
@@ -1475,6 +1475,51 @@ Three rules differ from the `[models.router]` form:
 The six [per-call bounds](#per-call-bounds) go on this table, since it is the
 one making the calls. The judge is held to the same rules as any other: one hop
 and no passthrough route.
+
+## `[store]` (optional)
+
+An optional transactional store for pool quota, gateway refresh tokens, and spend limits plus their audit trail, on SQLite or PostgreSQL. Without the table nothing changes: those three subsystems keep their JSON `state_path` snapshots and restore paths exactly as before. With it, the store replaces the snapshots, and each existing snapshot is imported once. The full behavior is in [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md). `[store]` is restart-only: changing it on a config reload logs a warning and takes effect after a restart.
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `backend` | — (required) | `"sqlite"` or `"postgres"`. `"postgres"` needs a build with the `store-postgres` Cargo feature: prebuilt release binaries have it; `cargo build` and `cargo install` do not (build with `--features store-postgres`). Without the feature, config load fails and names it |
+| `url` | — (required) | SQLite: a file path (used as written) or a `sqlite:` / `sqlite://` URL (its path is percent-decoded, so `sqlite:///data/my%20store.db` opens `/data/my store.db`); SQLite `file:` URIs, URL query options (`?...`), and an in-memory database are rejected at config load. PostgreSQL: a `postgres://` URL. Redacting secret — renders as `[redacted]` in diagnostic output; see [Secret references](#secret-references) |
+| `max_connections` | `4` | PostgreSQL pool size, at least `1`. Rejected for SQLite, which always uses one connection |
+| `password_env` | unset | PostgreSQL only: name of an environment variable holding the password. Used only when the URL has no password (in the userinfo or as `?password=`); if it is needed and the variable is unset or empty, startup fails |
+| `allow_insecure_remote_tls` | `false` | Accept a PostgreSQL host that is not `localhost`, a loopback IP, or a unix socket without `sslmode=verify-full`. Logs a warning |
+| `hold_stale_seconds` | `30` | Seconds without a heartbeat after which the instance hold is stale and the next process may take it over. At least `3`; the holder renews it every `hold_stale_seconds / 3` seconds |
+
+**TLS rule.** A non-loopback PostgreSQL host requires `sslmode=verify-full` in the URL unless `allow_insecure_remote_tls = true`; otherwise config load (and `shunt check`) fails. The rule judges the host and `sslmode` that sqlx parses from the URL, so `?host=` and `?hostaddr=` cannot bypass it. The TLS client verifies against the bundled Mozilla root set, not the operating-system store; for a private CA add `sslrootcert=/path/ca.pem` to the URL.
+
+**SQLite file.** A missing file is created with mode `0600` at boot (the `-wal` and `-shm` sidecars inherit it); an existing file keeps its mode. shunt opens one connection in WAL mode.
+
+**Durability.** Spend limits and gateway refresh tokens are written synchronously, before the admin API call or the token response returns. Pool quota is written behind, every 15 seconds and once more at graceful shutdown, so a hard crash can lose up to the last 15 seconds of quota; quota is re-derived from upstream responses.
+
+**Import once.** On the first boot the pool, gateway (`[server.gateway]` configured), and spend (`[server.spend]` configured) snapshots named by their `state_path` (the gateway and spend defaults apply) are copied into the store in one transaction per subsystem, together with a record that it happened. A subsystem that has a record never re-imports, even if its data was since deleted, and a snapshot that appears later is ignored. shunt never modifies the snapshots; it writes a `<state_path>.imported` sidecar beside each imported one. A malformed or version-mismatched snapshot fails the boot, naming the subsystem and the file, and imports nothing for that subsystem. With a store attached, `state_path` is only an import source.
+
+**Rolling back.** Import is a copy, not a sync. Removing `[store]` later starts from the snapshot as of import time, which can bring back sessions revoked and undo spend-limit changes made in the store since. A store-less boot that loads a snapshot still identical to the imported one logs a warning saying so; the warning stops once that boot rewrites the file.
+
+**One process per store.** The store carries an instance hold. A second `shunt run` against a live hold exits non-zero, naming the holder (`{HOSTNAME}:{pid}`) and how long ago it last renewed. A hold not renewed for `hold_stale_seconds` is taken over and the takeover is logged, so after a crash a restart can be refused for up to that long. If a running process finds its hold taken, it refuses further store writes but keeps serving proxied requests. Graceful shutdown releases the hold.
+
+**When a store write fails.** The proxy path never waits on the store. An admin spend-limit change that cannot be written returns the usual Anthropic-shaped `500`, and nothing changes. On the gateway `/oauth/token` endpoint, issuing a token (device grant) or rotating a refresh token that cannot be written returns `503` `{"error":"temporarily_unavailable"}` with `Cache-Control: no-store`, and the rotation is rolled back so the client's retry still works; a device-grant issue that fails after the grant was consumed means that user restarts the login. A replayed (already rotated) token still gets `401` `invalid_grant` and its family stays revoked; if the store cannot record that revocation, it is written by the next successful store write or the next 15 second flush, and is lost if the process crashes first. Every failed write increments the `shunt.store.write_failures` counter (`subsystem` = `pool`, `spend`, or `gateway`).
+
+**`shunt check`.** With `[store]`, [`shunt check`](/reference/cli/#shunt-check) opens the store read-only and reports its schema version; it never migrates, modifies the database, or creates a missing SQLite file (SQLite may create or remove the `-wal` / `-shm` sidecar files while inspecting a WAL database).
+
+**Security.** The store holds refresh-token hashes (SHA-256, never the raw token) and the identity each was issued to, and the spend audit trail — restrict database access and backups.
+
+```toml
+# SQLite (always available)
+[store]
+backend = "sqlite"
+url = "/var/lib/shunt/shunt.db"
+
+# PostgreSQL (needs the store-postgres feature)
+# [store]
+# backend = "postgres"
+# url = "postgres://shunt@db.example.com:5432/shunt?sslmode=verify-full"
+# password_env = "SHUNT_STORE_PASSWORD"
+# max_connections = 4
+```
 
 ## `[sentry]` (optional)
 

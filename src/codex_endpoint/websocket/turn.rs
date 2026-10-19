@@ -17,12 +17,15 @@ use crate::{
     server::AppState,
 };
 
+use super::continuation::TurnRecorder;
 use crate::codex_endpoint::frame::{
     build_ws_error_frame, parse_payload_type, parse_sse_block, terminal_status_from_type,
     BoundedSseFrameBuffer, MAX_CLIENT_SSE_FRAME_BYTES,
 };
 
 pub(super) struct TurnContext {
+    /// The runtime snapshot this turn routes with, refreshed by the caller
+    /// when the frame arrived.
     pub(super) state: AppState,
     pub(super) model: Option<String>,
     pub(super) session_id: Option<String>,
@@ -33,6 +36,35 @@ pub(super) struct TurnContext {
     pub(super) generation: u64,
     pub(super) current_generation: Arc<AtomicU64>,
     pub(super) out_tx: mpsc::Sender<(u64, Message)>,
+    /// Records the upstream response against the connection continuation so
+    /// the next incremental frame can extend it.
+    pub(super) recorder: TurnRecorder,
+}
+
+/// The `(type, code, message)` for a non-success upstream body. The ChatGPT
+/// backend answers in `{"detail": "…"}` shape, not the OpenAI error envelope;
+/// surface that detail instead of masking it as a generic upstream failure.
+fn upstream_error_parts(body: &serde_json::Value) -> (String, String, String) {
+    if let Some(detail) = body.get("detail").and_then(serde_json::Value::as_str) {
+        return (
+            "api_error".to_string(),
+            "upstream_error".to_string(),
+            detail.to_string(),
+        );
+    }
+    let detail = body.get("error").unwrap_or(body);
+    let pick = |key: &str, fallback: &str| {
+        detail
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(fallback)
+            .to_string()
+    };
+    (
+        pick("type", "api_error"),
+        pick("code", "upstream_error"),
+        pick("message", "Upstream request failed"),
+    )
 }
 
 pub(super) async fn run_turn(context: TurnContext) {
@@ -47,13 +79,10 @@ pub(super) async fn run_turn(context: TurnContext) {
         generation: turn_gen,
         current_generation,
         out_tx,
+        mut recorder,
     } = context;
     let is_current = || current_generation.load(Ordering::Relaxed) == turn_gen;
 
-    // A WebSocket connection may outlive several config reloads.  Refresh at
-    // turn start (rather than once at upgrade time) so each live turn captures
-    // one immutable runtime snapshot while later turns observe newer config.
-    let state = state.refreshed();
     let Some(codex_endpoint) = state.config.server.codex_endpoint.as_ref() else {
         let err_frame = build_ws_error_frame(
             502,
@@ -172,29 +201,22 @@ pub(super) async fn run_turn(context: TurnContext) {
             .await
             .unwrap_or_default();
         let err_json = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
-        let (err_type, code, message) = if let Some(val) = &err_json {
-            let detail = val.get("error").unwrap_or(val);
-            let t = detail
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("api_error");
-            let c = detail
-                .get("code")
-                .and_then(|v| v.as_str())
-                .unwrap_or("upstream_error");
-            let m = detail
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Upstream request failed");
-            (t, c, m)
-        } else {
-            ("api_error", "upstream_error", "Upstream request failed")
-        };
+        let (err_type, code, message) =
+            err_json
+                .as_ref()
+                .map(upstream_error_parts)
+                .unwrap_or_else(|| {
+                    (
+                        "api_error".to_string(),
+                        "upstream_error".to_string(),
+                        "Upstream request failed".to_string(),
+                    )
+                });
         let err_frame = build_ws_error_frame(
             status.as_u16(),
-            err_type,
-            code,
-            message,
+            &err_type,
+            &code,
+            &message,
             Some(&resp_headers),
         );
         let _ = out_tx
@@ -291,9 +313,11 @@ pub(super) async fn run_turn(context: TurnContext) {
                 }
             };
 
+            recorder.observe(&p_type, &payload);
+            let terminal = terminal_status_from_type(&p_type);
             let _ = out_tx.send((turn_gen, Message::Text(payload.into()))).await;
 
-            if terminal_status_from_type(&p_type).is_some() {
+            if terminal.is_some() {
                 terminal_seen = true;
                 break;
             }
@@ -326,10 +350,11 @@ pub(super) async fn run_turn(context: TurnContext) {
                 if let Some(payload) = parse_sse_block(s) {
                     if payload != "[DONE]" {
                         if let Some(p_type) = parse_payload_type(&payload) {
-                            let _ = out_tx.send((turn_gen, Message::Text(payload.into()))).await;
+                            recorder.observe(&p_type, &payload);
                             if terminal_status_from_type(&p_type).is_some() {
                                 terminal_seen = true;
                             }
+                            let _ = out_tx.send((turn_gen, Message::Text(payload.into()))).await;
                         } else {
                             let err_frame = build_ws_error_frame(
                                 502,
@@ -374,5 +399,34 @@ pub(super) async fn run_turn(context: TurnContext) {
         let _ = out_tx
             .send((turn_gen, Message::Text(err_frame.into())))
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::upstream_error_parts;
+    use serde_json::json;
+
+    #[test]
+    fn upstream_detail_shape_is_surfaced_not_masked() {
+        // The ChatGPT HTTP backend's actual rejection for a forwarded
+        // `previous_response_id`; masking it hid the cause for a day.
+        let body = json!({"detail": "Unsupported parameter: previous_response_id"});
+        let (_, _, message) = upstream_error_parts(&body);
+        assert_eq!(message, "Unsupported parameter: previous_response_id");
+    }
+
+    #[test]
+    fn openai_error_shape_still_reads_nested_fields() {
+        let body =
+            json!({"error": {"type": "invalid_request_error", "code": "bad", "message": "nope"}});
+        assert_eq!(
+            upstream_error_parts(&body),
+            (
+                "invalid_request_error".to_string(),
+                "bad".to_string(),
+                "nope".to_string()
+            )
+        );
     }
 }

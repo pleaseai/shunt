@@ -45,7 +45,25 @@ shunt check
 
 Reports specific errors: a bad bind address, an unknown provider in a route, a missing `api_key_env`, a bad `base_url`, a wrong adapter/auth combination.
 
-It also runs the same routed-Antigravity credential guard `shunt run` boots with: a config that routes to the native `antigravity` upstream with no credential stored fails the check and names [`shunt login antigravity`](#shunt-login-antigravity), instead of reporting `config ok` and then failing at startup. The check stays offline — it reads the routes and probes whether a credential exists (the singleton file or any named-pool candidate), never refreshing a token or contacting the backend. A config that merely declares the built-in `antigravity` provider without routing to it is unaffected, as is `kind = "antigravity_cli"` routing.
+It also runs the same routed-Antigravity credential guard `shunt run` boots with: a config that routes to the native `antigravity` upstream with no credential stored fails the check and names [`shunt login antigravity`](#shunt-login-antigravity), instead of reporting `config ok` and then failing at startup. This guard stays offline — it reads the routes and probes whether a credential exists (the singleton file or any named-pool candidate), never refreshing a token or contacting the backend. A config that merely declares the built-in `antigravity` provider without routing to it is unaffected, as is `kind = "antigravity_cli"` routing.
+
+With a [`[store]`](/reference/configuration/#store-optional), the check is no longer entirely offline: after `config ok` it opens the store read-only — it reads the SQLite file, or connects to PostgreSQL — and prints one more line. It never runs migrations, never modifies the database, and never creates a missing SQLite file. SQLite may still create or remove the `-wal` / `-shm` sidecar files while it inspects a WAL database.
+
+```bash
+shunt check
+# -> config ok
+# -> store ok: sqlite sqlite:/var/lib/shunt/shunt.db, schema v1 (binary supports v1)
+```
+
+| Store state | Output after `config ok` | Exit |
+| :-- | :-- | :-- |
+| Up to date | `store ok: <backend> <target>, schema vN (binary supports vM)` | `0` |
+| Schema older than the binary | the same line plus `; 1 pending migration applies at boot` (`; K pending migrations apply at boot` for K > 1) | `0` |
+| SQLite file does not exist | `store ok: sqlite sqlite:<path>, file does not exist yet; it is created with mode 0600 at boot` | `0` |
+| Unreachable | `store check failed`, caused by `store <target> is unreachable: <reason>` | `1` |
+| Schema newer than the binary | `store check failed`, caused by `store <target> is at schema version N, newer than the M this binary supports; upgrade shunt` | `1` |
+
+`<target>` is `sqlite:<path>` or `postgres://host:port/db`; credentials are never printed. The inspection is bounded at 15 seconds. A `[store]` that fails validation (for example a remote PostgreSQL host without `sslmode=verify-full`) fails earlier, as `config check failed`.
 
 ## `shunt init`
 

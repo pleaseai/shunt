@@ -57,6 +57,9 @@ shunt logs a `warn!` so the change is not mistaken for live:
   starts and cannot be hot-swapped.
 - **`[otel]`** — the OpenTelemetry exporters are likewise initialized once at
   startup.
+- **`[store]`** — the store is opened (and its single-instance hold taken) once at
+  startup; any change to the section logs a `warn!` and takes effect after a
+  restart. The warning never prints the URL.
 - **Enabling or disabling `[server.admin]`, `[server.gateway]`, `[server.spend]`,
   `[server.codex_endpoint]`, `[server.usage]`, or `[server.oauth_usage]`** —
   whether these route trees are registered is decided once at boot. Edits

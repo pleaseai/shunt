@@ -79,6 +79,10 @@ pub struct Config {
     /// no exporter is created and nothing ever leaves the machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otel: Option<OtelConfig>,
+    /// Optional pluggable store (ADR-0006). Absent (the default) means every
+    /// persistence choke point keeps its file-based body. Restart-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<Box<crate::store::StoreConfig>>,
 }
 
 fn default_auto_include_builtin_models() -> bool {
@@ -3109,6 +3113,8 @@ pub enum ConfigError {
     InvalidOtelEndpoint { message: String },
     #[error("otel.sample_ratio must be between 0.0 and 1.0, got {ratio}")]
     InvalidOtelSampleRatio { ratio: f64 },
+    #[error("{message}")]
+    InvalidStore { message: String },
     #[error("providers.{provider}.retry.max_retries must be at most {limit}, got {max_retries}")]
     InvalidRetryMaxRetries {
         provider: String,
@@ -3493,6 +3499,7 @@ impl Default for Config {
             route_prefixes: Vec::new(),
             sentry: None,
             otel: None,
+            store: None,
         }
     }
 }
@@ -4498,6 +4505,11 @@ impl Config {
                 // validator re-runs on every hot-reload, so warning here would
                 // repeat the log and mix a side effect into pure validation.
             }
+        }
+        if let Some(store) = &self.store {
+            store
+                .validate()
+                .map_err(|message| ConfigError::InvalidStore { message })?;
         }
         for (name, provider) in &self.providers {
             let url = self.provider_base_url(name, &provider.base_url)?;

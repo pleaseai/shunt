@@ -40,6 +40,7 @@ pub mod routing;
 pub mod server;
 pub mod state_persist;
 pub mod status_poll;
+pub mod store;
 pub mod stream_metrics;
 pub mod telemetry;
 pub mod upstream_status;

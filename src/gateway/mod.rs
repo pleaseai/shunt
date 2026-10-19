@@ -1,5 +1,6 @@
 pub mod approval;
 pub(crate) mod device;
+pub mod durable;
 mod idp;
 pub(crate) mod idp_client;
 pub mod jwt;
