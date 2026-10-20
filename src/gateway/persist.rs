@@ -226,6 +226,7 @@ fn save(path: &Path, sessions: &PersistedSessions) -> io::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use std::path::PathBuf;
 
@@ -353,6 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_save_keeps_sessions_dirty_for_retry() {
+        let _env_lock = crate::config::test_env_lock();
         let path = temp_file("save-failure");
         fs::create_dir(&path).expect("target directory makes rename fail");
 

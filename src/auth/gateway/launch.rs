@@ -462,7 +462,7 @@ mod tests {
     /// an injected lookup — the wiring `claude_command` depends on.
     #[tokio::test]
     async fn the_launcher_resolves_the_host_auth_pointer_from_the_real_environment() {
-        let _guard = store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let _pointer =
             crate::auth::shared::EnvVarGuard::set(HOST_AUTH_ENV_VAR, "SHUNT_TEST_HOST_CREDENTIAL");
 

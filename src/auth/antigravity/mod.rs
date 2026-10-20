@@ -378,7 +378,6 @@ mod tests {
         let _file_lock = ANTIGRAVITY_AUTH_FILE_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _store_lock = super::store::TEST_ENV_LOCK.blocking_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-agy-readiness-{}-{}",
             std::process::id(),

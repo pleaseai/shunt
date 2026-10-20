@@ -1729,6 +1729,7 @@ pub(crate) async fn mapped_error_envelope(
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use axum::{
         body::Body,
@@ -2449,6 +2450,7 @@ mod tests {
     /// returns at header arrival, never after the (budgeted) body read.
     #[tokio::test]
     async fn chain_attempt_defers_the_terminal_status_body_read() {
+        let _env_lock = crate::config::test_env_lock();
         let stalled = crate::testutil::StalledBody::start(StatusCode::BAD_REQUEST, "{", "}").await;
         let mut config = crate::config::Config::default();
         let anthropic = config

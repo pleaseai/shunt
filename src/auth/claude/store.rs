@@ -310,9 +310,6 @@ fn write_account(name: &str, value: &Value) -> anyhow::Result<PathBuf> {
 }
 
 #[cfg(test)]
-pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -372,9 +369,9 @@ mod tests {
 
     #[tokio::test]
     async fn setup_token_round_trips_and_replaces() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("setup");
-        // Declared after TEST_ENV_LOCK so it drops first: the var is removed on
+        // Declared after the env lock so it drops first: the var is removed on
         // drop (panic-safe) while the lock is still held.
         let _env = shared::EnvVarGuard::set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
 
@@ -404,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_tokens_round_trip_as_refreshable_account() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("oauth");
         let _env = shared::EnvVarGuard::set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
 
@@ -438,7 +435,7 @@ mod tests {
 
     #[tokio::test]
     async fn imports_and_scans_refreshable_accounts_in_name_order() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("import");
         fs::create_dir_all(&dir).unwrap();
         let source = dir.join("source.json");
@@ -468,7 +465,7 @@ mod tests {
         // a name-fallback identity: admin cleanup relies on `Err` here to
         // preserve pool health instead of wrongly concluding no other alias
         // shares the identity being removed.
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("scan-strict");
         fs::create_dir_all(&dir).unwrap();
         let source = dir.join("source.json");

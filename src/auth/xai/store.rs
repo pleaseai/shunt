@@ -103,9 +103,7 @@ pub fn store_oauth_tokens(
 }
 
 #[cfg(test)]
-pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-#[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use super::*;
     use crate::auth::xai::auth::XaiAuthStore;
@@ -148,7 +146,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_tokens_round_trip_in_the_legacy_file_shape() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("oauth");
         let _env = shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
 
@@ -166,7 +164,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_named_account_file_is_readable_by_the_xai_auth_store() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("readable");
         let _env = shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
 
@@ -183,7 +181,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_tokens_reject_blank_tokens() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("blank");
         let _env = shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
 
@@ -196,7 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_tokens_reject_invalid_names() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("names");
         let _env = shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
 
@@ -211,7 +209,7 @@ mod tests {
     async fn written_file_and_directory_are_private() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("perms");
         let _env = shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
 
@@ -230,7 +228,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_accounts_skips_non_account_files_and_uses_filename_identity() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("scan");
         let _env = shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
 
@@ -253,7 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn account_meta_lists_each_accounts_xai_user_id_and_no_token() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("meta");
         let _env = shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
 
@@ -287,7 +285,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_accounts_missing_dir_is_empty() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("missing");
         let _env = shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
 
@@ -296,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn named_login_never_writes_the_legacy_file() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("legacy");
         let legacy = dir.join("legacy.json");
         let _accounts = shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", dir.join("accounts"));

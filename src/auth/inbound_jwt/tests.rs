@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 //! Verification behaviour for `[[server.auth.jwt]]`.
 //!
 //! The suite signs real RS256 tokens with fixed test keys and serves a real
@@ -636,6 +637,7 @@ async fn a_token_without_kid_is_rejected() {
 
 #[tokio::test]
 async fn the_gate_accepts_a_static_token_and_a_jwt_on_the_same_route() {
+    let _env_lock = crate::config::test_env_lock();
     let env = "SHUNT_TEST_JWT_MIXED_TOKENS";
     std::env::set_var(env, "ci:static-token");
     let server = issuer_serving(jwks()).await;
@@ -1145,6 +1147,7 @@ async fn a_gated_route_answers_401_for_a_bad_jwt_and_503_when_the_issuer_is_down
     // actually sees.
     use axum::extract::State;
 
+    let _env_lock = crate::config::test_env_lock();
     let env = unset_tokens_env("ROUTER");
     let down = MockServer::start().await;
     Mock::given(method("GET"))
@@ -1174,7 +1177,8 @@ async fn a_gated_route_answers_401_for_a_bad_jwt_and_503_when_the_issuer_is_down
 }
 
 /// An env var name guaranteed unset, so `tokens_env` resolves empty and the
-/// JWT entry is the only credential.
+/// JWT entry is the only credential. Callers hold
+/// [`crate::config::test_env_lock`] while the name is resolved.
 fn unset_tokens_env(tag: &str) -> String {
     let env = format!("SHUNT_TEST_JWT_NO_TOKENS_{tag}_{}", std::process::id());
     std::env::remove_var(&env);
@@ -1191,6 +1195,7 @@ async fn a_reload_swaps_the_issuer_set_but_keeps_the_key_cache() {
 
     let first = issuer_serving(jwks()).await;
     let second = issuer_serving(jwks()).await;
+    let _env_lock = crate::config::test_env_lock();
     let env = unset_tokens_env("RELOAD");
 
     let config_with = |issuer: &MockServer| {

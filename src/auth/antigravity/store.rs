@@ -172,9 +172,7 @@ pub fn store_oauth_tokens(
 }
 
 #[cfg(test)]
-pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-#[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use super::*;
     use std::fs;
@@ -204,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_tokens_round_trip_in_the_stored_auth_schema() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("oauth");
         let _env = shared::EnvVarGuard::set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &dir);
 
@@ -234,7 +232,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_tokens_reject_blank_tokens_and_trim_labels() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("blank");
         let _env = shared::EnvVarGuard::set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &dir);
 
@@ -272,7 +270,7 @@ mod tests {
     async fn written_file_and_directory_are_private() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("perms");
         let _env = shared::EnvVarGuard::set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &dir);
 
@@ -291,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_accounts_skips_non_account_files_and_uses_filename_identity() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("scan");
         let _env = shared::EnvVarGuard::set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &dir);
         fs::create_dir_all(&dir).unwrap();
@@ -316,7 +314,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_accounts_missing_dir_is_empty() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("missing").join("does-not-exist");
         let _env = shared::EnvVarGuard::set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &dir);
         assert!(scan_accounts().unwrap().is_empty());
@@ -330,7 +328,7 @@ mod tests {
     async fn remove_account_waits_for_the_credential_file_lock() {
         use std::time::Duration;
 
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("remove-lock");
         let _env = shared::EnvVarGuard::set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &dir);
         let path =

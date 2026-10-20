@@ -1468,6 +1468,7 @@ pub(crate) fn remove_named_account(path: &Path) -> anyhow::Result<bool> {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use super::*;
     use wiremock::matchers::{body_json_string, method, path};
@@ -2797,7 +2798,7 @@ mod tests {
         use crate::auth::shared::EnvVarGuard;
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let _guard = store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt_tests_agy_named_writeback_cas_{}_{}",
             std::process::id(),

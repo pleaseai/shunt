@@ -606,6 +606,7 @@ mod caller_attribution {
 /// mock, so the consult's dispatch goes through the Responses translation the
 /// force lives in; the verdict text rides a `response.output_text.delta`, the
 /// same shape a real chatgpt judge replies with.
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod internal_calls_do_not_force_encrypted_reasoning {
     use std::collections::BTreeMap;
 
@@ -630,10 +631,10 @@ mod internal_calls_do_not_force_encrypted_reasoning {
 
     #[tokio::test]
     async fn a_judge_consult_to_a_chatgpt_target_does_not_request_encrypted_reasoning() {
-        // The env vars below are the codex store's own test env; its
-        // TEST_ENV_LOCK serializes them against every other reader/writer of
-        // those names in this binary.
-        let _env = crate::auth::codex::store::TEST_ENV_LOCK.lock().await;
+        // The env vars below are the codex store's own test env; the shared
+        // test env lock serializes them against every other reader/writer of
+        // the process environment in this binary.
+        let _env = crate::config::test_env_lock();
         let unique = format!(
             "shunt-f9-judge-{}-{}",
             std::process::id(),
