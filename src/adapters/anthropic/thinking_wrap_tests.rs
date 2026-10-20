@@ -721,6 +721,106 @@ async fn a_signature_string_value_is_not_mistaken_for_a_key() {
     }
 }
 
+/// A key right after a continuation line's `data:` is still a key: the colon
+/// before it is the SSE field's, not a JSON one. Judged by what precedes it,
+/// this oversized signature frame was skipped and its signature leaked raw.
+#[tokio::test]
+async fn a_signature_key_opening_a_data_continuation_is_held() {
+    let signature = raw_signature(300);
+    let split = format!(
+        "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"signature_delta\",\ndata:\"signature\":\"{signature}\"}}}}\n\n"
+    );
+    let body = format!("{}{split}{}{TEXT_DELTA}", thinking_start(0), block_stop(0));
+    let out = collect_bounded(chunks_of(&body, 50), Some(THIRD_PARTY), SMALL_FRAME, 4096).await;
+    assert!(!out.contains(RAW), "the raw signature never leaves: {out}");
+    assert_eq!(
+        signature_deltas(&out)
+            .into_iter()
+            .map(|(_, signature)| unwrap_upstream_signature(&signature))
+            .collect::<Vec<_>>(),
+        vec![Some((THIRD_PARTY.to_string(), signature))],
+        "held to its boundary and wrapped"
+    );
+}
+
+/// A string value reading `signature` is no key whatever precedes it — `,` in
+/// an array, a space after `:` — because no `:` follows it. Oversized
+/// tool_use frames carrying one pass byte-identical, wherever the chunks cut
+/// the match, including between its closing quote and the byte after it.
+#[tokio::test]
+async fn a_signature_value_after_a_comma_or_space_is_not_a_key() {
+    for value in [r#""tags":["a","signature"]"#, r#""mode": "signature""#] {
+        let big = format!(
+            "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\",\"input\":{{\"q\":\"{}\",{value}}}}}}}\n\n",
+            "x".repeat(300)
+        );
+        let match_at = big.rfind("\"signature\"").unwrap();
+        let rest = format!(
+            "{}{}{}",
+            thinking_start(2),
+            signature_delta(2, "SIG"),
+            block_stop(2)
+        );
+        for cut in [match_at, match_at + 5, match_at + 11, match_at + 12] {
+            let out = collect_within(
+                vec![
+                    chunk(&big[..200]),
+                    chunk(&big[200..cut]),
+                    chunk(&format!("{}{rest}", &big[cut..])),
+                ],
+                Some(THIRD_PARTY),
+                64,
+            )
+            .await;
+            assert!(
+                out.starts_with(&big),
+                "{value} cut {cut}: the tool_use frame passes verbatim"
+            );
+            assert!(!out.contains("event: error"), "{value} cut {cut}: {out}");
+            assert_eq!(
+                signature_deltas(&out).len(),
+                1,
+                "{value} cut {cut}: framing resumes"
+            );
+        }
+    }
+}
+
+/// A skipped frame's key with a space before its `:`, the `:` arriving only
+/// with the next chunk: the match is carried and decided then, and fails the
+/// stream closed before the value goes out.
+#[tokio::test]
+async fn a_skipped_key_whose_colon_arrives_next_chunk_fails_closed() {
+    let start = format!(
+        "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"thinking\",\"thinking\":\"{}\",\"signature\" :\"{}\"}}}}\n\n",
+        "x".repeat(300),
+        raw_signature(40)
+    );
+    let body = format!("{start}{}{TEXT_DELTA}", block_stop(0));
+    let key_at = body.find("\"signature\"").unwrap();
+    // After the closing quote, and after the space: the `:` is next chunk's.
+    for cut in [key_at + 11, key_at + 12] {
+        let out = collect_bounded(
+            vec![
+                chunk(&body[..100]),
+                chunk(&body[100..cut]),
+                chunk(&body[cut..]),
+            ],
+            Some(THIRD_PARTY),
+            64,
+            4096,
+        )
+        .await;
+        assert_failed_closed(&out);
+        let error = &out[out.rfind("event: error\n").unwrap()..];
+        assert_eq!(
+            frame_data(error).unwrap()["error"]["message"],
+            SKIPPED_KEY_MESSAGE,
+            "cut {cut}"
+        );
+    }
+}
+
 /// An event whose JSON spans two `data:` lines is valid SSE; read line by
 /// line its signature would not parse and would pass through raw.
 #[tokio::test]

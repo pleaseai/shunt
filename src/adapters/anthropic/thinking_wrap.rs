@@ -82,11 +82,17 @@ pub(super) fn signature_ceiling(response_byte_cap: Option<usize>) -> usize {
 /// `"signature_delta"` — a value, and a different word — does not match.
 const SIGNATURE_KEY: &[u8] = b"\"signature\"";
 
-/// Bytes of the forwarded frame carried between chunks while skipping: enough
-/// for a [`SIGNATURE_KEY`] straddling the chunk edge (all but its last byte)
-/// plus the byte before it, which tells a key from an escaped quote. A
-/// straddling event boundary needs only three.
-const SKIP_TAIL: usize = SIGNATURE_KEY.len();
+/// Most spaces or tabs a key may have between its closing quote and its `:`.
+/// A match is a key only when the `:` follows within this gap, which is what
+/// tells `"signature":` from a string value reading `signature`.
+const MAX_KEY_GAP: usize = 4;
+
+/// Bytes of the forwarded frame carried between chunks while skipping: the
+/// byte before a [`SIGNATURE_KEY`] (which tells a key from an escaped quote),
+/// the key itself, and up to [`MAX_KEY_GAP`] gap bytes, so a key whose `:` has
+/// not arrived yet is examined again with the next chunk. A straddling event
+/// boundary needs only three.
+const SKIP_TAIL: usize = 1 + SIGNATURE_KEY.len() + MAX_KEY_GAP;
 
 /// The envelope key for a third-party provider's signatures, or `None` when
 /// this provider's responses must not be wrapped.
@@ -340,13 +346,16 @@ struct SignatureWrap {
     /// its boundary are passed through without being framed, watched only for
     /// a `"signature"` key and for that boundary.
     skipping: bool,
-    /// The last [`SKIP_TAIL`] bytes forwarded while `skipping`, so a key or a
-    /// boundary split across two chunks is still found.
+    /// The last [`SKIP_TAIL`] bytes forwarded while `skipping`, so a key, its
+    /// `:`, or a boundary split across two chunks is still found.
     ///
     /// Invariant: it is only ever built from bytes before the skipped frame's
     /// boundary, so it never holds a complete event boundary. A boundary
     /// found in `tail` plus the next chunk's head therefore ends inside that
-    /// chunk, and `end - carried` in [`Self::push`] cannot underflow.
+    /// chunk, and `end - carried` in [`Self::push`] cannot underflow. A key
+    /// it holds whole was already examined: had it been one, the stream would
+    /// have failed closed, so examining it again cannot fail twice, and one
+    /// still undecided is decided now that more bytes follow it.
     tail: Vec<u8>,
     /// Withheld signature bytes per content block index.
     signatures: HashMap<u64, String>,
@@ -380,10 +389,10 @@ impl SignatureWrap {
             return out;
         }
         if self.skipping {
-            // A boundary or a key straddling the chunk edge ends within the
-            // chunk's first `SKIP_TAIL - 1` bytes, so only those are joined to
-            // the carried tail; the rest of the chunk is searched in place
-            // rather than copied.
+            // A boundary, or a key with its gap and `:`, straddling the chunk
+            // edge ends within the chunk's first `SKIP_TAIL - 1` bytes, so
+            // only those are joined to the carried tail; the rest of the chunk
+            // is searched in place rather than copied.
             let mut edge = std::mem::take(&mut self.tail);
             let carried = edge.len();
             edge.extend_from_slice(&chunk[..chunk.len().min(SKIP_TAIL - 1)]);
@@ -392,15 +401,18 @@ impl SignatureWrap {
                 .map(|end| end - carried)
                 .or_else(|| event_boundary(chunk));
             // Only the skipped frame's own bytes are watched: what follows its
-            // boundary is the next frame's, framed normally below. A key
-            // cannot overlap the boundary, which is all `\r` and `\n`.
-            let straddle_from = carried.saturating_sub(SIGNATURE_KEY.len() - 1);
+            // boundary is the next frame's, framed normally below. A match
+            // whose lookahead runs out is no key here — at the boundary the
+            // next bytes are `\r`/`\n`, never `:`, and at the end of the
+            // chunk the match is carried in `tail` and decided next push.
+            let straddle_from = carried.saturating_sub(SKIP_TAIL - 1);
             let straddle = &edge[straddle_from..edge_end.unwrap_or(edge.len())];
             let before_straddle = straddle_from.checked_sub(1).map(|i| edge[i]);
-            if has_signature_key(straddle, before_straddle)
+            if has_signature_key(straddle, before_straddle, Undecided::NotKey)
                 || has_signature_key(
                     &chunk[..end.unwrap_or(chunk.len())],
                     edge[..carried].last().copied(),
+                    Undecided::NotKey,
                 )
             {
                 self.fail(&mut out, true, SKIPPED_KEY_MESSAGE);
@@ -456,7 +468,9 @@ impl SignatureWrap {
         self.pending = pending;
         self.scanned = self.pending.len();
         if self.pending.len() > self.max_frame {
-            if !self.holding && has_signature_key(&self.pending, None) {
+            // A key whose `:` has not arrived yet counts: holding a frame
+            // that turns out to carry none is bounded and harmless.
+            if !self.holding && has_signature_key(&self.pending, None, Undecided::Key) {
                 self.holding = true;
             }
             if !self.holding {
@@ -479,7 +493,7 @@ impl SignatureWrap {
     /// dropping one costs the client nothing.
     fn finish(&mut self) -> Vec<u8> {
         let pending = std::mem::take(&mut self.pending);
-        if has_signature_key(&pending, None) {
+        if has_signature_key(&pending, None, Undecided::Key) {
             return Vec::new();
         }
         pending
@@ -611,23 +625,63 @@ fn event_boundary(buf: &[u8]) -> Option<usize> {
         .map(|i| i + 1)
 }
 
-/// Whether `buf` holds a [`SIGNATURE_KEY`] whose opening quote is not escaped
-/// and not in value position.
+/// How [`has_signature_key`] counts a match whose lookahead runs past the end
+/// of the searched bytes, before its `:` or anything else could decide it.
+#[derive(Clone, Copy)]
+enum Undecided {
+    /// Count it as a key: the conservative choice where the bytes are all
+    /// there will be for now.
+    Key,
+    /// Count it as no key: the end is a frame boundary, which no `:` follows,
+    /// or the match will be examined again once more bytes arrive.
+    NotKey,
+}
+
+/// Whether `buf` holds a [`SIGNATURE_KEY`] used as a JSON key.
 ///
-/// `before` is the byte preceding `buf`, when there is one. Inside a JSON
-/// string the word can only appear quoted as `\"signature\"`, which the key
-/// does not match, or as a string ending `\"signature`, whose own closing
-/// quote completes the eleven bytes after a backslash. Both are text — the
-/// prose of a delta — and not a key, whose opening quote follows `{`, `,` or
-/// whitespace instead. A match right after `:` or `[` is a string value that
-/// happens to read `signature` (`"mode":"signature"`), not a key.
-fn has_signature_key(buf: &[u8], before: Option<u8>) -> bool {
+/// The decision is made by lookahead: a match is a key only when at most
+/// [`MAX_KEY_GAP`] spaces or tabs and then `:` follow it. A string value that
+/// reads `signature` — `"mode":"signature"`, `["a","signature"]`, `"mode":
+/// "signature"` — is followed by `,`, `]` or `}` instead, whatever precedes
+/// it, and a key must stay a key even right after `data:` on a continuation
+/// line (`data:"signature":…`). `undecided` says how to count a match the
+/// lookahead cannot settle within `buf`.
+///
+/// One lookbehind remains. `before` is the byte preceding `buf`, when there
+/// is one. A key whose own text ends `\"signature` (`{"say \"signature": 1}`)
+/// completes the eleven bytes with its closing quote after a backslash, and is
+/// not the `signature` key; nor is `\"signature\"` inside a string, which the
+/// eleven bytes never match.
+///
+/// A key whose `:` is on the next `data:` line (`"signature"\ndata: :`) is not
+/// recognised. That is valid SSE, but splitting there is an accepted residual.
+fn has_signature_key(buf: &[u8], before: Option<u8>, undecided: Undecided) -> bool {
     buf.windows(SIGNATURE_KEY.len())
         .enumerate()
         .any(|(i, window)| {
             let preceding = if i == 0 { before } else { Some(buf[i - 1]) };
-            window == SIGNATURE_KEY && !matches!(preceding, Some(b'\\' | b':' | b'['))
+            if window != SIGNATURE_KEY || preceding == Some(b'\\') {
+                return false;
+            }
+            key_follows(&buf[i + SIGNATURE_KEY.len()..]).unwrap_or(match undecided {
+                Undecided::Key => true,
+                Undecided::NotKey => false,
+            })
         })
+}
+
+/// Whether the bytes after a [`SIGNATURE_KEY`] make it a key: `Some(true)`
+/// for a `:` after at most [`MAX_KEY_GAP`] spaces or tabs, `Some(false)` for
+/// anything else, `None` when `after` ends first.
+fn key_follows(after: &[u8]) -> Option<bool> {
+    for (gap, &byte) in after.iter().enumerate().take(MAX_KEY_GAP + 1) {
+        match byte {
+            b':' => return Some(true),
+            b' ' | b'\t' if gap < MAX_KEY_GAP => {}
+            _ => return Some(false),
+        }
+    }
+    None
 }
 
 #[cfg(test)]
