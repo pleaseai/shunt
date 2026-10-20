@@ -79,6 +79,29 @@ literal path the real ChatGPT backend uses), a base ending in `/v1` produces `/v
 a bare base produces `/responses`. Registering all three lets an operator use either CLI setup
 style (§ "Codex CLI setup" below) without shunt needing to know which one a given client chose.
 
+### Web search relay
+
+The Codex CLI runs its built-in web search tool (`web.run`: `search_query`, `open`, and the other
+commands) by posting to `<base_url>/alpha/search`, so the same opt-in registers one search route
+per base-URL form:
+
+| Method | Path |
+| :-- | :-- |
+| `POST` | `/backend-api/codex/alpha/search` |
+| `POST` | `/alpha/search` |
+| `POST` | `/v1/alpha/search` |
+
+They share the Responses routes' handler pipeline — `[server.auth]`, the request body limit, the
+session-sticky pool key, account selection, failover, refresh, and the OpenAI-shaped gateway errors
+(`concurrency::is_codex_path` classifies them too) — and relay the body and the upstream reply
+verbatim to `<base_url>/codex/alpha/search` (`<base_url>/alpha/search` for a non-ChatGPT base),
+selected by `adapters::responses::CodexOperation`. Two things differ from a turn. A search is not a
+model turn, so `[[server.codex_endpoint.routes]]` never applies: it always goes to
+`[server.codex_endpoint].provider`, and it is labeled `web_search` in metrics but selects its
+account without a model, so no per-model cooldown can block it. And the operation has no WebSocket
+form, so only `POST` is registered. Before these routes existed, every web search from a Codex CLI
+pointed at shunt failed with an empty `404`.
+
 In addition, shunt registers dedicated Codex model discovery routes:
 
 | Method | Path |
@@ -175,7 +198,9 @@ narrower path:
   never runs on the async executor.
 - **One credential, no pool, no failover.** shunt resolves the routed provider's single credential
   (`api_key` from its `api_key_env`, or an OAuth bearer) and sends exactly one request. There is no
-  account rotation to fall back to.
+  account rotation to fall back to. For an `xai_oauth` route whose account pool is non-empty, that
+  credential is the first account in pool selection order (the provider's `account`/`accounts`
+  scope honored); an empty pool uses `~/.shunt/xai-auth.json` ([M18](m18-xai-multi-account.md)).
 - **Verbatim relay.** The upstream response is relayed unchanged — status, body, and headers,
   including `retry-after` on a 429 — so the Codex CLI backs off against the third party's real
   signal instead of a rotation shunt invented. A 429 or 5xx is *not* a failover trigger here.
@@ -333,6 +358,18 @@ configured provider sets the outbound `websocket = true`
   failures arrive as standalone `type: "error"` frames carrying only safe response metadata.
   Failures before the upgrade (missing client token, a handshake without valid upgrade headers,
   an endpoint disabled by reload) return the OpenAI Responses error shape over HTTP.
+  An incremental `response.create` frame (`previous_response_id` plus only the new input) is
+  expanded against the connection's own transcript — the previous turn's full input plus the
+  output items of its completed response — because the ChatGPT HTTP backend rejects
+  `previous_response_id`; the id is stripped only for turns served by a ChatGPT backend, and a
+  frame whose input already carries the whole history is forwarded without expansion. An id that
+  does not name this connection's last completed response is dropped and the input forwarded as
+  sent: without a transcript shunt cannot tell a delta from a full history, so a client that sends
+  only a delta then loses the earlier context (e.g. after a reconnect) — resend the full history
+  on a new connection. A turn routed by `[[server.codex_endpoint.routes]]` to a non-ChatGPT
+  provider receives the frame unchanged, `previous_response_id` included, when that provider
+  issued the id (or shunt does not know it); an id issued by a different backend on the same
+  connection cannot resolve there, so it is stripped and the delta expanded instead.
 
 Without `[server.auth]`, a browser-originated upgrade is admitted only when its `Origin` matches
 the `Host` header. That check cannot tell `http` from `https` on the same host — shunt does not

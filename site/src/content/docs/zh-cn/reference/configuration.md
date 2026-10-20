@@ -231,11 +231,26 @@ jwt_secret = ["new-secret-value", "old-secret-value"]
 
 存在 `[server.gateway]` 即会注册经过认证的 `GET /managed/settings`;有序且非空的 policy list 为其提供 managed document。每条 policy 都有可选的 `[server.gateway.policies.match]` 和必需的 open-schema `[server.gateway.policies.cli]` object。省略 `match`、使用 `match = {}` 或不设置 `emails` 都表示 catch-all。显式空 `emails` list 或空白 entry 会导致启动错误。
 
-所有 catch-all policy 按顺序 merge,然后在其上 merge 第一个 email 精确匹配(case-sensitive)的 policy。object 递归 merge;array 通常替换,但 key 包含 `deny` 的 array 会做无重复 union。已知 key 会在启动和 hot reload 时验证:`availableModels` 必须是仅包含 string 的 array;`env` 必须是仅包含 string、number 或 boolean scalar value 的 table。未知 key 保持 open-schema,但所有 value 都必须可用 JSON 表示;非有限 float 会被拒绝。
+所有 catch-all policy 按顺序 merge,然后在其上 merge 第一个 email 精确匹配(不区分大小写)的 policy(`match.emails` 各项与登录用户的 email 都会先转为小写再比较)。object 递归 merge;array 通常替换,但 key 包含 `deny` 的 array 会做无重复 union。已知 key 会在启动和 hot reload 时验证:`availableModels` 必须是仅包含 string 的 array;`env` 必须是仅包含 string、number 或 boolean scalar value 的 table。未知 key 保持 open-schema,但所有 value 都必须可用 JSON 表示;非有限 float 会被拒绝。
 
 没有 `policies` 时 endpoint 返回 `404`。已配置 policy 但没有匹配的 user-specific 或 catch-all settings 时,若 telemetry 已启用则返回带有仅 telemetry `settings.env` 的 `200`,否则返回带有 `settings: {}` 的 `200`。response 包含 `uuid`、`checksum` 和保存 checksum 的 quoted `ETag`;匹配的 `If-None-Match` 返回 `304`。
 
 解析后的 `cli.availableModels` 会应用于 gateway JWT request 的 `/v1/messages` 和 `/v1/messages/count_tokens`。比较前会从 top-level `model` 移除一个末尾 Claude Code context-window hint（`[1m]` 或 `[1M]`）;若剩余 model 不在 list 中,则返回 `400 invalid_request_error`。static `[server.auth]` credential 无法标识 gateway policy user,因此不受此限制。
+
+### `[server.gateway.desktop_bootstrap]`(可选)
+
+提供 `GET /user/bootstrap`，即 Claude Desktop 的 [bootstrap 登录](/zh-cn/guides/connect-claude-desktop/#bootstrap-登录设备码)在设备码登录之后获取配置所用的端点。没有此表时该路由返回 `404`。
+
+| 键 | 默认 | 含义 |
+| :-- | :-- | :-- |
+| `template` | 必填 | 顶层为对象的 JSON 文件路径。在配置加载和 `shunt check` 时必须存在且可解析；每次请求都会读取，因此修改无需重启即可生效。相对路径以 shunt 的工作目录（而非配置文件所在目录）为基准解析 |
+
+只能是文件路径，不支持 URL。响应就是模板本身，只有字符串值中的 `${user.email}`、`${user.sub}`、`${user.name}` 会替换为已登录用户的值（未知的 `${...}` 标记和对象键保持原样）。没有 `[[server.gateway.policies]]`、某条 policy 的 `match.emails` 列出该用户，或存在 catch-all policy 时，该用户有权获取；其他用户收到 `403`。
+
+```toml
+[server.gateway.desktop_bootstrap]
+template = "/etc/shunt/claude-desktop-bootstrap.json"
+```
 
 ### `[server.gateway.telemetry]`(可选)
 
@@ -279,7 +294,7 @@ headers = { "x-api-key" = "..." }
 | `provider` | *(必填)* | 提供该模型的 provider。必须是 `kind = "responses"`,且不能使用不携带凭证的 auth 模式(`passthrough` 或 `none`) |
 | `upstream_model` | `model` | 发送给上游的模型 id。与 `model` 不同时,shunt 只改写请求体顶层的 `model`,其余字段保持不变 |
 
-指向未知 provider、非 `responses` provider,或使用不携带凭证的 auth 模式(`passthrough` 或 `none`)的 provider 的 route 会在校验时被拒绝;重复的 `model` 或空字段同样被拒绝。route 从实时配置快照读取,因此新增、修改、删除会在**重新加载**时生效;只有开关 `[server.codex_endpoint]` 表本身才需要重启。路由到非 ChatGPT provider 的请求从全新组装的头部允许列表开始:只从客户端取得 `content-type`(缺省为 `application/json`)和 `accept`;shunt 再加入解析出的凭据、通过 flavor 门控的 `OpenAI-Beta`、`xai_oauth` route 的整套 Grok CLI identity 头部,以及当 `api_key` route 的 host 恰好是 `api.openai.com` 且解析出了非空 conversation id 时重新生成的 `session-id`、`thread-id`、`x-client-request-id`、`x-codex-window-id`。调用方发送的凭据、Codex identity、session 和 `x-codex-*` 头部仍会被剥离。xAI 和其他第三方 OpenAI 兼容 host 都不会收到亲和头部,API 密钥路径也不会生成 `accept: text/event-stream`。请求使用 identity 编码的请求体和单个凭证,没有池也没有故障转移。
+指向未知 provider、非 `responses` provider,或使用不携带凭证的 auth 模式(`passthrough` 或 `none`)的 provider 的 route 会在校验时被拒绝;重复的 `model` 或空字段同样被拒绝。route 从实时配置快照读取,因此新增、修改、删除会在**重新加载**时生效;只有开关 `[server.codex_endpoint]` 表本身才需要重启。路由到非 ChatGPT provider 的请求从全新组装的头部允许列表开始:只从客户端取得 `content-type`(缺省为 `application/json`)和 `accept`;shunt 再加入解析出的凭据、通过 flavor 门控的 `OpenAI-Beta`、`xai_oauth` route 的整套 Grok CLI identity 头部,以及当 `api_key` route 的 host 恰好是 `api.openai.com` 且解析出了非空 conversation id 时重新生成的 `session-id`、`thread-id`、`x-client-request-id`、`x-codex-window-id`。调用方发送的凭据、Codex identity、session 和 `x-codex-*` 头部仍会被剥离。xAI 和其他第三方 OpenAI 兼容 host 都不会收到亲和头部,API 密钥路径也不会生成 `accept: text/event-stream`。请求使用 identity 编码的请求体和单个凭证,没有故障转移。对于 `xai_oauth` route,当 xAI 账户池非空时,该凭证是池选择顺序中第一个能加载登录的账户(遵循 provider 的 `account`/`accounts` 范围、`priority`、`disabled` 以及管理员的运行时暂停);当 xAI 账户池为空时,它是旧的 `~/.shunt/xai-auth.json`。无法加载登录的账户会被冷却并跳过,但在上游失败的请求不会改用其他账户重发。
 同一可选功能还会注册 `GET /models` 和 `GET /backend-api/codex/models`,它们在常规模型发现认证门之后返回有效的 Codex 回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 上,如果存在 `client_version` 查询,它优先于类 Anthropic 的头部并选择 Codex 空形状。没有 `client_version` 时,现有 Anthropic 发现响应保持不变。shunt 不会伪造不完整的 Codex `ModelInfo` 行。
 
 ## `[server.usage]`(可选)
@@ -311,7 +326,7 @@ headers = { "x-api-key" = "..." }
 | `default_max_utilization_fable` | 未设置 | 仅 fable 的周(`7d_oi`)窗口的硬上限默认值;只作用于 Fable 模型请求 |
 | `burn_rate_avoidance` | `false` | 同时避开按预测会在窗口重置之前耗尽其软阈值的账户 |
 | `sort_by_reset` | `false` | 按配额重置时间最早排序(升序;未知重置排最后)可用账户,而不是按燃烧速率余量排序。可在不编辑 `shunt.toml` 的情况下,通过管理仪表盘或 `PATCH /admin/api/pool` 在运行时切换 —— 参见[账户池控制](/zh-cn/guides/pool-account-controls/) |
-| `usage_refresh_seconds` | 禁用(`0`/未设置) | Claude `GET /api/oauth/usage`、Codex `GET /wham/usage` 和 Antigravity `POST :retrieveUserQuotaSummary` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
+| `usage_refresh_seconds` | 禁用(`0`/未设置) | Claude `GET /api/oauth/usage`、Codex `GET /wham/usage`、Antigravity `POST :retrieveUserQuotaSummary` 和池中 xAI(Grok)账户的 `GET /billing` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
 | `state_path` | 未设置 | 用于持久化池中按账户配额状态的文件;重启时从最后观测到的使用率热启动,而非从空池开始。未设置则禁用持久化(默认)。设置 [`[store]`](#store可选) 后,配额保存在存储中,此文件只作为导入来源 |
 | `ramp_initial_concurrency` | 禁用(`0`/未设置) | 风暴控制:对刚开始承接流量的账户身份的初始并发准入额度。`0` 或未设置则禁用准入门控 |
 | `reprobe_seconds` | 只要该表存在就是 `900`;`0` 则禁用 | 对陈旧的近配额 Codex/ChatGPT 账户进行机会性重新探测的间隔(秒);低于 60 的正值会向上取到 60 秒下限。`0` 禁用重新探测;若 `[server.pool]` 本身不存在,无论该值为何都禁用重新探测(#135 之前的行为)。非 WebSocket 的 outbound Responses 选择和可选的 inbound Codex HTTP 端点会保留重新探测;WebSocket 启用时的 outbound 选择会禁用重新探测 |
@@ -322,7 +337,7 @@ headers = { "x-api-key" = "..." }
 
 账户级键 `max_utilization`、`max_utilization_5h`、`max_utilization_7d`、`max_utilization_fable` 在每个 `[[providers.X.accounts]]` 条目上设置,详见英文参考页的 [accounts 表](/reference/configuration/#providersnameaccounts)。
 
-正的 `usage_refresh_seconds` 会启动后台轮询器,分别读取 Claude 的官方 usage API、Codex/ChatGPT 的非官方 `wham/usage` 以及 Antigravity 的非公开 `retrieveUserQuotaSummary` RPC;未设置或为 `0` 时禁用(默认)。只轮询 imported(可刷新)账户;长期 `claude setup-token` 与 `token_env` 凭据会被跳过。Claude 会对账每个报告窗口的用量、重置时刻和用量观测时间,status 的新鲜度仍来自响应头。Codex 会对账用量与观测时间,重置元数据来自响应,status 元数据仍来自头部;未来的已存重置会保留,已经过去的重置会在写入新用量前清除,wham 的 `reset_at` 不会被当作实际重置元数据。Antigravity 会通过现有 daily-host resolver 规范化生产主机写法,并只把 Gemini / Claude+GPT 的 grouped windows 写入仪表盘 quota-bucket 字段,不会写入通用的选择 quota state。非公开 schema 采用 fail-soft 解析;轮询间隔在启动时固定,配置重载不会启动、停止或重新调整轮询器。
+正的 `usage_refresh_seconds` 会启动后台轮询器,分别读取 Claude 的官方 usage API、Codex/ChatGPT 的非官方 `wham/usage`、Antigravity 的非公开 `retrieveUserQuotaSummary` RPC,以及为池中可刷新的 xAI 账户(存储中的登录,以及带 `credentials` 文件的内联条目)读取的 Grok CLI 代理非公开 `billing` 端点;未设置或为 `0` 时禁用(默认)。只轮询 imported(可刷新)账户;长期 `claude setup-token` 与 `token_env` 凭据会被跳过。Claude 会对账每个报告窗口的用量、重置时刻和用量观测时间,status 的新鲜度仍来自响应头。Codex 会对账用量与观测时间,重置元数据来自响应,status 元数据仍来自头部;未来的已存重置会保留,已经过去的重置会在写入新用量前清除,wham 的 `reset_at` 不会被当作实际重置元数据。Antigravity 会通过现有 daily-host resolver 规范化生产主机写法,并只把 Gemini / Claude+GPT 的 grouped windows 写入仪表盘 quota-bucket 字段,不会写入通用的选择 quota state。xAI 会以同样仅供显示的方式写入池中每个账户的积分总量和各产品用量(例如 "Grok Build");无论提供方把推理请求发往哪个主机,都始终请求 Grok CLI 代理。非公开 schema 采用 fail-soft 解析;轮询间隔在启动时固定,配置重载不会启动、停止或重新调整轮询器。
 
 `state_path` 会把池的配额状态(所有 provider 账户的按窗口使用率与各窗口自身的重置时刻,使用率和 status 的独立观测时间及捕获的 status 重置边界)写入磁盘。不设置时,重启会从空池开始:每个账户在重启后首个响应之前都显示为未观测,这会禁用 burn-rate 规避,并使 `GET /usage` 在流量重新填充池之前返回空值。该文件是尽力而为的缓存,而非权威来源 —— 配额无论如何都会从上游响应重新导出,因此文件缺失、陈旧或损坏只会导致冷启动,绝不会导致启动失败。写入使用私有 temp 文件(Unix 上为 `0600`)并将其原子重命名覆盖目标,且仅在配额发生变化时按后台定时器进行。写入失败时会在下一个 tick 重试。冷却不会被持久化(重启即失效),恢复的窗口中重置已过期的会在恢复时的 import 阶段、首次选择或 snapshot 之前丢弃。使用率在自身观测时间上限和该窗口的重置之间较早者到达时过期;仅上限经过时该窗口的未来重置仍可保留。按窗口 status 在自身观测时间上限和观测时捕获的 status 重置边界之间较早者到达时过期,捕获边界也会随 status 清除。版本2文件通过明确的迁移路径重写为版本3;版本3的无重置 status 在仅重置更新后仍保持无重置。路径在启动时固定;配置重载不会启动、停止或改变持久化路径。
 
@@ -386,7 +401,7 @@ codex-fallback = "gpt-5.2"
 | `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 | `opencode` | `anthropic` | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, 头 `x_api_key` |
 
-`auth = "claude_oauth"` 这样的字符串是 `auth = { mode = "claude_oauth" }` 的简写。`api_key` 映射接受 `env`（除非 preset 已提供，否则必需）和 `header`。省略 `header` 时保持默认值（`bearer`，或 `opencode` preset 的 `x_api_key`）。`claude_oauth` 与 `chatgpt_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小范围，但不能同时设置两者。`accounts` 接受存储条目名称字符串和完整账户表；显式的 `accounts = []` 会被拒绝，而省略两个范围字段则扫描整个存储。若 ChatGPT 存储为空，`chatgpt_oauth` 仍会回退到 `~/.codex/auth.json`。`passthrough`、`xai_oauth`、`cursor_oauth`、`antigravity_oauth` 映射只接受 `mode`；特定 mode 下的未知键会报错。
+`auth = "claude_oauth"` 这样的字符串是 `auth = { mode = "claude_oauth" }` 的简写。`api_key` 映射接受 `env`（除非 preset 已提供，否则必需）和 `header`。省略 `header` 时保持默认值（`bearer`，或 `opencode` preset 的 `x_api_key`）。`claude_oauth`、`chatgpt_oauth`、`kimi_oauth`、`xai_oauth` 与 `antigravity_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小范围，但不能同时设置两者。`accounts` 接受存储条目名称字符串和完整账户表；显式的 `accounts = []` 会被拒绝，而省略两个范围字段则扫描整个存储。若 ChatGPT 存储为空，`chatgpt_oauth` 仍会回退到 `~/.codex/auth.json`；若 Antigravity 存储为空且未配置任何内容，`antigravity_oauth` 会回退到 `~/.shunt/antigravity-auth.json`；若 xAI 存储为空且未配置任何内容，`xai_oauth` 会回退到 `~/.shunt/xai-auth.json`。`passthrough`、`cursor_oauth` 映射只接受 `mode`；特定 mode 下的未知键会报错。
 
 不要在配置文件中同时声明 `[[upstreams]]` 与 `[providers.*]`：文件层同时存在这两种声明形式时，启动会失败。无论采用哪种形式，环境变量都可按标准化后的上游/provider 名称通过 `SHUNT_PROVIDERS__<name>__<field>` 覆盖单个字段。有序的 `[[upstreams]]` 数组本身应在配置文件中声明，不要试图用单个环境变量合成整个数组。旧式 `[providers.<name>]` 仍受支持，并会标准化为按名称排序的隐式上游。由于这种形式没有声明故障转移顺序，模型映射只能有零个或一个条目；向模型映射添加多个条目前，请迁移到 `[[upstreams]]`。
 
@@ -422,7 +437,7 @@ codex-fallback = "gpt-5.2"
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` \| `antigravity_cli` | 上游协议 / 适配器。`anthropic` = Messages API(透传,可选择重新设置密钥);`responses` = Anthropic Messages 转换为 OpenAI Responses API(Responses API 没有 `stop` 参数,因此 `stop_sequences` 不会被静默丢弃,而是在转换中于网关侧模拟);`cursor` = 原生 Cursor ConnectRPC/protobuf AgentService 适配器;`gemini` = Anthropic Messages 转换为 Google Code Assist 后端的 Gemini `generateContent`/`streamGenerateContent`;`antigravity` = 通过 HTTP 连接 Google Antigravity 后端,与 `gemini` 使用相同的 Code Assist 协议,但以 Antigravity 订阅令牌认证,并在项目发现时以 `ideType: ANTIGRAVITY` 标识自身;`antigravity_cli` = **已弃用** —— 没有任何上游,以子进程方式运行本地 Antigravity CLI 二进制(`agy`)。由于 `agy` 自行解析工具调用，永远不会返回 `tool_use` 块，因此真正要求工具调用的请求——非空的 `tools` 数组，或值为 `any`、`tool` 的 `tool_choice`——会被 `400 invalid_request_error` 拒绝，而不是静默地以文本形式作答。`tool_choice: none`（即使与 `tools` 同时出现）、没有工具时的 `tool_choice: auto` 以及空的 `tools: []` 都不会强制工具调用，因此均被接受。 |
 | `base_url` | URL | 上游 base；shunt 追加端点路径。对于 `kind = "cursor"`，它仅用于登录/令牌刷新接口，不会选择代理/推理主机。 |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough` 转发客户端自己的 credential;`api_key` 从 `api_key_env` 注入一个密钥;`chatgpt_oauth` 复用 `~/.codex/auth.json`;`claude_oauth` 从显式 Anthropic 账户中选择;`xai_oauth` 复用来自 `shunt login xai` 的 `~/.shunt/xai-auth.json`(仅经由 HTTPS 发送到 x.ai/grok.com 主机);`cursor_oauth` 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`);`google_oauth` 复用 gemini CLI 登录的 `~/.gemini/oauth_creds.json`,仅在 `kind = "gemini"` 下有效;`antigravity_oauth` 复用来自 `shunt login antigravity` 的 `~/.shunt/antigravity-auth.json`,仅在 `kind = "antigravity"` 下有效,且与 `google_oauth` **不可互换** —— Antigravity 会请求 Gemini CLI 令牌所没有的两个 scope(`cclog`、`experimentsandconfigs`);`none` 完全不发送 credential,用于没有上游需要认证的适配器(`kind = "antigravity_cli"`)。 |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `kimi_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough` 转发客户端自己的 credential;`api_key` 从 `api_key_env` 注入一个密钥;`chatgpt_oauth` 复用 `~/.codex/auth.json`;`claude_oauth` 从显式 Anthropic 账户中选择;`kimi_oauth` 从显式 Kimi Code 账户(`shunt login kimi`)中选择,仅在 `kind = "anthropic"` 且 `base_url` 为 `kimi.com` 时有效;`xai_oauth` 汇集 `~/.shunt/accounts/xai/` 下的命名登录(`shunt login xai --name`),否则复用来自 `shunt login xai` 的 `~/.shunt/xai-auth.json`(仅经由 HTTPS 发送到 x.ai/grok.com 主机);`cursor_oauth` 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`);`google_oauth` 复用 gemini CLI 登录的 `~/.gemini/oauth_creds.json`,仅在 `kind = "gemini"` 下有效;`antigravity_oauth` 复用来自 `shunt login antigravity` 的 `~/.shunt/antigravity-auth.json`,仅在 `kind = "antigravity"` 下有效,且与 `google_oauth` **不可互换** —— Antigravity 会请求 Gemini CLI 令牌所没有的两个 scope(`cclog`、`experimentsandconfigs`);`none` 完全不发送 credential,用于没有上游需要认证的适配器(`kind = "antigravity_cli"`)。 |
 | `api_key_env` | 环境变量名 | 当 `auth = "api_key"` 时,从何处读取密钥。该值自身也可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))。 |
 | `api_key_header` | `bearer`(默认) \| `x_api_key` | 注入的密钥在哪个头部中发送。 |
 | `effort` | `low` … `max` | 可选的默认推理力度(`responses` 提供方)。也适用于 `kind = "antigravity"`,会作为目录的 effort 后缀追加到不带后缀的 `gemini-*` `upstream_model` 上。 |
@@ -434,9 +449,9 @@ codex-fallback = "gpt-5.2"
 
 ### `[providers.<name>.retry]`
 
-对受支持的单凭据调用中的**瞬时**上游故障进行有界重试，适用于 `passthrough`/`api_key` Anthropic 路径和单凭据 Responses 路径（`api_key`、`xai_oauth`/Grok，以及没有池化账户的 `chatgpt_oauth` provider）。遇到连接层传输错误（连接 reset/refused、超时）时，它会重新发出请求（在任何响应字节到达客户端之前，携带完整请求体）。这些创建类 POST 不是幂等的，上游可能已经接受了一次计费的生成，因此瞬时响应状态不会重试。当前 Cursor 适配器的流式回合没有被这一重试层包裹，因此其规范化后的 `retry` 表不起作用，响应之前的连接失败会直接浮出。所有受支持的路径都不会重试 `4xx` 响应，响应正文开始流式传输之后也绝不会开始重试。
+对受支持的单凭据调用中的**瞬时**上游故障进行有界重试，适用于 `passthrough`/`api_key` Anthropic 路径和单凭据 Responses 路径（`api_key`、没有池化账户的 `chatgpt_oauth` provider，以及仅在 xAI 账户池为空时的 `xai_oauth` provider —— 此时它读取旧的 `~/.shunt/xai-auth.json`；非空的 xAI 账户池则按池规则轮换）。遇到连接层传输错误（连接 reset/refused、超时）时，它会重新发出请求（在任何响应字节到达客户端之前，携带完整请求体）。这些创建类 POST 不是幂等的，上游可能已经接受了一次计费的生成，因此瞬时响应状态不会重试。当前 Cursor 适配器的流式回合没有被这一重试层包裹，因此其规范化后的 `retry` 表不起作用，响应之前的连接失败会直接浮出。所有受支持的路径都不会重试 `4xx` 响应，响应正文开始流式传输之后也绝不会开始重试。
 
-退避采用带随机化（full）抖动的指数方式，上限为 `max_backoff_ms`。服务器提供的 `Retry-After` 优先（delta-seconds 与 HTTP-date 两种形式都会遵循）；小数形式的 delta-seconds 也会被接受，并向上取整到下一个整数秒，格式错误或过长的值则会被忽略。如果它要求的等待超过 `max_backoff_ms`，响应会立即浮出，而不是超出预算地休眠等待。无论此设置如何，**`count_tokens` 都不会重试**。`claude_oauth` / `chatgpt_oauth` / `kimi_oauth` 账户池各自执行账户轮换故障转移，不受此表影响。
+退避采用带随机化（full）抖动的指数方式，上限为 `max_backoff_ms`。服务器提供的 `Retry-After` 优先（delta-seconds 与 HTTP-date 两种形式都会遵循）；小数形式的 delta-seconds 也会被接受，并向上取整到下一个整数秒，格式错误或过长的值则会被忽略。如果它要求的等待超过 `max_backoff_ms`，响应会立即浮出，而不是超出预算地休眠等待。无论此设置如何，**`count_tokens` 都不会重试**。`claude_oauth` / `chatgpt_oauth` / `kimi_oauth` / `xai_oauth` 账户池各自执行账户轮换故障转移，不受此表影响。
 
 ```toml
 [providers.openai.retry]
@@ -1224,7 +1239,7 @@ policy = { type = "target_selector", selector = "/target" }
 
 **回退。** 导入是复制,不是同步。之后移除 `[store]`,会从导入时刻的快照启动,可能让此后在存储中撤销的会话重新生效,并撤销在存储中所做的支出限制修改。无存储的启动若读到与已导入内容完全相同的快照,会记录一条相应的警告;该次启动重写文件后警告即停止。
 
-**每个存储一个进程。** 存储带有实例 hold。对一个 hold 仍有效的存储再运行第二个 `shunt run`,会以非零状态退出,并指出持有者(`{HOSTNAME}:{pid}`)以及距上次续期过去了多久。超过 `hold_stale_seconds` 未续期的 hold 会被接管,接管会记入日志,因此崩溃后重启最多可能被拒绝这么长时间。运行中的进程发现 hold 被夺走后,会拒绝之后的存储写入,但继续处理代理请求。正常关闭时释放 hold。
+**每个存储一个进程。** 存储带有实例 hold。对一个 hold 仍有效的存储再运行第二个 `shunt run`,会以非零状态退出,并指出持有者(`{HOSTNAME}:{pid}`)以及距上次续期过去了多久。在 PostgreSQL 上,若一个未结束的事务(通常来自客户端已断开的后端)占着 hold 行,使第二个进程在 5 秒内拿不到该行的锁,则该进程改为以 lock timeout 错误退出。超过 `hold_stale_seconds` 未续期的 hold 会被接管,接管会记入日志,因此崩溃后重启最多可能被拒绝这么长时间。运行中的进程发现 hold 被夺走后,会拒绝之后的存储写入,但继续处理代理请求。正常关闭时释放 hold。
 
 **存储写入失败时。** 代理路径从不等待存储。无法写入的 admin 支出限制修改会返回与以往相同的 Anthropic 格式 `500`,且不会产生任何变更。在网关 `/oauth/token` 端点上,签发 token(device grant)或轮换 refresh token 无法写入时,会返回带 `Cache-Control: no-store` 的 `503` `{"error":"temporarily_unavailable"}`,并回滚此次轮换,客户端重试即可成功;如果 device-grant 签发是在 grant 已被消耗之后失败的,该用户需要重新登录。对已轮换 token 的重放(replay)仍返回 `401` `invalid_grant`,其 family 保持已撤销状态;如果存储无法记录这次撤销,则会在下一次成功的存储写入或下一次 15 秒刷新时写入,若在此之前进程崩溃则会丢失。每次写入失败都会使 `shunt.store.write_failures` 计数器(`subsystem` = `pool`、`spend` 或 `gateway`)加一。
 

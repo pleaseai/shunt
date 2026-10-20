@@ -6,6 +6,7 @@ import type {
   ObservedAccount,
   PoolAccount,
   PoolProvider,
+  XaiStoreAccount,
 } from './types';
 
 /**
@@ -64,6 +65,24 @@ export function accountStatus(
  */
 const POOL_PROVIDER_ALIASES: Record<string, string> = { anthropic: 'claude' };
 
+/**
+ * The auth kind whose account store identifies an observed client login, keyed
+ * by the observation's provider. Store ids are only unique within one auth
+ * kind, so coalescing keys on the pair: an xAI user id that happens to equal a
+ * Claude or Codex id must not fold into the other provider's row.
+ */
+const OBSERVED_AUTH_KINDS: Record<string, string> = {
+  claude: 'claude_oauth',
+  anthropic: 'claude_oauth',
+  codex: 'chatgpt_oauth',
+  grok: 'xai_oauth',
+};
+
+/** The coalescing key for a store id under one auth kind. */
+function identityKey(auth: string, id: string): string {
+  return `${auth}:${id}`;
+}
+
 /** The window fields an observation may override on a coalesced row. */
 const WINDOW_KEYS = [
   'utilization_5h',
@@ -114,8 +133,9 @@ function managedRow(provider: string, account: PoolAccount): AccountRow {
     utilization_7d_oi: account.utilization_7d_oi,
     reset_7d_oi: account.reset_7d_oi,
     // Antigravity pool accounts carry grouped Gemini / Claude+GPT quota windows
-    // from the pool's own `retrieveUserQuotaSummary` poll; they have no local-observation
-    // counterpart, so there is nothing to fold in `foldObservation`.
+    // from the pool's own `retrieveUserQuotaSummary` poll, and xAI pool accounts
+    // carry Grok billing buckets from the pool's billing poll. `foldObservation`
+    // leaves these alone; `UsageCell` reads them ahead of an observation's.
     quota_buckets: account.quota_buckets,
   };
 }
@@ -187,6 +207,34 @@ function accountIdsByCodexName(
 }
 
 /**
+ * The xAI user id each xAI store account is known by, keyed by account name.
+ * Sourced from `/admin/api/accounts/xai`; the observed Grok CLI row carries the
+ * same id as its `uuid`, so the two can be matched the way Codex rows are.
+ */
+function accountIdsByXaiName(
+  xaiAccounts: { accounts?: XaiStoreAccount[] } | null,
+): Map<string, string> {
+  const ids = new Map<string, string>();
+  for (const account of xaiAccounts?.accounts ?? []) {
+    if (account.account_id) ids.set(account.name, account.account_id);
+  }
+  return ids;
+}
+
+/**
+ * The store identity an xAI pool account is known by. The store listing is
+ * keyed by file name, so it only describes an account that reads its store
+ * file: one whose `credentials` or `token_env` overrides that file may belong
+ * to a different user than the store's same-named login, and stays unmatched.
+ */
+function xaiStoreAccountId(
+  account: PoolAccount,
+  accountIdByXaiName: Map<string, string>,
+): string | undefined {
+  return account.credential_override ? undefined : accountIdByXaiName.get(account.name);
+}
+
+/**
  * Fold managed pool accounts and read-only observations into one row set per
  * provider.
  *
@@ -205,9 +253,11 @@ export function accountGroups(
   pool: { providers?: PoolProvider[] } | null,
   accounts: { accounts?: ClaudeStoreAccount[] } | null,
   codexAccounts: { accounts?: CodexStoreAccount[] } | null = null,
+  xaiAccounts: { accounts?: XaiStoreAccount[] } | null = null,
 ): Map<string, AccountRow[]> {
   const uuidByName = uuidsByAccountName(accounts);
   const accountIdByCodexName = accountIdsByCodexName(codexAccounts);
+  const accountIdByXaiName = accountIdsByXaiName(xaiAccounts);
 
   const groups = new Map<string, AccountRow[]>();
   const groupFor = (provider: string): AccountRow[] => {
@@ -236,14 +286,18 @@ export function accountGroups(
           ? uuidByName.get(account.name)
           : table.auth === 'chatgpt_oauth'
             ? accountIdByCodexName.get(account.name)
-            : undefined;
-      if (uuid) byUuid.set(uuid, row);
+            : table.auth === 'xai_oauth'
+              ? xaiStoreAccountId(account, accountIdByXaiName)
+              : undefined;
+      if (uuid && table.auth) byUuid.set(identityKey(table.auth, uuid), row);
     }
   }
 
   for (const observation of observed) {
     // A missing uuid means "identity unknown" and must never match.
-    const match = observation.uuid ? byUuid.get(observation.uuid) : undefined;
+    const auth = OBSERVED_AUTH_KINDS[observation.provider];
+    const match =
+      observation.uuid && auth ? byUuid.get(identityKey(auth, observation.uuid)) : undefined;
     if (match) {
       foldObservation(match, observation);
       continue;

@@ -33,8 +33,30 @@ use super::{
         commit_reprobe_for_account, force_refresh_or_cooldown, with_account_header, FirstOutcome,
         RetryOutcome,
     },
-    request::responses_url,
+    request::{alpha_search_url, responses_url},
 };
+
+/// The ChatGPT/Codex backend operation an inbound passthrough is relayed to.
+///
+/// The Codex CLI appends both `/responses` (a turn) and `/alpha/search` (its
+/// built-in `web.run` tool) to the same base URL, so both reach shunt and both
+/// are relayed over the same account pool; only the upstream URL differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CodexOperation {
+    /// A Responses turn: `{base}/codex/responses`.
+    Responses,
+    /// The web-search tool: `{base}/codex/alpha/search`.
+    AlphaSearch,
+}
+
+impl CodexOperation {
+    fn url(self, config: &crate::config::Config, provider: &str) -> String {
+        match self {
+            Self::Responses => responses_url(config, provider),
+            Self::AlphaSearch => alpha_search_url(config, provider),
+        }
+    }
+}
 
 /// Entry point for the inbound `[server.codex_endpoint]` passthrough. Gathers the
 /// target provider's pooled accounts (explicit `[[accounts]]` or a store scan)
@@ -48,6 +70,7 @@ pub(crate) async fn forward_codex_inbound(
     pool_key: Option<String>,
     client_headers: HeaderMap,
     body: Bytes,
+    operation: CodexOperation,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     // codex -> shunt -> codex is a byte-faithful passthrough: forward the Codex
     // CLI's own request headers verbatim and swap in only the pool account's
@@ -73,9 +96,25 @@ pub(crate) async fn forward_codex_inbound(
     .await
     .map_err(own_error)?;
     if accounts.is_empty() {
-        return forward_codex_passthrough_single(state, route, passthrough_headers, body).await;
+        return forward_codex_passthrough_single(
+            state,
+            route,
+            passthrough_headers,
+            body,
+            operation,
+        )
+        .await;
     }
-    forward_codex_passthrough(state, route, accounts, pool_key, passthrough_headers, body).await
+    forward_codex_passthrough(
+        state,
+        route,
+        accounts,
+        pool_key,
+        passthrough_headers,
+        body,
+        operation,
+    )
+    .await
 }
 
 /// Single-account inbound passthrough: no pool, no failover. Resolves the default
@@ -87,6 +126,7 @@ async fn forward_codex_passthrough_single(
     route: Route,
     passthrough_headers: HeaderMap,
     body: Bytes,
+    operation: CodexOperation,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
     let observed_account = match &credential {
@@ -97,9 +137,16 @@ async fn forward_codex_passthrough_single(
         }),
         _ => None,
     };
-    let upstream = passthrough_send(&state, &route, credential, &passthrough_headers, &body)
-        .await
-        .map_err(send_error)?;
+    let upstream = passthrough_send(
+        &state,
+        &route,
+        credential,
+        &passthrough_headers,
+        &body,
+        operation,
+    )
+    .await
+    .map_err(send_error)?;
     if let Some(account) = &observed_account {
         state
             .accounts
@@ -130,6 +177,7 @@ async fn forward_codex_passthrough(
     pool_key: Option<String>,
     passthrough_headers: HeaderMap,
     body: Bytes,
+    operation: CodexOperation,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
     // An all-`disabled` pool yields an empty order; surface it as a distinct
     // config error rather than the generic "all accounts failed" below.
@@ -149,11 +197,17 @@ async fn forward_codex_passthrough(
     // translating outbound path: near-quota accounts rotate proactively and
     // available accounts order by burn-rate headroom (issue #195). The
     // passthrough body's model is a label only (no fable-scoped Codex window).
+    // A search's `web_search` label names no model, so it selects without one:
+    // a per-model cooldown that happens to share the label must not block it.
+    let selection_model = match operation {
+        CodexOperation::Responses => Some(route.upstream_model.as_str()),
+        CodexOperation::AlphaSearch => None,
+    };
     let (order, mut reprobe_reservation, cap) = state.accounts.select_order_deferred_with_cap(
         &route.provider,
         &accounts_config,
         pool_key.as_deref(),
-        Some(route.upstream_model.as_str()),
+        selection_model,
         state.config.server.pool.as_ref(),
     );
     let ramp_initial = state.config.storm_ramp_initial();
@@ -183,6 +237,7 @@ async fn forward_codex_passthrough(
             credential.clone(),
             &passthrough_headers,
             &body,
+            operation,
         )
         .count_attempt(&state.accounts, &route.provider, account)
         .await
@@ -249,6 +304,7 @@ async fn forward_codex_passthrough(
                     retry_credential,
                     &passthrough_headers,
                     &body,
+                    operation,
                 )
                 .count_attempt(&state.accounts, &route.provider, account)
                 .await
@@ -417,8 +473,8 @@ pub(crate) fn passthrough_request_headers(
     out
 }
 
-/// Send the inbound Responses bytes upstream **verbatim** over the Codex HTTP
-/// path. Unlike the translating path's [`request_builder`], this forwards the
+/// Send the inbound bytes upstream **verbatim** to `operation`'s URL over the
+/// Codex HTTP path. Unlike the translating path's [`request_builder`], this forwards the
 /// Codex CLI's own request headers (`passthrough_headers`, built by
 /// [`passthrough_request_headers`]) and swaps in **only** the selected pool
 /// account's credential (via [`apply_credential`]) — no shunt-synthesized client
@@ -431,10 +487,11 @@ async fn passthrough_send(
     credential: Credential,
     passthrough_headers: &HeaderMap,
     body: &Bytes,
+    operation: CodexOperation,
 ) -> Result<reqwest::Response, SendError<reqwest::Error>> {
     let request = state
         .http_client
-        .post(responses_url(&state.config, &route.provider))
+        .post(operation.url(&state.config, &route.provider))
         .headers(passthrough_headers.clone());
     crate::upstream_timeout::wait(
         state.config.server.timeouts.upstream_ttfb_ms,
@@ -557,6 +614,7 @@ mod tests {
             },
             &HeaderMap::new(),
             &Bytes::from_static(b"{}"),
+            CodexOperation::Responses,
         )
         .await
         .unwrap();

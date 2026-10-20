@@ -441,6 +441,7 @@ fn add_gateway(config: &mut Config, label: &str) -> [String; 2] {
     std::env::set_var(&secret_env, std::str::from_utf8(GATEWAY_SECRET).unwrap());
     std::env::set_var(&users_env, "dev@example.com:password");
     config.server.gateway = Some(GatewayConfig {
+        desktop_bootstrap: None,
         public_url: GATEWAY_URL.to_string(),
         jwt_secret_env: Some(secret_env.clone()),
         users_env: users_env.clone(),
@@ -519,8 +520,34 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+/// The built-in `grok` provider is an `xai_oauth` pool, so `get` scans its
+/// account store. Point that scan at a path that never exists, under the lock
+/// the xAI store tests share, so no test reads the operator's real
+/// `~/.shunt/accounts/xai`. Fields drop in declaration order: the variable is
+/// removed before the lock is released.
+struct XaiStoreIsolation {
+    _env: crate::auth::shared::EnvVarGuard,
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+}
+
+async fn isolate_xai_store() -> XaiStoreIsolation {
+    let lock = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+    let env = crate::auth::shared::EnvVarGuard::set(
+        "SHUNT_XAI_ACCOUNTS_DIR",
+        std::env::temp_dir().join(format!(
+            "shunt-usage-test-xai-store-{}-absent",
+            std::process::id()
+        )),
+    );
+    XaiStoreIsolation {
+        _env: env,
+        _lock: lock,
+    }
+}
+
 #[tokio::test]
 async fn serves_aggregate_to_an_authenticated_client() {
+    let _xai = isolate_xai_store().await;
     let (state, env, reset_5h) = state_with_auth_and_seeded_pool("tok-secret", "serves");
     let mut headers = HeaderMap::new();
     headers.insert("x-api-key", "tok-secret".parse().unwrap());
@@ -543,6 +570,7 @@ async fn serves_aggregate_to_an_authenticated_client() {
 
 #[tokio::test]
 async fn aggregates_codex_headers_and_claude_fable_usage_together() {
+    let _xai = isolate_xai_store().await;
     use crate::accounts::StoreFamily;
     use crate::config::{ApiKeyHeader, AuthMode, CountTokens, ProviderConfig, ProviderKind};
 
@@ -663,11 +691,13 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
         json!(reset_fable)
     );
 
-    // Per-provider breakdown, keyed by the configured provider name: only the
-    // two pooled providers appear (the built-in non-pooled ones are omitted),
-    // and each carries only its own windows.
+    // Per-provider breakdown, keyed by the configured provider name: the
+    // pooled providers appear (the built-in non-pooled ones are omitted),
+    // and each carries only its own windows. The built-in `grok` provider is
+    // an `xai_oauth` pool, so it appears even with no accounts, as a built-in
+    // codex does.
     let keys: Vec<&String> = body["providers"].as_object().unwrap().keys().collect();
-    assert_eq!(keys, ["claude-oauth", "codex"]);
+    assert_eq!(keys, ["claude-oauth", "codex", "grok"]);
     let codex = &body["providers"]["codex"];
     assert_eq!(codex["status"], "ok");
     assert_eq!(codex["windows"]["5h"]["remaining"], json!(0.75));
@@ -678,6 +708,11 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
     assert_eq!(claude["windows"]["7d"]["remaining"], Value::Null);
     assert_eq!(claude["windows"]["fable"]["remaining"], json!(0.85));
     assert_eq!(claude["windows"]["fable"]["resets_at"], json!(reset_fable));
+    // The empty xAI pool contributes no windows to the aggregate or to itself.
+    let grok = &body["providers"]["grok"];
+    assert_eq!(grok["windows"]["5h"]["remaining"], Value::Null);
+    assert_eq!(grok["windows"]["7d"]["remaining"], Value::Null);
+    assert_eq!(grok["windows"]["fable"]["remaining"], Value::Null);
 }
 
 /// `GET /usage` must cover a `kimi_oauth` pool, not just Claude and Codex.
@@ -694,6 +729,7 @@ async fn aggregates_codex_headers_and_claude_fable_usage_together() {
 /// account would file the usage under a different key than the handler reads.
 #[tokio::test]
 async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
+    let _xai = isolate_xai_store().await;
     use crate::accounts::StoreFamily;
     use crate::config::{ApiKeyHeader, AuthMode, CountTokens, ProviderConfig, ProviderKind};
 
@@ -792,6 +828,95 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
     assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(reset_5h));
 }
 
+/// The xAI pool joins the same aggregate as the other managed families. The
+/// built-in `grok` provider already carries `xai_oauth`, so its account goes
+/// on that provider rather than a new one. Without the `XaiOauth` arm in
+/// `usage::get` the grok rows never reach the mean, and the expected value
+/// stays at the codex-only `0.75`.
+#[tokio::test]
+async fn aggregate_covers_an_xai_oauth_pool_alongside_codex() {
+    let _xai = isolate_xai_store().await;
+    use crate::accounts::StoreFamily;
+    use crate::config::AuthMode;
+
+    let env = format!("SHUNT_USAGE_TEST_TOKENS_{}_xai", std::process::id());
+    std::env::set_var(&env, "tester:tok-secret");
+    let reset_5h = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+
+    let mut config = crate::config::Config::default();
+    config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
+        header: "x-shunt-token".to_string(),
+        tokens_env: env.clone(),
+    });
+    config.server.usage = Some(UsageEndpointConfig::default());
+
+    let codex_account = AccountConfig {
+        name: "codex-a".to_string(),
+        ..AccountConfig::default()
+    };
+    config
+        .providers
+        .get_mut("codex")
+        .expect("built-in codex provider")
+        .accounts = vec![codex_account.clone()];
+
+    let xai_account = AccountConfig {
+        name: "xai-a".to_string(),
+        ..AccountConfig::default()
+    };
+    let grok = config
+        .providers
+        .get_mut("grok")
+        .expect("built-in grok provider");
+    assert_eq!(grok.auth, AuthMode::XaiOauth);
+    grok.accounts = vec![xai_account.clone()];
+
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let seeded = |account: &AccountConfig, family: StoreFamily| AccountConfig {
+        store_family: Some(family),
+        ..account.clone()
+    };
+    state.accounts.note_usage(
+        "codex",
+        &seeded(&codex_account, StoreFamily::Chatgpt),
+        &UsageSnapshot {
+            five_hour: Some(UsageWindow {
+                utilization: 0.25,
+                resets_at: Some(reset_5h),
+            }),
+            seven_day: None,
+            seven_day_oi: None,
+        },
+    );
+    state.accounts.note_usage(
+        "grok",
+        &seeded(&xai_account, StoreFamily::Xai),
+        &UsageSnapshot {
+            five_hour: Some(UsageWindow {
+                utilization: 0.10,
+                resets_at: Some(reset_5h),
+            }),
+            seven_day: None,
+            seven_day_oi: None,
+        },
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", "tok-secret".parse().unwrap());
+    let response = get(State(state), headers).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = body_json(response).await;
+    std::env::remove_var(&env);
+
+    assert_eq!(body["pool"]["windows"]["5h"]["remaining"], json!(0.825));
+    assert_eq!(body["pool"]["windows"]["5h"]["resets_at"], json!(reset_5h));
+}
+
 /// Config entries sharing a `uuid` are one physical account to the pool
 /// (`collapse_representatives`), and `AccountPool::snapshot` emits one row per
 /// entry, so without collapsing them the mean would give that subscription
@@ -804,6 +929,7 @@ async fn aggregate_covers_a_kimi_oauth_pool_alongside_claude_and_codex() {
 /// here — representatives are matched by row position, which covers it.)
 #[tokio::test]
 async fn aggregate_counts_an_aliased_identity_once() {
+    let _xai = isolate_xai_store().await;
     use crate::accounts::StoreFamily;
 
     let env = format!("SHUNT_USAGE_TEST_TOKENS_{}_alias", std::process::id());
@@ -878,6 +1004,7 @@ async fn aggregate_counts_an_aliased_identity_once() {
 
 #[tokio::test]
 async fn rejects_a_request_without_a_valid_client_token() {
+    let _xai = isolate_xai_store().await;
     let (state, env, _) = state_with_auth_and_seeded_pool("tok-secret", "rejects");
     // No credential header at all.
     let response = get(State(state), HeaderMap::new()).await;
@@ -895,6 +1022,7 @@ async fn rejects_a_request_without_a_valid_client_token() {
 
 #[tokio::test]
 async fn rejection_names_both_credentials_when_auth_and_gateway_are_configured() {
+    let _xai = isolate_xai_store().await;
     let mut config = Config::default();
     let auth_env = add_client_auth(&mut config, "tok-secret", "rejects_both");
     let gateway_env = add_gateway(&mut config, "rejects_both");
@@ -915,6 +1043,7 @@ async fn rejection_names_both_credentials_when_auth_and_gateway_are_configured()
 
 #[tokio::test]
 async fn serves_a_valid_gateway_login_without_server_auth() {
+    let _xai = isolate_xai_store().await;
     let mut config = Config::default();
     let gateway_env = add_gateway(&mut config, "gateway_only");
     let (state, _) = state_with_seeded_pool(config);
@@ -933,6 +1062,7 @@ async fn serves_a_valid_gateway_login_without_server_auth() {
 
 #[tokio::test]
 async fn serves_a_valid_gateway_login_alongside_server_auth() {
+    let _xai = isolate_xai_store().await;
     // The gateway bearer authenticates on its own even though it matches no
     // `[server.auth]` client token.
     let mut config = Config::default();
@@ -955,6 +1085,7 @@ async fn serves_a_valid_gateway_login_alongside_server_auth() {
 
 #[tokio::test]
 async fn rejects_an_invalid_bearer_when_only_gateway_login_is_configured() {
+    let _xai = isolate_xai_store().await;
     let mut config = Config::default();
     let gateway_env = add_gateway(&mut config, "gateway_garbage");
     let (state, _) = state_with_seeded_pool(config);
@@ -977,6 +1108,7 @@ async fn rejects_an_invalid_bearer_when_only_gateway_login_is_configured() {
 
 #[tokio::test]
 async fn fails_closed_when_inbound_auth_is_absent() {
+    let _xai = isolate_xai_store().await;
     // Defense in depth for the branch config validation normally forbids:
     // with neither `[server.auth]` nor `[server.gateway]`, the handler must
     // not serve pool telemetry.
@@ -989,6 +1121,7 @@ async fn fails_closed_when_inbound_auth_is_absent() {
 async fn returns_api_error_500_when_account_store_scan_fails() {
     use crate::auth::{codex::store as codex_store, shared::EnvVarGuard};
 
+    let _xai = isolate_xai_store().await;
     // Serialize with the codex store's own env-var tests (they share the
     // `SHUNT_CODEX_ACCOUNTS_DIR` process env).
     let _guard = codex_store::TEST_ENV_LOCK.lock().await;

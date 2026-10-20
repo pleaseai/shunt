@@ -316,6 +316,11 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
                 get(codex_endpoint::websocket::get).post(codex_endpoint::post),
             );
         }
+        // The Codex CLI's web-search tool posts to `{base_url}/alpha/search`.
+        // POST only: unlike a Responses turn there is no WebSocket form of it.
+        for path in codex_endpoint::search::PATHS {
+            router = router.route(path, post(codex_endpoint::search::post));
+        }
         for path in codex_analytics::PATHS {
             router = router.route(path, post(codex_analytics::post));
         }

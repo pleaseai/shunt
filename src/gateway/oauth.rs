@@ -79,7 +79,7 @@ pub async fn device_authorization(
         Ok(form) => form,
         Err(_) => return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request")),
     };
-    if form.client_id != CLAUDE_CODE_CLIENT_ID {
+    if !client_id_accepted(&form.client_id) {
         return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request"));
     }
     let state = state.refreshed();
@@ -140,7 +140,7 @@ pub async fn token(
         Err(_) => return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request")),
     };
     if form.grant_type.is_empty()
-        || form.client_id != CLAUDE_CODE_CLIENT_ID
+        || !client_id_accepted(&form.client_id)
         || (form.grant_type == DEVICE_GRANT && form.device_code.is_empty())
         || (form.grant_type == "refresh_token" && form.refresh_token.is_empty())
     {
@@ -165,7 +165,14 @@ pub async fn token(
             Rotation::Rotated(identity, refresh_token) => {
                 token_response(&auth, &identity, refresh_token)
             }
-            Rotation::Rejected => oauth_error(StatusCode::UNAUTHORIZED, "invalid_grant"),
+            Rotation::Rejected => oauth_error(
+                if form.client_id.is_empty() {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::UNAUTHORIZED
+                },
+                "invalid_grant",
+            ),
             Rotation::Unavailable => {
                 oauth_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
             }
@@ -223,6 +230,18 @@ fn token_response(
         expires_in: auth.token_ttl_seconds(),
     })
     .into_response()
+}
+
+/// Claude Desktop 2.42304.2's gateway-SSO device flow (`runGatewaySsoDeviceGrant`
+/// / `refreshGatewaySsoToken`) sends no `client_id` on the device authorization
+/// request, the device-code poll, or the refresh grant, so an empty `client_id`
+/// is accepted alongside `claude-code`. Desktop treats a refresh failure as a
+/// revocation only for HTTP 400 with `error == "invalid_grant"` (RFC 6749 5.2);
+/// any other status is transient, which is why `token` answers a rejected
+/// refresh with 400 for it while a `claude-code` client keeps the reference
+/// gateway's 401.
+fn client_id_accepted(client_id: &str) -> bool {
+    client_id.is_empty() || client_id == CLAUDE_CODE_CLIENT_ID
 }
 
 fn oauth_error(status: StatusCode, error: &'static str) -> Response {

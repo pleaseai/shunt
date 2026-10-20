@@ -19,6 +19,17 @@ used a mapped provider: a `thinking` block carrying **no** `signature` at all is
 shunt's own Responses path emits one when the upstream returned no signature, and Anthropic rejects
 a thinking block whose signature it cannot verify either way.
 
+A third-party Anthropic-kind provider — any `kind = "anthropic"` upstream that is not on
+`api.anthropic.com` and not a `claude_oauth` pool, such as MiniMax, Kimi, or Zhipu — may put a
+`signature` on its thinking blocks that Anthropic never issued. On the way to the client, streamed or not,
+shunt wraps that `signature` in an envelope of its own carrying a digest of the provider's `base_url` (trailing `/` trimmed), never the URL itself, so the URL and any credentials in it never reach the client. The digest is unsalted and stable, though, so it confirms a guess: anyone who can guess the whole `base_url` — a well-known endpoint, or a weak credential embedded in one — can check the guess against it. When a later
+turn goes back to a provider with the same `base_url`, shunt unwraps it and forwards the original
+signature byte-for-byte, so that provider's extended-thinking continuation keeps working; sent
+anywhere else, Anthropic included, the envelope counts as shunt-minted and the block is dropped as
+above. Switching between a third-party Anthropic-kind provider and Anthropic therefore drops that
+provider's thinking blocks rather than failing the request, and returning to the same provider
+restores them. Responses from `api.anthropic.com` and from `claude_oauth` pools are never wrapped.
+
 | Auth mode | Credential | Use case |
 | :-- | :-- | :-- |
 | `passthrough` (default) | the caller's own `x-api-key` / `Authorization` | transparent proxy — each client brings its own key or OAuth token |

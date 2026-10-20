@@ -326,6 +326,12 @@ operator-supplied base URL and never from the discovery document, so a hostile
 or MITM'd document cannot name a third-party plaintext host and have the
 refresh token POSTed there.
 
+Claude Desktop signs in through the same endpoints. It sends no `client_id`, so
+requests without one are accepted alongside `client_id=claude-code` (any other
+value is still rejected), and a rejected refresh token for a request without
+`client_id` returns `400 {"error":"invalid_grant"}` instead of `401`. See the
+[Desktop bootstrap note](gateway-desktop-bootstrap.md).
+
 For per-user policy after sign-in, shunt now serves authenticated
 `GET /managed/settings` with ordered email matching, `ETag`/`304`, telemetry
 environment push, and `availableModels` enforcement. See the

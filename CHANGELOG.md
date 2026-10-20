@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.57.1](https://github.com/pleaseai/shunt/compare/v0.57.0...v0.57.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **anthropic:** wrap third-party thinking signatures so they never reach api.anthropic.com ([#784](https://github.com/pleaseai/shunt/issues/784)) ([dedb858](https://github.com/pleaseai/shunt/commit/dedb858919222e887fab5125a655add2cc7da9fa))
+* **store:** take the PostgreSQL hold row lock before the stale cutoff ([#796](https://github.com/pleaseai/shunt/issues/796)) ([1f91898](https://github.com/pleaseai/shunt/commit/1f918982cac82baf64183ff279da3c6b2f26949f))
+
+## [0.57.0](https://github.com/pleaseai/shunt/compare/v0.56.0...v0.57.0) (2026-10-19)
+
+
+### Features
+
+* **codex-endpoint:** relay the Codex CLI web search tool (POST */alpha/search) ([#762](https://github.com/pleaseai/shunt/issues/762)) ([9d42ba2](https://github.com/pleaseai/shunt/commit/9d42ba251dd1f0651e9d150767e3ff98a1ae042b))
+* **gateway:** serve a Claude Desktop bootstrap config endpoint ([#793](https://github.com/pleaseai/shunt/issues/793)) ([fb63c17](https://github.com/pleaseai/shunt/commit/fb63c17b6056f004b8b278d51ac884413bab9eba))
+* **store:** optional pluggable store on sqlx (SQLite, PostgreSQL), Phase 1a ([#774](https://github.com/pleaseai/shunt/issues/774)) ([b99367c](https://github.com/pleaseai/shunt/commit/b99367c2b488d8c3657c59fdfa16be7fd60c63fb))
+* **xai:** pool multiple SuperGrok OAuth accounts ([#763](https://github.com/pleaseai/shunt/issues/763)) ([d3bc2a6](https://github.com/pleaseai/shunt/commit/d3bc2a664bea4141935030407c066e1ef9e4f183))
+
+
+### Bug Fixes
+
+* **anthropic:** resend once on a transport failure before rotating accounts ([#775](https://github.com/pleaseai/shunt/issues/775)) ([c7d5103](https://github.com/pleaseai/shunt/commit/c7d5103152c02d7455c0f4fcfa5b02a7c4eace3f))
+* **store:** settle an uncertain commit under the instance-hold lock ([#780](https://github.com/pleaseai/shunt/issues/780)) ([f325d91](https://github.com/pleaseai/shunt/commit/f325d917d2bae2de7c05ee929e7a215c1cd68ea6))
+* **store:** take the SQLite write lock up front when acquiring the hold ([#786](https://github.com/pleaseai/shunt/issues/786)) ([df16768](https://github.com/pleaseai/shunt/commit/df167682b11876723415ba4bdd55a747a5d23672))
+* **test:** count 49 literal route registrations after [#763](https://github.com/pleaseai/shunt/issues/763) and [#793](https://github.com/pleaseai/shunt/issues/793) ([#797](https://github.com/pleaseai/shunt/issues/797)) ([a4536e9](https://github.com/pleaseai/shunt/commit/a4536e9764d1d0d211092fe0708f7b0e29f998d7))
+
 ## [0.56.0](https://github.com/pleaseai/shunt/compare/v0.55.1...v0.56.0) (2026-10-16)
 
 

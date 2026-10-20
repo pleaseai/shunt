@@ -199,11 +199,11 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     response
 }
 
-fn sha256_label(bytes: &[u8]) -> String {
+pub(super) fn sha256_label(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn if_none_match(headers: &HeaderMap, checksum: &str) -> bool {
+pub(super) fn if_none_match(headers: &HeaderMap, checksum: &str) -> bool {
     headers
         .get_all(header::IF_NONE_MATCH)
         .iter()

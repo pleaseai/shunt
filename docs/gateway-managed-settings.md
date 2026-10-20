@@ -92,7 +92,9 @@ Policies are ordered:
 
 1. Every catch-all policy is merged in list order to form the base.
 2. The first non-catch-all policy whose `emails` contains the authenticated JWT
-   email is merged on top. Email matching is exact and case-sensitive.
+   email is merged on top. Email matching is exact but case-insensitive:
+   `match.emails` entries are lowercased at load and the signed-in email is
+   lowercased before lookup, the same rule the OIDC allowlist uses.
 3. Later matching user policies are ignored.
 
 A missing `match`, `match = {}`, or a match without `emails` is catch-all. An

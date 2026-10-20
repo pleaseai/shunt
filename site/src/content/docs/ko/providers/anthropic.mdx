@@ -18,6 +18,17 @@ shunt는 변환 없이 요청을 패스스루하고 **어떤 자격 증명**을 
 업스트림에서 signature를 받지 못했을 때 그런 블록을 만들고, Anthropic은 어느 쪽이든 검증할 수 없는
 signature를 가진 thinking 블록을 거부하기 때문입니다.
 
+서드파티 Anthropic 계열 프로바이더 — `api.anthropic.com`이 아니고 `claude_oauth` 풀도 아닌
+`kind = "anthropic"` 업스트림(MiniMax, Kimi, Zhipu 등) — 는 Anthropic이 발급하지 않은
+`signature`를 thinking 블록에 붙일 수 있습니다. shunt는 스트리밍 여부와 관계없이 클라이언트로 가는 응답에서 이
+`signature`를 프로바이더 `base_url`(끝의 `/` 제거)의 다이제스트를 담은 자체 envelope로 감쌉니다. URL 자체는 담지 않으므로 URL과 거기 포함된 자격 증명은 클라이언트에 노출되지 않습니다. 다만 다이제스트는 솔트 없는 고정값이라 추측을 확인하는 데 쓰일 수 있습니다. 잘 알려진 엔드포인트나 그 안에 넣은 약한 자격 증명처럼 `base_url` 전체를 추측할 수 있다면, 그 추측이 맞는지 다이제스트와 대조해 확인할 수 있습니다. 이후 턴이 같은 `base_url`의
+프로바이더로 돌아가면 shunt가 envelope를 풀어 원래 signature를 바이트 그대로 전달하므로, 그
+프로바이더의 extended thinking 연속 호출은 계속 동작합니다. Anthropic을 포함한 다른 곳으로 보내면
+envelope는 shunt가 생성한 값으로 취급되어 위와 같이 블록이 제거됩니다. 따라서 서드파티 Anthropic
+계열 프로바이더와 Anthropic 사이를 오가면 요청이 실패하는 대신 그 프로바이더의 thinking 블록이
+제거되고, 같은 프로바이더로 돌아가면 다시 복원됩니다. `api.anthropic.com`과 `claude_oauth` 풀의
+응답은 절대 감싸지 않습니다.
+
 | 인증 모드 | 자격 증명 | 사용 사례 |
 | :-- | :-- | :-- |
 | `passthrough` (기본값) | 호출자 본인의 `x-api-key` / `Authorization` | 투명 프록시 — 각 클라이언트가 자신의 키나 OAuth 토큰을 가져옴 |

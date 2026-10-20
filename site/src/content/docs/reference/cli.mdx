@@ -245,7 +245,27 @@ Run xAI's device-code OAuth flow and save its refreshable credential:
 
 ```bash
 shunt login xai
+shunt login xai --name <account-name>
 ```
+
+Without `--name` the credential lands in `~/.shunt/xai-auth.json` (override with
+`SHUNT_XAI_AUTH_FILE`). With `--name` it lands at `~/.shunt/accounts/xai/<account-name>.json` (0600;
+a store directory that shunt creates is made `0700`, but an existing directory keeps its own permissions;
+`SHUNT_XAI_ACCOUNTS_DIR` overrides the store) instead, so named logins never
+overwrite the single-account file. Reusing a name replaces its file. `--mode` and `--long-lived`
+are rejected, since xAI OAuth tokens are always refreshable; `--manual` is claude-only.
+
+Reference named accounts from a provider with `[[providers.grok.accounts]]` entries or
+`auth = { mode = "xai_oauth", accounts = [...] }`, or configure none to scan the whole store. With
+no configured accounts and an empty store, the provider falls back to the single-account file;
+once any named account exists, that file is no longer read. Both files use the same format, so
+with shunt stopped, create the store owner-only first and then move the login in:
+`install -d -m 700 ~/.shunt/accounts/xai && mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<account-name>.json`
+(the directory does not exist yet when you migrate from the single-account setup).
+
+xAI rotates the refresh token on every refresh, so the one-owner-per-refreshable-login rule above
+applies: never copy one credential file to two places or share it between two running shunt
+processes.
 
 ## `shunt login antigravity`
 
@@ -341,6 +361,8 @@ For an Anthropic provider with `auth = "claude_oauth"`, an account can use a nam
 | `CLAUDE_CREDENTIALS` | Alternate credentials file path for `shunt token` and refreshable `shunt login claude` import |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | Alternate shunt-managed Claude account-store directory |
 | `SHUNT_KIMI_ACCOUNTS_DIR` | Alternate shunt-managed Kimi Code account-store directory |
+| `SHUNT_XAI_AUTH_FILE` | Alternate credential file for `shunt login xai` without `--name` (default `~/.shunt/xai-auth.json`) |
+| `SHUNT_XAI_ACCOUNTS_DIR` | Alternate shunt-managed xAI account-store directory |
 | `SHUNT_ANTIGRAVITY_AUTH_FILE` | Alternate credential file for `shunt login antigravity` (default `~/.shunt/antigravity-auth.json`) |
 | `SHUNT_ANTIGRAVITY_ACCOUNTS_DIR` | Alternate shunt-managed Antigravity account-store directory |
 | Account-specific variable named by `token_env` | Setup token for an Anthropic `claude_oauth` pool entry; used verbatim |

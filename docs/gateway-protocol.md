@@ -234,6 +234,10 @@ of the Claude apps gateway superset. The relevant pieces:
   per-user policies, supports `ETag`/`304`, pushes the managed telemetry
   environment, and enforces `availableModels` on inference
   ([M-B note](gateway-managed-settings.md)).
+- **Claude Desktop bootstrap** — opt-in `GET /user/bootstrap` serves an
+  operator-supplied Desktop configuration template to entitled signed-in users
+  ([Desktop bootstrap note](gateway-desktop-bootstrap.md)). This is a Claude
+  Desktop contract, not part of the Claude Code gateway protocol captured here.
 - **`/v1/messages` + `count_tokens`** — [M1 — Messages ⇄ Responses
   translation](m1-responses-translation.md).
 - **`/v1/models` discovery** — [M3 — Model discovery](m3-discovery.md) (same wire contract,

@@ -19,6 +19,17 @@ Gemini・Cursor の各経路がそれぞれ生成します — ブロックと�
 signature を受け取らなかった場合にそうしたブロックを生成し、Anthropic は検証できない signature を
 持つ thinking ブロックをいずれにせよ拒否するからです。
 
+サードパーティの Anthropic 系プロバイダー — `api.anthropic.com` ではなく `claude_oauth` プールでも
+ない `kind = "anthropic"` の上流（MiniMax、Kimi、Zhipu など）— は、Anthropic が発行していない
+`signature` を thinking ブロックに付けることがあります。shunt はストリーミングかどうかにかかわらず、クライアントへ返す応答で
+その `signature` をプロバイダーの `base_url`（末尾の `/` を除く）のダイジェストを持つ独自の envelope で包みます。URL 自体は含まれないため、URL とそこに含まれる認証情報はクライアントに公開されません。ただしダイジェストはソルトのない固定値なので、推測の確認に使えます。よく知られたエンドポイントや、そこに埋め込まれた弱い認証情報のように `base_url` 全体を推測できるなら、その推測が正しいかをダイジェストと照合して確かめられます。後のターンが同じ
+`base_url` のプロバイダーに戻ると、shunt は envelope を解いて元の signature をバイト単位でそのまま
+転送するため、そのプロバイダーの extended thinking の継続は引き続き機能します。Anthropic を含む
+それ以外の宛先に送られた場合、envelope は shunt が生成した値として扱われ、上記のとおりブロックが
+取り除かれます。そのため、サードパーティの Anthropic 系プロバイダーと Anthropic を切り替えると、
+リクエストが失敗する代わりにそのプロバイダーの thinking ブロックが取り除かれ、同じプロバイダーに
+戻ると復元されます。`api.anthropic.com` と `claude_oauth` プールの応答が包まれることはありません。
+
 | 認証モード | 認証情報 | ユースケース |
 | :-- | :-- | :-- |
 | `passthrough`（デフォルト） | 呼び出し元自身の `x-api-key` / `Authorization` | 透過プロキシ — 各クライアントが自分のキーまたは OAuth トークンを持ち込む |

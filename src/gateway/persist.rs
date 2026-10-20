@@ -363,6 +363,7 @@ mod tests {
 
         let mut config = crate::config::Config::default();
         config.server.gateway = Some(crate::config::GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".into(),
             jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),

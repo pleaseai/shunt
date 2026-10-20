@@ -539,6 +539,7 @@ async fn admin_oidc_discovery_builds_authorization_redirect() {
 
 #[tokio::test]
 async fn admin_routes_are_absent_without_the_block() {
+    let _env = common::env_lock().await;
     if !can_bind_loopback() {
         return;
     }
@@ -1207,6 +1208,92 @@ async fn admin_pool_lists_kimi_oauth_accounts_read_only() {
         .expect("kimi_oauth provider is present in the pool listing");
     assert_eq!(section["auth"], "kimi_oauth");
     assert_eq!(section["accounts"][0]["name"], "kimi-primary");
+}
+
+#[tokio::test]
+async fn admin_pool_lists_xai_oauth_accounts_read_only() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_XAI_POOL", "ops:xai-pool-secret");
+    let mut config = admin_config("SHUNT_TEST_ADMIN_XAI_POOL");
+    let grok = config.providers.get_mut("grok").unwrap();
+    grok.accounts = vec![AccountConfig {
+        name: "xai-primary".to_string(),
+        token_env: Some("SHUNT_TEST_ADMIN_XAI_TOKEN".to_string()),
+        ..Default::default()
+    }];
+    vars.set("SHUNT_TEST_ADMIN_XAI_TOKEN", "xai-access-token");
+    let gateway = start(config).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/api/pool", gateway.base_url))
+        .header("x-shunt-admin-token", "xai-pool-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+    let section = providers
+        .iter()
+        .find(|provider| provider["provider"] == "grok")
+        .expect("xai_oauth provider is present in the pool listing");
+    assert_eq!(section["auth"], "xai_oauth");
+    assert_eq!(section["accounts"][0]["name"], "xai-primary");
+}
+
+/// The dashboard folds the Grok CLI login into the pooled account of the same
+/// xAI user, so the store listing must expose each account's user id — and
+/// never the token it was read from.
+#[tokio::test]
+async fn admin_lists_xai_store_accounts_with_their_user_id_and_no_tokens() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let dir = unique_dir();
+    vars.set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+    vars.set("SHUNT_TEST_ADMIN_XAI_LIST", "ops:xai-list-secret");
+    let access = format!(
+        "x.{}.y",
+        URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({"exp": 4_102_444_800_u64, "sub": "xai-user-1"}))
+                .unwrap()
+        )
+    );
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("personal.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "tokens": {"access_token": access, "refresh_token": "SECRET-XAI-REFRESH"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_XAI_LIST")).await;
+    let client = reqwest::Client::new();
+    let url = format!("{}/admin/api/accounts/xai", gateway.base_url);
+
+    let response = client.get(&url).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let response = client
+        .get(&url)
+        .header("x-shunt-admin-token", "xai-list-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = response.text().await.unwrap();
+    assert!(!text.contains(&access));
+    assert!(!text.contains("SECRET-XAI-REFRESH"));
+    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        body["accounts"],
+        serde_json::json!([{"name": "personal", "account_id": "xai-user-1"}])
+    );
 }
 
 /// The admin routing view must be byte-identical to the proxy's `/routes`.

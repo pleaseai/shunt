@@ -137,7 +137,7 @@ Deleting a store-managed account through the admin web surface (`DELETE /admin/a
 - Utilization expires at the earlier of its own observation-time cap or that window's reset. If only the observation cap has passed while that window's reset is still in the future, shunt clears that window's utilization and its timestamp but preserves that future reset as standalone metadata. Per-window status expires at the earlier of its own observation-time cap or the reset boundary captured when that status was observed; clearing status also clears its captured boundary. Later usage and reset-only updates cannot move a captured status boundary. A passed reset for that window clears that window's utilization and reset, and clears status when its captured boundary has also passed. A stamped aggregate status has its own lifetime and survives an unrelated window expiry; only the legacy unstamped aggregate follows window expiry.
 - A successful non-Fable response clears only the account-wide cooldown. A successful Fable response clears both the account-wide and Fable-only cooldowns.
 
-Credential-resolution failures cool an account for five minutes. Transport failures and upstream 5xx responses cool it for 30 seconds.
+Credential-resolution failures cool an account for five minutes. Upstream 5xx responses cool it for 30 seconds. A transport failure (no response: a dropped connection, a TLS record error) is resent to the same account once first, because it says nothing about the account; only when the resend also has a transport failure does the account cool for 30 seconds and the request rotate. Rotating at once would hand the request to the next candidate, which in a pool whose other accounts are quota-exhausted relays their `429` instead of the healthy account's answer.
 
 ## Usage-API reconciliation (opt-in)
 
@@ -175,6 +175,7 @@ shunt classifies the upstream response before streaming its body. It never retri
 | 401 from a `credentials` account | Force-refresh the credentials file even if its token has not expired, retry the same account once, then cool it for five minutes and rotate if it is still 401. |
 | 401 from a `token_env` or store-managed setup-token account | It cannot be refreshed; cool it for five minutes and rotate. |
 | 5xx | Cool the account for 30 seconds and rotate. |
+| Transport failure (no response: a dropped connection, a TLS record error) | Resend the same request to the same account once, including when it hits a throttle or refresh retry. Only a second consecutive transport failure cools the account for 30 seconds and rotates; a TTFB timeout is never resent and returns a gateway timeout. The resend is a full re-POST, so a request the upstream processed before the connection dropped can run twice. |
 | Other status | Relay immediately. |
 
 When attempts are exhausted after receiving upstream responses, shunt relays the **last upstream response body and status** rather than replacing it with a generic gateway error. If every account fails before any upstream response exists (for example, all credentials fail to resolve), shunt returns a gateway-owned upstream error.

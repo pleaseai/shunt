@@ -100,7 +100,16 @@ pub enum AuthMap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         accounts: Option<Vec<AccountSelection>>,
     },
-    XaiOauth {},
+    /// xAI subscription OAuth. Same `account`/`accounts` scope as `KimiOauth`,
+    /// absorbed by `absorb_oauth_scope`; omitting both scans the whole xAI store
+    /// (`~/.shunt/accounts/xai/`), and an empty store falls back to the legacy
+    /// `~/.shunt/xai-auth.json` (docs/m18-xai-multi-account.md).
+    XaiOauth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accounts: Option<Vec<AccountSelection>>,
+    },
     CursorOauth {},
     AntigravityOauth {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,7 +159,9 @@ impl UpstreamAuth {
             Self::Map(AuthMap::KimiOauth { account, accounts }) => {
                 absorb_oauth_scope(upstream, AuthMode::KimiOauth, account, accounts, provider)?;
             }
-            Self::Map(AuthMap::XaiOauth {}) => provider.auth = AuthMode::XaiOauth,
+            Self::Map(AuthMap::XaiOauth { account, accounts }) => {
+                absorb_oauth_scope(upstream, AuthMode::XaiOauth, account, accounts, provider)?;
+            }
             Self::Map(AuthMap::CursorOauth {}) => provider.auth = AuthMode::CursorOauth,
             Self::Map(AuthMap::AntigravityOauth { account, accounts }) => {
                 absorb_oauth_scope(

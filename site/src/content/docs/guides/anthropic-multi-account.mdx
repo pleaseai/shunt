@@ -211,7 +211,8 @@ The file is a best-effort cache, not a source of truth — quota is re-derived f
 | Plain 429 | Transient throttle: wait using numeric `retry-after` (default 1s, cap 300s), retry the **same** account once, then relay that retry response. |
 | 401 with `credentials` | Force-refresh, retry the same account once; if still 401, cooldown 5 minutes and rotate. |
 | 401 with `token_env` or a store-managed setup token | Cannot refresh: cooldown 5 minutes and rotate. |
-| 5xx or transport failure | Cooldown 30 seconds and rotate. |
+| 5xx | Cooldown 30 seconds and rotate. |
+| Transport failure (no response, such as a dropped connection or TLS error) | Resend to the **same** account once, including during a throttle or refresh retry; only a second transport failure cools down 30 seconds and rotates. A timeout is not resent. The resend is a full re-POST, so in rare cases the turn runs twice. |
 | Other status | Relay without failover. |
 
 Classification happens before the response body streams, so a mid-stream failure is never replayed. If the pool exhausts its attempts after receiving responses, the client gets the last real upstream status and body. If every account fails before any upstream response, shunt returns a gateway-owned error.
@@ -225,7 +226,7 @@ Anthropic binds the thinking blocks that Claude Sonnet 5.5 produces to the accou
 The pool is session-sticky, so a conversation normally stays on one account. It moves to another account in these cases:
 
 - The sticky account is near quota, cooled down, or disabled, so [proactive rotation](#selection-and-proactive-rotation) moves the session off it.
-- A response triggers a rotation under the [failover rules](#failover-rules): a quota 429, a 401 that a refresh does not fix (a setup token cannot be refreshed, so any 401 on one rotates), or a 5xx or transport failure.
+- A response triggers a rotation under the [failover rules](#failover-rules): a quota 429, a 401 that a refresh does not fix (a setup token cannot be refreshed, so any 401 on one rotates), or a 5xx, or a transport failure that repeats on the immediate resend.
 - The pool gains or loses a distinct account, for example a new `shunt login claude` store entry, which the pool picks up without a restart. The sticky account is chosen by hashing the session id over the pool's distinct accounts, so most existing sessions map to a different account.
 - The request has no `x-claude-code-session-id`, so it uses round-robin.
 

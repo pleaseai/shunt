@@ -263,6 +263,10 @@ Note that refresh grants mint tokens from the identity stored with the session a
 
 When [`[server.auth]`](/guides/shared-gateway/) and `[server.gateway]` are both configured, they compose: either a valid static client token or a valid gateway bearer grants access. This supports a staged migration without breaking existing clients.
 
+## Claude Desktop
+
+Claude Desktop can use the same login. Its bootstrap mode runs the device-code grant against shunt, which then serves the user's Desktop configuration from `GET /user/bootstrap`, so no CLI is needed on the device. Desktop sends no `client_id`, so the login endpoints accept requests without one (as well as `client_id=claude-code`; any other value is rejected). For those requests a rejected refresh token returns `400 {"error":"invalid_grant"}` instead of `401`. See [Connect Claude Desktop](/guides/connect-claude-desktop/#bootstrap-sign-in-device-code).
+
 ## What comes next
 
 Managed policy, `ETag` caching, telemetry environment push, inbound OTLP

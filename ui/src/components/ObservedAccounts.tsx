@@ -86,7 +86,7 @@ function atCap(
 
 function UsageCell({ row, state }: { row: AccountRow; state: string }): ReactElement {
   // Quota buckets, when present, replace the window bars: the pool's buckets
-  // (Antigravity) ahead of an observation's. The 5h/7d/Fable windows below
+  // (Antigravity, xAI) ahead of an observation's. The 5h/7d/Fable windows below
   // work the other way round: `foldObservation` replaces the pool's value with
   // the client's for every window the client reported, so a bar can show a
   // value the pool's cap check never read (hence `atCap`).
