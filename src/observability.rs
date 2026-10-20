@@ -100,6 +100,7 @@ use axum::http::StatusCode;
 use sentry::protocol::SpanStatus;
 use sentry::Level;
 
+use crate::client_attribution::ClientAttribution;
 use throttle::ThrottleDecision;
 
 /// Upper bound (in `char`s) on the model id exported to a span field or
@@ -185,6 +186,19 @@ fn sanitize_model_tag(model: &str) -> Cow<'_, str> {
 /// sanitized via [`sanitize_model_tag`] before export.
 pub(crate) fn record_requested_model(model: &str) {
     tracing::Span::current().record("gen_ai.request.model", sanitize_model_tag(model).as_ref());
+}
+
+/// Record the closed `client_kind`/`managed` attribution pair
+/// (`docs/otlp-client-attribution.md`) on the current span's
+/// `shunt.client_kind` and `shunt.managed` fields, so traces can be filtered
+/// exactly like the five per-request metric series. Both fields must be
+/// declared as `tracing::field::Empty` at span creation (see `proxy::post` /
+/// `codex_endpoint::serve`); the recorded values are fixed strings and a bool,
+/// never a raw header value.
+pub(crate) fn record_client_attribution(attribution: ClientAttribution) {
+    let span = tracing::Span::current();
+    span.record("shunt.client_kind", attribution.client_kind_str());
+    span.record("shunt.managed", attribution.managed);
 }
 
 /// Record the resolved upstream/provider and the upstream HTTP status on the

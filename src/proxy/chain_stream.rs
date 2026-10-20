@@ -305,9 +305,11 @@ fn is_terminal_frame(frame: &[u8]) -> bool {
 /// already name the winner, not the failed primary. The pending build
 /// resolves only the machine and the synthetic start; the keepalive wrapper
 /// covers the wait.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_winner(
     provider: &str,
     model: &str,
+    attribution: crate::client_attribution::ClientAttribution,
     header_latency_ms: f64,
     request_span: &tracing::Span,
     winner_slot: &std::sync::Arc<std::sync::Mutex<String>>,
@@ -317,6 +319,7 @@ async fn resolve_winner(
     crate::metrics::record_proxied_request(
         provider,
         model,
+        attribution,
         StatusCode::OK.as_u16(),
         header_latency_ms,
     );
@@ -490,6 +493,9 @@ pub(super) async fn forward_chain_stream(
     // `message_delta` carries the auto-mode classifier's answer, which only a
     // first-party relay produces (see `crate::proxy::safeguards`).
     let requested_safeguards = crate::proxy::safeguards::requested_types(body.json());
+    // The same: every sample this committed chain takes — each attempt's and
+    // the stream observer's — carries the turn's attribution.
+    let attribution = body.attribution();
     let max_request_bytes = state.config.server.limits.max_request_bytes;
     let first_route = routes
         .first()
@@ -816,6 +822,7 @@ pub(super) async fn forward_chain_stream(
                                     let (start, frames) = resolve_winner(
                                         &provider,
                                         &model,
+                                        attribution,
                                         headers_at
                                             .saturating_duration_since(attempt_started)
                                             .as_secs_f64()
@@ -857,6 +864,7 @@ pub(super) async fn forward_chain_stream(
                                     crate::metrics::record_proxied_request(
                                         &provider,
                                         &model,
+                                        attribution,
                                         status.as_u16(),
                                         attempt_started.elapsed().as_secs_f64() * 1000.0,
                                     );
@@ -971,6 +979,7 @@ pub(super) async fn forward_chain_stream(
             Protocol::Anthropic,
             winner_slot,
             winner_model_slot,
+            attribution,
             started_at,
             spend,
         )
@@ -1369,6 +1378,7 @@ mod tests {
             let mut resolution = Box::pin(super::resolve_winner(
                 &provider,
                 &model,
+                crate::client_attribution::ClientAttribution::UNATTRIBUTED,
                 0.0,
                 &span,
                 &provider_slot,

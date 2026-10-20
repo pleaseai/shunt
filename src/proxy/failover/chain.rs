@@ -81,6 +81,10 @@ pub(crate) struct ChainRequest<'a> {
     /// caller's, post-`check_inbound_auth`, or a judge call's stripped set.
     pub base_headers: &'a HeaderMap,
     pub inbound: &'a InboundContext,
+    /// Carries the `client_kind`/`managed` attribution every attempt's
+    /// `shunt.requests` sample is tagged with
+    /// ([`RequestBody::attribution`]): the caller's on a client turn, the
+    /// originating turn's `client_kind` with `managed = false` on a judge call.
     pub body: RequestBody,
     /// The advertised id, for the response stamp and the metric label.
     pub requested_model: &'a str,
@@ -137,6 +141,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
         .expect("route chains are non-empty after resolution")
         .clone();
     let primary_origin = primary_origin(&state, &routes);
+    let attribution = body.attribution();
     let mut body = Some(body);
     let mut remembered: Option<RememberedFailure> = None;
     for (index, route) in routes.into_iter().enumerate() {
@@ -201,6 +206,7 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                 caller,
                 &provider,
                 &target.model,
+                attribution,
                 status,
                 attempt_started_at.elapsed().as_secs_f64() * 1000.0,
             );

@@ -371,6 +371,9 @@ pub(super) struct HttpSendContext {
     pub(super) upstream_body: std::sync::Arc<Value>,
     pub(super) auth: AuthMode,
     pub(super) codex_quota_account: Option<crate::config::AccountConfig>,
+    /// The turn's `client_kind`/`managed` attribution, for the
+    /// `shunt.requests` sample [`http_events_stream`] takes in-stream.
+    pub(super) attribution: crate::client_attribution::ClientAttribution,
 }
 
 /// One streaming turn's upstream feed: drive the bounded-retry send inside the
@@ -436,6 +439,7 @@ pub(super) fn http_events_stream(
                                         crate::metrics::record_proxied_request(
                                             &context.route.provider,
                                             &context.route.model,
+                                            context.attribution,
                                             status.as_u16(),
                                             attempt_started.elapsed().as_secs_f64() * 1000.0,
                                         );
@@ -465,6 +469,7 @@ pub(super) fn http_events_stream(
                                 crate::metrics::record_proxied_request(
                                     &context.route.provider,
                                     &context.route.model,
+                                    context.attribution,
                                     StatusCode::OK.as_u16(),
                                     attempt_started.elapsed().as_secs_f64() * 1000.0,
                                 );
@@ -476,6 +481,7 @@ pub(super) fn http_events_stream(
                                 crate::metrics::record_proxied_request(
                                     &context.route.provider,
                                     &context.route.model,
+                                    context.attribution,
                                     status.as_u16(),
                                     attempt_started.elapsed().as_secs_f64() * 1000.0,
                                 );

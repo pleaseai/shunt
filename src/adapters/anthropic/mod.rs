@@ -26,6 +26,7 @@ mod auto_mode_classifier;
 mod deferral;
 mod model_rewrite;
 mod safeguards;
+mod sse_data;
 mod thinking;
 mod thinking_wrap;
 
@@ -1173,11 +1174,17 @@ async fn relay_response(
             alias,
             max_first_frame,
         );
-        // The signature wrap holds at most one incomplete frame, under the
-        // same ceiling, and sits inside the pings so they still land only
-        // between the frames it emits.
-        let stream =
-            thinking_wrap::wrap_signature_stream(stream, signing_key.clone(), max_first_frame);
+        // The signature wrap holds at most one unsigned incomplete frame, under
+        // the same ceiling, and withholds signature bytes under a separate
+        // one, also capped by the caller's: a signature can be far larger than
+        // a frame. It sits inside the pings so they still land only between
+        // the frames it emits.
+        let stream = thinking_wrap::wrap_signature_stream(
+            stream,
+            signing_key.clone(),
+            max_first_frame,
+            thinking_wrap::signature_ceiling(bounds.max_bytes),
+        );
         Body::from_stream(keepalive::with_pings(
             stream,
             Duration::from_secs(state.config.server.sse_keepalive_seconds),
@@ -1674,27 +1681,32 @@ pub(crate) async fn chain_attempt(
         };
     }
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
-    // The client streaming chain carries no cap of its own.
+    // The client streaming chain carries no cap of its own, so both the frame
+    // and the withheld-signature ceilings are the constants.
     let ceiling = model_rewrite::first_frame_ceiling(None);
     let frames = model_rewrite::rewrite_first_model_stream(upstream.bytes_stream(), alias, ceiling);
-    let frames =
-        thinking_wrap::wrap_signature_stream(frames, thinking_wrap::signing_key(provider), ceiling)
-            .map(|chunk| {
-                chunk.map_err(|error| {
-                    // A pre-terminal mid-relay body failure becomes the terminal
-                    // SSE error event (the chain records the failure), never a
-                    // silently truncated stream; once the terminal frame has
-                    // relayed, the chain ends the relay silently.
-                    serde_json::json!({
-                        "type": "error",
-                        "error": {
-                            "type": "api_error",
-                            "message": error.without_url().to_string()
-                        }
-                    })
-                })
+    let frames = thinking_wrap::wrap_signature_stream(
+        frames,
+        thinking_wrap::signing_key(provider),
+        ceiling,
+        thinking_wrap::signature_ceiling(None),
+    )
+    .map(|chunk| {
+        chunk.map_err(|error| {
+            // A pre-terminal mid-relay body failure becomes the terminal
+            // SSE error event (the chain records the failure), never a
+            // silently truncated stream; once the terminal frame has
+            // relayed, the chain ends the relay silently.
+            serde_json::json!({
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": error.without_url().to_string()
+                }
             })
-            .boxed();
+        })
+    })
+    .boxed();
     crate::proxy::chain_stream::Attempt::Winner {
         headers_at,
         relay: crate::proxy::chain_stream::RelayBuild::Ready {

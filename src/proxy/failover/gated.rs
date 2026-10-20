@@ -161,6 +161,7 @@ pub(super) async fn consult(
 pub(super) async fn finish(
     exit: GatedExit,
     started_at: Instant,
+    attribution: crate::client_attribution::ClientAttribution,
     requested_safeguards: &[String],
     max_body_bytes: usize,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
@@ -186,6 +187,7 @@ pub(super) async fn finish(
                     crate::stream_metrics::Protocol::Anthropic,
                     turn.provider,
                     turn.model,
+                    attribution,
                     started_at,
                 );
                 return Ok((turn.status, response));
@@ -204,6 +206,7 @@ pub(super) async fn finish(
                     // that is discarded rather than replayed.
                     spend: None,
                 },
+                attribution,
                 started_at,
                 requested_safeguards,
                 max_body_bytes,

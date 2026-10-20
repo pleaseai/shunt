@@ -72,6 +72,7 @@ pub(super) async fn forward(
     provider: String,
     pool_key: Option<String>,
     headers: HeaderMap,
+    attribution: crate::client_attribution::ClientAttribution,
     body: Bytes,
     started_at: Instant,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
@@ -92,5 +93,5 @@ pub(super) async fn forward(
         CodexOperation::AlphaSearch,
     )
     .await;
-    super::record_outcome(provider, LABEL.to_string(), started_at, result)
+    super::record_outcome(provider, LABEL.to_string(), attribution, started_at, result)
 }

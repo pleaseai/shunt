@@ -102,6 +102,7 @@ fn xai_turn(accounts: Vec<AccountConfig>, stream: bool) -> PoolForward {
         upstream_body: std::sync::Arc::new(json!({"input": []})),
         accounts_config: accounts,
         turn: TurnOptions {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             client_wants_stream: stream,
             thinking_enabled: false,
             tool_search_native: false,

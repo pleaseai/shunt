@@ -17,8 +17,8 @@ use tracing_subscriber::{
 };
 
 use super::{
-    error_chain, find_boundary, observe_response, ObserverState, Outcome, Protocol,
-    MAX_EVENT_BYTES, MAX_LAST_EVENT_BYTES,
+    error_chain, find_boundary, observe_response, ClientAttribution, ObserverState, Outcome,
+    Protocol, MAX_EVENT_BYTES, MAX_LAST_EVENT_BYTES,
 };
 
 fn state(protocol: Protocol) -> ObserverState {
@@ -27,6 +27,7 @@ fn state(protocol: Protocol) -> ObserverState {
         StatusCode::OK,
         std::sync::Arc::new(std::sync::Mutex::new("provider".to_string())),
         std::sync::Arc::new(std::sync::Mutex::new("model".to_string())),
+        ClientAttribution::UNATTRIBUTED,
         Instant::now(),
         tracing::Span::none(),
     )
@@ -85,6 +86,7 @@ fn ttft_records_on_a_split_first_frame() {
         StatusCode::OK,
         provider.clone(),
         Arc::new(Mutex::new("model".to_string())),
+        ClientAttribution::UNATTRIBUTED,
         Instant::now(),
         tracing::Span::none(),
     );
@@ -111,6 +113,7 @@ fn compact_ping_does_not_record_ttft_before_the_winner() {
         StatusCode::OK,
         provider.clone(),
         Arc::new(Mutex::new("model".to_string())),
+        ClientAttribution::UNATTRIBUTED,
         Instant::now(),
         tracing::Span::none(),
     );
@@ -159,6 +162,7 @@ fn a_comment_keepalive_does_not_record_ttft() {
             StatusCode::OK,
             provider.clone(),
             Arc::new(Mutex::new("model".to_string())),
+            ClientAttribution::UNATTRIBUTED,
             Instant::now(),
             tracing::Span::none(),
         );
@@ -234,6 +238,7 @@ fn keepalive_ping_does_not_record_ttft_before_the_winner() {
         StatusCode::OK,
         provider.clone(),
         Arc::new(Mutex::new("model".to_string())),
+        ClientAttribution::UNATTRIBUTED,
         Instant::now(),
         tracing::Span::none(),
     );
@@ -486,6 +491,7 @@ async fn wrapper_forwards_all_chunks_verbatim_and_preserves_headers() {
         Protocol::Anthropic,
         "provider".to_string(),
         "model".to_string(),
+        ClientAttribution::UNATTRIBUTED,
         Instant::now(),
     );
 
@@ -509,6 +515,7 @@ async fn dropping_body_mid_stream_exercises_client_disconnect_path() {
         Protocol::Anthropic,
         "provider".to_string(),
         "model".to_string(),
+        ClientAttribution::UNATTRIBUTED,
         Instant::now(),
     );
     let mut body_stream = wrapped.into_body().into_data_stream();
@@ -604,6 +611,7 @@ fn assert_finish_wiring(
                 protocol,
                 "provider".to_string(),
                 "model".to_string(),
+                ClientAttribution::UNATTRIBUTED,
                 Instant::now(),
             );
             drop(entered);
@@ -835,6 +843,7 @@ async fn non_sse_body_is_left_untouched() {
         Protocol::Responses,
         "provider".to_string(),
         "model".to_string(),
+        ClientAttribution::UNATTRIBUTED,
         Instant::now(),
     );
     assert_eq!(response.headers()["content-length"], "2");
@@ -910,6 +919,7 @@ fn a_failed_body_read_carries_its_message_and_the_observer_counters_into_the_eve
             Protocol::Anthropic,
             "provider".to_string(),
             "model".to_string(),
+            ClientAttribution::UNATTRIBUTED,
             Instant::now(),
         );
         drain(wrapped.into_body(), Drive::ErrorToEnd);
@@ -966,6 +976,7 @@ fn a_cut_before_any_body_chunk_reports_zero_counters_and_no_ttft() {
             Protocol::Anthropic,
             "provider".to_string(),
             "model".to_string(),
+            ClientAttribution::UNATTRIBUTED,
             Instant::now(),
         );
         drain(wrapped.into_body(), Drive::ToEnd);

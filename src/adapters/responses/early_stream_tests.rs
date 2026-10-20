@@ -527,6 +527,7 @@ async fn http_events_stream_maps_non_success_to_error_envelope() {
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(
         HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state,
             route: codex_route(),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -571,6 +572,7 @@ async fn http_events_stream_maps_ttfb_timeout_to_timeout_error_envelope() {
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(
         HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state,
             route: codex_route(),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -621,6 +623,7 @@ async fn http_events_stream_yields_parsed_events_from_streaming_upstream() {
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(
         HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state,
             route: codex_route(),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -803,6 +806,7 @@ async fn http_events_stream_turns_a_malformed_frame_into_a_terminal_error() {
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(
         HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state,
             route: codex_route(),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -895,6 +899,7 @@ async fn http_events_stream_redacts_the_upstream_url_from_transport_errors() {
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(
         HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state,
             route: codex_route(),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -944,6 +949,7 @@ async fn send_classified_defers_the_error_body_for_advance_statuses() {
     config.providers.get_mut("codex").unwrap().base_url = server.uri();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let context = HttpSendContext {
+        attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
         state,
         route: codex_route(),
         policy: crate::retry::RetryPolicy::DISABLED,
@@ -993,6 +999,7 @@ async fn send_classified_defers_the_envelope_for_terminal_statuses() {
     config.providers.get_mut("codex").unwrap().base_url = server.uri();
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let context = HttpSendContext {
+        attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
         state,
         route: codex_route(),
         policy: crate::retry::RetryPolicy::DISABLED,
@@ -1040,6 +1047,7 @@ async fn forward_http_commits_before_resolving_the_credential() {
         upstream_body: std::sync::Arc::new(json!({"input": []})),
         auth: crate::config::AuthMode::ApiKey,
         turn: TurnOptions {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             client_wants_stream: true,
             thinking_enabled: false,
             tool_search_native: false,
@@ -1079,6 +1087,7 @@ async fn http_events_stream_turns_a_credential_resolution_failure_into_a_termina
     let state = AppState::new(config, reqwest::Client::new()).unwrap();
     let error = own_error("credential resolution failed".to_string());
     let context = HttpSendContext {
+        attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
         state,
         route: codex_route(),
         policy: crate::retry::RetryPolicy::DISABLED,
@@ -1215,6 +1224,7 @@ async fn http_events_stream_relays_crlf_framed_upstream() {
     let upstream_body = std::sync::Arc::new(json!({"input": []}));
     let events = http_events_stream(
         HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state,
             route: codex_route(),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -1305,6 +1315,7 @@ async fn http_events_stream_records_the_sample_at_classification() {
     let state = state_with_provider("early-metrics-probe", server.uri());
     let events = http_events_stream(
         HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state,
             route: named_codex_route("early-metrics-probe"),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -1350,6 +1361,7 @@ async fn http_events_stream_records_the_terminal_status_of_a_classified_failure(
     let state = state_with_provider("early-metrics-fail-probe", server.uri());
     let events = http_events_stream(
         HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state,
             route: named_codex_route("early-metrics-fail-probe"),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -1387,6 +1399,7 @@ async fn http_events_stream_records_the_credential_resolution_failure_status() {
     let state = state_with_provider("early-metrics-cred-probe", "http://127.0.0.1:1".to_string());
     let events = http_events_stream(
         HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state,
             route: named_codex_route("early-metrics-cred-probe"),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -1492,6 +1505,7 @@ async fn a_terminal_status_defers_its_error_body_read() {
     let stalled = crate::testutil::StalledBody::start(StatusCode::BAD_REQUEST, "{", "}").await;
     let state = state_with_provider("stalled-400-send-probe", stalled.base_url.clone());
     let context = HttpSendContext {
+        attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
         state,
         route: named_codex_route("stalled-400-send-probe"),
         policy: crate::retry::RetryPolicy::DISABLED,
@@ -1540,6 +1554,7 @@ async fn a_stalled_terminal_error_body_never_delays_the_latency_sample() {
     let state = state_with_provider("stalled-400-metrics-probe", stalled.base_url.clone());
     let mut events = Box::pin(http_events_stream(
         HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state,
             route: named_codex_route("stalled-400-metrics-probe"),
             policy: crate::retry::RetryPolicy::DISABLED,

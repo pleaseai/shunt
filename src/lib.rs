@@ -10,6 +10,7 @@ pub mod auth;
 #[doc(hidden)]
 pub mod bench_support;
 pub mod blueprints;
+pub mod client_attribution;
 pub mod codex_analytics;
 pub mod codex_endpoint;
 pub(crate) mod compression;

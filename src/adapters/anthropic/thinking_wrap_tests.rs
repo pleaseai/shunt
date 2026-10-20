@@ -242,10 +242,24 @@ async fn collect(items: Vec<Item>, key: Option<&str>) -> String {
 }
 
 async fn collect_within(items: Vec<Item>, key: Option<&str>, max_frame: usize) -> String {
-    wrap_signature_stream(stream::iter(items), key.map(str::to_owned), max_frame)
-        .map(|item| String::from_utf8(item.unwrap().to_vec()).unwrap())
-        .collect()
-        .await
+    collect_bounded(items, key, max_frame, MAX_SIGNATURE_BYTES).await
+}
+
+async fn collect_bounded(
+    items: Vec<Item>,
+    key: Option<&str>,
+    max_frame: usize,
+    max_signature: usize,
+) -> String {
+    wrap_signature_stream(
+        stream::iter(items),
+        key.map(str::to_owned),
+        max_frame,
+        max_signature,
+    )
+    .map(|item| String::from_utf8(item.unwrap().to_vec()).unwrap())
+    .collect()
+    .await
 }
 
 const TEXT_DELTA: &str = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n";
@@ -318,6 +332,7 @@ async fn a_text_frame_is_forwarded_as_soon_as_it_completes() {
         upstream,
         Some(THIRD_PARTY.to_string()),
         64 * 1024,
+        MAX_SIGNATURE_BYTES,
     ));
     let first = wrapped
         .next()
@@ -409,6 +424,551 @@ async fn an_oversized_frame_boundary_is_found_wherever_the_chunks_cut_it() {
             "and framing resumes at its boundary"
         );
     }
+}
+
+// ------------------------------------------------------- signature bounds
+
+/// The ceiling composition, which no stream outcome distinguishes from an
+/// inverted `min`: both arms of the regression still bound the stream.
+#[test]
+fn the_signature_ceiling_takes_whichever_bound_is_smaller() {
+    assert_eq!(
+        signature_ceiling(None),
+        MAX_SIGNATURE_BYTES,
+        "the client path is bounded by the constant alone"
+    );
+    assert_eq!(
+        signature_ceiling(Some(1024)),
+        1024,
+        "a cap below the constant is the binding one"
+    );
+    assert_eq!(
+        signature_ceiling(Some(MAX_SIGNATURE_BYTES * 2)),
+        MAX_SIGNATURE_BYTES,
+        "a cap above the constant must not raise the ceiling"
+    );
+}
+
+/// Marks every raw signature in these tests, so a leak of any part of one is
+/// a substring the output must not contain. Base64 envelopes cannot carry it.
+const RAW: &str = "RAWSIG";
+
+/// A `max_frame` every frame here fits under except a signature frame built
+/// past it: a thinking start carries `"signature":""`, so a start that
+/// outgrew the bound and was skipped would fail closed on its own.
+const SMALL_FRAME: usize = 200;
+
+fn raw_signature(len: usize) -> String {
+    format!("{RAW}{}", "r".repeat(len))
+}
+
+fn thinking_start(index: u64) -> String {
+    format!("event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":{index},\"content_block\":{{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}}}\n\n")
+}
+
+fn signature_delta(index: u64, signature: &str) -> String {
+    format!("event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":{index},\"delta\":{{\"type\":\"signature_delta\",\"signature\":\"{signature}\"}}}}\n\n")
+}
+
+fn block_stop(index: u64) -> String {
+    format!("event: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":{index}}}\n\n")
+}
+
+/// `text` cut into chunks of `size` bytes (ASCII, so every cut is a char
+/// boundary).
+fn chunks_of(text: &str, size: usize) -> Vec<Item> {
+    text.as_bytes()
+        .chunks(size)
+        .map(|piece| chunk(std::str::from_utf8(piece).unwrap()))
+        .collect()
+}
+
+/// The stream failed closed: no raw signature byte left, the last thing out is
+/// the `error` event, it starts a frame of its own, and nothing follows it.
+fn assert_failed_closed(out: &str) {
+    assert!(!out.contains(RAW), "a raw signature leaked: {out}");
+    let at = out
+        .rfind("event: error\n")
+        .unwrap_or_else(|| panic!("no error event: {out}"));
+    assert!(
+        at == 0 || out[..at].ends_with("\n\n"),
+        "the error event is a frame of its own: {out}"
+    );
+    let error = &out[at..];
+    assert_eq!(
+        error.find("\n\n"),
+        Some(error.len() - 2),
+        "nothing follows the error event: {error}"
+    );
+    let event = frame_data(error).expect("the error event parses");
+    assert_eq!(event["type"], "error");
+    assert_eq!(event["error"]["type"], "api_error");
+}
+
+/// A signature frame past `max_frame` is held to its boundary rather than
+/// forwarded half-read, so however the chunks cut it, it leaves wrapped.
+/// Non-vacuity: forwarding it at `max_frame`, as an unsigned frame is, puts
+/// the raw signature in the output.
+#[tokio::test]
+async fn an_oversized_signature_frame_is_held_and_leaves_wrapped() {
+    let signature = raw_signature(300);
+    let body = format!(
+        "{}{}{}{TEXT_DELTA}",
+        thinking_start(0),
+        signature_delta(0, &signature),
+        block_stop(0)
+    );
+    let out = collect_bounded(chunks_of(&body, 50), Some(THIRD_PARTY), SMALL_FRAME, 4096).await;
+    assert!(!out.contains(RAW), "the raw signature never leaves: {out}");
+    assert_eq!(
+        signature_deltas(&out)
+            .into_iter()
+            .map(|(_, signature)| unwrap_upstream_signature(&signature))
+            .collect::<Vec<_>>(),
+        vec![Some((THIRD_PARTY.to_string(), signature))],
+        "exactly one wrapped signature_delta"
+    );
+    assert!(out.ends_with(TEXT_DELTA), "and the stream carries on");
+}
+
+/// An upstream that ends inside a signature frame leaves that frame
+/// incomplete; it is dropped rather than forwarded raw. A frame without a
+/// signature still goes out as it stands.
+/// Non-vacuity: forwarding every incomplete frame at the end, as unsigned
+/// ones are, puts the raw signature in the output.
+#[tokio::test]
+async fn an_unfinished_signature_frame_at_the_end_is_dropped() {
+    let unfinished = format!(
+        "{}{}",
+        thinking_start(0),
+        signature_delta(0, &raw_signature(20)).trim_end()
+    );
+    let out = collect(vec![chunk(&unfinished)], Some(THIRD_PARTY)).await;
+    assert_eq!(out, thinking_start(0), "only the complete start goes out");
+
+    let unsigned = TEXT_DELTA.trim_end();
+    let out = collect(vec![chunk(unsigned)], Some(THIRD_PARTY)).await;
+    assert_eq!(out, unsigned, "an unsigned incomplete frame is kept");
+}
+
+/// A signature frame larger than the signature bound cannot be held, and
+/// forwarding it would leak it: the stream fails closed instead.
+#[tokio::test]
+async fn a_signature_frame_past_the_signature_bound_fails_closed() {
+    let body = format!(
+        "{}{}{}{TEXT_DELTA}",
+        thinking_start(0),
+        signature_delta(0, &raw_signature(600)),
+        block_stop(0)
+    );
+    let out = collect_bounded(chunks_of(&body, 50), Some(THIRD_PARTY), SMALL_FRAME, 256).await;
+    assert_failed_closed(&out);
+    // The held frame is refused as it crosses the bound, not when it
+    // completes: here it never does, and the end of the stream would
+    // otherwise forward the incomplete frame as it stands.
+    let unfinished = format!(
+        "{}{}",
+        thinking_start(0),
+        signature_delta(0, &raw_signature(600)).trim_end()
+    );
+    let out = collect_bounded(
+        chunks_of(&unfinished, 50),
+        Some(THIRD_PARTY),
+        SMALL_FRAME,
+        256,
+    )
+    .await;
+    assert_failed_closed(&out);
+}
+
+/// Fragments each far below every bound still add up: the withheld total is
+/// what the signature bound caps.
+#[tokio::test]
+async fn withheld_fragments_past_the_signature_bound_fail_closed() {
+    let mut body = thinking_start(0);
+    for _ in 0..20 {
+        body.push_str(&signature_delta(0, &raw_signature(20)));
+    }
+    body.push_str(&block_stop(0));
+    body.push_str(TEXT_DELTA);
+    let out = collect_bounded(vec![chunk(&body)], Some(THIRD_PARTY), 64 * 1024, 256).await;
+    assert_failed_closed(&out);
+}
+
+/// A thinking start whose `"signature"` key lies past `max_frame` is already
+/// being forwarded unread when the key arrives; the key fails the stream
+/// closed before its value goes out, wherever the chunks cut it.
+#[tokio::test]
+async fn a_signature_key_in_a_skipped_frame_fails_closed() {
+    let start = format!(
+        "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"thinking\",\"thinking\":\"{}\",\"signature\":\"{}\"}}}}\n\n",
+        "x".repeat(300),
+        raw_signature(40)
+    );
+    let body = format!("{start}{}{TEXT_DELTA}", block_stop(0));
+    let key_at = body.find("\"signature\"").unwrap();
+    // The key deep in a later chunk, then straddling the edge after its
+    // opening quote, mid-word, and with only its closing quote left.
+    for cut in [key_at - 50, key_at + 1, key_at + 5, key_at + 10] {
+        let out = collect_bounded(
+            vec![
+                chunk(&body[..100]),
+                chunk(&body[100..cut]),
+                chunk(&body[cut..]),
+            ],
+            Some(THIRD_PARTY),
+            64,
+            4096,
+        )
+        .await;
+        assert!(
+            out.starts_with(&body[..100]),
+            "cut {cut}: the frame was being forwarded"
+        );
+        assert_failed_closed(&out);
+        assert!(
+            out.contains("past the gateway's frame bound"),
+            "cut {cut}: {out}"
+        );
+    }
+}
+
+/// The key watch looks for a JSON key, not the word. A text delta carrying
+/// prose, an escaped `\"signature\"`, and a text ending `\"signature` (whose
+/// own closing quote completes `"signature"` after a backslash) passes
+/// byte-identical and framing resumes. The mentions sit both in the bytes
+/// scanned when the frame outgrows `max_frame` and in the skipped bytes, cut
+/// at the chunk edge right after the backslash, mid-word, and with the
+/// backslash carried as the tail's oldest byte.
+#[tokio::test]
+async fn a_text_frame_mentioning_signature_is_not_mistaken_for_one() {
+    let text = format!(
+        "{} the signature is \\\"signature\\\" {} and it ends \\\"signature",
+        "x".repeat(40),
+        "y".repeat(200)
+    );
+    let big = format!(
+        "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\n"
+    );
+    let escaped_at = big.rfind("\\\"signature").unwrap();
+    let rest = format!(
+        "{}{}{}",
+        thinking_start(2),
+        signature_delta(2, "SIG"),
+        block_stop(2)
+    );
+    for cut in [escaped_at + 1, escaped_at + 6, escaped_at + 11] {
+        let out = collect_within(
+            vec![
+                chunk(&big[..200]),
+                chunk(&big[200..cut]),
+                chunk(&format!("{}{rest}", &big[cut..])),
+            ],
+            Some(THIRD_PARTY),
+            64,
+        )
+        .await;
+        assert!(
+            out.starts_with(&big),
+            "cut {cut}: the text frame passes verbatim"
+        );
+        assert!(!out.contains("event: error"), "cut {cut}: {out}");
+        assert_eq!(
+            signature_deltas(&out).len(),
+            1,
+            "cut {cut}: framing resumes"
+        );
+    }
+}
+
+/// A string value reading `signature` is not a key. An oversized non-thinking
+/// frame carrying `"mode":"signature"` passes byte-identical and framing
+/// resumes, wherever the chunks cut it, including right before the value's
+/// opening quote.
+#[tokio::test]
+async fn a_signature_string_value_is_not_mistaken_for_a_key() {
+    let big = format!(
+        "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\",\"input\":{{\"q\":\"{}\",\"mode\":\"signature\"}}}}}}\n\n",
+        "x".repeat(300)
+    );
+    let value_at = big.find(":\"signature\"").unwrap() + 1;
+    let rest = format!(
+        "{}{}{}",
+        thinking_start(2),
+        signature_delta(2, "SIG"),
+        block_stop(2)
+    );
+    for cut in [value_at - 3, value_at, value_at + 1, value_at + 6] {
+        let out = collect_within(
+            vec![
+                chunk(&big[..200]),
+                chunk(&big[200..cut]),
+                chunk(&format!("{}{rest}", &big[cut..])),
+            ],
+            Some(THIRD_PARTY),
+            64,
+        )
+        .await;
+        assert!(
+            out.starts_with(&big),
+            "cut {cut}: the tool_use frame passes verbatim"
+        );
+        assert!(!out.contains("event: error"), "cut {cut}: {out}");
+        assert_eq!(
+            signature_deltas(&out).len(),
+            1,
+            "cut {cut}: framing resumes"
+        );
+    }
+}
+
+/// A key right after a continuation line's `data:` is still a key: the colon
+/// before it is the SSE field's, not a JSON one. Judged by what precedes it,
+/// this oversized signature frame was skipped and its signature leaked raw.
+#[tokio::test]
+async fn a_signature_key_opening_a_data_continuation_is_held() {
+    let signature = raw_signature(300);
+    let split = format!(
+        "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"signature_delta\",\ndata:\"signature\":\"{signature}\"}}}}\n\n"
+    );
+    let body = format!("{}{split}{}{TEXT_DELTA}", thinking_start(0), block_stop(0));
+    let out = collect_bounded(chunks_of(&body, 50), Some(THIRD_PARTY), SMALL_FRAME, 4096).await;
+    assert!(!out.contains(RAW), "the raw signature never leaves: {out}");
+    assert_eq!(
+        signature_deltas(&out)
+            .into_iter()
+            .map(|(_, signature)| unwrap_upstream_signature(&signature))
+            .collect::<Vec<_>>(),
+        vec![Some((THIRD_PARTY.to_string(), signature))],
+        "held to its boundary and wrapped"
+    );
+}
+
+/// A string value reading `signature` is no key whatever precedes it — `,` in
+/// an array, a space after `:` — because no `:` follows it. Oversized
+/// tool_use frames carrying one pass byte-identical, wherever the chunks cut
+/// the match, including between its closing quote and the byte after it.
+#[tokio::test]
+async fn a_signature_value_after_a_comma_or_space_is_not_a_key() {
+    for value in [r#""tags":["a","signature"]"#, r#""mode": "signature""#] {
+        let big = format!(
+            "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\",\"input\":{{\"q\":\"{}\",{value}}}}}}}\n\n",
+            "x".repeat(300)
+        );
+        let match_at = big.rfind("\"signature\"").unwrap();
+        let rest = format!(
+            "{}{}{}",
+            thinking_start(2),
+            signature_delta(2, "SIG"),
+            block_stop(2)
+        );
+        for cut in [match_at, match_at + 5, match_at + 11, match_at + 12] {
+            let out = collect_within(
+                vec![
+                    chunk(&big[..200]),
+                    chunk(&big[200..cut]),
+                    chunk(&format!("{}{rest}", &big[cut..])),
+                ],
+                Some(THIRD_PARTY),
+                64,
+            )
+            .await;
+            assert!(
+                out.starts_with(&big),
+                "{value} cut {cut}: the tool_use frame passes verbatim"
+            );
+            assert!(!out.contains("event: error"), "{value} cut {cut}: {out}");
+            assert_eq!(
+                signature_deltas(&out).len(),
+                1,
+                "{value} cut {cut}: framing resumes"
+            );
+        }
+    }
+}
+
+/// A skipped frame's key with a space before its `:`, the `:` arriving only
+/// with the next chunk: the match is carried and decided then, and fails the
+/// stream closed before the value goes out.
+#[tokio::test]
+async fn a_skipped_key_whose_colon_arrives_next_chunk_fails_closed() {
+    let start = format!(
+        "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"thinking\",\"thinking\":\"{}\",\"signature\" :\"{}\"}}}}\n\n",
+        "x".repeat(300),
+        raw_signature(40)
+    );
+    let body = format!("{start}{}{TEXT_DELTA}", block_stop(0));
+    let key_at = body.find("\"signature\"").unwrap();
+    // After the closing quote, and after the space: the `:` is next chunk's.
+    for cut in [key_at + 11, key_at + 12] {
+        let out = collect_bounded(
+            vec![
+                chunk(&body[..100]),
+                chunk(&body[100..cut]),
+                chunk(&body[cut..]),
+            ],
+            Some(THIRD_PARTY),
+            64,
+            4096,
+        )
+        .await;
+        assert_failed_closed(&out);
+        let error = &out[out.rfind("event: error\n").unwrap()..];
+        assert_eq!(
+            frame_data(error).unwrap()["error"]["message"],
+            SKIPPED_KEY_MESSAGE,
+            "cut {cut}"
+        );
+    }
+}
+
+/// An empty `signature_delta` withholds nothing, so it opens no entry: empty
+/// deltas across many indices, never stopped, would otherwise grow the map
+/// with nothing counted against `max_signature`. The map is inspected
+/// directly because the output is the same either way. A real signature on
+/// another index still wraps.
+#[test]
+fn an_empty_signature_fragment_opens_no_entry() {
+    let mut wrap = SignatureWrap::new(THIRD_PARTY.to_string(), 64 * 1024, MAX_SIGNATURE_BYTES);
+    let mut empties = String::new();
+    for index in 0..50 {
+        empties.push_str(&signature_delta(index, ""));
+    }
+    assert_eq!(wrap.push(empties.as_bytes()), Vec::<u8>::new());
+    assert!(wrap.signatures.is_empty(), "{:?}", wrap.signatures.len());
+    assert_eq!(wrap.withheld, 0);
+
+    let real = format!(
+        "{}{}{}",
+        thinking_start(50),
+        signature_delta(50, "SIG"),
+        block_stop(50)
+    );
+    let out = String::from_utf8(wrap.push(real.as_bytes())).unwrap();
+    assert_eq!(
+        signature_deltas(&out)
+            .into_iter()
+            .map(|(index, signature)| (index, unwrap_upstream_signature(&signature)))
+            .collect::<Vec<_>>(),
+        vec![(50, Some((THIRD_PARTY.to_string(), "SIG".to_string())))]
+    );
+    // Stopping an index that withheld nothing leaves its stop untouched.
+    assert_eq!(
+        wrap.push(block_stop(0).as_bytes()),
+        block_stop(0).into_bytes()
+    );
+}
+
+/// Each open entry is charged against `max_signature`, not only its bytes:
+/// one-byte fragments across distinct indices, never stopped, would otherwise
+/// hold far more memory than the bound counts.
+/// Non-vacuity: charging bytes alone counts these 20 fragments as 20 bytes,
+/// far under the bound, and nothing fails.
+#[tokio::test]
+async fn open_signature_entries_are_charged_against_the_signature_bound() {
+    let mut body = String::new();
+    for index in 0..20 {
+        body.push_str(&signature_delta(index, "A"));
+    }
+    let out = collect_bounded(vec![chunk(&body)], Some(THIRD_PARTY), 64 * 1024, 1024).await;
+    assert_failed_closed(&out);
+}
+
+/// The twin: a block's charge is released when its signature is emitted, and
+/// it is charged once per block, not per fragment. The same 20 blocks under
+/// the same bound, each stopped before the next opens and fed in several
+/// fragments, all wrap.
+/// Non-vacuity: keeping the charge after the stop, or charging every
+/// fragment, takes the total past 1024 and fails the stream closed.
+#[tokio::test]
+async fn a_stopped_block_releases_its_signature_entry_charge() {
+    let mut body = String::new();
+    for index in 0..20 {
+        body.push_str(&thinking_start(index));
+        for _ in 0..20 {
+            body.push_str(&signature_delta(index, "A"));
+        }
+        body.push_str(&block_stop(index));
+    }
+    let out = collect_bounded(vec![chunk(&body)], Some(THIRD_PARTY), 64 * 1024, 1024).await;
+    assert!(!out.contains("event: error"), "nothing fails: {out}");
+    assert_eq!(
+        signature_deltas(&out)
+            .into_iter()
+            .map(|(index, signature)| (index, unwrap_upstream_signature(&signature)))
+            .collect::<Vec<_>>(),
+        (0..20)
+            .map(|index| (index, Some((THIRD_PARTY.to_string(), "A".repeat(20)))))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A frame held only because its match was undecided as it crossed
+/// `max_frame` is released once the next bytes show the match to be a value:
+/// forwarded and skipped like any unsigned frame, not held to its boundary
+/// and failed closed when it outgrows `max_signature`.
+#[tokio::test]
+async fn a_provisional_hold_is_released_when_the_match_proves_a_value() {
+    let big = format!(
+        "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\",\"input\":{{\"q\":\"{}\",\"mode\":\"signature\",\"more\":\"{}\"}}}}}}\n\n",
+        "x".repeat(50),
+        "y".repeat(400)
+    );
+    let match_at = big.find("\"signature\"").unwrap();
+    let rest = format!(
+        "{}{}{}",
+        thinking_start(2),
+        signature_delta(2, "SIG"),
+        block_stop(2)
+    );
+    // The cut leaves the first chunk under `max_signature`, so only a hold
+    // kept past the match being decided can reach it.
+    assert!(match_at + 13 < 256);
+    let n = big.len();
+    // Right after the value's closing quote (undecided), and two bytes on.
+    for cut in [match_at + 11, match_at + 13] {
+        let out = collect_bounded(
+            vec![
+                chunk(&big[..cut]),
+                // Past `max_signature`, still short of the boundary.
+                chunk(&big[cut..n - 2]),
+                chunk(&format!("{}{rest}", &big[n - 2..])),
+            ],
+            Some(THIRD_PARTY),
+            64,
+            256,
+        )
+        .await;
+        assert!(
+            out.starts_with(&big),
+            "cut {cut}: the tool_use frame passes verbatim"
+        );
+        assert!(!out.contains("event: error"), "cut {cut}: {out}");
+        assert_eq!(
+            signature_deltas(&out).len(),
+            1,
+            "cut {cut}: framing resumes"
+        );
+    }
+}
+
+/// An event whose JSON spans two `data:` lines is valid SSE; read line by
+/// line its signature would not parse and would pass through raw.
+#[tokio::test]
+async fn a_signature_delta_split_over_data_lines_is_wrapped() {
+    let split = format!(
+        "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\ndata: \"delta\":{{\"type\":\"signature_delta\",\"signature\":\"{RAW}\"}}}}\n\n"
+    );
+    let body = format!("{}{split}{}", thinking_start(0), block_stop(0));
+    let out = collect(vec![chunk(&body)], Some(THIRD_PARTY)).await;
+    assert!(!out.contains(RAW), "{out}");
+    assert_eq!(
+        signature_deltas(&out)
+            .into_iter()
+            .map(|(_, signature)| unwrap_upstream_signature(&signature))
+            .collect::<Vec<_>>(),
+        vec![Some((THIRD_PARTY.to_string(), RAW.to_string()))]
+    );
 }
 
 // ------------------------------------------------------------ relay_response
@@ -824,19 +1384,28 @@ async fn chain_attempt_wraps_a_third_party_winning_stream() {
 }
 
 /// `forward_kimi_oauth` is a third-party signing host too: its own envelope
-/// comes back as the original signature, a foreign one is dropped. A
-/// `token_env` account needs no credential file or network.
+/// comes back as the original signature, a foreign one is dropped. The
+/// account reads an unexpired token from its own credential file, so the test
+/// needs no network and mutates no process environment, which a concurrent
+/// lib test reading an unrelated variable could otherwise observe (issue #788).
 #[tokio::test]
 async fn kimi_oauth_restores_its_own_envelope_and_drops_a_foreign_one() {
     let _env_lock = crate::config::test_env_lock();
     let upstream = mock_messages("application/json", r#"{"content":[]}"#).await;
     let base = upstream.uri();
-    let env = format!("SHUNT_THINKING_WRAP_KIMI_TOKEN_{}", std::process::id());
-    std::env::set_var(&env, "kimi-token");
+    let credentials = std::env::temp_dir().join(format!(
+        "shunt-thinking-wrap-{}-kimi.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &credentials,
+        r#"{"kimiOauth":{"accessToken":"kimi-token","expiresAt":4000000000000},"deviceId":"test-device"}"#,
+    )
+    .unwrap();
     let mut kimi = provider(&base, AuthMode::KimiOauth);
     kimi.accounts = vec![crate::config::AccountConfig {
         name: "acct".to_string(),
-        token_env: Some(env),
+        credentials: Some(credentials.display().to_string()),
         ..Default::default()
     }];
     let state = chain_state("kimi", kimi);
@@ -877,6 +1446,7 @@ async fn kimi_oauth_restores_its_own_envelope_and_drops_a_foreign_one() {
     let foreign = wrap_upstream_signature(&key_of("https://other.example"), "other-sig");
     send(mixed_transcript(&foreign)).await;
     let content = last_received(&upstream).await["messages"][1]["content"].clone();
+    let _ = std::fs::remove_file(&credentials);
     assert_eq!(content[0]["signature"], "genuine");
     assert_eq!(content[1]["type"], "text");
 }

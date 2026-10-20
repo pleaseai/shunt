@@ -260,6 +260,7 @@ async fn a_client_drop_mid_stream_bills_the_delivered_floor() {
         Protocol::Anthropic,
         Arc::default(),
         Arc::default(),
+        crate::client_attribution::ClientAttribution::UNATTRIBUTED,
         Instant::now(),
         Some(tap.clone()),
     );

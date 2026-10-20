@@ -190,11 +190,11 @@ Both metric sinks export the same low-cardinality series:
 
 | Series | Type | Attributes | Meaning |
 | :-- | :-- | :-- | :-- |
-| `shunt.requests` | Counter | `provider`, `model`, `http.response.status_code` | Inference requests; token-count requests are excluded. |
-| `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code` | Time to response headers for streams and full latency for non-streaming responses; the committed streaming responses sample from dispatch to attempt classification, since their headers commit before the upstream responds. |
-| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Time from request start to the first complete non-keepalive SSE frame. |
-| `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | Exactly one stream result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
-| `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming usage for `input`, `output`, `cache_read`, or `cache_creation`; non-streaming usage is not recorded. |
+| `shunt.requests` | Counter | `provider`, `model`, `http.response.status_code`, `caller`, `client_kind`, `managed` | Inference requests; token-count requests are excluded. |
+| `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code`, `caller`, `client_kind`, `managed` | Time to response headers for streams and full latency for non-streaming responses; the committed streaming responses sample from dispatch to attempt classification, since their headers commit before the upstream responds. |
+| `shunt.ttft` | Histogram (ms) | `provider`, `model`, `client_kind`, `managed` | Time from request start to the first complete non-keepalive SSE frame. |
+| `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome`, `client_kind`, `managed` | Exactly one stream result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
+| `shunt.tokens` | Counter | `provider`, `model`, `kind`, `client_kind`, `managed` | Last reported streaming usage for `input`, `output`, `cache_read`, or `cache_creation`; non-streaming usage is not recorded. |
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation `hit` or full-input `fallback`. |
 | `shunt.codex_ws_overflow` | Counter | `provider`, `outcome` | Codex WebSocket dedicated overflow connection `opened` or ceiling-`refused` (issue #248). |
 | `shunt.upstream_retries` | Counter | `provider`, `reason` | Bounded transient retries. |
@@ -204,6 +204,27 @@ Both metric sinks export the same low-cardinality series:
 | `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, non-stale accounts for `5h`, `7d`, or `7d_oi`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Account rotations and pool exhaustion by low-cardinality cause. |
 | `shunt.pool.reprobes` | Counter | `provider` | Reprobes committed at the first HTTP dispatch for stale near-quota Codex/ChatGPT accounts; WebSocket-enabled providers count inbound HTTP probes only. |
+
+The five per-request series above carry two extra attributes: `client_kind` is
+`claude-code`, `codex`, or `other`, derived from the request's own client
+headers (`x-app`, `originator`, `user-agent`; the raw value is never exported),
+and `managed` is `true` only when the request authenticated with a
+gateway-issued JWT — the credential that also makes a client eligible for the
+pushed `OTEL_*` environment. Together they separate shunt's server-derived
+series from a client's own `claude_code.*` OTLP export, so a dashboard can take
+`claude_code.*` where it exists and `shunt.*{managed="false"}` everywhere else
+without double counting; see [`otlp-client-attribution.md`](otlp-client-attribution.md).
+That filter assumes the backend receives the managed clients' `claude_code.*`
+metrics, relayed through a `[server.gateway.telemetry].forward_to` destination
+with `metrics` on or exported by the clients directly. When it does not, read
+`shunt.*` across both `managed` values instead.
+A judge call a `[models.router]` entry makes (`caller="router"`) carries the
+originating turn's `client_kind` but is always `managed="false"`: it is shunt's
+own traffic, which no client exporter reports. The inbound Codex endpoint
+authenticates only `[server.auth]`, so its requests are always
+`managed="false"`. The same two values are recorded on the request span as
+`shunt.client_kind` and `shunt.managed`. An inbound Codex WebSocket turn has no
+request span, so its attribution appears on the metrics only.
 
 **Routing precedence** (`src/routing.rs`): matching `[models.upstream_model]` entry → exact
 `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`. A model

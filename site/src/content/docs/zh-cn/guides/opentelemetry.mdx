@@ -49,11 +49,11 @@ authorization = "Bearer <token>"
 
 | 序列 | 类型 | 属性 | 含义 |
 | :-- | :-- | :-- | :-- |
-| `shunt.requests` | 计数器 | `provider`, `model`, `http.response.status_code`, `caller` | 代理的推理请求。`caller` 对入站流量为 `client`，对 [`[models.router]`](/zh-cn/reference/configuration/) 条目代表调用方发起的裁判调用为 `router`。 |
-| `shunt.latency` | 直方图(ms) | `provider`, `model`, `http.response.status_code`, `caller` | 流式响应为到 header 的延迟；其他响应为完整延迟。提交式流式响应因 header 在上游响应前提交，测量从分发到尝试分类的时间。 |
-| `shunt.ttft` | 直方图(ms) | `provider`, `model` | 从请求开始到第一个完整的非保活 SSE 帧的时间。 |
-| `shunt.stream_outcome` | 计数器 | `provider`, `model`, `outcome` | 每个 SSE 记录一个最终结果：`completed`、`error_event`、`upstream_cut` 或 `client_disconnect`。 |
-| `shunt.tokens` | 计数器 | `provider`, `model`, `kind` | 最后报告的流式 token 用量（`input`、`output`、`cache_read`、`cache_creation`）；不记录非流式用量。 |
+| `shunt.requests` | 计数器 | `provider`, `model`, `http.response.status_code`, `caller`, `client_kind`, `managed` | 代理的推理请求。`caller` 对入站流量为 `client`，对 [`[models.router]`](/zh-cn/reference/configuration/) 条目代表调用方发起的裁判调用为 `router`。 |
+| `shunt.latency` | 直方图(ms) | `provider`, `model`, `http.response.status_code`, `caller`, `client_kind`, `managed` | 流式响应为到 header 的延迟；其他响应为完整延迟。提交式流式响应因 header 在上游响应前提交，测量从分发到尝试分类的时间。 |
+| `shunt.ttft` | 直方图(ms) | `provider`, `model`, `client_kind`, `managed` | 从请求开始到第一个完整的非保活 SSE 帧的时间。 |
+| `shunt.stream_outcome` | 计数器 | `provider`, `model`, `outcome`, `client_kind`, `managed` | 每个 SSE 记录一个最终结果：`completed`、`error_event`、`upstream_cut` 或 `client_disconnect`。 |
+| `shunt.tokens` | 计数器 | `provider`, `model`, `kind`, `client_kind`, `managed` | 最后报告的流式 token 用量（`input`、`output`、`cache_read`、`cache_creation`）；不记录非流式用量。 |
 | `shunt.codex_continuation` | 计数器 | `provider`, `outcome` | Codex WebSocket continuation 的 hit 或 fallback。 |
 | `shunt.codex_ws_overflow` | 计数器 | `provider`, `outcome` | 并发 turn 使用专用 overflow 连接时记录 `opened`，达到连接上限被拒绝时记录 `refused`（issue #248）。 |
 | `shunt.codex_client_events` | 计数器 | `event` | 按净化后的事件名称统计 Codex CLI 分析事件；payload 和属性会被丢弃。 |
@@ -70,6 +70,8 @@ authorization = "Bearer <token>"
 | `shunt.pool.reprobes` | 计数器 | `provider` | 在陈旧近配额 Codex/ChatGPT 账户的首次 HTTP 发送时提交的重新探测；启用 WebSocket 的提供方只统计 inbound HTTP 探测。 |
 | `shunt.store.write_failures` | 计数器 | `subsystem` | 对可选 [`[store]`](/zh-cn/reference/configuration/#store可选) 的写入失败,按 `subsystem` 统计:`pool`(write-behind 刷新)、`spend` 或 `gateway`(token 端点)。失败的池刷新会在下一个 15 秒周期重试,但若本进程丢失了存储 hold,池刷新会停止。失败的支出写入会报告给管理端调用方,失败的 token 端点写入会报告给客户端;后台网关刷新失败没有调用方,只记录日志。 |
 | `shunt.upstream.status` | 仪表 | `provider` | 观测到的 [`[server.status]`](/reference/configuration/#serverstatus-optional) Statuspage severity：`0` none、`1` minor、`2` major、`3` critical。当前处于 `unknown`（无信号）状态的 provider 不会以 `0` 上报，而是从该序列中完全省略。 |
+
+这五个按请求统计的序列会额外携带两个属性。`client_kind` 从请求自身的客户端 header(`x-app`、`originator`、`user-agent`)读取，取值为 `claude-code`、`codex` 或 `other`；原始 header 值绝不会被导出。`managed` 仅在请求使用网关签发的 JWT 完成认证时为 `true`，而正是这个凭据让客户端有资格接收下发的 `OTEL_*` 环境。两者结合即可把 shunt 在服务端派生的序列与网关模式客户端自行导出的 `claude_code.*` 区分开来：仪表盘可以在有 `claude_code.*` 的地方取它，其余地方取 `shunt.*{managed="false"}`，从而避免重复计数。这个过滤条件的前提是后端确实收到了受管客户端的 `claude_code.*` 指标，无论是经由开启了 `metrics` 的 `[server.gateway.telemetry].forward_to` 目的地中继而来，还是由客户端直接导出；如果没有收到，应不区分 `managed` 取值，读取全部 `shunt.*`。裁判调用(`caller="router"`)沿用发起它的那一轮的 `client_kind`，但 `managed` 始终为 `"false"`：它是 shunt 自身的流量，任何客户端导出器都不会上报。入站 Codex 端点只接受 `[server.auth]` 凭据，因此它的请求也始终为 `managed="false"`。同样的两个值也会以 `shunt.client_kind` 和 `shunt.managed` 记录在请求 span 上。入站 Codex WebSocket 轮次没有请求 span，因此它的归属信息只出现在指标上。
 
 ## 隐私
 
