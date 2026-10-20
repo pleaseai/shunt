@@ -46,7 +46,8 @@ client's, the duplicate becomes real.
    | `client_kind` | `claude-code`, `codex`, `other` |
    | `managed` | `true`, `false` |
 
-   `client_kind` is classified from request headers, and the raw header value is never
+   `client_kind` is classified from request headers (values and user-agent prefixes match
+   case-insensitively), and the raw header value is never
    exported:
 
    - `x-app: cli`, or a `user-agent` starting with `claude-cli/` → `claude-code`

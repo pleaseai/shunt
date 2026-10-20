@@ -77,16 +77,23 @@ pub fn classify_client(headers: &HeaderMap) -> ClientKind {
     let is_claude_code = headers
         .get("x-app")
         .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"cli"))
-        || user_agent.is_some_and(|agent| agent.starts_with(b"claude-cli/"));
+        || user_agent.is_some_and(|agent| starts_with_ignore_case(agent, b"claude-cli/"));
     if is_claude_code {
         return ClientKind::ClaudeCode;
     }
     if headers.contains_key("originator")
-        || user_agent.is_some_and(|agent| agent.starts_with(b"codex_"))
+        || user_agent.is_some_and(|agent| starts_with_ignore_case(agent, b"codex_"))
     {
         return ClientKind::Codex;
     }
     ClientKind::Other
+}
+
+/// A user-agent product token is matched case-insensitively, like `x-app`.
+fn starts_with_ignore_case(value: &[u8], prefix: &[u8]) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
 #[cfg(test)]
@@ -133,6 +140,18 @@ mod tests {
     fn codex_user_agent_is_codex() {
         assert_eq!(
             classify_client(&headers(&[("user-agent", "codex_cli_rs/0.55.0")])),
+            ClientKind::Codex
+        );
+    }
+
+    #[test]
+    fn user_agent_prefixes_match_case_insensitively() {
+        assert_eq!(
+            classify_client(&headers(&[("user-agent", "Claude-CLI/2.1.0")])),
+            ClientKind::ClaudeCode
+        );
+        assert_eq!(
+            classify_client(&headers(&[("user-agent", "Codex_CLI_rs/0.55.0")])),
             ClientKind::Codex
         );
     }
