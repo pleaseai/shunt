@@ -160,20 +160,32 @@ async fn both_engines_migrate_to_the_same_tables_and_columns() {
     }
 }
 
-/// The PostgreSQL arm reads its URL only while holding `CONFIG_ENV_LOCK`, so
-/// a reader started while the lock is held cannot finish until it is released.
+/// The PostgreSQL arm reads its URL only after acquiring `CONFIG_ENV_LOCK`:
+/// a reader started while the lock is held sees the value written just before
+/// the lock is released, not the one present when it started.
 #[cfg(feature = "store-postgres")]
 #[test]
 fn postgres_test_url_reads_under_the_config_env_lock() {
+    const URL: &str = "SHUNT_TEST_CONTRACT_LOCK_PROBE_URL";
+    const REQUIRED: &str = "SHUNT_TEST_CONTRACT_LOCK_PROBE_REQUIRED";
     let lock = crate::config::CONFIG_ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let reader = std::thread::spawn(super::postgres::test_url);
+    std::env::set_var(URL, "before-lock-release");
+    let reader = std::thread::spawn(|| super::postgres::read_test_url(URL, REQUIRED));
+    // Long enough for a reader that skips the lock, or takes it only after
+    // reading, to have read the first value.
     std::thread::sleep(std::time::Duration::from_millis(100));
-    assert!(
-        !reader.is_finished(),
-        "test_url read the environment without CONFIG_ENV_LOCK"
-    );
+    std::env::set_var(URL, "after-lock-release");
     drop(lock);
-    reader.join().expect("test_url");
+    let read = reader.join().expect("read_test_url");
+    let _lock = crate::config::CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::env::remove_var(URL);
+    assert_eq!(
+        read.as_deref(),
+        Some("after-lock-release"),
+        "test_url read the environment before acquiring CONFIG_ENV_LOCK"
+    );
 }

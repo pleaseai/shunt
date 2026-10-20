@@ -86,21 +86,27 @@ pub(crate) mod postgres {
     /// The configured test URL, `None` (after printing why) when the arm
     /// should be skipped. Panics when the URL is required but unset.
     ///
-    /// Reads under `CONFIG_ENV_LOCK` because tests in this binary write the
-    /// environment under it, and `setenv` may reallocate `environ` beneath an
+    /// Reads under `CONFIG_ENV_LOCK` so it cannot race the tests that write
+    /// the environment under it: `setenv` may reallocate `environ` beneath an
     /// unlocked reader. The guard drops on return, before `harness` awaits.
-    pub(super) fn test_url() -> Option<String> {
+    fn test_url() -> Option<String> {
+        read_test_url(URL_VAR, REQUIRED_VAR)
+    }
+
+    /// [`test_url`] over caller-chosen variable names, so a test can drive
+    /// the read through variables no other test uses.
+    pub(super) fn read_test_url(url_var: &str, required_var: &str) -> Option<String> {
         let _lock = crate::config::CONFIG_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match std::env::var(URL_VAR) {
+        match std::env::var(url_var) {
             Ok(url) if !url.trim().is_empty() => Some(url),
             _ => {
                 assert!(
-                    std::env::var(REQUIRED_VAR).as_deref() != Ok("1"),
-                    "{REQUIRED_VAR}=1 but {URL_VAR} is unset"
+                    std::env::var(required_var).as_deref() != Ok("1"),
+                    "{required_var}=1 but {url_var} is unset"
                 );
-                println!("skipped: {URL_VAR} unset");
+                println!("skipped: {url_var} unset");
                 None
             }
         }
