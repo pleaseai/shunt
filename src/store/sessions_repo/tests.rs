@@ -338,7 +338,8 @@ store_contract_test!(
 
                 // Only COMMIT gets the short bound, so a slow BEGIN or INSERT on
                 // a loaded runner cannot time out first.
-                let bound = crate::store::db::set_commit_timeout(Duration::from_millis(300));
+                let bound =
+                    crate::store::db::set_round_trip_timeout("COMMIT", Duration::from_millis(300));
                 let error = apply_diff(&store, &diff(&HashMap::new(), &written))
                     .await
                     .unwrap_err();

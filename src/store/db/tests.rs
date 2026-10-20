@@ -3,10 +3,10 @@ use crate::store::error::to_i64;
 use crate::store::test_support::{sqlite_config, TempDir};
 use crate::store::{Mode, Store};
 
-/// A bound [`super::set_io_timeout`] or [`super::set_commit_timeout`] put in
-/// place: the timeout, and whether it covers COMMIT alone.
+/// A bound [`super::set_io_timeout`] or [`super::set_round_trip_timeout`] put
+/// in place: the timeout, and the one kind of round trip it covers (`None`: all).
 #[cfg(feature = "store-postgres")]
-type IoTimeoutOverride = Option<(std::time::Duration, bool)>;
+type IoTimeoutOverride = Option<(std::time::Duration, Option<&'static str>)>;
 
 #[cfg(feature = "store-postgres")]
 thread_local! {
@@ -16,7 +16,7 @@ thread_local! {
 #[cfg(feature = "store-postgres")]
 pub(super) fn io_timeout_override(what: &str) -> Option<std::time::Duration> {
     match IO_TIMEOUT.with(std::cell::Cell::get) {
-        Some((timeout, commit_only)) if !commit_only || what == "COMMIT" => Some(timeout),
+        Some((timeout, only)) if only.is_none_or(|only| only == what) => Some(timeout),
         _ => None,
     }
 }
@@ -31,9 +31,9 @@ pub(crate) struct IoTimeoutGuard {
 
 #[cfg(feature = "store-postgres")]
 impl IoTimeoutGuard {
-    pub(super) fn install(timeout: std::time::Duration, commit_only: bool) -> Self {
+    pub(super) fn install(timeout: std::time::Duration, only: Option<&'static str>) -> Self {
         Self {
-            previous: IO_TIMEOUT.with(|cell| cell.replace(Some((timeout, commit_only)))),
+            previous: IO_TIMEOUT.with(|cell| cell.replace(Some((timeout, only)))),
         }
     }
 }
@@ -42,44 +42,6 @@ impl IoTimeoutGuard {
 impl Drop for IoTimeoutGuard {
     fn drop(&mut self) {
         IO_TIMEOUT.with(|cell| cell.set(self.previous));
-    }
-}
-
-#[cfg(feature = "store-postgres")]
-static RELEASE_TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Process-wide because the release hook runs in a task on any thread.
-#[cfg(feature = "store-postgres")]
-pub(super) fn release_timeout_override() -> Option<std::time::Duration> {
-    match RELEASE_TIMEOUT_MS.load(std::sync::atomic::Ordering::SeqCst) {
-        0 => None,
-        ms => Some(std::time::Duration::from_millis(ms)),
-    }
-}
-
-/// Replaces the release bound until the guard drops, panicking tests included.
-#[cfg(feature = "store-postgres")]
-#[must_use = "the bound is restored when the guard drops"]
-struct ReleaseTimeoutGuard {
-    previous: u64,
-}
-
-#[cfg(feature = "store-postgres")]
-impl ReleaseTimeoutGuard {
-    fn install(timeout: std::time::Duration) -> Self {
-        let ms = u64::try_from(timeout.as_millis())
-            .unwrap_or(u64::MAX)
-            .max(1);
-        Self {
-            previous: RELEASE_TIMEOUT_MS.swap(ms, std::sync::atomic::Ordering::SeqCst),
-        }
-    }
-}
-
-#[cfg(feature = "store-postgres")]
-impl Drop for ReleaseTimeoutGuard {
-    fn drop(&mut self) {
-        RELEASE_TIMEOUT_MS.store(self.previous, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -290,19 +252,22 @@ crate::store::contract::store_contract_test!(
         if let Db::Postgres(pool) = store.db() {
             use std::time::Duration;
             let _bound = super::set_io_timeout(Duration::from_millis(300));
-            let _release_bound = ReleaseTimeoutGuard::install(Duration::from_millis(300));
             let mut tx = store.db().begin().await.unwrap();
             let before = pool.size();
             let outcome = tx.fetch_optional("SELECT pg_sleep(3)", &[]).await;
             assert!(outcome.is_err());
             // The abandoned transaction neither waits out another bound nor
-            // commits.
+            // commits, and its connection leaves the pool with it.
             let started = std::time::Instant::now();
+            match tx.fetch_optional("SELECT 1", &[]).await {
+                Err(StoreError::Database { reason }) => {
+                    assert!(reason.contains("skipped"), "{reason}")
+                }
+                Err(other) => panic!("a statement after a timeout must be skipped, got {other:?}"),
+                Ok(_) => panic!("a statement after a timeout must be skipped"),
+            }
             tx.rollback().await.unwrap();
             assert!(started.elapsed() < Duration::from_millis(200));
-            // The server is still sleeping, so an unbounded release ping would
-            // hold the connection for the remaining ~2.7 s. Bounded, it is closed.
-            tokio::time::sleep(Duration::from_millis(1200)).await;
             assert_eq!(
                 pool.size(),
                 before - 1,
@@ -314,7 +279,7 @@ crate::store::contract::store_contract_test!(
 
 #[cfg(feature = "store-postgres")]
 crate::store::contract::store_contract_test!(
-    a_connection_that_needed_draining_is_closed_even_when_the_drain_succeeds,
+    a_timed_out_connection_is_closed_before_the_server_answers,
     |store| {
         if let Db::Postgres(pool) = store.db() {
             use std::time::Duration;
@@ -324,15 +289,60 @@ crate::store::contract::store_contract_test!(
             let outcome = tx.fetch_optional("SELECT pg_sleep(0.5)", &[]).await;
             assert!(outcome.is_err());
             tx.rollback().await.unwrap();
-            // The drain finishes well within the default bound, yet the
-            // connection must not be returned: a cancelled request may have
-            // left the server inside a transaction sqlx does not know about.
-            tokio::time::sleep(Duration::from_millis(1200)).await;
+            // The server would answer well within the default bound, yet the
+            // connection must not wait for it and come back: a cancelled
+            // request may have left the server inside a transaction sqlx does
+            // not know about. Closing it is immediate, not a release-time drain.
             assert_eq!(
                 pool.size(),
                 before - 1,
-                "a drained connection must be closed"
+                "a timed-out connection must be closed"
             );
         }
     }
 );
+
+#[cfg(feature = "store-postgres")]
+crate::store::contract::store_contract_test!(
+    an_unfinished_transaction_closes_its_connection,
+    |store| {
+        if let Db::Postgres(pool) = store.db() {
+            // A BEGIN or statement that gave up, or a `Tx` dropped without
+            // COMMIT or ROLLBACK, may leave the server inside a transaction no
+            // client will finish. All of them drop a `PgTx` that never
+            // finished, which must close its connection rather than return it.
+            let tx = store.db().begin().await.unwrap();
+            let before = pool.size();
+            drop(tx);
+            assert_eq!(pool.size(), before - 1, "the connection must be closed");
+            store.db().begin().await.unwrap().rollback().await.unwrap();
+        }
+    }
+);
+
+#[cfg(feature = "store-postgres")]
+crate::store::contract::store_contract_test!(a_commit_past_its_bound_is_uncertain, |store| {
+    if let Db::Postgres(_) = store.db() {
+        use std::time::Duration;
+        let mut tx = store.db().begin().await.unwrap();
+        // A deferred trigger makes COMMIT itself take a second, the way a
+        // COMMIT whose reply is lost looks to the client.
+        for sql in [
+            "CREATE TABLE slow_commit_probe (x BIGINT)",
+            "CREATE FUNCTION slow_commit_probe_fn() RETURNS trigger AS \
+             $body$ BEGIN PERFORM pg_sleep(1); RETURN NULL; END $body$ LANGUAGE plpgsql",
+            "CREATE CONSTRAINT TRIGGER slow_commit_probe AFTER INSERT ON slow_commit_probe \
+             DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION slow_commit_probe_fn()",
+            "INSERT INTO slow_commit_probe (x) VALUES (1)",
+        ] {
+            tx.execute(sql, &[]).await.unwrap();
+        }
+        let _bound = super::set_round_trip_timeout("COMMIT", Duration::from_millis(300));
+        match tx.commit().await {
+            Err(StoreError::CommitUncertain { reason }) => {
+                assert!(reason.contains("did not complete"), "{reason}");
+            }
+            other => panic!("a COMMIT past its bound must be uncertain, got {other:?}"),
+        }
+    }
+});

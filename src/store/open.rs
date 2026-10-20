@@ -5,8 +5,6 @@ use std::time::Duration;
 
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-#[cfg(feature = "store-postgres")]
-use sqlx::Connection as _;
 
 use super::config::{StoreBackend, StoreConfig};
 use super::db::Db;
@@ -233,30 +231,6 @@ async fn connect_postgres(
                 .unwrap_or(DEFAULT_POSTGRES_CONNECTIONS),
         )
         .acquire_timeout(POSTGRES_ACQUIRE_TIMEOUT)
-        // A clean connection is returned. Anything pending on it (a cancelled
-        // request's reply, or a dropped transaction's ROLLBACK) is drained
-        // within the bound and the connection is then closed, because a
-        // cancelled BEGIN can leave the server in a transaction sqlx does not
-        // know about. Every non-error path commits or rolls back explicitly,
-        // so only error paths cost a reconnect. sqlx's own release ping runs
-        // only on clean connections. Residual: a late reply already in the
-        // socket buffer can still complete the first poll.
-        .after_release(|conn, _meta| {
-            Box::pin(async move {
-                let mut drain = std::pin::pin!(conn.flush());
-                if let Some(result) = futures_util::FutureExt::now_or_never(&mut drain) {
-                    return result.map(|()| true);
-                }
-                match tokio::time::timeout(super::db::release_timeout(), &mut drain).await {
-                    Ok(Ok(())) => Ok(false),
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => Err(sqlx::Error::Io(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "release drain did not complete",
-                    ))),
-                }
-            })
-        })
         .connect_with(options)
         .await
         .map_err(|error| unreachable(target, error))?;
