@@ -159,3 +159,21 @@ async fn both_engines_migrate_to_the_same_tables_and_columns() {
         std::panic::resume_unwind(payload);
     }
 }
+
+/// The PostgreSQL arm reads its URL only while holding `CONFIG_ENV_LOCK`, so
+/// a reader started while the lock is held cannot finish until it is released.
+#[cfg(feature = "store-postgres")]
+#[test]
+fn postgres_test_url_reads_under_the_config_env_lock() {
+    let lock = crate::config::CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reader = std::thread::spawn(super::postgres::test_url);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        !reader.is_finished(),
+        "test_url read the environment without CONFIG_ENV_LOCK"
+    );
+    drop(lock);
+    reader.join().expect("test_url");
+}

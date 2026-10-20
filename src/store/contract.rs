@@ -85,7 +85,14 @@ pub(crate) mod postgres {
 
     /// The configured test URL, `None` (after printing why) when the arm
     /// should be skipped. Panics when the URL is required but unset.
-    fn test_url() -> Option<String> {
+    ///
+    /// Reads under `CONFIG_ENV_LOCK` because tests in this binary write the
+    /// environment under it, and `setenv` may reallocate `environ` beneath an
+    /// unlocked reader. The guard drops on return, before `harness` awaits.
+    pub(super) fn test_url() -> Option<String> {
+        let _lock = crate::config::CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match std::env::var(URL_VAR) {
             Ok(url) if !url.trim().is_empty() => Some(url),
             _ => {
