@@ -201,6 +201,13 @@ fn postgres_test_url_skips_when_unset_and_panics_when_required() {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     };
+    // Unset explicitly so an ambient value cannot decide the outcome. These
+    // names are probe-only and the change is local to the test process.
+    {
+        let _lock = env_lock();
+        std::env::remove_var(URL);
+        std::env::remove_var(REQUIRED);
+    }
     assert_eq!(super::postgres::read_test_url(URL, REQUIRED), None);
 
     {
