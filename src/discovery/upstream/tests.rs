@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 use std::time::{Duration, Instant};
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
@@ -624,7 +625,7 @@ async fn injects_configured_api_key_without_a_caller_credential() {
     // behind the shared lock, exactly as the `resolve_api_key` coverage in
     // src/auth/mod.rs does. SAFETY: the guard is held across the set/remove
     // window, so no other env-mutating test observes a partial state.
-    let _guard = crate::auth::claude::store::TEST_ENV_LOCK.lock().await;
+    let _guard = crate::config::test_env_lock();
     unsafe { std::env::set_var("SHUNT_TEST_DISCOVERY_KEY", "env-key") };
     let state = state_for(&server.uri(), AuthMode::ApiKey);
 
@@ -765,7 +766,7 @@ async fn claude_oauth_sends_bearer_and_beta_headers() {
     // behind the shared lock, exactly as the `resolve_api_key` coverage in
     // src/auth/mod.rs does. SAFETY: the guard is held across the set/remove
     // window, so no other env-mutating test observes a partial state.
-    let _guard = crate::auth::claude::store::TEST_ENV_LOCK.lock().await;
+    let _guard = crate::config::test_env_lock();
     unsafe { std::env::set_var("SHUNT_TEST_DISCOVERY_OAUTH_TOKEN", "oauth-token") };
     let state = state_for(&server.uri(), AuthMode::ClaudeOauth);
 
@@ -793,7 +794,7 @@ async fn claude_oauth_resolves_account_scope_from_the_store() {
             .unwrap()
             .as_nanos()
     ));
-    let _guard = crate::auth::claude::store::TEST_ENV_LOCK.lock().await;
+    let _guard = crate::config::test_env_lock();
     let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
     crate::auth::claude::store::store_setup_token("stored", "stored-token", Some("stored-uuid"))
         .unwrap();
@@ -838,7 +839,7 @@ async fn claude_oauth_skips_disabled_account() {
     // behind the shared lock, exactly as the `resolve_api_key` coverage in
     // src/auth/mod.rs does. SAFETY: the guard is held across the set/remove
     // window, so no other env-mutating test observes a partial state.
-    let _guard = crate::auth::claude::store::TEST_ENV_LOCK.lock().await;
+    let _guard = crate::config::test_env_lock();
     unsafe {
         std::env::set_var("SHUNT_TEST_DISABLED_DISCOVERY_TOKEN", "disabled-token");
         std::env::set_var("SHUNT_TEST_ENABLED_DISCOVERY_TOKEN", "enabled-token");

@@ -5948,7 +5948,21 @@ impl ServerConfig {
 #[cfg(test)]
 pub(crate) static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Takes [`CONFIG_ENV_LOCK`], tolerating poisoning as every holder must.
+///
+/// The one lock every lib test holds around a process-env write and the reads
+/// that depend on it: `setenv` may reallocate `environ`, so two independent
+/// mutexes would not exclude each other. Not reentrant — acquire it once per
+/// test and keep env-restoring guards declared after it.
 #[cfg(test)]
+pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use std::{
         collections::BTreeMap,
@@ -6379,6 +6393,7 @@ mod tests {
 
     #[test]
     fn admin_oidc_config_resolves_defaults_and_fails_closed() {
+        let _env_lock = crate::config::test_env_lock();
         let suffix = std::process::id();
         let tokens_env = format!("SHUNT_ADMIN_OIDC_CONFIG_TOKENS_{suffix}");
         let secret_env = format!("SHUNT_ADMIN_OIDC_CONFIG_SECRET_{suffix}");
@@ -6492,6 +6507,7 @@ mod tests {
 
     #[test]
     fn admin_config_resolve_succeeds_and_fails_closed() {
+        let _env_lock = crate::config::test_env_lock();
         let base = AdminConfig {
             header: "x-shunt-admin-token".to_string(),
             tokens_env: "SHUNT_TEST_ADMIN_RESOLVE".to_string(),
@@ -6539,6 +6555,7 @@ mod tests {
 
     #[test]
     fn admin_config_resolve_falls_back_to_tokens_file() {
+        let _env_lock = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-admin-tokens-file-{}",
             std::time::SystemTime::now()
@@ -6649,7 +6666,7 @@ mod tests {
         use crate::accounts::StoreFamily;
         use crate::auth::{antigravity::store, shared::EnvVarGuard};
 
-        let _guard = store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!("shunt-config-agy-{}", uuid::Uuid::new_v4()));
         let _env = EnvVarGuard::set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &dir);
         let mut provider = Config::default().providers.remove("antigravity").unwrap();
@@ -7896,6 +7913,7 @@ provider = "deepseek"
 
     #[test]
     fn gateway_config_fails_closed_and_resolves_valid_environment() {
+        let _env_lock = crate::config::test_env_lock();
         let suffix = std::process::id();
         let secret_env = format!("SHUNT_GATEWAY_CONFIG_SECRET_{suffix}");
         let users_env = format!("SHUNT_GATEWAY_CONFIG_USERS_{suffix}");
@@ -8791,6 +8809,7 @@ policy = { type = "target_selector", selector = "/target" }
 
     #[test]
     fn gateway_oidc_config_fails_closed() {
+        let _env_lock = crate::config::test_env_lock();
         let suffix = std::process::id();
         let secret_env = format!("SHUNT_GATEWAY_OIDC_CONFIG_SECRET_{suffix}");
         let mut oidc = GatewayOidcConfig {
@@ -8870,6 +8889,7 @@ policy = { type = "target_selector", selector = "/target" }
 
     #[test]
     fn gateway_oidc_makes_static_users_optional() {
+        let _env_lock = crate::config::test_env_lock();
         let suffix = std::process::id();
         let jwt_env = format!("SHUNT_GATEWAY_OPTIONAL_USERS_JWT_{suffix}");
         let users_env = format!("SHUNT_GATEWAY_OPTIONAL_USERS_LIST_{suffix}");
@@ -8911,6 +8931,7 @@ policy = { type = "target_selector", selector = "/target" }
 
     #[test]
     fn gateway_config_rejects_invalid_managed_policy_and_telemetry() {
+        let _env_lock = crate::config::test_env_lock();
         let suffix = format!("{}_managed", std::process::id());
         let secret_env = format!("SHUNT_GATEWAY_CONFIG_SECRET_{suffix}");
         let users_env = format!("SHUNT_GATEWAY_CONFIG_USERS_{suffix}");
@@ -9082,6 +9103,7 @@ policy = { type = "target_selector", selector = "/target" }
 
     #[test]
     fn gateway_session_jwt_secret_scalar_and_array_wire_forms_both_resolve() {
+        let _env_lock = crate::config::test_env_lock();
         // Proves the `session.jwt_secret` string-or-array wire format survives
         // the full figment extraction -> resolve() pipeline, not just the
         // GatewaySessionConfig-level deserialize tests in config/session.rs.
@@ -9301,6 +9323,7 @@ policy = { type = "target_selector", selector = "/target" }
 
     #[test]
     fn usage_endpoint_accepts_when_inbound_auth_is_configured() {
+        let _env_lock = crate::config::test_env_lock();
         // With `[server.auth]` present and its tokens resolvable, the pairing
         // validates. `validate()` fails closed by resolving `[server.auth]`, so
         // point it at an env var holding a valid token.
@@ -9426,6 +9449,7 @@ policy = { type = "target_selector", selector = "/target" }
 
     #[test]
     fn claude_oauth_provider_on_wildcard_bind_same_port_loopback_is_rejected() {
+        let _env_lock = crate::config::test_env_lock();
         // A wildcard bind (`0.0.0.0`) listens on every local address, so a
         // same-port loopback host does reach it and must still trip the guard.
         let mut config = Config::default();
@@ -9454,6 +9478,7 @@ policy = { type = "target_selector", selector = "/target" }
 
     #[test]
     fn claude_oauth_provider_on_cross_family_wildcard_bind_is_unaffected() {
+        let _env_lock = crate::config::test_env_lock();
         // An IPv4 wildcard bind (`0.0.0.0`) does not listen on an IPv6 loopback
         // literal, so a same-port `[::1]` provider cannot self-poll it and must
         // not be rejected.
@@ -9477,6 +9502,7 @@ policy = { type = "target_selector", selector = "/target" }
 
     #[test]
     fn claude_oauth_provider_on_dual_stack_wildcard_bind_same_port_ipv4_is_rejected() {
+        let _env_lock = crate::config::test_env_lock();
         // An IPv6 wildcard bind (`[::]`) is dual-stack by default and accepts
         // IPv4 connections, so a same-port `127.0.0.1` provider *can* self-poll
         // it and must still trip the guard.
@@ -12460,7 +12486,7 @@ target = "judge-alias"
         use crate::accounts::StoreFamily;
         use crate::auth::{shared::EnvVarGuard, xai::store};
 
-        let _guard = store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!("shunt-config-xai-{}", uuid::Uuid::new_v4()));
         let _env = EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
         let mut provider = Config::default().providers.remove("grok").unwrap();
@@ -14009,6 +14035,7 @@ routes:
     fn inbound_auth_boots_with_a_jwt_issuer_and_no_static_tokens() {
         // The deployment shape the feature exists for: identity comes entirely
         // from the IdP, so there is no `name:token` list to set.
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("JWT_ONLY");
         let auth = auth_with_jwt(vec![jwt_entry()], &env);
 
@@ -14021,6 +14048,7 @@ routes:
 
     #[test]
     fn inbound_auth_with_neither_tokens_nor_jwt_still_fails_closed() {
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("NEITHER");
 
         assert!(matches!(
@@ -14034,6 +14062,7 @@ routes:
         // `audience` is not an authorization decision for every issuer — a
         // GitHub Actions workflow picks its own `aud` — so an entry carrying
         // only an audience must not resolve.
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("NO_RULE");
         let mut entry = jwt_entry();
         entry.email_domains = Vec::new();
@@ -14049,6 +14078,7 @@ routes:
 
     #[test]
     fn inbound_jwt_requires_an_audience() {
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("NO_AUD");
         let mut entry = jwt_entry();
         entry.audience = super::StringList::Many(Vec::new());
@@ -14064,6 +14094,7 @@ routes:
         // The config-time half of `alg` confusion: a shared secret must never
         // reach the verifier, because a published JWKS key would then be
         // usable as one.
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("SYMMETRIC");
         let mut entry = jwt_entry();
         entry.algorithms = vec!["HS256".to_string()];
@@ -14078,6 +14109,7 @@ routes:
 
     #[test]
     fn inbound_jwt_rejects_an_unknown_algorithm_and_an_empty_list() {
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("ALGS");
         for algorithms in [vec!["RS255".to_string()], Vec::new()] {
             let mut entry = jwt_entry();
@@ -14094,6 +14126,7 @@ routes:
 
     #[test]
     fn inbound_jwt_rejects_an_unsafe_issuer_or_jwks_url() {
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("URLS");
         let mut plaintext_issuer = jwt_entry();
         plaintext_issuer.issuer = "http://issuer.example".to_string();
@@ -14112,6 +14145,7 @@ routes:
 
     #[test]
     fn inbound_jwt_reports_the_offending_entry_index() {
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("INDEX");
         let mut broken = jwt_entry();
         broken.issuer = "https://other.example".to_string();
@@ -14127,6 +14161,7 @@ routes:
 
     #[test]
     fn inbound_jwt_audience_accepts_a_string_or_an_array() {
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("AUD_FORMS");
         let mut many = jwt_entry();
         many.audience =
@@ -14146,6 +14181,7 @@ routes:
 
     #[test]
     fn inbound_jwt_authorized_parties_default_to_the_audience() {
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("AZP");
         let mut explicit = jwt_entry();
         explicit.authorized_parties = vec!["dedicated-azp".to_string()];
@@ -14167,6 +14203,7 @@ routes:
     fn inbound_jwt_issuer_may_not_be_the_gateway_public_url() {
         // Both verifiers read `Authorization: Bearer`, so a shared issuer would
         // make ownership of a token depend on evaluation order.
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("GATEWAY_COLLISION");
         let mut entry = jwt_entry();
         entry.issuer = "https://gw.example".to_string();
@@ -14188,6 +14225,7 @@ routes:
     fn inbound_jwt_issuer_keeps_its_trailing_slash_but_still_collides_with_the_gateway() {
         // Selection is by exact `iss`, so the rule keeps the configured form;
         // the collision check normalizes both sides.
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("ISSUER_SLASH");
         let mut entry = jwt_entry();
         entry.issuer = "https://gw.example/".to_string();
@@ -14212,6 +14250,7 @@ routes:
     fn inbound_jwt_issuer_with_a_double_slash_path_does_not_collide_with_the_gateway() {
         // Only a root path is normalized: `https://gw.example//` is its own
         // issuer, not the gateway's bare origin.
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("ISSUER_DOUBLE_SLASH");
         let mut entry = jwt_entry();
         entry.issuer = "https://gw.example//".to_string();
@@ -14239,6 +14278,7 @@ routes:
         // config with a distinct issuer must clear the collision check (it
         // then fails on the gateway's own unset signing secret, which is a
         // different error).
+        let _env_lock = crate::config::test_env_lock();
         let env = unset_tokens_env("GATEWAY_NO_COLLISION");
         let mut config = Config::default();
         config.server.auth = Some(auth_with_jwt(vec![jwt_entry()], &env));

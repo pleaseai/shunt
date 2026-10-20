@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 //! Non-vacuity. The wrap has two failure modes that look alike from one side:
 //! wrapping nothing (the leak of issue #783 stays) and wrapping everything
 //! (Anthropic's own signatures stop round-tripping). Every assertion that a
@@ -1345,6 +1346,7 @@ async fn chain_attempt_wraps_a_third_party_winning_stream() {
 /// lib test reading an unrelated variable could otherwise observe (issue #788).
 #[tokio::test]
 async fn kimi_oauth_restores_its_own_envelope_and_drops_a_foreign_one() {
+    let _env_lock = crate::config::test_env_lock();
     let upstream = mock_messages("application/json", r#"{"content":[]}"#).await;
     let base = upstream.uri();
     let credentials = std::env::temp_dir().join(format!(

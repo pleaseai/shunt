@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::MutexGuard,
 };
 
 use axum::{
@@ -22,7 +22,6 @@ const READ_KEY: &str = "read-key-0123456789abcdef01234567890";
 /// A legacy `tokens_env` pair. Those are the write tier, so it must behave
 /// exactly like `WRITE_KEY`.
 const TOKEN_KEY: &str = "token-key-0123456789abcdef0123456789";
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// `[server.admin]` + `[server.spend]` and deliberately **no**
 /// `[server.gateway]`: the whole suite therefore runs against a config that
@@ -38,9 +37,7 @@ impl SpendEnv {
     }
 
     fn config_with_state_path(label: &str, state_path: Option<PathBuf>) -> (Config, Self) {
-        let guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = crate::config::test_env_lock();
         let tokens_env = format!("SHUNT_SPEND_TEST_TOKENS_{}_{}", std::process::id(), label);
         std::env::set_var(&tokens_env, format!("ops:{TOKEN_KEY}"));
         let mut config = Config::default();
@@ -87,6 +84,20 @@ impl Drop for SpendEnv {
     fn drop(&mut self) {
         std::env::remove_var(&self.tokens_env);
     }
+}
+
+#[test]
+fn spend_env_holds_the_config_env_lock_until_it_drops() {
+    let (_, env) = SpendEnv::config("env-lock");
+    let tokens_env = env.tokens_env.clone();
+    assert!(std::env::var(&tokens_env).is_ok());
+    assert!(matches!(
+        crate::config::CONFIG_ENV_LOCK.try_lock(),
+        Err(std::sync::TryLockError::WouldBlock)
+    ));
+    drop(env);
+    let _lock = crate::config::test_env_lock();
+    assert!(std::env::var(&tokens_env).is_err());
 }
 
 async fn send(router: &Router, request: Request<Body>) -> (Response, Value) {

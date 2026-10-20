@@ -740,6 +740,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_claude_account_token_env_verbatim_with_uuid() {
+        let _env_lock = crate::config::test_env_lock();
         let env_name = format!("SHUNT_TEST_CLAUDE_TOKEN_{}", std::process::id());
         std::env::set_var(&env_name, "  setup-token-verbatim  ");
         let account = AccountConfig {
@@ -765,6 +766,7 @@ mod tests {
 
     #[tokio::test]
     async fn chatgpt_token_env_without_account_id_names_the_env_var() {
+        let _env_lock = crate::config::test_env_lock();
         use axum::body::to_bytes;
         // A `token_env` token whose JWT payload has no decodable
         // `chatgpt_account_id` claim: the error must point at the environment
@@ -846,7 +848,7 @@ mod tests {
 
     #[tokio::test]
     async fn name_only_claude_account_resolves_store_token() {
-        let _guard = crate::auth::claude::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-name-only-auth-{}-{}",
             std::process::id(),
@@ -883,6 +885,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_kimi_account_token_env_verbatim() {
+        let _env_lock = crate::config::test_env_lock();
         // Mirrors `resolves_claude_account_token_env_verbatim_with_uuid`: a
         // `token_env`-sourced Kimi credential carries no device id (no
         // account file to have persisted one in).
@@ -913,7 +916,7 @@ mod tests {
         // Mirrors `name_only_claude_account_resolves_store_token`: a
         // name-only account resolves through the on-disk store, which does
         // carry a device id.
-        let _guard = crate::auth::kimi::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-name-only-kimi-auth-{}-{}",
             std::process::id(),
@@ -964,7 +967,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_xai_account_token_env_verbatim() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let _env = crate::auth::shared::EnvVarGuard::set(
             "SHUNT_TEST_XAI_POOL_TOKEN",
             "  xai-token-verbatim  ",
@@ -989,7 +992,7 @@ mod tests {
 
     #[tokio::test]
     async fn xai_account_with_an_unset_token_env_fails_resolution() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let account = AccountConfig {
             name: "ci".to_string(),
             token_env: Some("SHUNT_TEST_XAI_POOL_TOKEN_UNSET".to_string()),
@@ -1003,7 +1006,7 @@ mod tests {
 
     #[tokio::test]
     async fn name_only_xai_account_resolves_the_store_file() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-name-only-xai-pool-{}-{}",
             std::process::id(),
@@ -1035,7 +1038,7 @@ mod tests {
 
     #[tokio::test]
     async fn xai_account_credentials_path_overrides_the_store() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-xai-pool-credentials-{}-{}",
             std::process::id(),
@@ -1075,7 +1078,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_xai_account_file_fails_resolution() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-xai-pool-missing-{}-{}",
             std::process::id(),
@@ -1119,6 +1122,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_chatgpt_account_token_env_verbatim_with_account_id() {
+        let _env_lock = crate::config::test_env_lock();
         let env_name = format!("SHUNT_TEST_CHATGPT_TOKEN_{}", std::process::id());
         let access_token = chatgpt_access_token("acct-from-jwt");
         std::env::set_var(&env_name, &access_token);
@@ -1144,7 +1148,7 @@ mod tests {
 
     #[tokio::test]
     async fn name_only_chatgpt_account_resolves_store_token() {
-        let _guard = crate::auth::codex::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-name-only-chatgpt-auth-{}-{}",
             std::process::id(),
@@ -1194,6 +1198,7 @@ mod tests {
 
     #[test]
     fn resolves_openai_key_from_codex_auth_json_when_env_missing() {
+        let _env_lock = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-auth-test-{}",
             std::time::SystemTime::now()
@@ -1221,6 +1226,7 @@ mod tests {
 
     #[test]
     fn api_key_provider_requires_env_var() {
+        let _env_lock = crate::config::test_env_lock();
         let config = Config::default();
         // A fresh temp env with no key set and no codex fallback for a non-openai
         // env var name must error rather than silently pass.

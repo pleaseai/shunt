@@ -257,9 +257,6 @@ fn write_account(name: &str, value: &Value) -> anyhow::Result<PathBuf> {
 }
 
 #[cfg(test)]
-pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -335,7 +332,7 @@ mod tests {
     /// comparison must be case-insensitive.
     #[tokio::test]
     async fn import_accepts_lowercase_chatgpt_auth_mode() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("lowercase-chatgpt");
         fs::create_dir_all(&dir).unwrap();
         let source = dir.join("source.json");
@@ -388,13 +385,13 @@ mod tests {
 
     #[tokio::test]
     async fn imports_and_scans_refreshable_accounts_in_name_order() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("import");
         fs::create_dir_all(&dir).unwrap();
         let source = dir.join("source.json");
         fs::write(&source, chatgpt_source_json("access", "refresh")).unwrap();
         let accounts_dir = dir.join("accounts");
-        // Declared after TEST_ENV_LOCK so it drops first: the var is removed on
+        // Declared after the env lock so it drops first: the var is removed on
         // drop (panic-safe) while the lock is still held.
         let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
 
@@ -432,7 +429,7 @@ mod tests {
 
     #[tokio::test]
     async fn stores_tokens_and_lists_token_free_metadata() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("oauth");
         let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
         let access = access_token(2_000_000_000, "acct-from-claim");
@@ -478,7 +475,7 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_falls_back_to_access_token_account_claim() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("meta-claim");
         fs::create_dir_all(&dir).unwrap();
         let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
@@ -498,7 +495,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_falls_back_to_jwt_account_id_and_coalesces_aliases() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("scan-claim");
         fs::create_dir_all(&dir).unwrap();
         let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
@@ -522,7 +519,7 @@ mod tests {
         // a name-fallback identity: admin cleanup relies on `Err` here to
         // preserve pool health instead of wrongly concluding no other alias
         // shares the identity being removed.
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("scan-strict-codex");
         fs::create_dir_all(&dir).unwrap();
         let _env = shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &dir);
@@ -562,7 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn removes_existing_and_reports_missing_accounts() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("remove");
         fs::create_dir_all(&dir).unwrap();
         let source = dir.join("source.json");

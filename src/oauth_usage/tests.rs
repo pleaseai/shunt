@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 use axum::{extract::State, http::HeaderMap};
 use serde_json::{json, Value};
 
@@ -250,7 +251,8 @@ fn fable_limit_falls_back_to_all_candidates_when_every_account_is_capped() {
 
 /// Config with `[server.auth]` bound to a unique env var and one explicit
 /// `ClaudeOauth` account on the built-in `anthropic` provider, so the
-/// snapshot path does not touch the account store.
+/// snapshot path does not touch the account store. Callers hold
+/// [`crate::config::test_env_lock`] until they remove the variable.
 fn state_with_claude_account(label: &str, bind: &str) -> (AppState, String) {
     state_with_claude_and_codex_accounts(label, bind, None)
 }
@@ -330,6 +332,7 @@ async fn handler_returns_empty_object_when_no_claude_oauth_provider_is_configure
 
 #[tokio::test]
 async fn sanitization_never_exposes_account_identity_or_capacity() {
+    let _env_lock = crate::config::test_env_lock();
     let (state, env) = state_with_claude_account("sanitization", "127.0.0.1:0");
     // `note_usage` keys its health entry by `account_identity` (name, absent a
     // uuid) — it must name the *same* account `state_with_claude_account`
@@ -393,6 +396,7 @@ async fn sanitization_never_exposes_account_identity_or_capacity() {
 /// response.
 #[tokio::test]
 async fn only_claude_oauth_accounts_contribute_never_chatgpt_oauth() {
+    let _env_lock = crate::config::test_env_lock();
     let (state, env) =
         state_with_claude_and_codex_accounts("provider_filter", "127.0.0.1:0", Some("codex-acct"));
     state.accounts.note_usage(
@@ -444,6 +448,7 @@ async fn only_claude_oauth_accounts_contribute_never_chatgpt_oauth() {
 
 #[tokio::test]
 async fn loopback_bind_serves_unauthenticated_even_with_server_auth_configured() {
+    let _env_lock = crate::config::test_env_lock();
     let (state, env) = state_with_claude_account("loopback_no_auth", "127.0.0.1:0");
     let response = get(State(state), HeaderMap::new()).await;
     std::env::remove_var(&env);
@@ -452,6 +457,7 @@ async fn loopback_bind_serves_unauthenticated_even_with_server_auth_configured()
 
 #[tokio::test]
 async fn non_loopback_bind_admits_a_valid_client_token() {
+    let _env_lock = crate::config::test_env_lock();
     let (state, env) = state_with_claude_account("non_loopback_valid", "0.0.0.0:0");
     let mut headers = HeaderMap::new();
     // The helper configures `[server.auth]` header `x-shunt-token` with the
@@ -468,6 +474,7 @@ async fn non_loopback_bind_rejects_a_fabricated_non_matching_credential() {
     // token (nor a valid gateway JWT) must be rejected — bare presence is not
     // enough. Guards against scraping pool quota telemetry with a fabricated
     // `Authorization`/`x-api-key` header on a network-facing bind.
+    let _env_lock = crate::config::test_env_lock();
     let (state, env) = state_with_claude_account("non_loopback_fabricated", "0.0.0.0:0");
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -483,6 +490,7 @@ async fn non_loopback_bind_rejects_a_fabricated_non_matching_credential() {
 
 #[tokio::test]
 async fn non_loopback_bind_rejects_when_no_credential_is_presented_at_all() {
+    let _env_lock = crate::config::test_env_lock();
     let (state, env) = state_with_claude_account("non_loopback_missing", "0.0.0.0:0");
     let response = get(State(state), HeaderMap::new()).await;
     std::env::remove_var(&env);

@@ -521,17 +521,17 @@ async fn body_json(response: axum::response::Response) -> Value {
 }
 
 /// The built-in `grok` provider is an `xai_oauth` pool, so `get` scans its
-/// account store. Point that scan at a path that never exists, under the lock
-/// the xAI store tests share, so no test reads the operator's real
+/// account store. Point that scan at a path that never exists, under the shared
+/// test env lock the xAI store tests also hold, so no test reads the operator's real
 /// `~/.shunt/accounts/xai`. Fields drop in declaration order: the variable is
 /// removed before the lock is released.
 struct XaiStoreIsolation {
     _env: crate::auth::shared::EnvVarGuard,
-    _lock: tokio::sync::MutexGuard<'static, ()>,
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 async fn isolate_xai_store() -> XaiStoreIsolation {
-    let lock = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+    let lock = crate::config::test_env_lock();
     let env = crate::auth::shared::EnvVarGuard::set(
         "SHUNT_XAI_ACCOUNTS_DIR",
         std::env::temp_dir().join(format!(
@@ -1119,12 +1119,13 @@ async fn fails_closed_when_inbound_auth_is_absent() {
 
 #[tokio::test]
 async fn returns_api_error_500_when_account_store_scan_fails() {
-    use crate::auth::{codex::store as codex_store, shared::EnvVarGuard};
+    use crate::auth::shared::EnvVarGuard;
 
+    // Holds the shared test env lock for the whole test, which also serializes
+    // this with the codex store's own env-var tests (they share the
+    // `SHUNT_CODEX_ACCOUNTS_DIR` process env). The lock is not reentrant, so
+    // this test takes it only here.
     let _xai = isolate_xai_store().await;
-    // Serialize with the codex store's own env-var tests (they share the
-    // `SHUNT_CODEX_ACCOUNTS_DIR` process env).
-    let _guard = codex_store::TEST_ENV_LOCK.lock().await;
     // A file where the store expects a directory is a platform-stable way to
     // fail `fs::read_dir` (NotADirectory / ENOTDIR-equivalent) without racing
     // real filesystem permissions.
@@ -1137,7 +1138,7 @@ async fn returns_api_error_500_when_account_store_scan_fails() {
             .as_nanos()
     ));
     std::fs::write(&not_a_dir, b"not a directory").unwrap();
-    // Declared after TEST_ENV_LOCK so it drops first: the var is removed on
+    // Declared after the env lock so it drops first: the var is removed on
     // drop (panic-safe) while the lock is still held.
     let _env_dir = EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &not_a_dir);
 

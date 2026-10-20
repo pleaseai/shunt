@@ -537,6 +537,7 @@ mod tests {
 
     #[test]
     fn env_var_guard_restores_a_prior_value_on_drop() {
+        let _env_lock = crate::config::test_env_lock();
         // The bug this guard fixes: overwriting a real env var and then
         // unconditionally removing it (rather than restoring what was there
         // before) would clobber a value the surrounding environment had set.
@@ -557,6 +558,7 @@ mod tests {
 
     #[test]
     fn env_var_guard_removes_a_previously_unset_var_on_drop() {
+        let _env_lock = crate::config::test_env_lock();
         let key = "SHUNT_RELOAD_ENV_GUARD_TEST_UNSET";
         std::env::remove_var(key); // start from a clean slate
         {
@@ -857,6 +859,7 @@ mod tests {
 
     #[test]
     fn reload_reresolves_inbound_auth() {
+        let _env_lock = crate::config::test_env_lock();
         let dir = temp_dir("auth");
         let _guard = TempDirGuard(dir.clone());
         let path = dir.join("shunt.toml");
@@ -883,6 +886,7 @@ mod tests {
 
     #[test]
     fn reload_reresolves_gateway_auth() {
+        let _env_lock = crate::config::test_env_lock();
         let dir = temp_dir("gateway-auth");
         let _guard = TempDirGuard(dir.clone());
         let path = dir.join("shunt.toml");
@@ -962,6 +966,7 @@ mod tests {
 
     #[test]
     fn reload_keeps_gateway_capability_fixed_at_boot() {
+        let _env_lock = crate::config::test_env_lock();
         let dir = temp_dir("gateway-toggle");
         let _guard = TempDirGuard(dir.clone());
         let path = dir.join("shunt.toml");

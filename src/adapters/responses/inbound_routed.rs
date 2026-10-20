@@ -251,6 +251,7 @@ fn routed_request_headers(state: &AppState, route: &Route, client: &HeaderMap) -
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use crate::{config::Config, routing::AdapterKind};
 
@@ -399,7 +400,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_xai_route_with_named_accounts_uses_the_first_selected_account() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = fresh_accounts_dir("first");
         let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
         let (token_a, token_b) = (xai_token("a"), xai_token("b"));
@@ -431,7 +432,7 @@ mod tests {
     /// credential cannot be loaded is cooled down and the next account serves.
     #[tokio::test]
     async fn an_xai_route_skips_an_account_whose_login_cannot_be_loaded() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = fresh_accounts_dir("skip");
         let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
         let token_b = xai_token("b");
@@ -471,7 +472,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_xai_route_with_an_empty_store_falls_back_to_the_single_account_file() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = fresh_accounts_dir("empty");
         // The directory is never created, so the store is empty.
         let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
@@ -483,7 +484,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_non_xai_route_never_consults_the_xai_store() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = fresh_accounts_dir("non-xai");
         let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
         crate::auth::xai::store::store_oauth_tokens("a", &xai_token("a"), "refresh", None).unwrap();
@@ -498,7 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_xai_route_whose_accounts_are_all_disabled_is_a_gateway_error() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = fresh_accounts_dir("disabled");
         let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
 
@@ -520,7 +521,7 @@ mod tests {
     /// accounts, so neither can steer the other's session onto an account.
     #[tokio::test]
     async fn an_xai_route_selects_by_the_client_namespaced_pool_key() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = fresh_accounts_dir("pool-key");
         let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
         let (token_a, token_b) = (xai_token("a"), xai_token("b"));
@@ -576,7 +577,7 @@ mod tests {
     /// generic "none are selectable" 502.
     #[tokio::test]
     async fn an_xai_route_whose_accounts_are_all_capped_returns_the_cap_429() {
-        let _guard = crate::auth::xai::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = fresh_accounts_dir("capped");
         let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.57.1](https://github.com/pleaseai/shunt/compare/v0.57.0...v0.57.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **anthropic:** wrap third-party thinking signatures so they never reach api.anthropic.com ([#784](https://github.com/pleaseai/shunt/issues/784)) ([dedb858](https://github.com/pleaseai/shunt/commit/dedb858919222e887fab5125a655add2cc7da9fa))
+* **store:** take the PostgreSQL hold row lock before the stale cutoff ([#796](https://github.com/pleaseai/shunt/issues/796)) ([1f91898](https://github.com/pleaseai/shunt/commit/1f918982cac82baf64183ff279da3c6b2f26949f))
+
 ## [0.57.0](https://github.com/pleaseai/shunt/compare/v0.56.0...v0.57.0) (2026-10-19)
 
 

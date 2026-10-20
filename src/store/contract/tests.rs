@@ -159,3 +159,73 @@ async fn both_engines_migrate_to_the_same_tables_and_columns() {
         std::panic::resume_unwind(payload);
     }
 }
+
+/// The PostgreSQL arm reads its URL only after acquiring `CONFIG_ENV_LOCK`:
+/// a reader started while the lock is held sees the value written just before
+/// the lock is released, not the one present when it started.
+#[cfg(feature = "store-postgres")]
+#[test]
+fn postgres_test_url_reads_under_the_config_env_lock() {
+    const URL: &str = "SHUNT_TEST_CONTRACT_LOCK_PROBE_URL";
+    const REQUIRED: &str = "SHUNT_TEST_CONTRACT_LOCK_PROBE_REQUIRED";
+    let lock = crate::config::CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::env::set_var(URL, "before-lock-release");
+    let reader = std::thread::spawn(|| super::postgres::read_test_url(URL, REQUIRED));
+    // Long enough for a reader that skips the lock, or takes it only after
+    // reading, to have read the first value.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::env::set_var(URL, "after-lock-release");
+    drop(lock);
+    let read = reader.join().expect("read_test_url");
+    let _lock = crate::config::CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::env::remove_var(URL);
+    assert_eq!(
+        read.as_deref(),
+        Some("after-lock-release"),
+        "test_url read the environment before acquiring CONFIG_ENV_LOCK"
+    );
+}
+
+/// With no URL the PostgreSQL arm skips, unless the URL is required.
+#[cfg(feature = "store-postgres")]
+#[test]
+fn postgres_test_url_skips_when_unset_and_panics_when_required() {
+    const URL: &str = "SHUNT_TEST_CONTRACT_UNSET_PROBE_URL";
+    const REQUIRED: &str = "SHUNT_TEST_CONTRACT_UNSET_PROBE_REQUIRED";
+    let env_lock = || {
+        crate::config::CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    // Unset explicitly so an ambient value cannot decide the outcome. These
+    // names are probe-only and the change is local to the test process.
+    {
+        let _lock = env_lock();
+        std::env::remove_var(URL);
+        std::env::remove_var(REQUIRED);
+    }
+    assert_eq!(super::postgres::read_test_url(URL, REQUIRED), None);
+
+    {
+        let _lock = env_lock();
+        std::env::set_var(REQUIRED, "1");
+    }
+    let required = std::panic::catch_unwind(|| super::postgres::read_test_url(URL, REQUIRED));
+    {
+        let _lock = env_lock();
+        std::env::remove_var(REQUIRED);
+    }
+    let message = required.expect_err("a required but unset URL must panic");
+    let message = message
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains(&format!("{REQUIRED}=1 but {URL} is unset")),
+        "{message}"
+    );
+}

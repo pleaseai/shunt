@@ -2099,6 +2099,7 @@ pub(super) async fn classify_retry(
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2115,10 +2116,6 @@ mod tests {
     use axum::http::StatusCode;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    /// Serializes the env vars the pool-probe tests write; every test in this
-    /// module that calls `std::env::set_var` must hold it for its whole body.
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn pool_route() -> Route {
         Route {
@@ -2160,7 +2157,7 @@ mod tests {
         };
         use futures_util::{SinkExt, StreamExt};
 
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _pool_guard = POOL_TEST_LOCK.lock().await;
         let _token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
@@ -2292,7 +2289,7 @@ mod tests {
         };
         use futures_util::{SinkExt, StreamExt};
 
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _pool_guard = POOL_TEST_LOCK.lock().await;
         let _token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
@@ -2421,7 +2418,7 @@ mod tests {
         };
         use futures_util::{SinkExt, StreamExt};
 
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _pool_guard = POOL_TEST_LOCK.lock().await;
         let _token_b =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
@@ -2545,7 +2542,7 @@ mod tests {
         };
         use futures_util::{SinkExt, StreamExt};
 
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _pool_guard = POOL_TEST_LOCK.lock().await;
         let _token_b =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
@@ -2697,7 +2694,7 @@ mod tests {
     #[tokio::test]
     async fn pool_streaming_arm_commits_synthetic_start_before_any_upstream_byte() {
         use futures_util::StreamExt;
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
         let server = MockServer::start().await;
@@ -2737,7 +2734,7 @@ mod tests {
     /// the relayed content flows after it.
     #[tokio::test]
     async fn pool_streaming_arm_rotates_and_relays_from_the_second_account() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
         let _token_b =
@@ -2790,7 +2787,7 @@ mod tests {
     /// committed stream — never a synthesized completion.
     #[tokio::test]
     async fn pool_streaming_arm_emits_error_event_on_exhaustion() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
         let server = MockServer::start().await;
@@ -2825,7 +2822,7 @@ mod tests {
     /// error response with the real status, not an early-committed stream.
     #[tokio::test]
     async fn pool_non_streaming_arm_keeps_the_status_relay() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
         let server = MockServer::start().await;
@@ -2863,7 +2860,7 @@ mod tests {
     /// cooled account-wide, and another model still selects it first.
     #[tokio::test]
     async fn pool_rotates_off_a_model_refusal_and_cools_only_that_model() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
         let _token_b =
@@ -2935,7 +2932,7 @@ mod tests {
     /// The same rotation on the committed streaming arm.
     #[tokio::test]
     async fn pool_streaming_arm_rotates_off_a_model_refusal() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
         let _token_b =
@@ -2982,7 +2979,7 @@ mod tests {
     /// own 400, its refusal message intact.
     #[tokio::test]
     async fn pool_exhausted_by_model_refusals_relays_the_refusal() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
         let _token_b =
@@ -3023,7 +3020,7 @@ mod tests {
     /// the first account without rotating.
     #[tokio::test]
     async fn pool_relays_other_bad_requests_without_rotating() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
         let _token_b =
@@ -3427,7 +3424,7 @@ mod tests {
     #[tokio::test]
     async fn a_gated_pool_exhausted_on_a_stalled_429_is_cut_end_to_end() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -3502,7 +3499,7 @@ mod tests {
     #[tokio::test]
     async fn a_gated_pool_relay_whose_body_sends_nothing_is_cut_end_to_end() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let env = ENV_LOCK.lock().await;
+        let env = crate::config::test_env_lock();
         let token_a =
             crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
         let (received_tx, received_rx) = tokio::sync::oneshot::channel::<()>();
@@ -3938,7 +3935,7 @@ mod tests {
     /// account relays, never the near-zero dispatch/commit time.
     #[tokio::test]
     async fn pool_stream_records_the_sample_at_classification() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token = crate::auth::shared::EnvVarGuard::set(
             "SHUNT_POOL_METRICS_PROBE",
             probe_token("acc-metrics"),
@@ -3984,7 +3981,7 @@ mod tests {
     /// committed 200.
     #[tokio::test]
     async fn pool_stream_records_the_terminal_status_on_exhaustion() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token = crate::auth::shared::EnvVarGuard::set(
             "SHUNT_POOL_METRICS_FAIL_PROBE",
             probe_token("acc-metrics-fail"),
@@ -4023,7 +4020,7 @@ mod tests {
     /// chain's per-attempt record would double-count.
     #[tokio::test]
     async fn a_chain_pool_stream_leaves_the_sample_to_the_chain() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token = crate::auth::shared::EnvVarGuard::set(
             "SHUNT_POOL_METRICS_CHAIN_PROBE",
             probe_token("acc-metrics-chain"),
@@ -4080,7 +4077,7 @@ mod tests {
     /// records the sample.
     #[tokio::test]
     async fn pool_stream_records_the_ttfb_timeout_status() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token = crate::auth::shared::EnvVarGuard::set(
             "SHUNT_POOL_METRICS_TTFB_PROBE",
             probe_token("acc-metrics-ttfb"),
@@ -4132,7 +4129,7 @@ mod tests {
     /// the classified 502 from the exhaustion arm, never a committed 200.
     #[tokio::test]
     async fn pool_stream_records_the_transport_exhaustion_status() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token = crate::auth::shared::EnvVarGuard::set(
             "SHUNT_POOL_METRICS_REFUSED_PROBE",
             probe_token("acc-metrics-refused"),
@@ -4349,7 +4346,7 @@ mod tests {
     /// per-attempt record.
     #[tokio::test]
     async fn pool_or_single_carries_the_scan_time_into_the_pool_sample() {
-        let _env = ENV_LOCK.lock().await;
+        let _env = crate::config::test_env_lock();
         let _token = crate::auth::shared::EnvVarGuard::set(
             "SHUNT_POOL_SCAN_LATENCY_POOL_PROBE",
             probe_token("pool-metrics-scan-latency-pool"),
