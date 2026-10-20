@@ -76,8 +76,7 @@ pub fn classify_client(headers: &HeaderMap) -> ClientKind {
     let user_agent = headers.get("user-agent").map(|value| value.as_bytes());
     let is_claude_code = headers
         .get("x-app")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|app| app.eq_ignore_ascii_case("cli"))
+        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"cli"))
         || user_agent.is_some_and(|agent| agent.starts_with(b"claude-cli/"));
     if is_claude_code {
         return ClientKind::ClaudeCode;

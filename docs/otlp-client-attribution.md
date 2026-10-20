@@ -65,7 +65,16 @@ client's, the duplicate becomes real.
 
    A dashboard then takes `claude_code.*` where it exists and
    `shunt.*{managed="false"}` everywhere else, with no operator setting to keep
-   in sync. `managed` is a statement about the credential, not about whether
+   in sync. That filter is only correct when the backend actually receives the
+   managed clients' `claude_code.*` metrics, either relayed through a
+   `forward_to` destination with `metrics` on or exported by the clients
+   directly. When it does not, the dashboard reads `shunt.*` across both
+   `managed` values instead; filtering to `managed="false"` there would drop
+   every managed request. Which case applies follows from the managed-settings
+   push: when some destination opts in to logs or traces but none to metrics,
+   managed clients are pushed `OTEL_METRICS_EXPORTER=none` and report no
+   metrics; when no destination opts in to any signal, nothing is pushed and
+   each client keeps its own exporter configuration. `managed` is a statement about the credential, not about whether
    `[server.gateway.telemetry].forward_to` is currently non-empty: the latter
    hot-reloads and is not observable per request, and a client whose exporter
    was pushed as `none` still holds a gateway JWT.

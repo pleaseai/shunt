@@ -374,3 +374,98 @@ async fn routed_stock_openai_api_key_generates_the_affinity_headers() {
 
     upstream.verify().await;
 }
+
+/// Records every `Span::record(...)` value into a shared map, so a test can
+/// read what an exporter would see on the request span.
+#[derive(Clone, Default)]
+struct SpanFieldCapture(
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+);
+
+impl tracing::field::Visit for SpanFieldCapture {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0
+            .lock()
+            .expect("span capture mutex poisoned")
+            .insert(field.name().to_string(), format!("{value:?}"));
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.0
+            .lock()
+            .expect("span capture mutex poisoned")
+            .insert(field.name().to_string(), value.to_string());
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanFieldCapture {
+    fn on_record(
+        &self,
+        _id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        values.record(&mut self.clone());
+    }
+}
+
+/// An authenticated request rejected by the body limit still carries the
+/// `client_kind`/`managed` attribution on its request span: it is recorded
+/// right after authentication, before the body is read
+/// (`docs/otlp-client-attribution.md`).
+#[tokio::test]
+async fn a_body_limit_rejection_still_records_the_client_attribution() {
+    use tracing::Instrument;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    let mut config = Config::default();
+    config.server.limits.max_request_bytes = 4;
+    config.server.codex_endpoint = Some(CodexEndpointConfig {
+        provider: "codex".to_string(),
+        routes: vec![],
+    });
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", "application/json".parse().unwrap());
+    headers.insert("content-length", "64".parse().unwrap());
+    headers.insert("originator", "codex_cli_rs".parse().unwrap());
+
+    let captured = SpanFieldCapture::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(captured.clone()));
+    let span = tracing::info_span!(
+        "codex_endpoint_request",
+        shunt.client_kind = tracing::field::Empty,
+        shunt.managed = tracing::field::Empty,
+    );
+
+    let result = forward(
+        state,
+        None,
+        headers,
+        Body::from(r#"{"model":"gpt-5.6-sol","input":[]}"#),
+        std::time::Instant::now(),
+        CodexOperation::Responses,
+    )
+    .instrument(span)
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("a body over the limit must be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.response.status(),
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE
+    );
+    let fields = captured.0.lock().unwrap();
+    assert_eq!(
+        fields.get("shunt.client_kind").map(String::as_str),
+        Some("codex")
+    );
+    assert_eq!(
+        fields.get("shunt.managed").map(String::as_str),
+        Some("false")
+    );
+}

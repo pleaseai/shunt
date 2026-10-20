@@ -211,6 +211,10 @@ async fn forward(
         .to_string(),
         response: Box::new(err.into_response()),
     })?;
+    // Recorded as soon as the caller is authenticated, so a request rejected
+    // while its body is read (413, an interrupted upload) still carries the
+    // attribution on its span.
+    let attribution = inbound_attribution(&headers);
 
     let max_request_bytes = state.config.server.limits.max_request_bytes;
     if crate::http_tuning::content_length_exceeds(&headers, max_request_bytes) {
@@ -240,10 +244,29 @@ async fn forward(
     let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id.clone());
     match operation {
         CodexOperation::Responses => {
-            forward_turn(state, None, pool_key, session_id, headers, body, started_at).await
+            forward_turn(
+                state,
+                None,
+                pool_key,
+                session_id,
+                headers,
+                attribution,
+                body,
+                started_at,
+            )
+            .await
         }
         CodexOperation::AlphaSearch => {
-            search::forward(state, provider, pool_key, headers, body, started_at).await
+            search::forward(
+                state,
+                provider,
+                pool_key,
+                headers,
+                attribution,
+                body,
+                started_at,
+            )
+            .await
         }
     }
 }
@@ -298,12 +321,14 @@ pub(crate) async fn authenticate_inbound(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn forward_turn(
     state: AppState,
     model: Option<String>,
     pool_key: Option<String>,
     session_id: Option<String>,
     headers: HeaderMap,
+    attribution: ClientAttribution,
     body: Bytes,
     started_at: Instant,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
@@ -360,7 +385,6 @@ pub(crate) async fn forward_turn(
     };
 
     crate::observability::record_requested_model(&model_name);
-    let attribution = inbound_attribution(&headers);
 
     let (provider, result) = match matched {
         Some(route) => {

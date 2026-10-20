@@ -72,10 +72,10 @@ pub(super) async fn forward(
     provider: String,
     pool_key: Option<String>,
     headers: HeaderMap,
+    attribution: crate::client_attribution::ClientAttribution,
     body: Bytes,
     started_at: Instant,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
-    let attribution = super::inbound_attribution(&headers);
     let route = Route {
         provider: provider.clone(),
         adapter: AdapterKind::Responses,

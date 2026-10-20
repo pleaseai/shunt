@@ -13,7 +13,7 @@ use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
 use crate::{
-    codex_endpoint::{forward_turn, pool_sticky_key},
+    codex_endpoint::{forward_turn, inbound_attribution, pool_sticky_key},
     server::AppState,
 };
 
@@ -164,8 +164,18 @@ pub(super) async fn run_turn(context: TurnContext) {
         headers.remove(admin_auth.header());
     }
     let started_at = Instant::now();
+    // A WebSocket turn has no request span, so this records nothing there; it
+    // still tags the turn's metric samples (`docs/otlp-client-attribution.md`).
+    let attribution = inbound_attribution(&headers);
     let dispatch_res = forward_turn(
-        state, model, pool_key, session_id, headers, body, started_at,
+        state,
+        model,
+        pool_key,
+        session_id,
+        headers,
+        attribution,
+        body,
+        started_at,
     )
     .await;
 

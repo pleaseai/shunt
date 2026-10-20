@@ -214,12 +214,17 @@ pushed `OTEL_*` environment. Together they separate shunt's server-derived
 series from a client's own `claude_code.*` OTLP export, so a dashboard can take
 `claude_code.*` where it exists and `shunt.*{managed="false"}` everywhere else
 without double counting; see [`otlp-client-attribution.md`](otlp-client-attribution.md).
+That filter assumes the backend receives the managed clients' `claude_code.*`
+metrics, relayed through a `[server.gateway.telemetry].forward_to` destination
+with `metrics` on or exported by the clients directly. When it does not, read
+`shunt.*` across both `managed` values instead.
 A judge call a `[models.router]` entry makes (`caller="router"`) carries the
 originating turn's `client_kind` but is always `managed="false"`: it is shunt's
 own traffic, which no client exporter reports. The inbound Codex endpoint
 authenticates only `[server.auth]`, so its requests are always
 `managed="false"`. The same two values are recorded on the request span as
-`shunt.client_kind` and `shunt.managed`.
+`shunt.client_kind` and `shunt.managed`. An inbound Codex WebSocket turn has no
+request span, so its attribution appears on the metrics only.
 
 **Routing precedence** (`src/routing.rs`): matching `[models.upstream_model]` entry → exact
 `[[routes]]` match → `[[route_prefixes]]` prefix match → `server.default_provider`. A model
