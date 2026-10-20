@@ -34,7 +34,8 @@ pub use window::{months_back_start, reset_label, window, Window};
 pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Reserved principal for requests with no client identity whose admission
