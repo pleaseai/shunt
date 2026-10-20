@@ -200,7 +200,16 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let routes = routing::resolve_target_chain(&request.state.config, target, request.router_id);
+    let mut routes =
+        routing::resolve_target_chain(&request.state.config, target, request.router_id);
+    // This dispatch does not re-enter `proxy::forward`, so the capability
+    // filter has to run here or a later fallback the adapter cannot serve
+    // is attempted before a compatible one.
+    crate::proxy::capability::filter_fallbacks(
+        &mut routes,
+        &request.state.config,
+        request.body.json(),
+    );
     let captured = tokio::time::timeout(bounds.gated_max_duration, async {
         // A streaming turn the live path would send through the committed
         // chain stream takes it here too, so a first route that fails before
