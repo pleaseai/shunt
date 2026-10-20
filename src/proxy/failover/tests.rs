@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -846,6 +847,7 @@ async fn an_early_committed_streaming_request_samples_metrics_at_classification(
         .mount(&server)
         .await;
     let config = single_route_config("loop-metrics-probe", "loop-metrics-model", server.uri());
+    let _env_lock = crate::config::test_env_lock();
     let _env = crate::auth::shared::EnvVarGuard::set("loop-metrics-probe_key", "probe");
     let (status, response) = forward_streaming_turn(config, "loop-metrics-model").await;
     assert_eq!(status, StatusCode::OK);
@@ -888,6 +890,7 @@ async fn an_early_committed_streaming_request_records_the_classified_status() {
         "loop-metrics-fail-model",
         server.uri(),
     );
+    let _env_lock = crate::config::test_env_lock();
     let _env = crate::auth::shared::EnvVarGuard::set("loop-metrics-fail-probe_key", "probe");
     let (status, response) = forward_streaming_turn(config, "loop-metrics-fail-model").await;
     assert_eq!(
