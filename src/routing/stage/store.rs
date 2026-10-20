@@ -41,13 +41,16 @@ use crate::routing::random::DrawState;
 use decide::{evict, fingerprint, is_live, resolve};
 use entries::{session_key, Entries, PinScope, SessionKey, StageSession};
 
-// Re-exported for the two builds that actually read the caps: `tests` below
-// (via `use super::*`) and `bench_support` behind the `bench` feature. The
-// default build compiles neither, and an ungated re-export there is an
+// Re-exported only for the builds that read each cap: `tests` below (via
+// `use super::*`) reads the session cap, and `bench_support` behind the
+// `bench` feature reads both. A re-export no compiled code reads is an
 // `unused_imports` error under CI's `-D warnings` (the `Test default build
-// (no ui feature)` job), which `--all-features` runs cannot see.
+// (no ui feature)` job), which `--all-features` runs cannot see — so the child
+// cap, which `tests` does not read, is gated on `bench` alone.
+#[cfg(feature = "bench")]
+pub(crate) use entries::MAX_TRACKED_CHILD_PINS;
 #[cfg(any(test, feature = "bench"))]
-pub(crate) use entries::{MAX_TRACKED_CHILD_PINS, MAX_TRACKED_SESSIONS};
+pub(crate) use entries::MAX_TRACKED_SESSIONS;
 
 /// A pin [`StageRouterStore::apply`] prepared but has not written.
 ///
