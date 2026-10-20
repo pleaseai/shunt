@@ -403,7 +403,7 @@ impl SignatureWrap {
                     edge[..carried].last().copied(),
                 )
             {
-                self.fail(&mut out, true);
+                self.fail(&mut out, true, SKIPPED_KEY_MESSAGE);
                 return out;
             }
             match end {
@@ -442,7 +442,7 @@ impl SignatureWrap {
                 None => out.extend_from_slice(frame),
             }
             if self.closed {
-                self.fail(&mut out, false);
+                self.fail(&mut out, false, BOUND_MESSAGE);
                 return out;
             }
             start = end;
@@ -465,7 +465,7 @@ impl SignatureWrap {
                 self.scanned = 0;
                 self.skipping = true;
             } else if self.pending.len() + self.withheld > self.max_signature {
-                self.fail(&mut out, false);
+                self.fail(&mut out, false, BOUND_MESSAGE);
             }
         }
         out
@@ -488,8 +488,11 @@ impl SignatureWrap {
     /// Fail closed: drop every withheld byte, append the error event to `out`,
     /// and emit nothing after it. `mid_frame` is set when part of a frame has
     /// already reached the client, which a blank line then terminates so the
-    /// error is not read as the rest of that frame.
-    fn fail(&mut self, out: &mut Vec<u8>, mid_frame: bool) {
+    /// error is not read as the rest of that frame. `message` is the error's
+    /// reason: [`BOUND_MESSAGE`] when a signature outgrew `max_signature`,
+    /// [`SKIPPED_KEY_MESSAGE`] when a signature key turned up in a frame
+    /// already being forwarded unread. It never carries upstream bytes.
+    fn fail(&mut self, out: &mut Vec<u8>, mid_frame: bool, message: &str) {
         self.closed = true;
         self.pending = Vec::new();
         self.scanned = 0;
@@ -505,7 +508,7 @@ impl SignatureWrap {
             "type": "error",
             "error": {
                 "type": "api_error",
-                "message": "an upstream thinking signature exceeded the gateway's signature bound",
+                "message": message,
             },
         });
         out.extend_from_slice(format!("event: error\ndata: {error}\n\n").as_bytes());
@@ -588,6 +591,10 @@ impl SignatureWrap {
     }
 }
 
+const BOUND_MESSAGE: &str = "an upstream thinking signature exceeded the gateway's signature bound";
+const SKIPPED_KEY_MESSAGE: &str =
+    "an upstream frame carried a thinking signature past the gateway's frame bound";
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
@@ -604,20 +611,22 @@ fn event_boundary(buf: &[u8]) -> Option<usize> {
         .map(|i| i + 1)
 }
 
-/// Whether `buf` holds a [`SIGNATURE_KEY`] whose opening quote is not escaped.
+/// Whether `buf` holds a [`SIGNATURE_KEY`] whose opening quote is not escaped
+/// and not in value position.
 ///
 /// `before` is the byte preceding `buf`, when there is one. Inside a JSON
 /// string the word can only appear quoted as `\"signature\"`, which the key
 /// does not match, or as a string ending `\"signature`, whose own closing
 /// quote completes the eleven bytes after a backslash. Both are text — the
 /// prose of a delta — and not a key, whose opening quote follows `{`, `,` or
-/// whitespace instead.
+/// whitespace instead. A match right after `:` or `[` is a string value that
+/// happens to read `signature` (`"mode":"signature"`), not a key.
 fn has_signature_key(buf: &[u8], before: Option<u8>) -> bool {
     buf.windows(SIGNATURE_KEY.len())
         .enumerate()
         .any(|(i, window)| {
             let preceding = if i == 0 { before } else { Some(buf[i - 1]) };
-            window == SIGNATURE_KEY && preceding != Some(b'\\')
+            window == SIGNATURE_KEY && !matches!(preceding, Some(b'\\' | b':' | b'['))
         })
 }
 

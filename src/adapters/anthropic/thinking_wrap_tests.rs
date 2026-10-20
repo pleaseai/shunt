@@ -625,6 +625,10 @@ async fn a_signature_key_in_a_skipped_frame_fails_closed() {
             "cut {cut}: the frame was being forwarded"
         );
         assert_failed_closed(&out);
+        assert!(
+            out.contains("past the gateway's frame bound"),
+            "cut {cut}: {out}"
+        );
     }
 }
 
@@ -666,6 +670,47 @@ async fn a_text_frame_mentioning_signature_is_not_mistaken_for_one() {
         assert!(
             out.starts_with(&big),
             "cut {cut}: the text frame passes verbatim"
+        );
+        assert!(!out.contains("event: error"), "cut {cut}: {out}");
+        assert_eq!(
+            signature_deltas(&out).len(),
+            1,
+            "cut {cut}: framing resumes"
+        );
+    }
+}
+
+/// A string value reading `signature` is not a key. An oversized non-thinking
+/// frame carrying `"mode":"signature"` passes byte-identical and framing
+/// resumes, wherever the chunks cut it, including right before the value's
+/// opening quote.
+#[tokio::test]
+async fn a_signature_string_value_is_not_mistaken_for_a_key() {
+    let big = format!(
+        "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\",\"input\":{{\"q\":\"{}\",\"mode\":\"signature\"}}}}}}\n\n",
+        "x".repeat(300)
+    );
+    let value_at = big.find(":\"signature\"").unwrap() + 1;
+    let rest = format!(
+        "{}{}{}",
+        thinking_start(2),
+        signature_delta(2, "SIG"),
+        block_stop(2)
+    );
+    for cut in [value_at - 3, value_at, value_at + 1, value_at + 6] {
+        let out = collect_within(
+            vec![
+                chunk(&big[..200]),
+                chunk(&big[200..cut]),
+                chunk(&format!("{}{rest}", &big[cut..])),
+            ],
+            Some(THIRD_PARTY),
+            64,
+        )
+        .await;
+        assert!(
+            out.starts_with(&big),
+            "cut {cut}: the tool_use frame passes verbatim"
         );
         assert!(!out.contains("event: error"), "cut {cut}: {out}");
         assert_eq!(
