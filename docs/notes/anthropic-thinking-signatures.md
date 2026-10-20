@@ -148,11 +148,18 @@ byte cap when that is smaller. A signature is an encrypted copy of the full
 reasoning (see above), so it cannot be assumed to stay small, and a
 signature-bearing frame past the frame bound is held to its boundary rather
 than forwarded. Past the signature bound, or when a `"signature"` key turns up
-inside a frame already being forwarded unread, the stream fails closed: the
+inside a frame already being forwarded unread, the stream fails closed (a key
+is recognised by the `:` that follows it after at most four spaces or tabs; a
+key with a longer gap, or with its `:` on the next `data:` line, is an
+accepted residual and is not recognised): the
 withheld bytes are dropped, the client receives an Anthropic-shape `error`
 event (`api_error`), and nothing follows it. The raw signature is never
 forwarded on that path, nor when the upstream ends inside a signature-bearing
-frame: that incomplete frame is dropped. An event whose JSON
+frame: that incomplete frame is dropped. In the second case the front of the
+frame has already reached the client, and the blank line that ends it before
+the `error` event dispatches that truncated event too. A client that parses
+each event's data as JSON, as the Anthropic SDKs do, therefore reports a parse
+error first rather than the `error` event's message. An event whose JSON
 spans several `data:` lines is joined with `\n`, as the SSE spec requires,
 before it is parsed, here and in the `message_start` model-alias rewrite; a
 rewritten event is emitted on one `data:` line.

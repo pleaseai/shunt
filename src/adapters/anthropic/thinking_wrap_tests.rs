@@ -821,6 +821,92 @@ async fn a_skipped_key_whose_colon_arrives_next_chunk_fails_closed() {
     }
 }
 
+/// An empty `signature_delta` withholds nothing, so it opens no entry: empty
+/// deltas across many indices, never stopped, would otherwise grow the map
+/// with nothing counted against `max_signature`. The map is inspected
+/// directly because the output is the same either way. A real signature on
+/// another index still wraps.
+#[test]
+fn an_empty_signature_fragment_opens_no_entry() {
+    let mut wrap = SignatureWrap::new(THIRD_PARTY.to_string(), 64 * 1024, MAX_SIGNATURE_BYTES);
+    let mut empties = String::new();
+    for index in 0..50 {
+        empties.push_str(&signature_delta(index, ""));
+    }
+    assert_eq!(wrap.push(empties.as_bytes()), Vec::<u8>::new());
+    assert!(wrap.signatures.is_empty(), "{:?}", wrap.signatures.len());
+    assert_eq!(wrap.withheld, 0);
+
+    let real = format!(
+        "{}{}{}",
+        thinking_start(50),
+        signature_delta(50, "SIG"),
+        block_stop(50)
+    );
+    let out = String::from_utf8(wrap.push(real.as_bytes())).unwrap();
+    assert_eq!(
+        signature_deltas(&out)
+            .into_iter()
+            .map(|(index, signature)| (index, unwrap_upstream_signature(&signature)))
+            .collect::<Vec<_>>(),
+        vec![(50, Some((THIRD_PARTY.to_string(), "SIG".to_string())))]
+    );
+    // Stopping an index that withheld nothing leaves its stop untouched.
+    assert_eq!(
+        wrap.push(block_stop(0).as_bytes()),
+        block_stop(0).into_bytes()
+    );
+}
+
+/// A frame held only because its match was undecided as it crossed
+/// `max_frame` is released once the next bytes show the match to be a value:
+/// forwarded and skipped like any unsigned frame, not held to its boundary
+/// and failed closed when it outgrows `max_signature`.
+#[tokio::test]
+async fn a_provisional_hold_is_released_when_the_match_proves_a_value() {
+    let big = format!(
+        "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\",\"input\":{{\"q\":\"{}\",\"mode\":\"signature\",\"more\":\"{}\"}}}}}}\n\n",
+        "x".repeat(50),
+        "y".repeat(400)
+    );
+    let match_at = big.find("\"signature\"").unwrap();
+    let rest = format!(
+        "{}{}{}",
+        thinking_start(2),
+        signature_delta(2, "SIG"),
+        block_stop(2)
+    );
+    // The cut leaves the first chunk under `max_signature`, so only a hold
+    // kept past the match being decided can reach it.
+    assert!(match_at + 13 < 256);
+    let n = big.len();
+    // Right after the value's closing quote (undecided), and two bytes on.
+    for cut in [match_at + 11, match_at + 13] {
+        let out = collect_bounded(
+            vec![
+                chunk(&big[..cut]),
+                // Past `max_signature`, still short of the boundary.
+                chunk(&big[cut..n - 2]),
+                chunk(&format!("{}{rest}", &big[n - 2..])),
+            ],
+            Some(THIRD_PARTY),
+            64,
+            256,
+        )
+        .await;
+        assert!(
+            out.starts_with(&big),
+            "cut {cut}: the tool_use frame passes verbatim"
+        );
+        assert!(!out.contains("event: error"), "cut {cut}: {out}");
+        assert_eq!(
+            signature_deltas(&out).len(),
+            1,
+            "cut {cut}: framing resumes"
+        );
+    }
+}
+
 /// An event whose JSON spans two `data:` lines is valid SSE; read line by
 /// line its signature would not parse and would pass through raw.
 #[tokio::test]

@@ -84,7 +84,8 @@ const SIGNATURE_KEY: &[u8] = b"\"signature\"";
 
 /// Most spaces or tabs a key may have between its closing quote and its `:`.
 /// A match is a key only when the `:` follows within this gap, which is what
-/// tells `"signature":` from a string value reading `signature`.
+/// tells `"signature":` from a string value reading `signature`. A key with a
+/// longer gap is valid JSON but is not recognised, an accepted residual.
 const MAX_KEY_GAP: usize = 4;
 
 /// Bytes of the forwarded frame carried between chunks while skipping: the
@@ -338,10 +339,12 @@ struct SignatureWrap {
     /// How far into `pending` is known to hold no event boundary, so a large
     /// frame arriving in small chunks is searched once, not once per chunk.
     scanned: usize,
-    /// Set while `pending` has outgrown `max_frame` but carries a
-    /// `"signature"` key, so it is held to its boundary instead of forwarded.
-    /// Its bytes count against `max_signature`; the key is looked for once.
-    holding: bool,
+    /// Whether `pending`, having outgrown `max_frame`, is held to its boundary
+    /// instead of forwarded, and how sure that is ([`Hold`]). A held frame's
+    /// bytes count against `max_signature` either way. The key is looked for
+    /// once, as the frame crosses `max_frame`; a provisional hold re-decides
+    /// only its own match, and rescans only past it, as more bytes arrive.
+    hold: Hold,
     /// Set after an oversized frame was forwarded unfinished: the bytes up to
     /// its boundary are passed through without being framed, watched only for
     /// a `"signature"` key and for that boundary.
@@ -373,7 +376,7 @@ impl SignatureWrap {
             max_signature,
             pending: Vec::new(),
             scanned: 0,
-            holding: false,
+            hold: Hold::Off,
             skipping: false,
             tail: Vec::new(),
             signatures: HashMap::new(),
@@ -462,18 +465,14 @@ impl SignatureWrap {
         }
         if start > 0 {
             // The frame being held, if any, has completed.
-            self.holding = false;
+            self.hold = Hold::Off;
         }
         pending.drain(..start);
         self.pending = pending;
         self.scanned = self.pending.len();
         if self.pending.len() > self.max_frame {
-            // A key whose `:` has not arrived yet counts: holding a frame
-            // that turns out to carry none is bounded and harmless.
-            if !self.holding && has_signature_key(&self.pending, None, Undecided::Key) {
-                self.holding = true;
-            }
-            if !self.holding {
+            self.hold = self.decide_hold();
+            if self.hold == Hold::Off {
                 self.tail = self.pending[self.pending.len().saturating_sub(SKIP_TAIL)..].to_vec();
                 out.append(&mut self.pending);
                 self.scanned = 0;
@@ -483,6 +482,32 @@ impl SignatureWrap {
             }
         }
         out
+    }
+
+    /// Whether the oversized incomplete frame in `pending` is to be held.
+    ///
+    /// A match whose `:` has not arrived yet holds the frame provisionally:
+    /// holding a frame that turns out to carry no key costs only time, while
+    /// forwarding one that does would leak its signature. Each later push
+    /// re-decides that match alone. Once it proves a value, the frame is
+    /// searched again from just past it — the bytes before it held no key — and,
+    /// with no key there either, it is forwarded and skipped like any frame
+    /// without one, so it is buffered no longer than its key stays undecided.
+    fn decide_hold(&self) -> Hold {
+        let from = match self.hold {
+            Hold::Off => 0,
+            Hold::Confirmed => return Hold::Confirmed,
+            Hold::Provisional(at) => match key_follows(&self.pending[at + SIGNATURE_KEY.len()..]) {
+                Some(true) => return Hold::Confirmed,
+                Some(false) => at + 1,
+                None => return Hold::Provisional(at),
+            },
+        };
+        match find_signature_key(&self.pending, from) {
+            KeyMatch::Key => Hold::Confirmed,
+            KeyMatch::Undecided(at) => Hold::Provisional(at),
+            KeyMatch::Absent => Hold::Off,
+        }
     }
 
     /// The stream ended: whatever incomplete frame is held goes out verbatim,
@@ -510,7 +535,7 @@ impl SignatureWrap {
         self.closed = true;
         self.pending = Vec::new();
         self.scanned = 0;
-        self.holding = false;
+        self.hold = Hold::Off;
         self.skipping = false;
         self.tail = Vec::new();
         self.signatures = HashMap::new();
@@ -530,7 +555,15 @@ impl SignatureWrap {
 
     /// Withhold `fragment` as part of block `index`'s signature, or fail closed
     /// (`false`) when that would take the stream past `max_signature`.
+    ///
+    /// An empty fragment withholds nothing and opens no entry, as an empty
+    /// start signature does not: otherwise `"signature":""` deltas across
+    /// distinct indices, never stopped, would grow `signatures` with nothing
+    /// counted against the bound.
     fn withhold(&mut self, index: u64, fragment: &str) -> bool {
+        if fragment.is_empty() {
+            return true;
+        }
         if self.withheld + fragment.len() > self.max_signature {
             self.closed = true;
             return false;
@@ -653,8 +686,9 @@ enum Undecided {
 /// not the `signature` key; nor is `\"signature\"` inside a string, which the
 /// eleven bytes never match.
 ///
-/// A key whose `:` is on the next `data:` line (`"signature"\ndata: :`) is not
-/// recognised. That is valid SSE, but splitting there is an accepted residual.
+/// Two valid forms are not recognised, as accepted residuals: a key followed
+/// by more than [`MAX_KEY_GAP`] spaces or tabs before its `:`, and a key whose
+/// `:` is on the next `data:` line (`"signature"\ndata: :`).
 fn has_signature_key(buf: &[u8], before: Option<u8>, undecided: Undecided) -> bool {
     buf.windows(SIGNATURE_KEY.len())
         .enumerate()
@@ -668,6 +702,50 @@ fn has_signature_key(buf: &[u8], before: Option<u8>, undecided: Undecided) -> bo
                 Undecided::NotKey => false,
             })
         })
+}
+
+/// Whether an oversized incomplete frame is being held ([`SignatureWrap::hold`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    /// Not held: the frame is still under `max_frame`, or carries no key.
+    Off,
+    /// Held on a match at this offset in `pending` whose `:` has not arrived:
+    /// the next bytes may yet show it to be a string value.
+    Provisional(usize),
+    /// Held on a confirmed `"signature"` key, until the frame completes.
+    Confirmed,
+}
+
+/// What [`find_signature_key`] found.
+enum KeyMatch {
+    /// A confirmed key.
+    Key,
+    /// A match at this offset whose lookahead runs past the end of the bytes.
+    /// Nothing can follow it: an undecided match leaves fewer bytes after it
+    /// than another match needs.
+    Undecided(usize),
+    /// No key, and no match still open.
+    Absent,
+}
+
+/// The first [`SIGNATURE_KEY`] used as a key in `buf`, among matches starting
+/// at or after `from`, by the rule [`has_signature_key`] states.
+fn find_signature_key(buf: &[u8], from: usize) -> KeyMatch {
+    let Some(searched) = buf.get(from..) else {
+        return KeyMatch::Absent;
+    };
+    for (offset, window) in searched.windows(SIGNATURE_KEY.len()).enumerate() {
+        let at = from + offset;
+        if window != SIGNATURE_KEY || at.checked_sub(1).map(|i| buf[i]) == Some(b'\\') {
+            continue;
+        }
+        match key_follows(&buf[at + SIGNATURE_KEY.len()..]) {
+            Some(true) => return KeyMatch::Key,
+            Some(false) => {}
+            None => return KeyMatch::Undecided(at),
+        }
+    }
+    KeyMatch::Absent
 }
 
 /// Whether the bytes after a [`SIGNATURE_KEY`] make it a key: `Some(true)`
