@@ -59,6 +59,8 @@ pub async fn post(
         session_id = span_session_id,
         gen_ai.request.model = tracing::field::Empty,
         shunt.provider = tracing::field::Empty,
+        shunt.client_kind = tracing::field::Empty,
+        shunt.managed = tracing::field::Empty,
         http.response.status_code = tracing::field::Empty,
         otel.status_code = tracing::field::Empty
     );

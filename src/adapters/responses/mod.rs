@@ -272,6 +272,7 @@ async fn forward(
         tool_search_native,
         stop_sequences,
         response_bounds,
+        attribution: body.attribution(),
     };
     let upstream_body = Arc::new(translate_request_value(
         request_json,
@@ -550,6 +551,7 @@ pub(crate) async fn chain_attempt(
         // This path is streaming by construction, so nothing here buffers a
         // whole reply for the bounds to bound.
         response_bounds: crate::adapters::ResponseBounds::default(),
+        attribution: body.attribution(),
     };
     let upstream_body = Arc::new(translate_request_value(
         request_json,
@@ -627,6 +629,7 @@ pub(crate) async fn chain_attempt(
                 record_metrics: false,
                 started_at: None,
                 delegation: delegation.clone(),
+                attribution: turn.attribution,
             });
             // Race the machine build — which awaits the bounded token
             // estimate — against the pool's first poll so account admission,
@@ -774,6 +777,7 @@ pub(crate) async fn chain_attempt(
         upstream_body: upstream_body.clone(),
         auth,
         codex_quota_account,
+        attribution: turn.attribution,
     };
     // Start the route-gated estimate before the send so the encode overlaps
     // the upstream round-trip instead of serializing after the headers

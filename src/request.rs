@@ -64,6 +64,14 @@ pub(crate) struct RequestBody {
     /// to scope chatgpt-flavor defaults that exist to mirror what the client
     /// itself sends.
     client_turn: bool,
+    /// The `client_kind`/`managed` pair every per-request metric sample of this
+    /// body's dispatch carries (`docs/otlp-client-attribution.md`). Armed by the
+    /// proxy entry from the original inbound headers and the credential it
+    /// authenticated; a judge call sets its own. It rides the body because the
+    /// body is what reaches the adapters — and the response streams they
+    /// commit, which are polled outside the request task — so an
+    /// adapter-owned `shunt.requests` sample reads it from here.
+    attribution: crate::client_attribution::ClientAttribution,
 }
 
 struct TopLevelValueVisitor;
@@ -188,6 +196,7 @@ impl RequestBody {
             json: Arc::new(json),
             compaction: CompactionMark::default(),
             client_turn: false,
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
         })
     }
 
@@ -222,6 +231,22 @@ impl RequestBody {
     /// Whether this body is the client's own turn.
     pub(crate) fn is_client_turn(&self) -> bool {
         self.client_turn
+    }
+
+    /// Set the attribution this body's metric samples carry (called once per
+    /// inbound request after authentication, and by a judge call for its own
+    /// body).
+    pub(crate) fn set_attribution(
+        &mut self,
+        attribution: crate::client_attribution::ClientAttribution,
+    ) {
+        self.attribution = attribution;
+    }
+
+    /// The attribution this body's metric samples carry;
+    /// `ClientAttribution::UNATTRIBUTED` until one is set.
+    pub(crate) fn attribution(&self) -> crate::client_attribution::ClientAttribution {
+        self.attribution
     }
 
     pub(crate) fn into_raw(self) -> Vec<u8> {

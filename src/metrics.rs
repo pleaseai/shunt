@@ -17,10 +17,12 @@
 //! metrics count inbound OTLP telemetry payloads by signal and ingest outcome.
 //!
 //! Attributes stay low-cardinality (provider/model/status/outcome/kind/window/
-//! reason/signal, plus the sanitized, cardinality-capped `event` on
-//! `shunt.codex_client_events`) — never client names, account ids, session ids,
-//! or anything else request-derived. Token metrics currently cover streaming
-//! responses only; non-streaming token usage is intentionally out of scope.
+//! reason/signal, the closed `client_kind`/`managed` pair the five per-request
+//! series carry — see `docs/otlp-client-attribution.md` — plus the sanitized,
+//! cardinality-capped `event` on `shunt.codex_client_events`) — never client
+//! names, account ids, session ids, or anything else request-derived. Token
+//! metrics currently cover streaming responses only; non-streaming token usage
+//! is intentionally out of scope.
 
 use std::{
     collections::HashMap,
@@ -32,6 +34,8 @@ use opentelemetry::{
     KeyValue,
 };
 use sentry::protocol::Unit;
+
+use crate::client_attribution::ClientAttribution;
 
 /// OTel instruments on the global meter. Created lazily on first record so the
 /// meter provider (installed at startup, before any request) is already in
@@ -222,18 +226,23 @@ fn otel_instruments() -> &'static OtelInstruments {
 }
 
 /// Record time from request start to the first successfully forwarded SSE body
-/// chunk. Non-streaming responses do not call this function. Emitted to Sentry
-/// and OpenTelemetry; each sink is inert unless configured.
-pub fn record_ttft(provider: &str, model: &str, milliseconds: f64) {
+/// chunk. `attribution` carries the closed `client_kind`/`managed` pair.
+/// Non-streaming responses do not call this function. Emitted to Sentry and
+/// OpenTelemetry; each sink is inert unless configured.
+pub fn record_ttft(provider: &str, model: &str, attribution: ClientAttribution, milliseconds: f64) {
     sentry::metrics::distribution("shunt.ttft", milliseconds)
         .unit(Unit::Millisecond)
         .attribute("provider", provider.to_owned())
         .attribute("model", model.to_owned())
+        .attribute("client_kind", attribution.client_kind_str())
+        .attribute("managed", attribution.managed)
         .capture();
 
     let attributes = [
         KeyValue::new("provider", provider.to_owned()),
         KeyValue::new("model", model.to_owned()),
+        KeyValue::new("client_kind", attribution.client_kind_str()),
+        KeyValue::new("managed", attribution.managed),
     ];
     otel_instruments().ttft.record(milliseconds, &attributes);
 }
@@ -241,17 +250,26 @@ pub fn record_ttft(provider: &str, model: &str, milliseconds: f64) {
 /// Record the final outcome of one SSE response stream. `outcome` is one of
 /// `completed`, `error_event`, `upstream_cut`, or `client_disconnect`; callers
 /// guarantee exactly one record per stream.
-pub fn record_stream_outcome(provider: &str, model: &str, outcome: &'static str) {
+pub fn record_stream_outcome(
+    provider: &str,
+    model: &str,
+    attribution: ClientAttribution,
+    outcome: &'static str,
+) {
     sentry::metrics::counter("shunt.stream_outcome", 1)
         .attribute("provider", provider.to_owned())
         .attribute("model", model.to_owned())
         .attribute("outcome", outcome.to_owned())
+        .attribute("client_kind", attribution.client_kind_str())
+        .attribute("managed", attribution.managed)
         .capture();
 
     let attributes = [
         KeyValue::new("provider", provider.to_owned()),
         KeyValue::new("model", model.to_owned()),
         KeyValue::new("outcome", outcome),
+        KeyValue::new("client_kind", attribution.client_kind_str()),
+        KeyValue::new("managed", attribution.managed),
     ];
     otel_instruments().stream_outcome.add(1, &attributes);
 }
@@ -259,17 +277,27 @@ pub fn record_stream_outcome(provider: &str, model: &str, outcome: &'static str)
 /// Add one last-seen token count from a completed or interrupted SSE stream.
 /// `kind` is one of `input`, `output`, `cache_read`, or `cache_creation`; absent
 /// usage fields are not emitted by the stream observer.
-pub fn record_stream_tokens(provider: &str, model: &str, kind: &'static str, count: u64) {
+pub fn record_stream_tokens(
+    provider: &str,
+    model: &str,
+    attribution: ClientAttribution,
+    kind: &'static str,
+    count: u64,
+) {
     sentry::metrics::counter("shunt.tokens", count as f64)
         .attribute("provider", provider.to_owned())
         .attribute("model", model.to_owned())
         .attribute("kind", kind.to_owned())
+        .attribute("client_kind", attribution.client_kind_str())
+        .attribute("managed", attribution.managed)
         .capture();
 
     let attributes = [
         KeyValue::new("provider", provider.to_owned()),
         KeyValue::new("model", model.to_owned()),
         KeyValue::new("kind", kind),
+        KeyValue::new("client_kind", attribution.client_kind_str()),
+        KeyValue::new("managed", attribution.managed),
     ];
     otel_instruments().tokens.add(count, &attributes);
 }
@@ -439,13 +467,20 @@ impl ContinuationOutcome {
 
 /// Record one proxied inference request: a `shunt.requests` count and a
 /// `shunt.latency` distribution, both tagged with provider, model (the
-/// client-requested id), and the response status code. Emitted to Sentry and
+/// client-requested id), the response status code, and the requesting
+/// client's `client_kind`/`managed` attribution. Emitted to Sentry and
 /// OpenTelemetry; each sink is inert unless configured.
 ///
 /// Client traffic. An internal call a driven `[models.router]` makes goes
 /// through [`record_proxied_request_as`] with `caller = "router"`.
-pub fn record_proxied_request(provider: &str, model: &str, status: u16, latency_ms: f64) {
-    record_proxied_request_as("client", provider, model, status, latency_ms);
+pub fn record_proxied_request(
+    provider: &str,
+    model: &str,
+    attribution: ClientAttribution,
+    status: u16,
+    latency_ms: f64,
+) {
+    record_proxied_request_as("client", provider, model, attribution, status, latency_ms);
 }
 
 /// [`record_proxied_request`] with the `caller` attribute spelled out.
@@ -455,10 +490,16 @@ pub fn record_proxied_request(provider: &str, model: &str, status: u16, latency_
 /// pools, so both belong in the same series — but an operator reading request
 /// volume or latency needs to know which half is the gateway's own. A closed
 /// two-value set, so it costs one dimension of two.
+///
+/// `attribution` is independent of `caller`: a judge call carries the
+/// originating turn's `client_kind` but is always `managed = false`, because
+/// no client exporter ever reports shunt's own traffic
+/// (`docs/otlp-client-attribution.md`).
 pub fn record_proxied_request_as(
     caller: &'static str,
     provider: &str,
     model: &str,
+    attribution: ClientAttribution,
     status: u16,
     latency_ms: f64,
 ) {
@@ -467,6 +508,8 @@ pub fn record_proxied_request_as(
         .attribute("model", model.to_owned())
         .attribute("caller", caller)
         .attribute("http.response.status_code", i64::from(status))
+        .attribute("client_kind", attribution.client_kind_str())
+        .attribute("managed", attribution.managed)
         .capture();
     sentry::metrics::distribution("shunt.latency", latency_ms)
         .unit(Unit::Millisecond)
@@ -474,6 +517,8 @@ pub fn record_proxied_request_as(
         .attribute("model", model.to_owned())
         .attribute("caller", caller)
         .attribute("http.response.status_code", i64::from(status))
+        .attribute("client_kind", attribution.client_kind_str())
+        .attribute("managed", attribution.managed)
         .capture();
 
     let attributes = [
@@ -481,6 +526,8 @@ pub fn record_proxied_request_as(
         KeyValue::new("model", model.to_owned()),
         KeyValue::new("caller", caller),
         KeyValue::new("http.response.status_code", i64::from(status)),
+        KeyValue::new("client_kind", attribution.client_kind_str()),
+        KeyValue::new("managed", attribution.managed),
     ];
     let instruments = otel_instruments();
     instruments.requests.add(1, &attributes);
@@ -492,7 +539,13 @@ pub fn record_proxied_request_as(
             .lock()
             .expect("test proxied-request sample lock poisoned");
         let entry = samples
-            .entry((caller, provider.to_owned(), model.to_owned(), status))
+            .entry((
+                caller,
+                attribution,
+                provider.to_owned(),
+                model.to_owned(),
+                status,
+            ))
             .or_default();
         entry.count += 1;
         entry.latencies.push(latency_ms);
@@ -500,7 +553,7 @@ pub fn record_proxied_request_as(
 }
 
 /// One test-observed [`record_proxied_request`] sample: the count and every
-/// latency for one (provider, model, status) key.
+/// latency for one (caller, attribution, provider, model, status) key.
 #[cfg(test)]
 #[derive(Default)]
 struct ProxiedRequestSample {
@@ -509,7 +562,10 @@ struct ProxiedRequestSample {
 }
 
 #[cfg(test)]
-type ProxiedSampleStore = Mutex<HashMap<(&'static str, String, String, u16), ProxiedRequestSample>>;
+type ProxiedSampleKey = (&'static str, ClientAttribution, String, String, u16);
+
+#[cfg(test)]
+type ProxiedSampleStore = Mutex<HashMap<ProxiedSampleKey, ProxiedRequestSample>>;
 
 #[cfg(test)]
 fn test_proxied_samples() -> &'static ProxiedSampleStore {
@@ -527,17 +583,24 @@ pub fn proxied_request_samples_for_tests(
     model: &str,
     status: u16,
 ) -> (u64, Vec<f64>) {
-    // Summed across callers, deliberately: this is the whole-series view its
-    // existing callers have always read, and a judge call is a proxied request
-    // like any other. Use `proxied_request_samples_by_caller_for_tests` to
-    // separate the two halves.
+    // Summed across callers and attributions, deliberately: this is the
+    // whole-series view its existing callers have always read, and a judge call
+    // is a proxied request like any other. Use
+    // `proxied_request_samples_by_caller_for_tests` to separate the two halves.
+    summed_proxied_samples(|(_, _, sample_provider, sample_model, sample_status)| {
+        sample_provider == provider && sample_model == model && *sample_status == status
+    })
+}
+
+/// Sum the count and concatenate the latencies of every sample whose key
+/// `matches`.
+#[cfg(test)]
+fn summed_proxied_samples(matches: impl Fn(&ProxiedSampleKey) -> bool) -> (u64, Vec<f64>) {
     test_proxied_samples()
         .lock()
         .expect("test proxied-request sample lock poisoned")
         .iter()
-        .filter(|((_, sample_provider, sample_model, sample_status), _)| {
-            sample_provider == provider && sample_model == model && *sample_status == status
-        })
+        .filter(|(key, _)| matches(key))
         .fold((0, Vec::new()), |(count, mut latencies), (_, sample)| {
             latencies.extend(sample.latencies.iter().copied());
             (count + sample.count, latencies)
@@ -554,10 +617,39 @@ pub fn proxied_request_samples_by_caller_for_tests(
     model: &str,
     status: u16,
 ) -> (u64, Vec<f64>) {
+    // Summed across attributions, so this keeps the meaning it had before the
+    // `client_kind`/`managed` pair joined the key.
+    summed_proxied_samples(
+        |(sample_caller, _, sample_provider, sample_model, sample_status)| {
+            *sample_caller == caller
+                && sample_provider == provider
+                && sample_model == model
+                && *sample_status == status
+        },
+    )
+}
+
+/// [`proxied_request_samples_by_caller_for_tests`] narrowed further to one
+/// `client_kind`/`managed` attribution, for the tests that must prove a
+/// request's real attribution reached the `shunt.requests` recorder.
+#[cfg(test)]
+pub fn proxied_request_samples_by_attribution_for_tests(
+    caller: &'static str,
+    attribution: ClientAttribution,
+    provider: &str,
+    model: &str,
+    status: u16,
+) -> (u64, Vec<f64>) {
     test_proxied_samples()
         .lock()
         .expect("test proxied-request sample lock poisoned")
-        .get(&(caller, provider.to_owned(), model.to_owned(), status))
+        .get(&(
+            caller,
+            attribution,
+            provider.to_owned(),
+            model.to_owned(),
+            status,
+        ))
         .map_or((0, Vec::new()), |sample| {
             (sample.count, sample.latencies.clone())
         })
@@ -952,11 +1044,21 @@ fn test_overflow_counts() -> &'static Mutex<HashMap<(String, &'static str), u64>
 #[cfg(test)]
 mod tests {
     use super::{
-        judge_call_samples_for_tests, proxied_request_samples_by_caller_for_tests,
-        record_codex_client_event, record_continuation_outcome, record_gateway_telemetry_ingest,
-        record_judge_call, record_pool_rotation, record_pool_utilization, record_proxied_request,
+        judge_call_samples_for_tests, proxied_request_samples_by_attribution_for_tests,
+        proxied_request_samples_by_caller_for_tests, record_codex_client_event,
+        record_continuation_outcome, record_gateway_telemetry_ingest, record_judge_call,
+        record_pool_rotation, record_pool_utilization, record_proxied_request,
         record_proxied_request_as, record_stream_outcome, record_stream_tokens, record_ttft,
-        record_upstream_status, upstream_status_value_for_tests, ContinuationOutcome,
+        record_upstream_status, upstream_status_value_for_tests, ClientAttribution,
+        ContinuationOutcome,
+    };
+    use crate::client_attribution::ClientKind;
+
+    /// A managed Claude Code request — a non-default attribution, so a test
+    /// reading it back cannot pass on `UNATTRIBUTED` alone.
+    const MANAGED_CLAUDE_CODE: ClientAttribution = ClientAttribution {
+        client_kind: ClientKind::ClaudeCode,
+        managed: true,
     };
 
     /// The core opt-in contract: recording a proxied request must never panic,
@@ -966,8 +1068,20 @@ mod tests {
     /// bound). Emission stays a silent no-op when nothing is configured.
     #[test]
     fn record_is_noop_without_sinks() {
-        record_proxied_request("openai", "gpt-5.2", 200, 123.4);
-        record_proxied_request("anthropic", "claude-opus-4-8", 502, 0.0);
+        record_proxied_request(
+            "openai",
+            "gpt-5.2",
+            ClientAttribution::UNATTRIBUTED,
+            200,
+            123.4,
+        );
+        record_proxied_request(
+            "anthropic",
+            "claude-opus-4-8",
+            MANAGED_CLAUDE_CODE,
+            502,
+            0.0,
+        );
     }
 
     /// A consultation is counted per turn that wanted a judge, keyed by model,
@@ -1006,8 +1120,15 @@ mod tests {
     #[test]
     fn the_caller_attribute_separates_a_judge_call_from_a_client_turn() {
         let model = "claude-judge-caller-metric";
-        record_proxied_request("judge", model, 200, 1.0);
-        record_proxied_request_as("router", "judge", model, 200, 2.0);
+        record_proxied_request("judge", model, ClientAttribution::UNATTRIBUTED, 200, 1.0);
+        record_proxied_request_as(
+            "router",
+            "judge",
+            model,
+            ClientAttribution::UNATTRIBUTED,
+            200,
+            2.0,
+        );
 
         let (client, _) =
             proxied_request_samples_by_caller_for_tests("client", "judge", model, 200);
@@ -1017,12 +1138,78 @@ mod tests {
         assert_eq!(router, 1, "the judge call is attributed to the router");
     }
 
+    /// The `client_kind`/`managed` pair a request was recorded with is what
+    /// the `shunt.requests` sample is keyed on: a managed Claude Code turn and
+    /// an unattributed one of the same (provider, model, status) land in two
+    /// series, and the caller-level view still sums both.
+    #[test]
+    fn the_attribution_a_request_carries_reaches_the_requests_recorder() {
+        let model = "claude-attribution-metric";
+        record_proxied_request("anthropic", model, MANAGED_CLAUDE_CODE, 200, 3.0);
+        record_proxied_request(
+            "anthropic",
+            model,
+            ClientAttribution::UNATTRIBUTED,
+            200,
+            4.0,
+        );
+
+        let (managed, latencies) = proxied_request_samples_by_attribution_for_tests(
+            "client",
+            MANAGED_CLAUDE_CODE,
+            "anthropic",
+            model,
+            200,
+        );
+        assert_eq!(
+            managed, 1,
+            "the managed Claude Code turn has its own series"
+        );
+        assert_eq!(latencies, vec![3.0]);
+        let (unattributed, _) = proxied_request_samples_by_attribution_for_tests(
+            "client",
+            ClientAttribution::UNATTRIBUTED,
+            "anthropic",
+            model,
+            200,
+        );
+        assert_eq!(unattributed, 1, "the unattributed turn is not merged in");
+        let (unmanaged_claude_code, _) = proxied_request_samples_by_attribution_for_tests(
+            "client",
+            ClientAttribution {
+                client_kind: ClientKind::ClaudeCode,
+                managed: false,
+            },
+            "anthropic",
+            model,
+            200,
+        );
+        assert_eq!(
+            unmanaged_claude_code, 0,
+            "`managed` is part of the key, not just `client_kind`"
+        );
+        let (caller_total, _) =
+            proxied_request_samples_by_caller_for_tests("client", "anthropic", model, 200);
+        assert_eq!(caller_total, 2, "the caller view sums across attributions");
+    }
+
     /// Stream metrics honor the same opt-in no-op contract.
     #[test]
     fn record_stream_metrics_are_noop_without_sinks() {
-        record_ttft("anthropic", "claude-opus-4-8", 42.0);
-        record_stream_outcome("anthropic", "claude-opus-4-8", "completed");
-        record_stream_tokens("anthropic", "claude-opus-4-8", "input", 123);
+        record_ttft("anthropic", "claude-opus-4-8", MANAGED_CLAUDE_CODE, 42.0);
+        record_stream_outcome(
+            "anthropic",
+            "claude-opus-4-8",
+            MANAGED_CLAUDE_CODE,
+            "completed",
+        );
+        record_stream_tokens(
+            "anthropic",
+            "claude-opus-4-8",
+            ClientAttribution::UNATTRIBUTED,
+            "input",
+            123,
+        );
     }
 
     /// Pool metrics honor the same opt-in no-op contract.

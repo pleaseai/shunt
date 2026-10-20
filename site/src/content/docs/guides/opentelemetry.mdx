@@ -39,7 +39,7 @@ Setting `endpoint = ""` (e.g. `SHUNT_OTEL__ENDPOINT=""`) disables export again w
 
 | Signal | What's exported | Notes |
 | :-- | :-- | :-- |
-| **Traces** | The per-request `proxy_request` span (and `codex_endpoint_request` on the inbound Codex endpoint), tagged with `gen_ai.request.model`, `shunt.provider`, `http.response.status_code`, and `otel.status_code` (`error` on a 5xx response, or on a streaming request that fails mid-stream after a `200` header — an `event: error` frame or a connection cut before a terminal event, issue #287) | Head-based sampling via `sample_ratio`. Low-cardinality; no request/response bodies, headers, or credentials. |
+| **Traces** | The per-request `proxy_request` span (and `codex_endpoint_request` on the inbound Codex endpoint), tagged with `gen_ai.request.model`, `shunt.provider`, `shunt.client_kind`, `shunt.managed`, `http.response.status_code`, and `otel.status_code` (`error` on a 5xx response, or on a streaming request that fails mid-stream after a `200` header — an `event: error` frame or a connection cut before a terminal event, issue #287) | Head-based sampling via `sample_ratio`. Low-cardinality; no request/response bodies, headers, or credentials. |
 | **Metrics** | The low-cardinality series listed below | The same series shunt sends to Sentry when `[sentry] metrics = true`. |
 | **Logs** | shunt's `tracing` log events, bridged to OTLP | The stderr logs are unaffected. |
 
@@ -49,11 +49,11 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 
 | Series | Type | Attributes | Meaning |
 | :-- | :-- | :-- | :-- |
-| `shunt.requests` | Counter | `provider`, `model`, `http.response.status_code`, `caller` | Proxied inference requests. `caller` is `client` for inbound traffic and `router` for a judge call a [`[models.router]`](/reference/configuration/) entry made on the caller's behalf. |
-| `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code`, `caller` | Header latency for streams; full latency otherwise. The committed streaming responses sample from dispatch to attempt classification, since their headers commit before the upstream responds. |
-| `shunt.ttft` | Histogram (ms) | `provider`, `model` | Request start to the first complete non-keepalive SSE frame. |
-| `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome` | One final SSE result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
-| `shunt.tokens` | Counter | `provider`, `model`, `kind` | Last reported streaming token usage (`input`, `output`, `cache_read`, `cache_creation`). Non-streaming usage is not recorded. |
+| `shunt.requests` | Counter | `provider`, `model`, `http.response.status_code`, `caller`, `client_kind`, `managed` | Proxied inference requests. `caller` is `client` for inbound traffic and `router` for a judge call a [`[models.router]`](/reference/configuration/) entry made on the caller's behalf. |
+| `shunt.latency` | Histogram (ms) | `provider`, `model`, `http.response.status_code`, `caller`, `client_kind`, `managed` | Header latency for streams; full latency otherwise. The committed streaming responses sample from dispatch to attempt classification, since their headers commit before the upstream responds. |
+| `shunt.ttft` | Histogram (ms) | `provider`, `model`, `client_kind`, `managed` | Request start to the first complete non-keepalive SSE frame. |
+| `shunt.stream_outcome` | Counter | `provider`, `model`, `outcome`, `client_kind`, `managed` | One final SSE result: `completed`, `error_event`, `upstream_cut`, or `client_disconnect`. |
+| `shunt.tokens` | Counter | `provider`, `model`, `kind`, `client_kind`, `managed` | Last reported streaming token usage (`input`, `output`, `cache_read`, `cache_creation`). Non-streaming usage is not recorded. |
 | `shunt.codex_continuation` | Counter | `provider`, `outcome` | Codex WebSocket continuation hit or fallback. |
 | `shunt.codex_ws_overflow` | Counter | `provider`, `outcome` | Codex WebSocket dedicated overflow connection `opened` or ceiling-`refused` for a concurrent turn (issue #248). |
 | `shunt.codex_client_events` | Counter | `event` | Codex CLI analytics events by sanitized event name; payloads and properties are discarded. |
@@ -70,6 +70,8 @@ Each signal toggles independently via `traces` / `metrics` / `logs`.
 | `shunt.pool.reprobes` | Counter | `provider` | Reprobes committed at first HTTP dispatch for stale near-quota Codex/ChatGPT accounts; WebSocket-enabled providers count inbound HTTP probes only. |
 | `shunt.store.write_failures` | Counter | `subsystem` | Failed writes to the optional [`[store]`](/reference/configuration/#store-optional), by `subsystem`: `pool` (write-behind flush), `spend`, or `gateway` (token endpoint). A failed pool flush is retried on the next 15 second tick unless this process lost the store hold, which stops pool flushing. A failed spend write is reported to the admin caller, and a failed token-endpoint write is reported to the client; a failed background gateway flush has no caller and is only logged. |
 | `shunt.upstream.status` | Gauge | `provider` | Observed [`[server.status]`](/reference/configuration/#serverstatus-optional) Statuspage severity: `0` none, `1` minor, `2` major, `3` critical. A provider currently `unknown` (no signal) is omitted from this series rather than reported as `0`. |
+
+The five per-request series carry two extra attributes. `client_kind` is `claude-code`, `codex`, or `other`, read from the request's own client headers (`x-app`, `originator`, `user-agent`) — the raw header value is never exported. `managed` is `true` only when the request authenticated with a gateway-issued JWT, the credential that also makes a client eligible for the pushed `OTEL_*` environment. Together they separate shunt's server-derived series from a gateway-mode client's own `claude_code.*` export, so a dashboard can take `claude_code.*` where it exists and `shunt.*{managed="false"}` everywhere else without double counting. A judge call (`caller="router"`) keeps the originating turn's `client_kind` but is always `managed="false"`, because it is shunt's own traffic that no client exporter reports; requests to the inbound Codex endpoint are always `managed="false"` too, since it accepts only `[server.auth]` credentials. The same two values are recorded on the request span as `shunt.client_kind` and `shunt.managed`.
 
 ## Privacy
 

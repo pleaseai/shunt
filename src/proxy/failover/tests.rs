@@ -6,12 +6,13 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 
 use crate::admin::AdminAuth;
 use crate::auth::inbound::{is_consumed_by_shunt, InboundAuth};
+use crate::client_attribution::{ClientAttribution, ClientKind};
 use crate::config::{AdminKey, AdminKeyring, AuthMode, Config, Secret};
 use crate::gateway::{approval::Identity, jwt, GatewayAuth};
 use crate::routing::{AdapterKind, Route};
 use crate::server::AppState;
 
-use super::{check_inbound_auth, headers_for_route, InboundContext};
+use super::{attribution_for, check_inbound_auth, headers_for_route, InboundContext};
 
 const GATEWAY_URL: &str = "https://gateway.example";
 const GATEWAY_SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
@@ -1061,5 +1062,140 @@ fn an_inbound_jwt_is_stripped_before_a_same_origin_passthrough_attempt() {
     assert_eq!(
         forwarded.get("x-api-key").unwrap(),
         &HeaderValue::from_static(GENUINE_UPSTREAM_KEY)
+    );
+}
+
+/// `managed` on the five per-request series is a statement about the
+/// credential: `true` exactly when `check_inbound_auth` verified a
+/// gateway-issued JWT for this request, and `false` for a caller presenting
+/// their own upstream credential against the same gateway-enabled state
+/// (`docs/otlp-client-attribution.md`). Built from the *original* inbound
+/// headers, so the classification also survives the gate's credential
+/// stripping.
+#[tokio::test]
+async fn managed_attribution_follows_the_gateway_jwt() {
+    let state = state();
+    let mut managed_headers = HeaderMap::new();
+    managed_headers.insert(
+        "authorization",
+        format!("Bearer {}", gateway_jwt()).parse().unwrap(),
+    );
+    managed_headers.insert("x-app", HeaderValue::from_static("cli"));
+
+    let (_, inbound) = check_inbound_auth(&state, &[passthrough_route()], &managed_headers)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("check_inbound_auth rejected the request: {}", error.message)
+        });
+
+    assert_eq!(
+        attribution_for(&managed_headers, &inbound),
+        ClientAttribution {
+            client_kind: ClientKind::ClaudeCode,
+            managed: true,
+        }
+    );
+
+    // Non-vacuity control: the same state and the same client markers, but the
+    // caller's own credential instead of a gateway JWT.
+    let mut unmanaged_headers = caller_headers();
+    unmanaged_headers.insert("x-app", HeaderValue::from_static("cli"));
+
+    let (_, inbound) = check_inbound_auth(&state, &[passthrough_route()], &unmanaged_headers)
+        .await
+        .unwrap_or_else(|error| {
+            panic!("check_inbound_auth rejected the request: {}", error.message)
+        });
+
+    assert_eq!(
+        attribution_for(&unmanaged_headers, &inbound),
+        ClientAttribution {
+            client_kind: ClientKind::ClaudeCode,
+            managed: false,
+        }
+    );
+}
+
+/// The attribution `forward` derives reaches the `shunt.requests` sample even
+/// when the adapter takes it: a streaming Responses turn commits before its
+/// upstream send, so its sample is recorded inside the committed stream —
+/// polled outside the request task — from the attribution the request body
+/// carried down. A Claude Code client with no gateway credential is
+/// `claude-code`/`false`, and nothing lands on the unattributed series.
+#[tokio::test]
+async fn a_requests_sample_carries_the_turns_attribution_through_the_adapter() {
+    use axum::body::to_bytes;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let sse = concat!(
+        "event: response.created\n",
+        "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse.to_string()))
+        .mount(&server)
+        .await;
+    let (provider, model) = ("attribution-probe", "attribution-model");
+    let config = single_route_config(provider, model, server.uri());
+    let _env_lock = crate::config::test_env_lock();
+    let _env = crate::auth::shared::EnvVarGuard::set("attribution-probe_key", "probe");
+    let state = AppState::new(config, reqwest::Client::new()).unwrap();
+    let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    headers.insert("x-app", HeaderValue::from_static("cli"));
+    let body = axum::body::Body::from(
+        serde_json::json!({
+            "model": model,
+            "stream": true,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        .to_string(),
+    );
+    let (status, response) =
+        match super::forward(state, &uri, &headers, body, std::time::Instant::now()).await {
+            Ok(result) => result,
+            Err(error) => panic!("forward failed: {}", error.message),
+        };
+    assert_eq!(status, StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body is readable");
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("event: message_stop"),
+        "the stream completed"
+    );
+
+    let claude_code = ClientAttribution {
+        client_kind: ClientKind::ClaudeCode,
+        managed: false,
+    };
+    let (attributed, _) = crate::metrics::proxied_request_samples_by_attribution_for_tests(
+        "client",
+        claude_code,
+        provider,
+        model,
+        200,
+    );
+    assert_eq!(
+        attributed, 1,
+        "the in-stream sample carries the turn's attribution"
+    );
+    let (unattributed, _) = crate::metrics::proxied_request_samples_by_attribution_for_tests(
+        "client",
+        ClientAttribution::UNATTRIBUTED,
+        provider,
+        model,
+        200,
+    );
+    assert_eq!(
+        unattributed, 0,
+        "no sample fell back to the default attribution"
     );
 }

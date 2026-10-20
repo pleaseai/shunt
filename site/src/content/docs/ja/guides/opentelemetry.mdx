@@ -49,11 +49,11 @@ authorization = "Bearer <token>"
 
 | 系列 | 種類 | 属性 | 意味 |
 | :-- | :-- | :-- | :-- |
-| `shunt.requests` | カウンター | `provider`, `model`, `http.response.status_code`, `caller` | プロキシされた推論リクエスト。`caller` はインバウンドのトラフィックなら `client`、[`[models.router]`](/ja/reference/configuration/) エントリが呼び出し元に代わって行ったジャッジ呼び出しなら `router`。 |
-| `shunt.latency` | ヒストグラム(ms) | `provider`, `model`, `http.response.status_code`, `caller` | ストリームではヘッダーまで、それ以外では応答全体のレイテンシ。コミット型ストリーミング応答はヘッダーがアップストリーム応答より先にコミットされるため、ディスパッチから試行分類までを測定します。 |
-| `shunt.ttft` | ヒストグラム(ms) | `provider`, `model` | リクエスト開始から最初の完全な非キープアライブ SSE フレームまでの時間。 |
-| `shunt.stream_outcome` | カウンター | `provider`, `model`, `outcome` | SSE の最終結果を 1 件記録: `completed`, `error_event`, `upstream_cut`, `client_disconnect`。 |
-| `shunt.tokens` | カウンター | `provider`, `model`, `kind` | 最後に報告されたストリーミング token usage (`input`, `output`, `cache_read`, `cache_creation`)。非ストリーミングは記録しない。 |
+| `shunt.requests` | カウンター | `provider`, `model`, `http.response.status_code`, `caller`, `client_kind`, `managed` | プロキシされた推論リクエスト。`caller` はインバウンドのトラフィックなら `client`、[`[models.router]`](/ja/reference/configuration/) エントリが呼び出し元に代わって行ったジャッジ呼び出しなら `router`。 |
+| `shunt.latency` | ヒストグラム(ms) | `provider`, `model`, `http.response.status_code`, `caller`, `client_kind`, `managed` | ストリームではヘッダーまで、それ以外では応答全体のレイテンシ。コミット型ストリーミング応答はヘッダーがアップストリーム応答より先にコミットされるため、ディスパッチから試行分類までを測定します。 |
+| `shunt.ttft` | ヒストグラム(ms) | `provider`, `model`, `client_kind`, `managed` | リクエスト開始から最初の完全な非キープアライブ SSE フレームまでの時間。 |
+| `shunt.stream_outcome` | カウンター | `provider`, `model`, `outcome`, `client_kind`, `managed` | SSE の最終結果を 1 件記録: `completed`, `error_event`, `upstream_cut`, `client_disconnect`。 |
+| `shunt.tokens` | カウンター | `provider`, `model`, `kind`, `client_kind`, `managed` | 最後に報告されたストリーミング token usage (`input`, `output`, `cache_read`, `cache_creation`)。非ストリーミングは記録しない。 |
 | `shunt.codex_continuation` | カウンター | `provider`, `outcome` | Codex WebSocket continuation の hit または fallback。 |
 | `shunt.codex_ws_overflow` | カウンター | `provider`, `outcome` | 並行 turn が専用 overflow 接続を開いた場合は `opened`、接続上限で拒否された場合は `refused`（issue #248）。 |
 | `shunt.codex_client_events` | カウンター | `event` | サニタイズ済みイベント名ごとの Codex CLI analytics イベント。payload とプロパティは破棄される。 |
@@ -70,6 +70,8 @@ authorization = "Bearer <token>"
 | `shunt.pool.reprobes` | カウンター | `provider` | 陳腐化した近接クォータの Codex/ChatGPT アカウントで、最初の HTTP 送信時にコミットされた再プローブ。WebSocket 有効プロバイダーは inbound HTTP のみを数える。 |
 | `shunt.store.write_failures` | カウンター | `subsystem` | オプションの [`[store]`](/ja/reference/configuration/#storeオプション) への書き込み失敗を `subsystem` ごとに集計: `pool`（write-behind フラッシュ）、`spend`、`gateway`（トークンエンドポイント）。失敗したプールのフラッシュは次の 15 秒周期で再試行されるが、このプロセスがストアの hold を失うとプールのフラッシュは停止する。失敗した支出の書き込みは管理者の呼び出し元に、失敗したトークンエンドポイントの書き込みはクライアントに報告され、バックグラウンドのゲートウェイのフラッシュ失敗は呼び出し元がないためログにのみ記録される。 |
 | `shunt.upstream.status` | ゲージ | `provider` | 観測された [`[server.status]`](/reference/configuration/#serverstatus-optional) Statuspage severity: `0` none、`1` minor、`2` major、`3` critical。現在 `unknown`（信号なし）の provider は `0` として報告されるのではなく、この系列から完全に除外される。 |
+
+リクエスト単位の 5 系列には属性が 2 つ追加されます。`client_kind` はリクエスト自身のクライアントヘッダー(`x-app`、`originator`、`user-agent`)から読み取った `claude-code`、`codex`、`other` のいずれかで、生のヘッダー値がエクスポートされることはありません。`managed` は、ゲートウェイが発行した JWT で認証されたリクエストのときだけ `true` になります。その資格情報こそが、クライアントにプッシュされた `OTEL_*` 環境を受け取る資格を与えるものです。両者を合わせると、shunt がサーバー側で導出した系列と、ゲートウェイモードのクライアント自身が出力する `claude_code.*` を区別できるため、ダッシュボードは `claude_code.*` があるところではそれを、それ以外では `shunt.*{managed="false"}` を採用し、二重計上せずに集計できます。ジャッジ呼び出し(`caller="router"`)は元のターンの `client_kind` を引き継ぎますが、`managed` は常に `"false"` です。shunt 自身のトラフィックであり、どのクライアントのエクスポーターも報告しないためです。インバウンド Codex エンドポイントは `[server.auth]` の資格情報しか受け付けないため、そのリクエストも常に `managed="false"` です。同じ 2 つの値はリクエストスパンにも `shunt.client_kind` / `shunt.managed` として記録されます。
 
 ## プライバシー
 

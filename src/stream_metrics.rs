@@ -19,6 +19,8 @@ use axum::{
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 
+use crate::client_attribution::ClientAttribution;
+
 const MAX_EVENT_BYTES: usize = 256 * 1024;
 
 /// Bytes of an SSE `event:` name kept for the "last observed event type"
@@ -162,6 +164,10 @@ struct ObserverState {
     // routed provider).
     provider: std::sync::Arc<std::sync::Mutex<String>>,
     model: std::sync::Arc<std::sync::Mutex<String>>,
+    /// The `client_kind`/`managed` pair every per-request series carries
+    /// (`docs/otlp-client-attribution.md`), captured from the inbound request
+    /// before the stream was wrapped.
+    attribution: ClientAttribution,
     started_at: Instant,
     // The upstream response status the stream opened with. `finish` gates
     // `record_stream_failure` on this being 2xx: a non-2xx SSE response was
@@ -220,6 +226,7 @@ impl ObserverState {
         status: StatusCode,
         provider: std::sync::Arc<std::sync::Mutex<String>>,
         model: std::sync::Arc<std::sync::Mutex<String>>,
+        attribution: ClientAttribution,
         started_at: Instant,
         span: tracing::Span,
     ) -> Self {
@@ -227,6 +234,7 @@ impl ObserverState {
             protocol,
             provider,
             model,
+            attribution,
             started_at,
             status,
             span,
@@ -263,6 +271,7 @@ impl ObserverState {
         crate::metrics::record_ttft(
             &self.provider.lock().expect("provider slot"),
             &self.model.lock().expect("model slot"),
+            self.attribution,
             ttft.as_secs_f64() * 1000.0,
         );
         self.ttft_ms = Some(millis(ttft));
@@ -422,6 +431,7 @@ impl ObserverState {
         crate::metrics::record_stream_outcome(
             &self.provider.lock().expect("provider slot"),
             &self.model.lock().expect("model slot"),
+            self.attribution,
             outcome.as_str(),
         );
         // Only a stream that actually opened `200` can have "failed mid-stream"
@@ -450,6 +460,7 @@ impl ObserverState {
                 crate::metrics::record_stream_tokens(
                     &self.provider.lock().expect("provider slot"),
                     &self.model.lock().expect("model slot"),
+                    self.attribution,
                     kind,
                     count,
                 );
@@ -677,6 +688,7 @@ pub fn observe_response(
     protocol: Protocol,
     provider: String,
     model: String,
+    attribution: ClientAttribution,
     started_at: Instant,
 ) -> Response<Body> {
     observe_response_with_slot(
@@ -684,6 +696,7 @@ pub fn observe_response(
         protocol,
         std::sync::Arc::new(std::sync::Mutex::new(provider)),
         std::sync::Arc::new(std::sync::Mutex::new(model)),
+        attribution,
         started_at,
     )
 }
@@ -696,6 +709,7 @@ pub fn observe_response_with_slot(
     protocol: Protocol,
     provider: std::sync::Arc<std::sync::Mutex<String>>,
     model: std::sync::Arc<std::sync::Mutex<String>>,
+    attribution: ClientAttribution,
     started_at: Instant,
 ) -> Response<Body> {
     if !is_sse(&response) {
@@ -711,7 +725,15 @@ pub fn observe_response_with_slot(
     let (parts, body) = response.into_parts();
     let observed = ObservedStream {
         upstream: body.into_data_stream().boxed(),
-        state: ObserverState::new(protocol, status, provider, model, started_at, span),
+        state: ObserverState::new(
+            protocol,
+            status,
+            provider,
+            model,
+            attribution,
+            started_at,
+            span,
+        ),
     };
     Response::from_parts(parts, Body::from_stream(observed))
 }

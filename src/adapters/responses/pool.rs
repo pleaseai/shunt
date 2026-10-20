@@ -136,6 +136,9 @@ pub(super) struct PoolStreamContext {
     /// it — the committed pool's account scan ran inside this stream — else
     /// the first poll of the account loop.
     pub(super) started_at: Option<std::time::Instant>,
+    /// The turn's `client_kind`/`managed` attribution, for the sample this
+    /// stream takes when it owns it (`record_metrics`).
+    pub(super) attribution: crate::client_attribution::ClientAttribution,
 }
 
 /// One streaming pool turn's event feed: the account loop (admission,
@@ -211,6 +214,7 @@ pub(super) async fn forward_chatgpt_oauth_stream(
         upstream_body: upstream_body.clone(),
         auth: provider_auth(&state, &route),
         codex_quota_account: None,
+        attribution: turn.attribution,
     };
     let events = pool_or_single_events(
         scan,
@@ -307,6 +311,7 @@ pub(super) fn pool_or_single_events(
                             crate::metrics::record_proxied_request(
                                 &route.provider,
                                 &route.model,
+                                single.attribution,
                                 StatusCode::BAD_GATEWAY.as_u16(),
                                 attempt_started.elapsed().as_secs_f64() * 1000.0,
                             );
@@ -318,6 +323,7 @@ pub(super) fn pool_or_single_events(
                         crate::metrics::record_proxied_request(
                             &route.provider,
                             &route.model,
+                            single.attribution,
                             StatusCode::BAD_GATEWAY.as_u16(),
                             attempt_started.elapsed().as_secs_f64() * 1000.0,
                         );
@@ -365,6 +371,7 @@ pub(super) fn pool_or_single_events(
                             ramp_initial,
                             record_metrics: true,
                             started_at: Some(attempt_started),
+                            attribution: single.attribution,
                         }))
                     };
                     inner.next().await.map(|item| (item, Phase::Inner(inner)))
@@ -407,6 +414,7 @@ pub(super) fn pool_events_stream(
         ramp_initial,
         record_metrics,
         started_at,
+        attribution,
     } = context;
     type Parsed = std::pin::Pin<Box<dyn Stream<Item = Result<ResponseEvent, Value>> + Send>>;
     enum Phase {
@@ -524,6 +532,7 @@ pub(super) fn pool_events_stream(
                                     crate::metrics::record_proxied_request(
                                         &route.provider,
                                         &route.model,
+                                        attribution,
                                         status.as_u16(),
                                         started.elapsed().as_secs_f64() * 1000.0,
                                     );
@@ -1044,6 +1053,7 @@ pub(super) async fn forward_chatgpt_oauth(
             ramp_initial: state.config.storm_ramp_initial(),
             record_metrics: true,
             started_at: None,
+            attribution: turn.attribution,
         });
         return Ok((
             StatusCode::OK,
@@ -2678,6 +2688,7 @@ mod tests {
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             accounts_config: accounts,
             turn: TurnOptions {
+                attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
                 client_wants_stream: stream,
                 thinking_enabled: false,
                 tool_search_native: false,
@@ -4046,6 +4057,7 @@ mod tests {
             state.config.server.pool.as_ref(),
         );
         let events = pool_events_stream(PoolStreamContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state: state.clone(),
             route: route.clone(),
             auth: AuthMode::ChatgptOauth,
@@ -4199,6 +4211,7 @@ mod tests {
         let (state, route) =
             pool_state_with_provider("pool-metrics-scan-probe", "http://127.0.0.1:1".to_string());
         let single = HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state: state.clone(),
             route: route.clone(),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -4242,6 +4255,7 @@ mod tests {
             "http://127.0.0.1:1".to_string(),
         );
         let single = HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state: state.clone(),
             route: route.clone(),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -4298,6 +4312,7 @@ mod tests {
         let (state, route) =
             pool_state_with_provider("pool-metrics-scan-latency-probe", server.uri());
         let single = HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state: state.clone(),
             route: route.clone(),
             policy: crate::retry::RetryPolicy::DISABLED,
@@ -4362,6 +4377,7 @@ mod tests {
         let (state, route) =
             pool_state_with_provider("pool-metrics-scan-latency-pool-probe", server.uri());
         let single = HttpSendContext {
+            attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
             state: state.clone(),
             route: route.clone(),
             policy: crate::retry::RetryPolicy::DISABLED,

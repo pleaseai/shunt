@@ -158,7 +158,7 @@ async fn dispatch(
 ) -> switchyard_libsy::Result<Response> {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy::default();
-    let body = match judge_body(&engine, &policy, call) {
+    let mut body = match judge_body(&engine, &policy, call) {
         Ok(body) => body,
         Err(message) => {
             return Err(client_call(
@@ -169,6 +169,14 @@ async fn dispatch(
             ))
         }
     };
+    // The originating turn's `client_kind`, but never `managed`: a judge call
+    // is shunt's own traffic, which no client exporter reports, so it belongs
+    // on the `managed = "false"` side of the dedupe rule whatever credential
+    // the turn it serves presented (`docs/otlp-client-attribution.md`).
+    body.set_attribution(crate::client_attribution::ClientAttribution::new(
+        admitted.headers,
+        false,
+    ));
     let routes = routing::resolve_target_chain(&state.config, target.as_str(), admitted.router_id);
     let headers = judge_headers(state, admitted.headers);
     // `/v1/messages` because the judge request *is* a Messages request: the

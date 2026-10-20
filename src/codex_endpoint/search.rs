@@ -75,6 +75,7 @@ pub(super) async fn forward(
     body: Bytes,
     started_at: Instant,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
+    let attribution = super::inbound_attribution(&headers);
     let route = Route {
         provider: provider.clone(),
         adapter: AdapterKind::Responses,
@@ -92,5 +93,5 @@ pub(super) async fn forward(
         CodexOperation::AlphaSearch,
     )
     .await;
-    super::record_outcome(provider, LABEL.to_string(), started_at, result)
+    super::record_outcome(provider, LABEL.to_string(), attribution, started_at, result)
 }

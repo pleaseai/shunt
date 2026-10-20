@@ -12,6 +12,7 @@ use crate::{
         AdapterError,
     },
     auth::{gate, inbound::ConsumedBy, slots::ShuntCredentials},
+    client_attribution::ClientAttribution,
     config::CountTokens,
     count_tokens,
     error::ShuntError,
@@ -227,6 +228,15 @@ pub(super) async fn forward(
     let (base_headers, inbound) = check_inbound_auth(&state, admission, headers)
         .await
         .map_err(|error| *error)?;
+    // Built from the *original* inbound headers, not `base_headers`: the gate
+    // above has already stripped shunt's own credential slots, and the client
+    // markers this classifies (`x-app`, `originator`, `user-agent`) must be
+    // read as the client sent them. `managed` is a statement about the
+    // credential — a gateway-issued JWT — not about telemetry configuration;
+    // an external-IdP JWT authenticates as a static client, never into
+    // `gateway_claims`, so it is `false` (`docs/otlp-client-attribution.md`).
+    let attribution = attribution_for(headers, &inbound);
+    crate::observability::record_client_attribution(attribution);
     enforce_managed_model_policy(&state, inbound.gateway_claims.as_ref(), &requested_model)
         .map_err(|error| *error)?;
     // The request is admitted, so the tier it was routed at may be recorded —
@@ -257,6 +267,11 @@ pub(super) async fn forward(
     // the same flag the store decided against.
     let read_only = stage.read_only;
     drop(stage);
+    // Armed here, once `stage` no longer borrows the body: every sample of this
+    // turn — the chain's, the committed chain stream's, and the ones the
+    // adapters take inside the streams they commit — reads it from the body.
+    // A judge call builds its own body and sets its own (`routing::serve`).
+    body.set_attribution(attribution);
     // The drive. Between admission and the pin commit, because both boundaries
     // matter: a refused caller must spend no judge call, and the pin must
     // record the tier the turn was actually dispatched at.
@@ -432,7 +447,14 @@ pub(super) async fn forward(
         }
     }
     if let Some(exit) = gated_exit {
-        return gated::finish(exit, started_at, &requested_safeguards, max_request_bytes).await;
+        return gated::finish(
+            exit,
+            started_at,
+            attribution,
+            &requested_safeguards,
+            max_request_bytes,
+        )
+        .await;
     }
     // The handoff note rides the admitted request, so it is applied on the same
     // boundary the counters are: a rejected turn never reaches an upstream and
@@ -515,6 +537,7 @@ pub(super) async fn forward(
         success.response,
         success.provider,
         success.model,
+        attribution,
         started_at,
         &requested_safeguards,
         max_request_bytes,
@@ -739,11 +762,13 @@ async fn dispatch(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn observe_response(
     status: StatusCode,
     response: axum::response::Response,
     provider: String,
     model: String,
+    attribution: ClientAttribution,
     started_at: Instant,
     requested_safeguards: &[String],
     max_body_bytes: usize,
@@ -757,6 +782,7 @@ async fn observe_response(
         crate::stream_metrics::Protocol::Anthropic,
         provider,
         model,
+        attribution,
         started_at,
     );
     (status, response)
@@ -820,6 +846,13 @@ impl InboundContext {
             static_client: false,
         }
     }
+}
+
+/// The `client_kind`/`managed` attribution of an admitted request: the client
+/// classified from its original `headers`, and `managed` exactly when
+/// [`check_inbound_auth`] verified a gateway-issued JWT for it.
+fn attribution_for(headers: &HeaderMap, inbound: &InboundContext) -> ClientAttribution {
+    ClientAttribution::new(headers, inbound.gateway_claims.is_some())
 }
 
 /// Authenticate once against the whole route chain. Client credential stripping

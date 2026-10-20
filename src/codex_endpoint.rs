@@ -32,6 +32,7 @@ use crate::{
         AdapterError,
     },
     auth::{gate, inbound::InboundAuth, inbound_jwt::JwksCache},
+    client_attribution::ClientAttribution,
     config::CodexRouteConfig,
     error::ShuntError,
     routing::{AdapterKind, Route},
@@ -111,6 +112,8 @@ async fn serve(
         session_id = span_session_id,
         gen_ai.request.model = tracing::field::Empty,
         shunt.provider = tracing::field::Empty,
+        shunt.client_kind = tracing::field::Empty,
+        shunt.managed = tracing::field::Empty,
         http.response.status_code = tracing::field::Empty,
         otel.status_code = tracing::field::Empty
     );
@@ -357,6 +360,7 @@ pub(crate) async fn forward_turn(
     };
 
     crate::observability::record_requested_model(&model_name);
+    let attribution = inbound_attribution(&headers);
 
     let (provider, result) = match matched {
         Some(route) => {
@@ -396,7 +400,22 @@ pub(crate) async fn forward_turn(
         }
     };
 
-    record_outcome(provider, model_name, started_at, result)
+    record_outcome(provider, model_name, attribution, started_at, result)
+}
+
+/// The `client_kind`/`managed` attribution of one inbound Codex request,
+/// recorded on the current span as well.
+///
+/// `managed` is always `false` here: every auth path of this endpoint — the
+/// HTTP routes and the inbound Responses WebSocket alike — authenticates only
+/// `[server.auth]` (`authenticate_inbound`, a static token or an external-IdP
+/// JWT), never a gateway-issued JWT, so no request reaching it can be
+/// attributed to a gateway credential without changing authentication
+/// semantics (`docs/otlp-client-attribution.md`).
+pub(crate) fn inbound_attribution(headers: &HeaderMap) -> ClientAttribution {
+    let attribution = ClientAttribution::new(headers, false);
+    crate::observability::record_client_attribution(attribution);
+    attribution
 }
 
 /// Dispatch a request whose `model` matched a `[[server.codex_endpoint.routes]]`
@@ -535,6 +554,7 @@ async fn routed_body_error(error: BodyError, provider: &str) -> ForwardError {
 fn record_outcome(
     provider: String,
     model: String,
+    attribution: ClientAttribution,
     started_at: Instant,
     result: Result<(StatusCode, axum::response::Response), AdapterError>,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
@@ -547,6 +567,7 @@ fn record_outcome(
     crate::metrics::record_proxied_request(
         &provider,
         &model,
+        attribution,
         status_code.as_u16(),
         started_at.elapsed().as_secs_f64() * 1000.0,
     );
@@ -557,6 +578,7 @@ fn record_outcome(
                 crate::stream_metrics::Protocol::Responses,
                 provider,
                 model,
+                attribution,
                 started_at,
             );
             (status, response)

@@ -117,6 +117,7 @@ pub(super) async fn forward_http(
                 upstream_body: upstream_body.clone(),
                 auth,
                 codex_quota_account: None,
+                attribution: turn.attribution,
             },
             credential,
             codex_quota_account,
@@ -981,6 +982,7 @@ mod tests {
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: crate::config::AuthMode::ApiKey,
             turn: TurnOptions {
+                attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
                 client_wants_stream: true,
                 thinking_enabled: false,
                 tool_search_native: false,
@@ -1050,6 +1052,7 @@ mod tests {
             upstream_body: std::sync::Arc::new(json!({"input": []})),
             auth: crate::config::AuthMode::ApiKey,
             turn: TurnOptions {
+                attribution: crate::client_attribution::ClientAttribution::UNATTRIBUTED,
                 client_wants_stream: true,
                 thinking_enabled: false,
                 tool_search_native: false,

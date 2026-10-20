@@ -75,6 +75,10 @@ pub(super) struct TurnOptions {
     /// upstream stalls after its headers sit until `gated_max_duration_ms`.
     /// The HTTP read and the websocket accumulation both honour both bounds.
     pub response_bounds: crate::adapters::ResponseBounds,
+    /// The turn's `client_kind`/`managed` attribution
+    /// ([`RequestBody::attribution`](crate::request::RequestBody::attribution)),
+    /// for the `shunt.requests` samples a committed stream takes itself.
+    pub attribution: crate::client_attribution::ClientAttribution,
 }
 
 impl TurnOptions {
