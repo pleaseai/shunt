@@ -16,8 +16,7 @@ use serde_json::Value;
 /// whose joined data is not JSON, yields `None`.
 pub(super) fn frame_data(frame: &str) -> Option<Value> {
     let mut values = frame
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(|value| value.strip_prefix(' ').unwrap_or(value));
     let first = values.next()?;

@@ -859,6 +859,50 @@ fn an_empty_signature_fragment_opens_no_entry() {
     );
 }
 
+/// Each open entry is charged against `max_signature`, not only its bytes:
+/// one-byte fragments across distinct indices, never stopped, would otherwise
+/// hold far more memory than the bound counts.
+/// Non-vacuity: charging bytes alone counts these 20 fragments as 20 bytes,
+/// far under the bound, and nothing fails.
+#[tokio::test]
+async fn open_signature_entries_are_charged_against_the_signature_bound() {
+    let mut body = String::new();
+    for index in 0..20 {
+        body.push_str(&signature_delta(index, "A"));
+    }
+    let out = collect_bounded(vec![chunk(&body)], Some(THIRD_PARTY), 64 * 1024, 1024).await;
+    assert_failed_closed(&out);
+}
+
+/// The twin: a block's charge is released when its signature is emitted, and
+/// it is charged once per block, not per fragment. The same 20 blocks under
+/// the same bound, each stopped before the next opens and fed in several
+/// fragments, all wrap.
+/// Non-vacuity: keeping the charge after the stop, or charging every
+/// fragment, takes the total past 1024 and fails the stream closed.
+#[tokio::test]
+async fn a_stopped_block_releases_its_signature_entry_charge() {
+    let mut body = String::new();
+    for index in 0..20 {
+        body.push_str(&thinking_start(index));
+        for _ in 0..20 {
+            body.push_str(&signature_delta(index, "A"));
+        }
+        body.push_str(&block_stop(index));
+    }
+    let out = collect_bounded(vec![chunk(&body)], Some(THIRD_PARTY), 64 * 1024, 1024).await;
+    assert!(!out.contains("event: error"), "nothing fails: {out}");
+    assert_eq!(
+        signature_deltas(&out)
+            .into_iter()
+            .map(|(index, signature)| (index, unwrap_upstream_signature(&signature)))
+            .collect::<Vec<_>>(),
+        (0..20)
+            .map(|index| (index, Some((THIRD_PARTY.to_string(), "A".repeat(20)))))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// A frame held only because its match was undecided as it crossed
 /// `max_frame` is released once the next bytes show the match to be a value:
 /// forwarded and skipped like any unsigned frame, not held to its boundary

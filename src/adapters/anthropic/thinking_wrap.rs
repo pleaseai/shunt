@@ -67,6 +67,12 @@ use crate::request::RequestBody;
 /// stops sending signature bytes can make the gateway hold.
 const MAX_SIGNATURE_BYTES: usize = 8 * 1024 * 1024;
 
+/// What one open block's entry is charged against `max_signature` on top of
+/// its bytes: roughly a map slot plus a string's header and smallest
+/// allocation. Without it, one-byte fragments across distinct indices that
+/// never stop would hold far more memory than the bound counts.
+const SIGNATURE_ENTRY_COST: usize = 64;
+
 /// The withheld-signature ceiling for a caller holding `response_byte_cap`,
 /// mirroring [`super::model_rewrite::first_frame_ceiling`].
 ///
@@ -266,7 +272,8 @@ pub(super) fn wrap_response_signatures(body: Bytes, key: &str) -> Bytes {
 ///   through its own boundary, so a long text or thinking delta keeps
 ///   streaming.
 /// - `max_signature` ([`signature_ceiling`]) bounds the signature bytes
-///   withheld across every open block, together with an incomplete frame that
+///   withheld across every open block, each block also charged
+///   [`SIGNATURE_ENTRY_COST`], together with an incomplete frame that
 ///   carries a `"signature"` key. Such a frame is not forwarded at `max_frame`
 ///   — that would hand the client the raw signature — but held until it
 ///   completes.
@@ -362,7 +369,8 @@ struct SignatureWrap {
     tail: Vec<u8>,
     /// Withheld signature bytes per content block index.
     signatures: HashMap<u64, String>,
-    /// Total length of every value in `signatures`.
+    /// Total length of every value in `signatures`, plus
+    /// [`SIGNATURE_ENTRY_COST`] per entry.
     withheld: usize,
     /// Set once the stream has failed closed: nothing more is emitted.
     closed: bool,
@@ -559,16 +567,19 @@ impl SignatureWrap {
     /// An empty fragment withholds nothing and opens no entry, as an empty
     /// start signature does not: otherwise `"signature":""` deltas across
     /// distinct indices, never stopped, would grow `signatures` with nothing
-    /// counted against the bound.
+    /// counted against the bound. A fragment that opens an entry is also
+    /// charged [`SIGNATURE_ENTRY_COST`].
     fn withhold(&mut self, index: u64, fragment: &str) -> bool {
         if fragment.is_empty() {
             return true;
         }
-        if self.withheld + fragment.len() > self.max_signature {
+        let opens = !self.signatures.contains_key(&index);
+        let cost = fragment.len() + if opens { SIGNATURE_ENTRY_COST } else { 0 };
+        if self.withheld + cost > self.max_signature {
             self.closed = true;
             return false;
         }
-        self.withheld += fragment.len();
+        self.withheld += cost;
         self.signatures.entry(index).or_default().push_str(fragment);
         true
     }
@@ -614,7 +625,7 @@ impl SignatureWrap {
             }
             "content_block_stop" => {
                 let signature = self.signatures.remove(&index)?;
-                self.withheld -= signature.len();
+                self.withheld -= signature.len() + SIGNATURE_ENTRY_COST;
                 if signature.is_empty() {
                     return None;
                 }

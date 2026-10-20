@@ -143,8 +143,12 @@ On a stream, a block's signature bytes are withheld until its
 `content_block_stop` and then emitted as one wrapped `signature_delta`. The
 withheld total therefore has its own bound, separate from the 64 KiB a frame
 without a signature may grow to before it is forwarded unread: 8 MiB per
-stream. On an internal capped call, each bound is lowered to the caller's
-byte cap when that is smaller. A signature is an encrypted copy of the full
+stream, with each open block charged a further 64 bytes so that many tiny
+signatures cannot hold more memory than the bound counts. A block's charge
+is released when its signature is emitted. On an internal capped call, each
+bound is lowered to the caller's byte cap when that is smaller, so there a
+single signature fails closed once it comes within 64 bytes of the cap. A
+signature is an encrypted copy of the full
 reasoning (see above), so it cannot be assumed to stay small, and a
 signature-bearing frame past the frame bound is held to its boundary rather
 than forwarded. Past the signature bound, or when a `"signature"` key turns up
@@ -155,8 +159,9 @@ accepted residual and is not recognised): the
 withheld bytes are dropped, the client receives an Anthropic-shape `error`
 event (`api_error`), and nothing follows it. The raw signature is never
 forwarded on that path, nor when the upstream ends inside a signature-bearing
-frame: that incomplete frame is dropped. In the second case the front of the
-frame has already reached the client, and the blank line that ends it before
+frame: that incomplete frame is dropped. When a key turns up in a frame
+already being forwarded, the front of that frame has already reached the
+client, and the blank line that ends it before
 the `error` event dispatches that truncated event too. A client that parses
 each event's data as JSON, as the Anthropic SDKs do, therefore reports a parse
 error first rather than the `error` event's message. An event whose JSON
