@@ -11,6 +11,8 @@ use serde_json::json;
 use crate::{admin::session::random_id, server::AppState};
 
 use super::{
+    approval::Identity,
+    durable::{self, Rotation},
     jwt,
     store::{DevicePoll, DEVICE_CODE_TTL, INITIAL_POLL_INTERVAL},
 };
@@ -77,7 +79,7 @@ pub async fn device_authorization(
         Ok(form) => form,
         Err(_) => return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request")),
     };
-    if form.client_id != CLAUDE_CODE_CLIENT_ID {
+    if !client_id_accepted(&form.client_id) {
         return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request"));
     }
     let state = state.refreshed();
@@ -138,7 +140,7 @@ pub async fn token(
         Err(_) => return no_store(oauth_error(StatusCode::BAD_REQUEST, "invalid_request")),
     };
     if form.grant_type.is_empty()
-        || form.client_id != CLAUDE_CODE_CLIENT_ID
+        || !client_id_accepted(&form.client_id)
         || (form.grant_type == DEVICE_GRANT && form.device_code.is_empty())
         || (form.grant_type == "refresh_token" && form.refresh_token.is_empty())
     {
@@ -154,26 +156,61 @@ pub async fn token(
             DevicePoll::SlowDown => oauth_error(StatusCode::BAD_REQUEST, "slow_down"),
             DevicePoll::Denied => oauth_error(StatusCode::BAD_REQUEST, "access_denied"),
             DevicePoll::Expired => oauth_error(StatusCode::BAD_REQUEST, "expired_token"),
-            DevicePoll::Approved(identity) => {
-                let refresh_token = state.gateway_stores.refresh_tokens.issue(identity.clone());
+            DevicePoll::Approved(identity) => match issue_refresh_token(&state, &identity).await {
+                Some(refresh_token) => token_response(&auth, &identity, refresh_token),
+                None => oauth_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+            },
+        },
+        "refresh_token" => match rotate_refresh_token(&state, &form.refresh_token).await {
+            Rotation::Rotated(identity, refresh_token) => {
                 token_response(&auth, &identity, refresh_token)
             }
-        },
-        "refresh_token" => match state
-            .gateway_stores
-            .refresh_tokens
-            .rotate(&form.refresh_token)
-        {
-            Some((identity, refresh_token)) => token_response(&auth, &identity, refresh_token),
-            None => oauth_error(StatusCode::UNAUTHORIZED, "invalid_grant"),
+            Rotation::Rejected => oauth_error(
+                if form.client_id.is_empty() {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::UNAUTHORIZED
+                },
+                "invalid_grant",
+            ),
+            Rotation::Unavailable => {
+                oauth_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
+            }
         },
         _ => oauth_error(StatusCode::BAD_REQUEST, "unsupported_grant_type"),
     };
     // Opt-in `[server.gateway] state_path`: put any refresh-token mutation
     // (grant, rotation, or replay revocation) on disk before responding. A
     // no-op when the key is unset or nothing changed (e.g. pending polls).
-    super::persist::save_if_dirty(&state).await;
+    // With a store attached the mutation was already committed (or rolled
+    // back) above, so the file path stays out of it.
+    if state.gateway_stores.store().is_none() {
+        super::persist::save_if_dirty(&state).await;
+    }
     no_store(response)
+}
+
+/// Issue a refresh token. `None` only when a store is attached and the token
+/// could not be committed (memory is rolled back, nothing was issued).
+async fn issue_refresh_token(state: &AppState, identity: &Identity) -> Option<String> {
+    let stores = &state.gateway_stores;
+    match stores.store() {
+        Some(store) => durable::issue(stores.clone(), store.clone(), identity.clone())
+            .await
+            .ok(),
+        None => Some(stores.refresh_tokens.issue(identity.clone())),
+    }
+}
+
+async fn rotate_refresh_token(state: &AppState, presented: &str) -> Rotation {
+    let stores = &state.gateway_stores;
+    match stores.store() {
+        Some(store) => durable::rotate(stores.clone(), store.clone(), presented).await,
+        None => match stores.refresh_tokens.rotate(presented) {
+            Some((identity, token)) => Rotation::Rotated(identity, token),
+            None => Rotation::Rejected,
+        },
+    }
 }
 
 fn token_response(
@@ -193,6 +230,18 @@ fn token_response(
         expires_in: auth.token_ttl_seconds(),
     })
     .into_response()
+}
+
+/// Claude Desktop 2.42304.2's gateway-SSO device flow (`runGatewaySsoDeviceGrant`
+/// / `refreshGatewaySsoToken`) sends no `client_id` on the device authorization
+/// request, the device-code poll, or the refresh grant, so an empty `client_id`
+/// is accepted alongside `claude-code`. Desktop treats a refresh failure as a
+/// revocation only for HTTP 400 with `error == "invalid_grant"` (RFC 6749 5.2);
+/// any other status is transient, which is why `token` answers a rejected
+/// refresh with 400 for it while a `claude-code` client keeps the reference
+/// gateway's 401.
+fn client_id_accepted(client_id: &str) -> bool {
+    client_id.is_empty() || client_id == CLAUDE_CODE_CLIENT_ID
 }
 
 fn oauth_error(status: StatusCode, error: &'static str) -> Response {

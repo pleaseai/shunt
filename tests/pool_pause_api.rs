@@ -465,3 +465,41 @@ async fn patch_pool_sort_by_reset_has_no_effect_without_a_pool_table() {
 
     drop(gateway);
 }
+
+#[tokio::test]
+async fn patch_pool_account_pauses_an_xai_oauth_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut config = admin_config();
+    config.providers.get_mut("grok").unwrap().accounts = vec![AccountConfig {
+        name: "grok-pause-me".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        ..Default::default()
+    }];
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_TOKENS_POOL_PAUSE", "ops:unused");
+    let (gateway, _state) = start(config).await;
+    let client = reqwest::Client::new();
+    let account_ref = pool_account_ref(&client, &gateway, "grok", "grok-pause-me").await;
+
+    let response = client
+        .patch(format!(
+            "{}/admin/api/pool/grok/accounts/{account_ref}",
+            gateway.base_url
+        ))
+        .header("x-shunt-admin-token", ADMIN_WRITE_KEY)
+        .header("content-type", "application/json")
+        .body(r#"{"paused":true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let accounts = pool_accounts(&client, &gateway, "grok").await;
+    let account = accounts
+        .iter()
+        .find(|a| a["name"] == "grok-pause-me")
+        .expect("patched xai_oauth account present in pool snapshot");
+    assert_eq!(account["paused"], true);
+}

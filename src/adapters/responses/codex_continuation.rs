@@ -116,13 +116,8 @@ pub fn decide_with_signature(
         return None;
     }
     let input = current_body.get("input").and_then(Value::as_array)?;
-    if stored.transcript.len() > input.len() {
+    if !extends_transcript(&stored.transcript, input) {
         return None;
-    }
-    for (previous, current) in stored.transcript.iter().zip(input.iter()) {
-        if normalize_item(previous) != normalize_item(current) {
-            return None;
-        }
     }
     let delta = input[stored.transcript.len()..].to_vec();
     if delta.is_empty() {
@@ -134,6 +129,18 @@ pub fn decide_with_signature(
         previous_response_id: stored.response_id.clone(),
         input_delta: delta,
     })
+}
+
+/// Whether `input` starts with every `transcript` item (compared with
+/// backend-only fields normalized away), i.e. it already carries the whole
+/// stored history rather than only a delta after it. An input equal to the
+/// transcript extends it.
+pub fn extends_transcript(transcript: &[Value], input: &[Value]) -> bool {
+    transcript.len() <= input.len()
+        && transcript
+            .iter()
+            .zip(input)
+            .all(|(previous, current)| normalize_item(previous) == normalize_item(current))
 }
 
 /// Build the transcript to store after a turn: the request's full logical input

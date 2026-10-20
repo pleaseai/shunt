@@ -22,7 +22,7 @@ use std::{fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::server::AppState;
+use crate::{server::AppState, store::import::LoadIssue};
 
 use super::{approval::Identity, refresh::RefreshRecord};
 
@@ -172,27 +172,51 @@ fn load(path: &Path) -> io::Result<Option<PersistedSessions>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let persisted: PersistedSessions = match serde_json::from_slice(&bytes) {
-        Ok(persisted) => persisted,
-        Err(error) => {
+    crate::store::marker::warn_if_imported("gateway", path, &bytes);
+    match parse(&bytes) {
+        Ok(persisted) => Ok(Some(persisted)),
+        Err(LoadIssue::NotJson(error)) => {
             tracing::warn!(
                 path = %path.display(),
                 %error,
                 "gateway session state file is not valid json; ignoring"
             );
-            return Ok(None);
+            Ok(None)
         }
-    };
-    if persisted.version != STATE_VERSION {
-        tracing::warn!(
-            path = %path.display(),
-            found = persisted.version,
-            expected = STATE_VERSION,
-            "gateway session state file version mismatch; ignoring"
-        );
-        return Ok(None);
+        Err(LoadIssue::Version { found, expected }) => {
+            tracing::warn!(
+                path = %path.display(),
+                found,
+                expected,
+                "gateway session state file version mismatch; ignoring"
+            );
+            Ok(None)
+        }
     }
-    Ok(Some(persisted))
+}
+
+/// Decode and version-check a state file's bytes. Shared by the lenient
+/// [`load`] and the store import, which refuses to boot on an issue.
+fn parse(bytes: &[u8]) -> Result<PersistedSessions, LoadIssue> {
+    let persisted: PersistedSessions =
+        serde_json::from_slice(bytes).map_err(|error| LoadIssue::NotJson(error.to_string()))?;
+    if persisted.version != STATE_VERSION {
+        return Err(LoadIssue::Version {
+            found: persisted.version,
+            expected: STATE_VERSION.to_string(),
+        });
+    }
+    Ok(persisted)
+}
+
+/// The refresh-token records a snapshot holds. Strict: an unreadable or
+/// incompatible snapshot is an error.
+pub(crate) fn parse_records(bytes: &[u8]) -> Result<Vec<RefreshRecord>, LoadIssue> {
+    Ok(parse(bytes)?
+        .refresh_tokens
+        .into_iter()
+        .map(RefreshRecord::from)
+        .collect())
 }
 
 /// Write the state atomically via [`crate::atomic_file::write_private_atomic`].
@@ -202,6 +226,7 @@ fn save(path: &Path, sessions: &PersistedSessions) -> io::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use std::path::PathBuf;
 
@@ -283,6 +308,38 @@ mod tests {
         remove_test_dir(&path);
     }
 
+    #[test]
+    fn store_less_load_warns_only_while_the_imported_snapshot_is_unchanged() {
+        use crate::store::{marker, test_support::capture_logs};
+
+        let path = temp_file("imported");
+        save(&path, &sample_sessions()).expect("save succeeds");
+        let sha = marker::sha256_hex(&fs::read(&path).expect("read snapshot"));
+        marker::write(
+            &path,
+            &marker::ImportMarker {
+                backend: "postgres".to_string(),
+                imported_at: 1_700_000_321,
+                source_sha256: sha,
+            },
+        )
+        .expect("write sidecar");
+
+        let logs = capture_logs(|| {
+            load(&path).expect("load succeeds").expect("file present");
+        });
+        assert!(logs.contains("imported into a store"), "{logs}");
+
+        let mut changed = sample_sessions();
+        changed.refresh_tokens.pop();
+        save(&path, &changed).expect("rewrite succeeds");
+        let logs = capture_logs(|| {
+            load(&path).expect("load succeeds").expect("file present");
+        });
+        assert!(logs.is_empty(), "{logs}");
+        remove_test_dir(&path);
+    }
+
     #[cfg(unix)]
     #[test]
     fn saved_file_is_private() {
@@ -297,6 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_save_keeps_sessions_dirty_for_retry() {
+        let _env_lock = crate::config::test_env_lock();
         let path = temp_file("save-failure");
         fs::create_dir(&path).expect("target directory makes rename fail");
 
@@ -307,6 +365,7 @@ mod tests {
 
         let mut config = crate::config::Config::default();
         config.server.gateway = Some(crate::config::GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".into(),
             jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),

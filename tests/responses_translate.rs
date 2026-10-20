@@ -1297,6 +1297,1011 @@ fn streaming_state_machine_emits_incremental_anthropic_events() {
     assert!(emitted.contains("\"output_tokens\":9"));
 }
 
+/// Two parallel function calls whose arguments arrive only in the done events,
+/// with no `function_call_arguments.delta` — the shape Codex sends for parallel
+/// calls (issue #765).
+const DONE_ONLY_ARGUMENTS_FIXTURE: &str = concat!(
+    "event: response.created\n",
+    "data: {\"response\":{\"id\":\"resp_1\"}}\n\n",
+    "event: response.output_item.added\n",
+    "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"Probe\",\"arguments\":\"\"}}\n\n",
+    "event: response.function_call_arguments.done\n",
+    "data: {\"arguments\":\"{\\\"value\\\":7}\"}\n\n",
+    "event: response.output_item.done\n",
+    "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"Probe\",\"arguments\":\"{\\\"value\\\":7}\"}}\n\n",
+    "event: response.output_item.added\n",
+    "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_b\",\"name\":\"Probe\",\"arguments\":\"\"}}\n\n",
+    "event: response.output_item.done\n",
+    "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_b\",\"name\":\"Probe\",\"arguments\":\"{\\\"value\\\":11}\"}}\n\n",
+    "event: response.completed\n",
+    "data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":4}}}\n\n",
+);
+
+#[test]
+fn done_only_function_call_arguments_reach_the_streaming_client() {
+    let mut machine =
+        AnthropicSseMachine::new("gpt-6.1-sol", false, false).without_content_accumulation();
+    let emitted = parse_sse_events(DONE_ONLY_ARGUMENTS_FIXTURE)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    assert_eq!(
+        event_names(&emitted),
+        vec![
+            "message_start",
+            "ping",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "message_delta",
+            "message_stop"
+        ]
+    );
+    // The first call's arguments arrive at `function_call_arguments.done` and
+    // must not be repeated by its `output_item.done`.
+    assert_eq!(
+        emitted
+            .matches("\"partial_json\":\"{\\\"value\\\":7}\"")
+            .count(),
+        1
+    );
+    assert_eq!(
+        emitted
+            .matches("\"partial_json\":\"{\\\"value\\\":11}\"")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn done_only_function_call_arguments_reach_the_final_json() {
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    for event in parse_sse_events(DONE_ONLY_ARGUMENTS_FIXTURE) {
+        machine.apply(event);
+    }
+    let final_json = machine.final_json();
+
+    assert_eq!(final_json["stop_reason"], "tool_use");
+    assert_eq!(final_json["content"][0]["id"], "call_a");
+    assert_eq!(final_json["content"][0]["input"], json!({"value": 7}));
+    assert_eq!(final_json["content"][1]["id"], "call_b");
+    assert_eq!(final_json["content"][1]["input"], json!({"value": 11}));
+}
+
+#[test]
+fn interleaved_parallel_calls_keep_their_own_arguments() {
+    // Added A, added B, B's delta, done A, done B. Anthropic blocks stream one at
+    // a time, so B waits until A closes: A still gets its done-only arguments,
+    // and B gets its streamed delta once, never A's arguments.
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_a\",\"call_id\":\"call_a\",\"name\":\"Probe\"}}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_b\",\"call_id\":\"call_b\",\"name\":\"Probe\"}}\n\n",
+        "event: response.function_call_arguments.delta\n",
+        "data: {\"item_id\":\"fc_b\",\"delta\":\"{\\\"value\\\":11}\"}\n\n",
+        "event: response.function_call_arguments.done\n",
+        "data: {\"item_id\":\"fc_a\",\"arguments\":\"{\\\"value\\\":7}\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_a\",\"call_id\":\"call_a\",\"name\":\"Probe\",\"arguments\":\"{\\\"value\\\":7}\"}}\n\n",
+        "event: response.function_call_arguments.done\n",
+        "data: {\"item_id\":\"fc_b\",\"arguments\":\"{\\\"value\\\":11}\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_b\",\"call_id\":\"call_b\",\"name\":\"Probe\",\"arguments\":\"{\\\"value\\\":11}\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{}}\n\n",
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    assert_eq!(
+        event_names(&emitted),
+        vec![
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "message_delta",
+            "message_stop"
+        ]
+    );
+    let delta = |index: u32, json: &str| {
+        format!(
+            "\"index\":{index},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{}}}",
+            Value::String(json.to_string())
+        )
+    };
+    assert_eq!(emitted.matches(&delta(0, "{\"value\":7}")).count(), 1);
+    assert_eq!(emitted.matches(&delta(1, "{\"value\":11}")).count(), 1);
+    let final_json = machine.final_json();
+    assert_eq!(final_json["content"][0]["id"], "call_a");
+    assert_eq!(final_json["content"][0]["input"], json!({"value": 7}));
+    assert_eq!(final_json["content"][1]["id"], "call_b");
+    assert_eq!(final_json["content"][1]["input"], json!({"value": 11}));
+}
+
+#[test]
+fn three_interleaved_calls_replay_in_order_with_their_own_arguments() {
+    // Added A, B, C before any done event. Replaying B's buffered done events
+    // opens C while B's `output_item.done` is still replaying, which must not
+    // close C or give it B's arguments.
+    let added = |id: &str| {
+        format!(
+            "event: response.output_item.added\ndata: {}\n\n",
+            json!({"item": {"type": "function_call", "id": format!("fc_{id}"), "call_id": format!("call_{id}"), "name": "Probe"}})
+        )
+    };
+    let done = |id: &str, value: u32| {
+        let arguments = json!({"value": value}).to_string();
+        format!(
+            "event: response.function_call_arguments.done\ndata: {}\n\nevent: response.output_item.done\ndata: {}\n\n",
+            json!({"item_id": format!("fc_{id}"), "arguments": arguments}),
+            json!({"item": {"type": "function_call", "id": format!("fc_{id}"), "call_id": format!("call_{id}"), "name": "Probe", "arguments": arguments}})
+        )
+    };
+    let fixture = [
+        added("a"),
+        added("b"),
+        added("c"),
+        done("a", 1),
+        done("b", 2),
+        done("c", 3),
+        "event: response.completed\ndata: {\"response\":{}}\n\n".to_string(),
+    ]
+    .concat();
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    let emitted = parse_sse_events(&fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    let names = event_names(&emitted);
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| *name == "content_block_start")
+            .count(),
+        3
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| *name == "content_block_delta")
+            .count(),
+        3
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| *name == "content_block_stop")
+            .count(),
+        3
+    );
+    let final_json = machine.final_json();
+    for (index, (id, value)) in [("call_a", 1), ("call_b", 2), ("call_c", 3)]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(final_json["content"][index]["id"], id);
+        assert_eq!(
+            final_json["content"][index]["input"],
+            json!({"value": value})
+        );
+    }
+}
+
+#[test]
+fn a_later_call_never_overtakes_a_deferred_one_after_text_closes_the_open_call() {
+    // Text closes call A while B is deferred; C, added afterwards, must queue
+    // behind B rather than open first. A then sends only its arguments-done
+    // event, which must release B and C before the turn ends.
+    let added = |id: &str| {
+        format!(
+            "event: response.output_item.added\ndata: {}\n\n",
+            json!({"item": {"type": "function_call", "id": format!("fc_{id}"), "call_id": format!("call_{id}"), "name": "Probe"}})
+        )
+    };
+    let event = |name: &str, data: Value| format!("event: {name}\ndata: {data}\n\n");
+    let arguments = |value: u32| json!({"value": value}).to_string();
+    let item_done = |id: &str, value: u32| {
+        event(
+            "response.output_item.done",
+            json!({"item": {"type": "function_call", "id": format!("fc_{id}"), "call_id": format!("call_{id}"), "name": "Probe", "arguments": arguments(value)}}),
+        )
+    };
+    let fixture = [
+        added("a"),
+        event(
+            "response.function_call_arguments.delta",
+            json!({"item_id": "fc_a", "delta": arguments(1)}),
+        ),
+        added("b"),
+        event("response.output_text.delta", json!({"delta": "note"})),
+        event("response.output_text.done", json!({})),
+        added("c"),
+        event(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_b", "arguments": arguments(2)}),
+        ),
+        item_done("b", 2),
+        event(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_a", "arguments": arguments(1)}),
+        ),
+        event(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_c", "arguments": arguments(3)}),
+        ),
+        item_done("c", 3),
+    ]
+    .concat();
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    let before_terminal = parse_sse_events(&fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    for event in parse_sse_events(&event("response.completed", json!({"response": {}}))) {
+        machine.apply(event);
+    }
+
+    // Every block streams before the terminal event, at increasing indexes,
+    // and each argument delta targets its own call's block.
+    let frames = before_terminal
+        .split("\n\n")
+        .filter_map(|frame| frame.lines().find_map(|line| line.strip_prefix("data: ")))
+        .map(|data| serde_json::from_str::<Value>(data).unwrap())
+        .collect::<Vec<_>>();
+    let indexes = |kind: &str| {
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == kind)
+            .map(|frame| frame["index"].as_u64().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(indexes("content_block_start"), vec![0, 1, 2, 3]);
+    assert_eq!(indexes("content_block_stop"), vec![0, 1, 2, 3]);
+    let argument_deltas = frames
+        .iter()
+        .filter(|frame| frame["delta"]["type"] == "input_json_delta")
+        .map(|frame| {
+            (
+                frame["index"].as_u64().unwrap(),
+                frame["delta"]["partial_json"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        argument_deltas,
+        vec![(0, arguments(1)), (2, arguments(2)), (3, arguments(3))]
+    );
+
+    let final_json = machine.final_json();
+    let blocks = final_json["content"].as_array().unwrap();
+    let order = blocks
+        .iter()
+        .map(|block| {
+            block["id"]
+                .as_str()
+                .unwrap_or(block["type"].as_str().unwrap())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(order, vec!["call_a", "text", "call_b", "call_c"]);
+    assert_eq!(blocks[0]["input"], json!({"value": 1}));
+    assert_eq!(blocks[2]["input"], json!({"value": 2}));
+    assert_eq!(blocks[3]["input"], json!({"value": 3}));
+}
+
+#[test]
+fn a_late_arguments_done_never_closes_an_open_text_block() {
+    // Text closes call A while B is deferred, and both of A's done events
+    // arrive mid-text: neither may split the text block, and B streams once
+    // the whole message item finishes — its `output_item.done` must not close
+    // B before B's own done event. A's block was already stopped by the text, so its
+    // late arguments cannot reach it — the one loss an interleaved text block
+    // still causes.
+    let event = |name: &str, data: Value| format!("event: {name}\ndata: {data}\n\n");
+    let call = |id: &str| json!({"type": "function_call", "id": format!("fc_{id}"), "call_id": format!("call_{id}"), "name": "Probe"});
+    let arguments = |value: u32| json!({"value": value}).to_string();
+    let fixture = [
+        event("response.output_item.added", json!({"item": call("a")})),
+        event("response.output_item.added", json!({"item": call("b")})),
+        event("response.output_text.delta", json!({"delta": "no"})),
+        event(
+            "response.function_call_arguments.delta",
+            json!({"item_id": "fc_a", "delta": arguments(1)}),
+        ),
+        event(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_a", "arguments": arguments(1)}),
+        ),
+        event("response.output_item.done", json!({"item": call("a")})),
+        event("response.output_text.delta", json!({"delta": "te"})),
+        event("response.output_text.done", json!({})),
+        event("response.content_part.done", json!({})),
+        event(
+            "response.output_item.done",
+            json!({"item": {"type": "message"}}),
+        ),
+        event(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_b", "arguments": arguments(2)}),
+        ),
+        event("response.completed", json!({"response": {}})),
+    ]
+    .concat();
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    let emitted = parse_sse_events(&fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+    let final_json = machine.final_json();
+
+    // A's late delta must not stream onto the text block (index 1); the only
+    // argument delta is B's, on B's own block.
+    let argument_deltas = emitted
+        .split("\n\n")
+        .filter_map(|frame| frame.lines().find_map(|line| line.strip_prefix("data: ")))
+        .map(|data| serde_json::from_str::<Value>(data).unwrap())
+        .filter(|frame| frame["delta"]["type"] == "input_json_delta")
+        .map(|frame| frame["index"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(argument_deltas, vec![2]);
+    let blocks = final_json["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 3);
+    assert_eq!(blocks[0]["id"], "call_a");
+    assert_eq!(blocks[0]["input"], json!({}));
+    assert_eq!(blocks[1], json!({"type": "text", "text": "note"}));
+    assert_eq!(blocks[2]["id"], "call_b");
+    assert_eq!(blocks[2]["input"], json!({"value": 2}));
+}
+
+#[test]
+fn deferred_call_is_emitted_when_the_open_call_never_finishes() {
+    // Call A sends no done events, so B stays deferred until the turn ends; the
+    // terminal event must still emit B with its arguments.
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_a\",\"call_id\":\"call_a\",\"name\":\"Probe\"}}\n\n",
+        "event: response.function_call_arguments.delta\n",
+        "data: {\"item_id\":\"fc_a\",\"delta\":\"{\\\"value\\\":7}\"}\n\n",
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"id\":\"fc_b\",\"call_id\":\"call_b\",\"name\":\"Probe\"}}\n\n",
+        "event: response.function_call_arguments.delta\n",
+        "data: {\"item_id\":\"fc_b\",\"delta\":\"{\\\"value\\\":11}\"}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{}}\n\n",
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    assert_eq!(
+        event_names(&emitted),
+        vec![
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "message_delta",
+            "message_stop"
+        ]
+    );
+    let final_json = machine.final_json();
+    assert_eq!(final_json["stop_reason"], "tool_use");
+    assert_eq!(final_json["content"][0]["input"], json!({"value": 7}));
+    assert_eq!(final_json["content"][1]["id"], "call_b");
+    assert_eq!(final_json["content"][1]["input"], json!({"value": 11}));
+}
+
+fn sse_frame(name: &str, data: Value) -> String {
+    format!("event: {name}\ndata: {data}\n\n")
+}
+
+fn probe_call(id: &str) -> Value {
+    json!({"type": "function_call", "id": format!("fc_{id}"), "call_id": format!("call_{id}"), "name": "Probe"})
+}
+
+/// Each final content block's tool id, or its type when it has no `id`.
+fn block_labels(final_json: &Value) -> Vec<String> {
+    final_json["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|block| {
+            block["id"]
+                .as_str()
+                .unwrap_or_else(|| block["type"].as_str().unwrap())
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn items_added_inside_an_open_call_wait_for_its_done_only_arguments() {
+    // A message, reasoning, web search, or unknown item that starts before call
+    // A's done events waits behind A instead of stopping A's block, so A still
+    // gets the arguments it sends only at done (issue #770).
+    let arguments = json!({"value": 1}).to_string();
+    let cases = [
+        (
+            vec![
+                sse_frame(
+                    "response.output_item.added",
+                    json!({"item": {"type": "message", "id": "msg_1"}}),
+                ),
+                sse_frame(
+                    "response.output_text.delta",
+                    json!({"item_id": "msg_1", "delta": "note"}),
+                ),
+                sse_frame("response.output_text.done", json!({"item_id": "msg_1"})),
+                sse_frame("response.content_part.done", json!({"item_id": "msg_1"})),
+                sse_frame(
+                    "response.output_item.done",
+                    json!({"item": {"type": "message", "id": "msg_1"}}),
+                ),
+            ],
+            vec!["call_a", "text"],
+        ),
+        (
+            vec![
+                sse_frame(
+                    "response.output_item.added",
+                    json!({"item": {"type": "reasoning", "id": "rs_1"}}),
+                ),
+                sse_frame(
+                    "response.reasoning_summary_text.delta",
+                    json!({"item_id": "rs_1", "delta": "think"}),
+                ),
+                sse_frame(
+                    "response.output_item.done",
+                    json!({"item": {"type": "reasoning", "id": "rs_1", "encrypted_content": "enc"}}),
+                ),
+            ],
+            vec!["call_a", "thinking"],
+        ),
+        (
+            vec![
+                sse_frame(
+                    "response.output_item.added",
+                    json!({"item": {"type": "web_search_call", "id": "ws_1"}}),
+                ),
+                sse_frame(
+                    "response.output_item.done",
+                    json!({"item": {"type": "web_search_call", "id": "ws_1", "action": {"query": "q"}}}),
+                ),
+            ],
+            vec!["call_a", "ws_1", "web_search_tool_result"],
+        ),
+        (
+            vec![
+                sse_frame(
+                    "response.output_item.added",
+                    json!({"item": {"type": "custom_tool_call", "id": "ctc_1"}}),
+                ),
+                sse_frame(
+                    "response.output_item.done",
+                    json!({"item": {"type": "custom_tool_call", "id": "ctc_1"}}),
+                ),
+            ],
+            vec!["call_a"],
+        ),
+    ];
+    for (item_events, expected) in cases {
+        let fixture = [
+            vec![sse_frame(
+                "response.output_item.added",
+                json!({"item": probe_call("a")}),
+            )],
+            item_events,
+            vec![
+                sse_frame(
+                    "response.function_call_arguments.done",
+                    json!({"item_id": "fc_a", "arguments": arguments}),
+                ),
+                sse_frame(
+                    "response.output_item.done",
+                    json!({"item": probe_call("a")}),
+                ),
+                sse_frame("response.completed", json!({"response": {}})),
+            ],
+        ]
+        .concat()
+        .concat();
+        let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", true, false);
+        let emitted = parse_sse_events(&fixture)
+            .into_iter()
+            .flat_map(|event| machine.apply(event))
+            .collect::<String>();
+        let final_json = machine.final_json();
+
+        assert_eq!(block_labels(&final_json), expected);
+        assert_eq!(final_json["content"][0]["input"], json!({"value": 1}));
+        assert_eq!(
+            emitted
+                .matches("\"index\":0,\"delta\":{\"type\":\"input_json_delta\"")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn a_released_call_keeps_its_arguments_when_reasoning_arrives_before_its_done() {
+    // The issue #770 order: text closes call A while B waits, and the message's
+    // done releases B. A reasoning item then starts before B's done event; it
+    // must wait behind B rather than stop B's block. A's block was stopped by
+    // the id-less text, the one loss interleaved text still causes.
+    let arguments = json!({"value": 2}).to_string();
+    let fixture = [
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("a")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("b")}),
+        ),
+        sse_frame("response.output_text.delta", json!({"delta": "note"})),
+        sse_frame("response.output_text.done", json!({})),
+        sse_frame("response.content_part.done", json!({})),
+        sse_frame(
+            "response.output_item.done",
+            json!({"item": {"type": "message"}}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": {"type": "reasoning", "id": "rs_1"}}),
+        ),
+        sse_frame(
+            "response.reasoning_summary_text.delta",
+            json!({"item_id": "rs_1", "delta": "think"}),
+        ),
+        sse_frame(
+            "response.output_item.done",
+            json!({"item": {"type": "reasoning", "id": "rs_1", "encrypted_content": "enc"}}),
+        ),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_b", "arguments": arguments}),
+        ),
+        sse_frame(
+            "response.output_item.done",
+            json!({"item": probe_call("b")}),
+        ),
+        sse_frame("response.completed", json!({"response": {}})),
+    ]
+    .concat();
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", true, false);
+    for event in parse_sse_events(&fixture) {
+        machine.apply(event);
+    }
+    let final_json = machine.final_json();
+
+    assert_eq!(
+        block_labels(&final_json),
+        vec!["call_a", "text", "call_b", "thinking"]
+    );
+    assert_eq!(final_json["content"][0]["input"], json!({}));
+    assert_eq!(final_json["content"][2]["input"], json!({"value": 2}));
+}
+
+#[test]
+fn items_started_before_an_open_call_wait_for_its_done_only_arguments() {
+    // An item added before call A, or never announced, whose text, reasoning,
+    // or done event arrives while A is open waits behind A too, so A still
+    // gets the arguments it sends only at done (issues #770, #772).
+    let message = json!({"type": "message", "id": "msg_1"});
+    let reasoning = json!({"type": "reasoning", "id": "rs_1", "encrypted_content": "enc"});
+    let web_search = json!({"type": "web_search_call", "id": "ws_1", "action": {"query": "q"}});
+    let cases = [
+        (
+            vec![sse_frame(
+                "response.output_item.added",
+                json!({"item": message}),
+            )],
+            vec![
+                sse_frame(
+                    "response.output_text.delta",
+                    json!({"item_id": "msg_1", "delta": "note"}),
+                ),
+                sse_frame("response.output_text.done", json!({"item_id": "msg_1"})),
+                sse_frame("response.output_item.done", json!({"item": message})),
+            ],
+            vec!["call_a", "text"],
+        ),
+        (
+            vec![sse_frame(
+                "response.output_item.added",
+                json!({"item": {"type": "reasoning", "id": "rs_1"}}),
+            )],
+            vec![
+                sse_frame(
+                    "response.reasoning_summary_text.delta",
+                    json!({"item_id": "rs_1", "delta": "think"}),
+                ),
+                sse_frame("response.output_item.done", json!({"item": reasoning})),
+            ],
+            vec!["call_a", "thinking"],
+        ),
+        // Never announced by `output_item.added`.
+        (
+            vec![],
+            vec![
+                sse_frame(
+                    "response.reasoning_summary_text.delta",
+                    json!({"item_id": "rs_1", "delta": "think"}),
+                ),
+                sse_frame("response.output_item.done", json!({"item": reasoning})),
+            ],
+            vec!["call_a", "thinking"],
+        ),
+        (
+            vec![sse_frame(
+                "response.output_item.added",
+                json!({"item": {"type": "web_search_call", "id": "ws_1"}}),
+            )],
+            vec![sse_frame(
+                "response.output_item.done",
+                json!({"item": web_search}),
+            )],
+            vec!["call_a", "ws_1", "web_search_tool_result"],
+        ),
+    ];
+    for (before_call, item_events, expected) in cases {
+        let fixture = [
+            before_call,
+            vec![sse_frame(
+                "response.output_item.added",
+                json!({"item": probe_call("a")}),
+            )],
+            item_events,
+            vec![
+                sse_frame(
+                    "response.function_call_arguments.done",
+                    json!({"item_id": "fc_a", "arguments": json!({"value": 1}).to_string()}),
+                ),
+                sse_frame(
+                    "response.output_item.done",
+                    json!({"item": probe_call("a")}),
+                ),
+                sse_frame("response.completed", json!({"response": {}})),
+            ],
+        ]
+        .concat()
+        .concat();
+        let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", true, false);
+        let emitted = parse_sse_events(&fixture)
+            .into_iter()
+            .flat_map(|event| machine.apply(event))
+            .collect::<String>();
+        let final_json = machine.final_json();
+
+        assert_eq!(block_labels(&final_json), expected);
+        assert_eq!(final_json["content"][0]["input"], json!({"value": 1}));
+        // A's arguments stream onto its own block before that block stops.
+        let arguments_at = emitted
+            .find("\"index\":0,\"delta\":{\"type\":\"input_json_delta\"")
+            .unwrap();
+        let stop_at = emitted
+            .find("{\"type\":\"content_block_stop\",\"index\":0}")
+            .unwrap();
+        assert!(arguments_at < stop_at);
+    }
+}
+
+#[test]
+fn items_started_before_an_open_call_replay_in_order_ahead_of_later_items() {
+    // msg_1 and msg_2 start before call A, B is added and deferred while A is
+    // open, and only then does their text arrive. Both keep their upstream
+    // order, ahead of B, once A finishes.
+    let message = |id: &str| json!({"type": "message", "id": id});
+    let text = |id: &str, delta: &str| {
+        sse_frame(
+            "response.output_text.delta",
+            json!({"item_id": id, "delta": delta}),
+        )
+    };
+    let fixture = [
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": message("msg_1")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": message("msg_2")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("a")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("b")}),
+        ),
+        text("msg_1", "one"),
+        sse_frame(
+            "response.output_item.done",
+            json!({"item": message("msg_1")}),
+        ),
+        text("msg_2", "two"),
+        sse_frame(
+            "response.output_item.done",
+            json!({"item": message("msg_2")}),
+        ),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_a", "arguments": json!({"value": 1}).to_string()}),
+        ),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_b", "arguments": json!({"value": 2}).to_string()}),
+        ),
+        sse_frame("response.completed", json!({"response": {}})),
+    ]
+    .concat();
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    for event in parse_sse_events(&fixture) {
+        machine.apply(event);
+    }
+    let final_json = machine.final_json();
+
+    assert_eq!(
+        block_labels(&final_json),
+        vec!["call_a", "text", "text", "call_b"]
+    );
+    assert_eq!(final_json["content"][0]["input"], json!({"value": 1}));
+    assert_eq!(final_json["content"][1]["text"], "one");
+    assert_eq!(final_json["content"][2]["text"], "two");
+    assert_eq!(final_json["content"][3]["input"], json!({"value": 2}));
+}
+
+#[test]
+fn text_continuing_an_open_text_block_is_never_deferred() {
+    // Id-less text closes call A while B waits. Later deltas of that message
+    // carry its `item_id`; they continue the open text block, and its done
+    // events release B as soon as A finishes.
+    let message = json!({"type": "message", "id": "msg_1"});
+    let emitted = emitted_sse(&[
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("a")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("b")}),
+        ),
+        sse_frame("response.output_text.delta", json!({"delta": "no"})),
+        sse_frame(
+            "response.output_text.delta",
+            json!({"item_id": "msg_1", "delta": "te"}),
+        ),
+        sse_frame("response.output_text.done", json!({"item_id": "msg_1"})),
+        sse_frame("response.output_item.done", json!({"item": message})),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_a", "arguments": "{}"}),
+        ),
+    ]);
+
+    assert_eq!(
+        event_names(&emitted)
+            .iter()
+            .filter(|name| *name == "content_block_start")
+            .count(),
+        3
+    );
+    assert!(emitted.contains("\"text\":\"te\""));
+    assert!(emitted.contains("\"id\":\"call_b\""));
+}
+
+#[test]
+fn a_call_added_while_a_released_item_streams_waits_for_its_done() {
+    // Reasoning deferred behind call A is replayed once A finishes, but its done
+    // event is still to come. Call C, added meanwhile, must wait for it rather
+    // than stop the thinking block before its round-trip signature arrives.
+    let arguments = |value: u32| json!({"value": value}).to_string();
+    let fixture = [
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("a")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": {"type": "reasoning", "id": "rs_1"}}),
+        ),
+        sse_frame(
+            "response.reasoning_summary_text.delta",
+            json!({"item_id": "rs_1", "delta": "think"}),
+        ),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_a", "arguments": arguments(1)}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("c")}),
+        ),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_c", "arguments": arguments(3)}),
+        ),
+        sse_frame(
+            "response.output_item.done",
+            json!({"item": {"type": "reasoning", "id": "rs_1", "encrypted_content": "enc"}}),
+        ),
+        sse_frame("response.completed", json!({"response": {}})),
+    ]
+    .concat();
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", true, false);
+    for event in parse_sse_events(&fixture) {
+        machine.apply(event);
+    }
+    let final_json = machine.final_json();
+
+    assert_eq!(
+        block_labels(&final_json),
+        vec!["call_a", "thinking", "call_c"]
+    );
+    assert_eq!(final_json["content"][0]["input"], json!({"value": 1}));
+    assert!(final_json["content"][1]["signature"].is_string());
+    assert_eq!(final_json["content"][2]["input"], json!({"value": 3}));
+}
+
+/// Applies each frame and returns everything emitted, without a terminal event.
+fn emitted_sse(frames: &[String]) -> String {
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", true, false);
+    parse_sse_events(&frames.concat())
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect()
+}
+
+#[test]
+fn a_replayed_call_finished_while_another_tool_block_is_open_releases_later_items() {
+    // A is open and P deferred. A's done replays P, which stays pending. Call C
+    // has no id, so it opens at once and closes P's block; P's done then names
+    // another call than the open one, yet still finishes P so D streams.
+    let arguments = json!({"value": 1}).to_string();
+    let mut c = probe_call("c");
+    c.as_object_mut().unwrap().remove("id");
+    let emitted = emitted_sse(&[
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("a")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("p")}),
+        ),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_a", "arguments": arguments}),
+        ),
+        sse_frame("response.output_item.added", json!({"item": c})),
+        sse_frame(
+            "response.output_item.done",
+            json!({"item": probe_call("p")}),
+        ),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"arguments": arguments}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("d")}),
+        ),
+    ]);
+
+    assert!(emitted.contains("\"id\":\"call_d\""), "{emitted}");
+}
+
+#[test]
+fn a_replayed_call_finished_by_call_id_alone_releases_later_items() {
+    // B is replayed after A and stays pending; id-less text closes its block.
+    // B's done carries only `call_id`, which must still finish it so D streams.
+    let arguments = json!({"value": 1}).to_string();
+    let emitted = emitted_sse(&[
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("a")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("b")}),
+        ),
+        sse_frame(
+            "response.function_call_arguments.done",
+            json!({"item_id": "fc_a", "arguments": arguments}),
+        ),
+        sse_frame("response.output_text.delta", json!({"delta": "hi"})),
+        sse_frame("response.output_text.done", json!({"text": "hi"})),
+        sse_frame(
+            "response.output_item.done",
+            json!({"item": {"type": "function_call", "call_id": "call_b"}}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("d")}),
+        ),
+    ]);
+
+    assert!(emitted.contains("\"id\":\"call_d\""), "{emitted}");
+}
+
+#[test]
+fn a_stop_sequence_in_replayed_text_ends_the_turn_once() {
+    // A deferred message replayed at the terminal event can hit an emulated stop
+    // sequence; the turn then ends there, without a second message_stop.
+    let fixture = [
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": probe_call("a")}),
+        ),
+        sse_frame(
+            "response.output_item.added",
+            json!({"item": {"type": "message", "id": "msg_1"}}),
+        ),
+        sse_frame(
+            "response.output_text.delta",
+            json!({"item_id": "msg_1", "delta": "keep STOP drop"}),
+        ),
+        sse_frame("response.completed", json!({"response": {}})),
+    ]
+    .concat();
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false)
+        .with_stop_sequences(vec!["STOP".to_string()]);
+    let emitted = parse_sse_events(&fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    let names = event_names(&emitted);
+    assert_eq!(
+        names.iter().filter(|name| *name == "message_stop").count(),
+        1
+    );
+    assert!(emitted.contains("\"stop_reason\":\"stop_sequence\""));
+    assert!(!emitted.contains("drop"));
+}
+
+#[test]
+fn streamed_function_call_arguments_are_not_repeated_by_done_events() {
+    let fixture = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"Probe\"}}\n\n",
+        "event: response.function_call_arguments.delta\n",
+        "data: {\"delta\":\"{\\\"value\\\":7}\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"item\":{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"Probe\",\"arguments\":\"{\\\"value\\\":7}\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"response\":{}}\n\n",
+    );
+    let mut machine = AnthropicSseMachine::new("gpt-6.1-sol", false, false);
+    let emitted = parse_sse_events(fixture)
+        .into_iter()
+        .flat_map(|event| machine.apply(event))
+        .collect::<String>();
+
+    assert_eq!(emitted.matches("\"type\":\"input_json_delta\"").count(), 1);
+    assert_eq!(
+        machine.final_json()["content"][0]["input"],
+        json!({"value": 7})
+    );
+}
+
 #[test]
 fn response_incomplete_ends_the_turn_like_a_normal_completion() {
     // `response.incomplete` is a clean (if truncated) terminal, not a

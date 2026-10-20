@@ -55,6 +55,9 @@ A single Rust binary that:
 - Opt-in per-user/organization spend caps (`[server.spend]`): metered and enforced on
   `/v1/messages` requests the gateway pays for (chains made only of passthrough or
   `noop` routes are neither enforced nor metered), with an Admin API and `/effective` view — `src/gateway/spend/`
+- Opt-in durable store (`[store]`: SQLite or PostgreSQL) for pool quota, gateway
+  sessions, and spend limits/audit, with a one-time import of the JSON snapshots —
+  single instance (`src/store/`, `docs/store.md`)
 - Observability: tracing, opt-in OpenTelemetry export, Sentry
 
 ## Design Constraints

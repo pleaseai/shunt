@@ -45,7 +45,25 @@ shunt check
 
 구체적인 오류를 보고합니다: 잘못된 bind 주소, 라우트의 알 수 없는 프로바이더, 누락된 `api_key_env`, 잘못된 `base_url`, 잘못된 어댑터/인증 조합.
 
-`shunt run`이 부팅 시 수행하는 라우팅된 Antigravity 자격 증명 가드도 동일하게 실행합니다: 네이티브 `antigravity` 업스트림으로 라우팅하면서 저장된 자격 증명이 없는 구성은 `config ok`를 출력한 뒤 시작 시점에 실패하는 대신, 검사 단계에서 실패하며 `shunt login antigravity`를 안내합니다. 이 검사는 오프라인으로 유지됩니다 — 라우트를 읽고 자격 증명의 존재 여부(싱글톤 파일 또는 이름 지정 풀 후보)만 확인할 뿐, 토큰을 갱신하거나 백엔드에 접속하지 않습니다. 내장 `antigravity` 프로바이더를 선언만 하고 라우팅하지 않는 구성은 영향을 받지 않으며, `kind = "antigravity_cli"` 라우팅도 마찬가지입니다.
+`shunt run`이 부팅 시 수행하는 라우팅된 Antigravity 자격 증명 가드도 동일하게 실행합니다: 네이티브 `antigravity` 업스트림으로 라우팅하면서 저장된 자격 증명이 없는 구성은 `config ok`를 출력한 뒤 시작 시점에 실패하는 대신, 검사 단계에서 실패하며 `shunt login antigravity`를 안내합니다. 이 가드는 오프라인으로 유지됩니다 — 라우트를 읽고 자격 증명의 존재 여부(싱글톤 파일 또는 이름 지정 풀 후보)만 확인할 뿐, 토큰을 갱신하거나 백엔드에 접속하지 않습니다. 내장 `antigravity` 프로바이더를 선언만 하고 라우팅하지 않는 구성은 영향을 받지 않으며, `kind = "antigravity_cli"` 라우팅도 마찬가지입니다.
+
+[`[store]`](/ko/reference/configuration/#store-선택)가 있으면 검사가 더 이상 완전한 오프라인이 아닙니다. `config ok` 뒤에 저장소를 읽기 전용으로 열어(SQLite 파일을 읽거나 PostgreSQL에 연결) 한 줄을 더 출력합니다. 마이그레이션을 실행하거나, 데이터베이스를 수정하거나, 없는 SQLite 파일을 만들지 않습니다. 다만 WAL 모드 데이터베이스를 검사하는 동안 SQLite가 `-wal` / `-shm` 보조 파일을 만들거나 지울 수 있습니다.
+
+```bash
+shunt check
+# -> config ok
+# -> store ok: sqlite sqlite:/var/lib/shunt/shunt.db, schema v1 (binary supports v1)
+```
+
+| 저장소 상태 | `config ok` 다음 출력 | 종료 코드 |
+| :-- | :-- | :-- |
+| 최신 | `store ok: <backend> <target>, schema vN (binary supports vM)` | `0` |
+| 스키마가 바이너리보다 오래됨 | 같은 줄 뒤에 `; 1 pending migration applies at boot`(K > 1이면 `; K pending migrations apply at boot`)가 붙음 | `0` |
+| SQLite 파일 없음 | `store ok: sqlite sqlite:<path>, file does not exist yet; it is created with mode 0600 at boot` | `0` |
+| 연결 불가 | `store check failed`, 원인은 `store <target> is unreachable: <reason>` | `1` |
+| 스키마가 바이너리보다 새로움 | `store check failed`, 원인은 `store <target> is at schema version N, newer than the M this binary supports; upgrade shunt` | `1` |
+
+`<target>`은 `sqlite:<path>` 또는 `postgres://host:port/db`이며 자격 증명은 출력되지 않습니다. 검사는 최대 15초로 제한됩니다. 검증에 실패하는 `[store]`(예: `sslmode=verify-full` 없는 원격 PostgreSQL 호스트)는 그보다 먼저 `config check failed`로 실패합니다.
 
 ## `shunt init`
 
@@ -215,7 +233,14 @@ xAI device-code OAuth 플로우를 실행하고 갱신 가능한 credential을 �
 
 ```bash
 shunt login xai
+shunt login xai --name <account-name>
 ```
+
+`--name`이 없으면 credential은 `~/.shunt/xai-auth.json`에 저장됩니다(`SHUNT_XAI_AUTH_FILE`로 재정의). `--name`을 주면 대신 `~/.shunt/accounts/xai/<account-name>.json`(0600; shunt가 새로 만드는 스토어 디렉터리는 `0700`이지만 이미 존재하는 디렉터리는 기존 권한을 유지합니다; `SHUNT_XAI_ACCOUNTS_DIR`로 스토어를 재정의)에 저장되므로, 이름 있는 로그인이 단일 계정 파일을 덮어쓰지 않습니다. 같은 이름을 다시 쓰면 파일이 교체됩니다. `--mode`와 `--long-lived`는 거부되며(xAI OAuth 토큰은 항상 갱신 가능), `--manual`은 claude 전용입니다.
+
+프로바이더에서 `[[providers.grok.accounts]]` 항목을 두거나, `auth = { mode = "xai_oauth", accounts = [...] }` 맵의 `accounts` 항목에 이름 있는 계정을 지정하거나, 아무것도 설정하지 않아 스토어 전체를 스캔하게 할 수 있습니다. 설정된 계정이 없고 스토어가 비어 있으면 프로바이더는 단일 계정 파일로 fallback합니다. 이름 있는 계정이 하나라도 생기면 그 파일은 더 이상 읽히지 않습니다. 두 파일의 형식은 같으므로, shunt를 멈춘 상태에서 먼저 소유자 전용으로 스토어 디렉터리를 만든 뒤 옮기면 기존 로그인을 풀로 옮길 수 있습니다: `install -d -m 700 ~/.shunt/accounts/xai && mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<account-name>.json`. 단일 계정 구성에서 마이그레이션할 때는 이 디렉터리가 아직 없습니다.
+
+xAI는 갱신할 때마다 refresh 토큰을 회전시키므로, 갱신 가능한 로그인 하나에는 소유자가 하나여야 합니다. credential 파일 하나를 두 곳에 복사하거나 실행 중인 shunt 프로세스 두 개 사이에서 공유하지 마세요.
 
 ## `shunt login kimi`
 
@@ -260,5 +285,7 @@ Kimi는 갱신할 때마다 refresh token을 회전시키며, 발급되는 acces
 | `CLAUDE_CREDENTIALS` | `shunt token` 및 갱신 가능한 `shunt login claude` 가져오기용 대체 credential 파일 경로 |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt가 관리하는 Claude 계정 스토어의 대체 디렉터리 |
 | `SHUNT_KIMI_ACCOUNTS_DIR` | shunt가 관리하는 Kimi Code 계정 스토어의 대체 디렉터리 |
+| `SHUNT_XAI_AUTH_FILE` | `shunt login xai`(`--name` 없음)의 대체 credential 파일(기본값 `~/.shunt/xai-auth.json`) |
+| `SHUNT_XAI_ACCOUNTS_DIR` | shunt가 관리하는 xAI 계정 스토어의 대체 디렉터리 |
 | `token_env`로 지정한 계정별 변수 | Anthropic `claude_oauth` 풀 항목의 setup token; 변경 없이 그대로 사용 |
 | `OPENAI_API_KEY` | `openai` 프로바이더용 기본 키 env(프로바이더별로 `api_key_env`를 통해) |

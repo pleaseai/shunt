@@ -487,3 +487,36 @@ fn corrupt_and_version_mismatched_files_fail_closed() {
     assert!(error.to_string().contains("version mismatch"));
     fs::remove_dir_all(mismatch.parent().unwrap()).ok();
 }
+
+#[test]
+fn store_less_load_warns_only_while_the_imported_snapshot_is_unchanged() {
+    use crate::store::marker;
+
+    let path = temp_file("imported");
+    let snapshot = |next_audit_id: u64| {
+        serde_json::to_vec(&json!({
+            "version": 1, "limits": [], "audit": [], "next_audit_id": next_audit_id,
+        }))
+        .unwrap()
+    };
+    fs::write(&path, snapshot(1)).unwrap();
+    marker::write(
+        &path,
+        &marker::ImportMarker {
+            backend: "sqlite".to_string(),
+            imported_at: 1_700_000_321,
+            source_sha256: marker::sha256_hex(&snapshot(1)),
+        },
+    )
+    .unwrap();
+
+    let (loaded, logs) = capture_logs(|| load(&path));
+    assert!(loaded.unwrap().is_some());
+    assert!(logs.contains("imported into a store"), "{logs}");
+
+    fs::write(&path, snapshot(5)).unwrap();
+    let (loaded, logs) = capture_logs(|| load(&path));
+    assert!(loaded.unwrap().is_some());
+    assert!(logs.is_empty(), "{logs}");
+    fs::remove_dir_all(path.parent().unwrap()).ok();
+}

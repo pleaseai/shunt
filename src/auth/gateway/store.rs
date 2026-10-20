@@ -249,9 +249,6 @@ pub(crate) fn waiters_blocked_on(path: &Path) -> usize {
 }
 
 #[cfg(test)]
-pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-#[cfg(test)]
 pub(crate) fn temp_dir(tag: &str) -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
     std::env::temp_dir().join(format!(
@@ -297,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_blank_session_file_override_is_treated_as_unset() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         {
             let _blank = shared::EnvVarGuard::set(SESSION_FILE_ENV, "   ");
             assert_eq!(

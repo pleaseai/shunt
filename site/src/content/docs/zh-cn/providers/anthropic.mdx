@@ -16,6 +16,15 @@ description: 默认的透传提供方 —— 转发调用方自己的凭据、�
 被移除:shunt 自己的 Responses 路径在上游未返回 signature 时就会生成这种块,而 Anthropic 无论如何
 都会拒绝无法验证 signature 的 thinking 块。
 
+第三方 Anthropic 类提供方 —— 即既不在 `api.anthropic.com` 上、也不是 `claude_oauth` 池的
+`kind = "anthropic"` 上游(如 MiniMax、Kimi、Zhipu)—— 可能会在 thinking 块上附带并非 Anthropic 签发的 `signature`。
+无论是否流式,shunt 都会在返回客户端的响应中,把该 `signature` 包进一个携带提供方 `base_url`(去掉末尾的 `/`)摘要的自有
+envelope。envelope 不含 URL 本身,因此 URL 及其中的凭据不会暴露给客户端。不过该摘要是未加盐的固定值,可以用来验证猜测:只要能猜出完整的 `base_url`(例如常见的端点,或其中嵌入的弱凭据),就能拿摘要核对猜测是否正确。之后的轮次回到 `base_url` 相同的提供方时,shunt 会解开 envelope,按字节原样转发原始
+signature,因此该提供方的 extended thinking 续写照常工作;发往其他任何地方(包括 Anthropic)时,
+envelope 被视为 shunt 生成的值,块会按上文所述被移除。因此,在第三方 Anthropic 类提供方与 Anthropic
+之间切换时,该提供方的 thinking 块会被移除而不是让请求失败,回到同一提供方时又会恢复。
+`api.anthropic.com` 和 `claude_oauth` 池的响应从不被包装。
+
 | 认证模式 | 凭据 | 使用场景 |
 | :-- | :-- | :-- |
 | `passthrough`(默认) | 调用方自己的 `x-api-key` / `Authorization` | 透明代理 —— 每个客户端自带密钥或 OAuth token |

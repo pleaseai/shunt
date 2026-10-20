@@ -116,6 +116,31 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 #                                    from the last observed utilization; a
 #                                    best-effort cache, re-derived from upstream
 
+# --- Optional: transactional store for pool quota, gateway refresh tokens, and
+# spend limits/audit (docs/store.md). Off unless this table is set; without it the
+# JSON `state_path` snapshots above behave exactly as before. One shunt process
+# per store: a second `shunt run` on the same store is refused. On the first boot
+# the existing JSON snapshots are imported once (never modified); removing [store]
+# later falls back to the snapshot as it was at import time. The store holds
+# refresh-token hashes: restrict database access and backups. Restart-only.
+# [store]
+# backend = "sqlite"                         # "sqlite" or "postgres"
+# url = "/home/you/.shunt/shunt.db"          # sqlite: a file path or sqlite: URL
+#                                            # (a new file is created 0600; an existing file
+#                                            #  keeps its mode; a sqlite: URL path is percent-decoded;
+#                                            #  file: URIs, ?query options and in-memory are rejected)
+#                                            # postgres: "postgres://user@db.example.com/shunt?sslmode=verify-full"
+#                                            # (needs a build with --features store-postgres;
+#                                            #  prebuilt release binaries have it)
+# max_connections = 4                        # postgres only (default 4); rejected for sqlite
+# password_env = "SHUNT_STORE_PASSWORD"      # postgres: env var holding the password,
+#                                            # used only when the URL has none
+# allow_insecure_remote_tls = false          # (default) a non-loopback postgres host needs
+#                                            # sslmode=verify-full unless this is true
+# hold_stale_seconds = 30                    # (default; minimum 3) a hold not renewed this
+#                                            # long is stale and may be taken over; a crash
+#                                            # blocks a restart for up to this long
+
 # --- Optional: Sentry error reporting to YOUR OWN Sentry project (docs/running.md §3.1).
 # Off unless you set a DSN. Reports gateway-owned diagnostics — fatal
 # gateway startup/serve errors, panics, and error-level log events (warn/info as

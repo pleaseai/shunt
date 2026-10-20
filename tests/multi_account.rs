@@ -1,7 +1,5 @@
 use std::{
-    collections::hash_map::DefaultHasher,
     fs,
-    hash::{Hash, Hasher},
     io::ErrorKind,
     net::SocketAddr,
     path::PathBuf,
@@ -237,13 +235,18 @@ fn can_bind_loopback() -> bool {
     }
 }
 
+/// A session id that maps to `index` under the real bucket assignment
+/// (`accounts::stable_session_index`: first 8 bytes of SHA-256, big-endian,
+/// mod count).
 fn session_id_for_account(index: usize, account_count: usize) -> String {
+    use sha2::{Digest, Sha256};
+
     (0..1000)
         .map(|candidate| format!("session-{candidate}"))
         .find(|session_id| {
-            let mut hasher = DefaultHasher::new();
-            session_id.hash(&mut hasher);
-            hasher.finish() as usize % account_count == index
+            let digest = Sha256::digest(session_id.as_bytes());
+            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
+            prefix % account_count as u64 == index as u64
         })
         .expect("a session id should map to the requested account")
 }
@@ -708,6 +711,268 @@ async fn plain_429_retries_the_same_account_without_rotating() {
     );
     assert_eq!(response.text().await.unwrap(), error_body);
     upstream.verify().await;
+}
+
+/// Read one HTTP/1.1 request (headers plus a `content-length` body) off a raw
+/// upstream connection, returning the bearer it carried.
+async fn read_raw_request(stream: &mut tokio::net::TcpStream) -> String {
+    use tokio::io::AsyncReadExt;
+
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "upstream connection closed mid-request");
+        buffer.extend_from_slice(&chunk[..read]);
+        let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        // Header names are case-insensitive; values (the bearer) are not.
+        let head = String::from_utf8_lossy(&buffer[..end]);
+        let header = |name: &str| {
+            head.lines().find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.trim().eq_ignore_ascii_case(name).then(|| value.trim())
+            })
+        };
+        let length = header("content-length").map_or(0, |value| value.parse::<usize>().unwrap());
+        if buffer.len() >= end + 4 + length {
+            return header("authorization")
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .unwrap_or_default()
+                .to_string();
+        }
+    }
+}
+
+/// A connection-level failure (the live trigger was a TLS `BadRecordMac` on a
+/// reused connection) says nothing about the account. The gateway resends once
+/// on the same account instead of rotating: rotating hands the request to the
+/// next candidate, which in a pool whose other accounts are quota-exhausted
+/// relays their 429 while the healthy account would have answered.
+#[tokio::test]
+async fn transport_failure_retries_the_same_account_once_before_rotating() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use tokio::io::AsyncWriteExt;
+
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "transport-a"].concat();
+    let token_b = ["fake-oauth-", "transport-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_TRANSPORT_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_TRANSPORT_B", &token_b);
+
+    // The first request is read in full and its connection dropped with no
+    // response; every later one is answered 200 naming the bearer it carried.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = listener.local_addr().unwrap();
+    let bearers = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let served = Arc::new(AtomicUsize::new(0));
+    let upstream = {
+        let bearers = Arc::clone(&bearers);
+        let served = Arc::clone(&served);
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let bearer = read_raw_request(&mut stream).await;
+                bearers.lock().unwrap().push(bearer.clone());
+                if served.fetch_add(1, Ordering::SeqCst) == 0 {
+                    drop(stream);
+                    continue;
+                }
+                let body = format!(r#"{{"bearer":"{bearer}"}}"#);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.ok();
+            }
+        })
+    };
+
+    let gateway = start_gateway_with(test_config(
+        &format!("http://{upstream_addr}"),
+        account("account-a", "SHUNT_TEST_MULTI_TRANSPORT_A", "uuid-a"),
+        account("account-b", "SHUNT_TEST_MULTI_TRANSPORT_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let served_by = response
+        .headers()
+        .get("x-shunt-account")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let token = if served_by == "account-a" {
+        &token_a
+    } else {
+        &token_b
+    };
+    assert_eq!(
+        *bearers.lock().unwrap(),
+        vec![token.clone(), token.clone()],
+        "both sends go to {served_by}; the other account is never tried"
+    );
+    upstream.abort();
+}
+
+/// The resend is a single one: when it fails too, the account is cooled down
+/// and the request rotates, so a later request that hashes to the failing
+/// account is served by the healthy one without touching it again.
+#[tokio::test]
+async fn repeated_transport_failure_cools_down_and_rotates() {
+    use tokio::io::AsyncWriteExt;
+
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "transport-repeat-a"].concat();
+    let token_b = ["fake-oauth-", "transport-repeat-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_TRANSPORT_REPEAT_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_TRANSPORT_REPEAT_B", &token_b);
+
+    // Every request carrying account-a's bearer is read in full and its
+    // connection dropped with no response; account-b's are answered 200.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = listener.local_addr().unwrap();
+    let bearers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let upstream = {
+        let bearers = std::sync::Arc::clone(&bearers);
+        let failing = token_a.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let bearer = read_raw_request(&mut stream).await;
+                bearers.lock().unwrap().push(bearer.clone());
+                if bearer == failing {
+                    drop(stream);
+                    continue;
+                }
+                let body = r#"{"account":"b"}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.ok();
+            }
+        })
+    };
+
+    let gateway = start_gateway_with(test_config(
+        &format!("http://{upstream_addr}"),
+        account("account-a", "SHUNT_TEST_MULTI_TRANSPORT_REPEAT_A", "uuid-a"),
+        account("account-b", "SHUNT_TEST_MULTI_TRANSPORT_REPEAT_B", "uuid-b"),
+    ))
+    .await;
+
+    // Round-robin starts on account-a: it is sent twice, then the pool rotates.
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    // A session that hashes to account-a lands on account-b because account-a
+    // is cooled down; the upstream sees no third account-a send.
+    let session_id = session_id_for_account(0, 2);
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    let (a, b) = (token_a, token_b);
+    assert_eq!(*bearers.lock().unwrap(), vec![a.clone(), a, b.clone(), b]);
+    upstream.abort();
+}
+
+/// The status-driven same-account retries get the same single resend: a plain
+/// 429's throttle retry that hits a dropped connection is sent again to the
+/// throttled account instead of cooling it and rotating.
+#[tokio::test]
+async fn throttle_retry_transport_failure_resends_to_the_same_account() {
+    use tokio::io::AsyncWriteExt;
+
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "throttle-transport-a"].concat();
+    let token_b = ["fake-oauth-", "throttle-transport-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_THROTTLE_TRANSPORT_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_THROTTLE_TRANSPORT_B", &token_b);
+
+    // The first request gets a plain 429 with no wait, the throttle retry's
+    // connection is dropped with no response, and the resend is answered 200.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = listener.local_addr().unwrap();
+    let bearers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let upstream = {
+        let bearers = std::sync::Arc::clone(&bearers);
+        tokio::spawn(async move {
+            for served in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let bearer = read_raw_request(&mut stream).await;
+                bearers.lock().unwrap().push(bearer);
+                let (status, extra, body) = match served {
+                    0 => (
+                        "429 Too Many Requests",
+                        "retry-after: 0\r\n",
+                        r#"{"type":"error"}"#,
+                    ),
+                    1 => {
+                        drop(stream);
+                        continue;
+                    }
+                    _ => ("200 OK", "", r#"{"ok":true}"#),
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n{extra}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.ok();
+            }
+        })
+    };
+
+    let gateway = start_gateway_with(test_config(
+        &format!("http://{upstream_addr}"),
+        account(
+            "account-a",
+            "SHUNT_TEST_MULTI_THROTTLE_TRANSPORT_A",
+            "uuid-a",
+        ),
+        account(
+            "account-b",
+            "SHUNT_TEST_MULTI_THROTTLE_TRANSPORT_B",
+            "uuid-b",
+        ),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+    let a = token_a;
+    assert_eq!(*bearers.lock().unwrap(), vec![a.clone(), a.clone(), a]);
+    upstream.abort();
 }
 
 #[tokio::test]
@@ -1488,19 +1753,8 @@ async fn storm_control_spills_concurrent_request_to_next_account() {
     });
     let gateway = start_gateway_with(config).await;
 
-    // Both requests carry a session id that maps to account-a under the REAL
-    // bucket assignment (`accounts::stable_session_index`: first 8 bytes of
-    // SHA-256, big-endian, mod count) — this file's `session_id_for_account`
-    // helper hashes with `DefaultHasher` and would land on the wrong account.
-    let session_id = (0..1000)
-        .map(|candidate| format!("session-{candidate}"))
-        .find(|session_id| {
-            use sha2::{Digest, Sha256};
-            let digest = Sha256::digest(session_id.as_bytes());
-            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
-            prefix % 2 == 0
-        })
-        .expect("a session id should map to account-a");
+    // Both requests carry a session id that maps to account-a.
+    let session_id = session_id_for_account(0, 2);
 
     let first = {
         let gateway_url = gateway.base_url.clone();

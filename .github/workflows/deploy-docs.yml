@@ -3,6 +3,10 @@
 #   CLOUDFLARE_API_TOKEN   - API token with the "Cloudflare Pages: Edit" permission
 #   CLOUDFLARE_ACCOUNT_ID  - the Cloudflare account id
 # The Pages project ("shunt-docs") is created on first deploy if it doesn't exist.
+#
+# A release-please merge commit is not deployed on push: it stamps a new default
+# version into site/public/install.sh before release.yml has uploaded that
+# version's binaries. release.yml calls this workflow once the upload succeeds.
 name: deploy docs
 
 on:
@@ -12,6 +16,12 @@ on:
       - "site/**"
       - ".github/workflows/deploy-docs.yml"
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      branch:
+        description: "Cloudflare Pages branch to deploy as (a tag checkout has no branch for wrangler to detect)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -23,10 +33,36 @@ concurrency:
 jobs:
   deploy:
     name: build and deploy to Cloudflare Pages
+    if: >-
+      inputs.branch ||
+      !startsWith(github.event.head_commit.message || '', 'chore(main): release')
     runs-on: ubuntu-latest
     steps:
+      # A release-triggered call builds the branch tip, not the tag, so it never
+      # replaces a newer docs deploy with an older checkout.
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.branch }}
+
+      # Any deploy (not only the release merge) can publish an installer whose
+      # stamped default version is still building or failed to release. Refuse
+      # until every asset install.sh fetches is attached; release.yml redeploys
+      # once they are.
+      - name: Check installer default version is released
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^DEFAULT_VERSION="\([^"]*\)".*/\1/p' site/public/install.sh)"
+          [ -n "$version" ] || { echo "::error::DEFAULT_VERSION not found in site/public/install.sh"; exit 1; }
+          assets="$(gh release view "v${version}" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' || true)"
+          for name in SHA256SUMS shunt-darwin-arm64 shunt-darwin-x64 shunt-linux-arm64 shunt-linux-x64; do
+            grep -qx "$name" <<<"$assets" || {
+              echo "::error::v${version} has no ${name} asset yet; install.sh would 404. release.yml deploys after the upload."
+              exit 1
+            }
+          done
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -48,4 +84,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy site/dist --project-name=shunt-docs
+          command: pages deploy site/dist --project-name=shunt-docs ${{ inputs.branch && format('--branch={0}', inputs.branch) || '' }}

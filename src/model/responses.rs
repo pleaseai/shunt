@@ -71,6 +71,21 @@ pub struct AnthropicSseMachine {
     text_buffer: String,
     text_citations: Vec<Value>,
     tool_buffer: Option<ToolBuffer>,
+    /// Identity and delta state of the open tool block, tracked apart from
+    /// `tool_buffer` (absent on streaming machines) so the done events can tell
+    /// whether they belong to it and whether their full `arguments` still need
+    /// to reach the client (issue #765).
+    tool_call: OpenToolCall,
+    /// Output items added while an earlier item must finish first, in arrival
+    /// order (see [`DeferredItem`]).
+    deferred_items: Vec<DeferredItem>,
+    /// The `id` and `call_id` of a deferred item whose replay ended before its
+    /// `output_item.done`: its remaining events arrive live, and the items
+    /// behind it stay deferred until it finishes.
+    pending_item: Option<PendingItem>,
+    /// Whether deferred items are being replayed, so a done event inside the
+    /// replay never starts a second, nested replay.
+    replaying: bool,
     reasoning: Option<ReasoningBuffer>,
     web_search_indexes: HashMap<String, String>,
     /// Whether the request used the native `tool_search` protocol (issue #82).
@@ -96,6 +111,54 @@ pub struct AnthropicSseMachine {
     /// Responses API has no `stop` parameter (issue #605). Empty — the common
     /// case — leaves every text path byte-identical to before the feature.
     stop: StopScanner,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OpenToolCall {
+    /// The output item's `id`, which `function_call_arguments.done` names as
+    /// `item_id`.
+    item_id: Option<String>,
+    call_id: Option<String>,
+    /// Whether any `input_json_delta` was emitted for this call.
+    args_streamed: bool,
+}
+
+/// A replayed item whose `output_item.done` has not arrived yet.
+#[derive(Debug, Clone)]
+struct PendingItem {
+    id: String,
+    call_id: Option<String>,
+}
+
+/// An output item the upstream added while a tool block was still open, while
+/// a replayed item was still in progress, or behind items already deferred —
+/// parallel calls interleaved as added A, added B, done A, done B, or a message,
+/// reasoning, web search, or other item that starts before call A's done
+/// events. Anthropic content blocks stream one at a time, so opening the new
+/// item's block would close A before its done-event arguments arrive. The item
+/// and every event naming it wait here instead, and replay in arrival order
+/// once nothing open is left to finish (issues #765, #770).
+#[derive(Debug, Clone)]
+struct DeferredItem {
+    id: String,
+    call_id: Option<String>,
+    events: Vec<ResponseEvent>,
+    /// Whether the item's own done event is among `events`, so its replay
+    /// finishes it.
+    done: bool,
+    /// Whether the item started before the open call — it reached the queue
+    /// through a later event, not its `output_item.added`.
+    started_early: bool,
+}
+
+impl DeferredItem {
+    fn push(&mut self, event: ResponseEvent) {
+        self.done |= matches!(
+            event.event.as_deref(),
+            Some("response.output_item.done" | "response.function_call_arguments.done")
+        );
+        self.events.push(event);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +201,10 @@ impl AnthropicSseMachine {
             text_buffer: String::new(),
             text_citations: Vec::new(),
             tool_buffer: None,
+            tool_call: OpenToolCall::default(),
+            deferred_items: Vec::new(),
+            pending_item: None,
+            replaying: false,
             reasoning: None,
             web_search_indexes: HashMap::new(),
             tool_search_native,
@@ -195,6 +262,19 @@ impl AnthropicSseMachine {
         if self.stopped {
             return Vec::new();
         }
+        if let Some(index) = self.deferral(&event) {
+            self.deferred_items[index].push(event);
+            return Vec::new();
+        }
+        self.dispatch(event)
+    }
+
+    /// Translate one upstream event, past the deferral queue: [`Self::apply`]
+    /// for a live event, [`Self::release_deferred_items`] for a replayed one.
+    fn dispatch(&mut self, event: ResponseEvent) -> Vec<String> {
+        if self.stopped {
+            return Vec::new();
+        }
         let name = event.event.as_deref().unwrap_or("");
         match name {
             "response.created" | "response.in_progress" => self.start(&event.data),
@@ -206,7 +286,7 @@ impl AnthropicSseMachine {
             }
             "response.reasoning_summary_text.delta" => self.reasoning_delta(&event.data),
             "response.function_call_arguments.delta" => self.arguments_delta(&event.data),
-            "response.function_call_arguments.done" => self.close_current(BlockKind::Tool),
+            "response.function_call_arguments.done" => self.close_tool(&event.data),
             "response.output_item.done" => self.output_item_done(&event.data),
             // `response.incomplete` is a clean (if truncated) terminal, not a
             // transport cut — mirrors the WebSocket transport's terminal set
@@ -256,7 +336,11 @@ impl AnthropicSseMachine {
             return Vec::new();
         }
         let mut out = self.close_any();
-        out.extend(self.stop_events("end_turn"));
+        out.extend(self.drain_deferred_items());
+        // A replayed text delta can end the turn on an emulated stop sequence.
+        if !self.stopped {
+            out.extend(self.stop_events("end_turn"));
+        }
         out
     }
 
@@ -351,18 +435,27 @@ impl AnthropicSseMachine {
 
     /// `response.output_item.done` closes whichever item just finished. Reasoning
     /// items need special handling (stamp the round-trip signature); function_call
-    /// and message items just close.
+    /// items deliver any `arguments` no delta carried; message items just close.
+    /// Every finished item then releases the items deferred behind it.
     fn output_item_done(&mut self, data: &Value) -> Vec<String> {
         let item = data.get("item").unwrap_or(data);
-        match item.get("type").and_then(Value::as_str) {
+        let mut out = match item.get("type").and_then(Value::as_str) {
             Some("reasoning") => self.reasoning_done(item),
             Some("web_search_call") => self.web_search_done(item),
             // The native tool_search_call carries its full `arguments` (a JSON
             // object) only at `done` — codex ignores the `added`/delta events too
             // — so the whole ToolSearch tool_use is emitted here in one shot.
             Some("tool_search_call") if self.tool_search_native => self.tool_search_call_done(item),
+            Some("function_call") => return self.close_tool(item),
+            // A message ends its own text block only — never a tool block a
+            // deferred call opened. Its `output_text.done` / `content_part.done`
+            // still precede it.
+            Some("message") => self.close_current(BlockKind::Text),
             _ => self.close_any(),
-        }
+        };
+        self.finish_item(item);
+        out.extend(self.release_deferred_items());
+        out
     }
 
     /// An upstream `tool_search_call` -> an Anthropic `tool_use` for `ToolSearch`,
@@ -592,6 +685,12 @@ impl AnthropicSseMachine {
             .unwrap_or("")
             .to_string();
         self.saw_tool = true;
+        let identifier = |key| item.get(key).and_then(Value::as_str).map(str::to_string);
+        self.tool_call = OpenToolCall {
+            item_id: identifier("id"),
+            call_id: identifier("call_id"),
+            args_streamed: false,
+        };
         self.tool_buffer = self.accumulate_content.then(|| ToolBuffer {
             id: id.clone(),
             name: name.clone(),
@@ -795,7 +894,21 @@ impl AnthropicSseMachine {
     }
 
     fn arguments_delta(&mut self, data: &Value) -> Vec<String> {
+        // A delta for a call whose block text or reasoning already stopped has
+        // no block left to land on; never stream it onto another block.
+        if self.open.as_ref().map(|block| block.kind) != Some(BlockKind::Tool)
+            || !self.event_names_open_call(data)
+        {
+            return Vec::new();
+        }
         let delta = data.get("delta").and_then(Value::as_str).unwrap_or("");
+        self.emit_arguments(delta)
+    }
+
+    fn emit_arguments(&mut self, delta: &str) -> Vec<String> {
+        if !delta.is_empty() {
+            self.tool_call.args_streamed = true;
+        }
         if self.accumulate_content {
             if let Some(tool) = &mut self.tool_buffer {
                 tool.json.push_str(delta);
@@ -809,6 +922,224 @@ impl AnthropicSseMachine {
                 "delta": {"type": "input_json_delta", "partial_json": delta}
             }),
         )]
+    }
+
+    /// Close the open block at a function call's `function_call_arguments.done`
+    /// or `output_item.done`, both of which carry the call's full `arguments`.
+    /// Upstreams may send the arguments only there, with no preceding delta
+    /// (Codex parallel calls, issue #765), so a tool block that streamed nothing
+    /// gets them as one `input_json_delta` before its `content_block_stop`. A
+    /// block whose deltas already arrived is closed as-is, never sent a second
+    /// copy. A done event naming a different call than the open one (a call
+    /// whose block an interleaved `output_item.added` already closed) is
+    /// ignored, so its arguments never land on another call's `tool_use` and
+    /// the open call still closes on its own done events.
+    fn close_tool(&mut self, data: &Value) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Tool) {
+            if !self.event_names_open_call(data) {
+                // The event names another call, which is finished even though
+                // its arguments are ignored here.
+                self.finish_item(data);
+                return out;
+            }
+            if !self.tool_call.args_streamed {
+                if let Some(arguments) = data
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .filter(|arguments| !arguments.is_empty())
+                {
+                    out.extend(self.emit_arguments(arguments));
+                }
+            }
+            out.extend(self.close_any());
+            // The open call itself finished, even when the done event carries
+            // no id.
+            let (item_id, call_id) = (
+                self.tool_call.item_id.clone(),
+                self.tool_call.call_id.clone(),
+            );
+            self.finish_ids(item_id.as_deref(), call_id.as_deref());
+        }
+        // When text or reasoning closed this call first, its done event never
+        // closes that block, and still finishes the call.
+        self.finish_item(data);
+        out.extend(self.release_deferred_items());
+        out
+    }
+
+    /// The deferral slot an event waits in, if it must wait: the deferred item
+    /// it names, or a new slot for an item added while an earlier one has yet
+    /// to finish, or for one added before the open call (or never announced)
+    /// whose text, reasoning, or done event would stop the open tool block.
+    /// Every per-item event names its item by `item_id`;
+    /// `output_item.added` / `output_item.done` carry the item, named by `id`,
+    /// or by `call_id` on a function call. An item without an `id` cannot get a
+    /// slot, so it is never deferred: it opens at once, closing the open block
+    /// as before.
+    fn deferral(&mut self, event: &ResponseEvent) -> Option<usize> {
+        let name = event.event.as_deref()?;
+        let data = &event.data;
+        let item = matches!(
+            name,
+            "response.output_item.added" | "response.output_item.done"
+        )
+        .then(|| data.get("item").unwrap_or(data));
+        let id = item
+            .map_or_else(|| data.get("item_id"), |item| item.get("id"))
+            .and_then(Value::as_str);
+        let call_id = item
+            .and_then(|item| item.get("call_id"))
+            .and_then(Value::as_str);
+        let names =
+            |value: Option<&str>, deferred: Option<&str>| value.is_some() && value == deferred;
+        if let Some(index) = self.deferred_items.iter().position(|deferred| {
+            names(id, Some(&deferred.id)) || names(call_id, deferred.call_id.as_deref())
+        }) {
+            return Some(index);
+        }
+        let tool_is_open = self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Tool);
+        let waits = match name {
+            "response.output_item.added" => self.holds_new_items(),
+            // Only while a tool block is open: with text or reasoning open, the
+            // event continues that block rather than stopping a call's.
+            "response.output_text.delta" | "response.reasoning_summary_text.delta" => tool_is_open,
+            // A function call's done event only ever closes its own block.
+            "response.output_item.done" => {
+                tool_is_open
+                    && item
+                        .and_then(|item| item.get("type"))
+                        .and_then(Value::as_str)
+                        != Some("function_call")
+            }
+            _ => false,
+        };
+        let id = id?;
+        // The replayed item still in progress streams its remaining events live.
+        if !waits
+            || self
+                .pending_item
+                .as_ref()
+                .is_some_and(|pending| pending.id == id)
+        {
+            return None;
+        }
+        // An item that started before the open call precedes every item added
+        // after it, so it replays ahead of them, behind the items that started
+        // early before it.
+        let started_early = name != "response.output_item.added";
+        let index = if started_early {
+            self.deferred_items
+                .iter()
+                .position(|deferred| !deferred.started_early)
+                .unwrap_or(self.deferred_items.len())
+        } else {
+            self.deferred_items.len()
+        };
+        self.deferred_items.insert(
+            index,
+            DeferredItem {
+                id: id.to_string(),
+                call_id: call_id.map(str::to_string),
+                events: Vec::new(),
+                done: false,
+                started_early,
+            },
+        );
+        Some(index)
+    }
+
+    /// Whether an item added now must wait: behind the open tool block, whose
+    /// done-event arguments may still arrive; behind a replayed item still in
+    /// progress; or behind items already deferred, so a later item never
+    /// overtakes an earlier one.
+    fn holds_new_items(&self) -> bool {
+        self.open.as_ref().map(|block| block.kind) == Some(BlockKind::Tool)
+            || self.pending_item.is_some()
+            || !self.deferred_items.is_empty()
+    }
+
+    /// Record that the item an event names has finished, so the items deferred
+    /// behind it may replay. The event names it by `item_id` / `id`, or by
+    /// `call_id` on a function call.
+    fn finish_item(&mut self, data: &Value) {
+        let id = data
+            .get("item_id")
+            .or_else(|| data.get("id"))
+            .and_then(Value::as_str);
+        let call_id = data.get("call_id").and_then(Value::as_str);
+        self.finish_ids(id, call_id);
+    }
+
+    fn finish_ids(&mut self, id: Option<&str>, call_id: Option<&str>) {
+        let named = self.pending_item.as_ref().is_some_and(|pending| {
+            (id.is_some() && id == Some(pending.id.as_str()))
+                || (call_id.is_some() && call_id == pending.call_id.as_deref())
+        });
+        if named {
+            self.pending_item = None;
+        }
+    }
+
+    /// Replay the deferred items in arrival order once no block is open and no
+    /// replayed item is still in progress. An open text or reasoning block is
+    /// never cut short to make room. Replay stops at the first item whose own
+    /// done event has not arrived yet: its remaining events then arrive live,
+    /// and the items behind it stay deferred until it finishes.
+    fn release_deferred_items(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.replaying {
+            return out;
+        }
+        self.replaying = true;
+        while !self.stopped
+            && self.open.is_none()
+            && self.pending_item.is_none()
+            && !self.deferred_items.is_empty()
+        {
+            let item = self.deferred_items.remove(0);
+            for event in item.events {
+                out.extend(self.dispatch(event));
+            }
+            if !item.done {
+                self.pending_item = Some(PendingItem {
+                    id: item.id,
+                    call_id: item.call_id,
+                });
+            }
+        }
+        self.replaying = false;
+        out
+    }
+
+    /// At a terminal event, emit every item still deferred — the open call or a
+    /// replayed item may never have sent its done events — closing each after
+    /// its replay.
+    fn drain_deferred_items(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        while !self.stopped && !self.deferred_items.is_empty() {
+            self.pending_item = None;
+            out.extend(self.release_deferred_items());
+            out.extend(self.close_any());
+        }
+        self.pending_item = None;
+        out
+    }
+
+    /// Whether an argument or done event belongs to the open tool call.
+    /// `output_item.done` names the call by its item's `id` and `call_id`, the
+    /// `function_call_arguments` events by `item_id`. An identifier missing on
+    /// either side cannot tell the calls apart, so it counts as a match.
+    fn event_names_open_call(&self, data: &Value) -> bool {
+        let differs = |key: &str, open: &Option<String>| {
+            matches!(
+                (data.get(key).and_then(Value::as_str), open),
+                (Some(event), Some(open)) if event != open
+            )
+        };
+        !differs("call_id", &self.tool_call.call_id)
+            && !differs("item_id", &self.tool_call.item_id)
+            && !differs("id", &self.tool_call.item_id)
     }
 
     fn close_current(&mut self, expected: BlockKind) -> Vec<String> {
@@ -902,6 +1233,11 @@ impl AnthropicSseMachine {
     fn complete(&mut self, data: &Value) -> Vec<String> {
         self.read_usage(data);
         let mut out = self.close_any();
+        out.extend(self.drain_deferred_items());
+        // A replayed text delta can end the turn on an emulated stop sequence.
+        if self.stopped {
+            return out;
+        }
         let stop_reason = if self.saw_tool {
             "tool_use"
         } else {

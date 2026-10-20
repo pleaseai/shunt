@@ -13,7 +13,8 @@ export type WindowKey = (typeof WINDOW_KEYS)[number]
 
 export type WindowStatus = {
   /**
-   * The fraction of the pool's combined capacity still *unused*, `0..=1`, or
+   * The fraction of the pool's combined capacity still *usable* before each
+   * account's `max_utilization` hard cap excludes it, `0..=1`, or
    * `null` where no non-disabled account reports the window. Headroom, not
    * consumption: a full bar is a fresh pool.
    */

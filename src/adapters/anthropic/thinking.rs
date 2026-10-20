@@ -29,18 +29,27 @@ use crate::request::RequestBody;
 
 /// Remove thinking blocks carrying a shunt-minted signature.
 pub(super) fn strip_foreign_thinking(body: &mut RequestBody) {
+    strip_foreign_thinking_except(body, |_| false);
+}
+
+/// [`strip_foreign_thinking`], sparing blocks whose signature `exempt` claims.
+///
+/// `exempt` is how a third-party destination keeps the envelopes it is about to
+/// restore: the strip runs first, then the restore, so a restored value that is
+/// itself shunt-minted (another shunt's envelope) is not dropped afterwards.
+pub(super) fn strip_foreign_thinking_except(body: &mut RequestBody, exempt: impl Fn(&str) -> bool) {
     // Not for byte preservation — `mutate` already skips re-serialising when the
     // closure reports no change. This is about the clone: `Arc::make_mut` runs
     // *before* the closure decides, so without this check every Anthropic
     // request would deep-copy a `messages` tree it shares with routing, to then
     // change nothing. The read-only scan is the cheaper half by far.
-    if !request_carries_foreign_thinking(body.json()) {
+    if !request_carries_foreign_thinking(body.json(), &exempt) {
         return;
     }
-    body.mutate(strip_foreign_thinking_blocks);
+    body.mutate(|request| strip_foreign_thinking_blocks(request, &exempt));
 }
 
-fn request_carries_foreign_thinking(request: &Value) -> bool {
+fn request_carries_foreign_thinking(request: &Value, exempt: &dyn Fn(&str) -> bool) -> bool {
     let Some(messages) = request.get("messages").and_then(Value::as_array) else {
         return false;
     };
@@ -48,11 +57,15 @@ fn request_carries_foreign_thinking(request: &Value) -> bool {
         message
             .get("content")
             .and_then(Value::as_array)
-            .is_some_and(|content| content.iter().any(is_foreign_thinking_block))
+            .is_some_and(|content| {
+                content
+                    .iter()
+                    .any(|block| is_foreign_thinking_block(block, exempt))
+            })
     })
 }
 
-fn strip_foreign_thinking_blocks(request: &mut Value) -> bool {
+fn strip_foreign_thinking_blocks(request: &mut Value, exempt: &dyn Fn(&str) -> bool) -> bool {
     let Some(messages) = request.get_mut("messages").and_then(Value::as_array_mut) else {
         return false;
     };
@@ -68,14 +81,14 @@ fn strip_foreign_thinking_blocks(request: &mut Value) -> bool {
     // message holding nothing but a thinking block" — at any position, not only
     // a trailing one.
     let before_messages = messages.len();
-    messages.retain(|message| !is_all_foreign_assistant_turn(message));
+    messages.retain(|message| !is_all_foreign_assistant_turn(message, exempt));
     let mut changed = messages.len() != before_messages;
     for message in messages {
         let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
             continue;
         };
         let before = content.len();
-        content.retain(|block| !is_foreign_thinking_block(block));
+        content.retain(|block| !is_foreign_thinking_block(block, exempt));
         changed |= content.len() != before;
     }
     changed
@@ -88,14 +101,19 @@ fn strip_foreign_thinking_blocks(request: &mut Value) -> bool {
 /// content and is never dropped, however odd its blocks look. An empty `content`
 /// array is left alone too — `all` is vacuously true there, and an already-empty
 /// message is not this pass's to fix.
-fn is_all_foreign_assistant_turn(message: &Value) -> bool {
+fn is_all_foreign_assistant_turn(message: &Value, exempt: &dyn Fn(&str) -> bool) -> bool {
     if message.get("role").and_then(Value::as_str) != Some("assistant") {
         return false;
     }
     message
         .get("content")
         .and_then(Value::as_array)
-        .is_some_and(|content| !content.is_empty() && content.iter().all(is_foreign_thinking_block))
+        .is_some_and(|content| {
+            !content.is_empty()
+                && content
+                    .iter()
+                    .all(|block| is_foreign_thinking_block(block, exempt))
+        })
 }
 
 /// True for a thinking block that `api.anthropic.com` cannot have issued.
@@ -104,14 +122,16 @@ fn is_all_foreign_assistant_turn(message: &Value) -> bool {
 /// its absence means the block did not come from there either. Both halves are
 /// the wide side of the pair on purpose — this predicate only ever removes
 /// blocks that are already invalid upstream.
-fn is_foreign_thinking_block(block: &Value) -> bool {
+fn is_foreign_thinking_block(block: &Value, exempt: &dyn Fn(&str) -> bool) -> bool {
     if block.get("type").and_then(Value::as_str) != Some("thinking") {
         return false;
     }
     block
         .get("signature")
         .and_then(Value::as_str)
-        .is_none_or(thinking_signature::is_shunt_minted)
+        .is_none_or(|signature| {
+            !exempt(signature) && thinking_signature::is_shunt_minted(signature)
+        })
 }
 
 #[cfg(test)]

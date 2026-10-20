@@ -245,6 +245,7 @@ async fn a_policy_denied_model_is_refused_before_the_judge_is_called() {
     judge_mock(0.1, 0).mount(&judge).await;
     let config = driven_config_with(&capable, &efficient, judge.uri(), |config| {
         config.server.gateway = Some(shunt::config::GatewayConfig {
+            desktop_bootstrap: None,
             public_url: "https://gateway.example".to_string(),
             jwt_secret_env: Some(secret_env.clone()),
             users_env: users_env.clone(),

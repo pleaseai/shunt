@@ -25,6 +25,16 @@ Startup validation rejects an unknown `provider` or one that doesn't use `auth =
 
 The opt-in also makes Codex CLI model discovery parseable. `GET /models` and `GET /backend-api/codex/models` return the valid fallback `{"models":[]}`. On the shared `GET /v1/models` path, a `client_version` query field selects that Codex shape even when Anthropic-looking headers are present; without it, the existing Anthropic discovery response is unchanged. These requests pass the normal model-discovery auth gate, and shunt deliberately avoids fabricating incomplete Codex model rows.
 
+## Web search
+
+The Codex CLI's built-in web search tool (`web.run`) posts to `{base_url}/alpha/search` — the same base URL it appends `/responses` to. shunt registers that path for each base-URL form:
+
+- `POST /backend-api/codex/alpha/search`
+- `POST /alpha/search`
+- `POST /v1/alpha/search`
+
+A search uses the same `[server.auth]` policy and the same ChatGPT/Codex account pool (session-sticky selection, failover, refresh) as a Responses turn, and relays the request body and the reply verbatim to the backend's `/codex/alpha/search`. It always goes to `[server.codex_endpoint].provider`: a search is not a model turn, so `[[server.codex_endpoint.routes]]` does not apply. The routes accept `POST` only — the tool has no WebSocket form.
+
 ## Client analytics sink
 
 The Codex CLI also posts product analytics to the base URL. shunt accepts both paths the CLI can produce:
@@ -160,7 +170,7 @@ What changes for a routed request to a **non-ChatGPT** upstream:
 - **Header allowlist.** The fresh allowlist initially takes only `content-type` (defaulted to `application/json`) and `accept` from the client, then adds the resolved credential and the headers the routed upstream itself requires: `OpenAI-Beta: responses=experimental` (skipped for xAI/Grok), the Grok-CLI identity header set for an `xai_oauth` route, and, when an `api_key` route targets exactly `api.openai.com` and has a nonempty resolved conversation id, four regenerated session-affinity headers (`session-id`, `thread-id`, `x-client-request-id`, and `x-codex-window-id`). Client-supplied `authorization`, `x-api-key`, `chatgpt-account-id`, `originator`, `version`, `user-agent`, `session-id`, `thread-id`, `x-client-request-id`, `x-codex-*`, and `x-shunt-*` remain stripped; the stock-OpenAI values are generated, never forwarded. xAI and every other third-party OpenAI-compatible host receive no session-affinity headers. The API-key path does not synthesize `accept: text/event-stream`.
 - **Body `model` rewrite.** When `upstream_model` differs from the requested model, shunt rewrites the top-level `model` and leaves every other field intact. A body that is not a JSON object is rejected with a `400` rather than sent on.
 - **Identity encoding.** A zstd request body is decoded first — a stock Responses API does not accept that encoding — and `content-encoding` is not forwarded.
-- **One credential, no failover.** There is no pool behind a routed third party, so a 429 or 5xx relays verbatim with its `retry-after` instead of triggering rotation.
+- **One credential, no failover.** A routed third party has no failover pool, so a 429 or 5xx relays verbatim with its `retry-after` instead of triggering rotation. The one pool-aware exception is an `xai_oauth` route with named accounts: it still sends the request once (an upstream failure is relayed, not rotated), but the credential is the first account in pool selection order whose login loads (the provider's `account`/`accounts` scope honored), and an account whose login fails to load is cooled down and skipped; with no named accounts it is `~/.shunt/xai-auth.json`.
 
 Matching is exact and case-sensitive with no charset restriction, so vendor slugs like `MiniMax-M3`, `openai/gpt-5.6-sol`, and `~openai/gpt-latest` route as written. A route to another `chatgpt_oauth` provider instead keeps the full pool passthrough. Routes are read from the live config, so they take effect on reload.
 

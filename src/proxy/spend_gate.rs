@@ -14,10 +14,11 @@ use axum::{
 use super::{spend_headers, spend_headers::Plan, ForwardError};
 use crate::{
     error::ShuntError,
-    gateway::spend::{
-        meter::{now_secs, reset_label, Check, ANONYMOUS_PRINCIPAL},
-        store::Period,
-    },
+    gateway::spend::meter::{now_secs, reset_label, Check, ANONYMOUS_PRINCIPAL},
+    // Spelled out, not grouped under `spend::{…}`: the store-isolation scan in
+    // `src/store/boot/tests.rs` reads a grouped `store::` line as the optional
+    // durable store module, which the proxy path must never reach.
+    gateway::spend::store::Period,
     routing::{AdapterKind, Route},
     server::AppState,
 };

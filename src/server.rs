@@ -320,6 +320,11 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
                 get(codex_endpoint::websocket::get).post(codex_endpoint::post),
             );
         }
+        // The Codex CLI's web-search tool posts to `{base_url}/alpha/search`.
+        // POST only: unlike a Responses turn there is no WebSocket form of it.
+        for path in codex_endpoint::search::PATHS {
+            router = router.route(path, post(codex_endpoint::search::post));
+        }
         for path in codex_analytics::PATHS {
             router = router.route(path, post(codex_analytics::post));
         }
@@ -396,6 +401,7 @@ async fn health() -> Json<HealthResponse> {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use axum::{
         body::{Body, HttpBody},
@@ -481,6 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn usage_route_is_registered_and_answers_when_enabled_with_valid_auth() {
+        let _env_lock = crate::config::test_env_lock();
         let (config, env) = config_with_usage_enabled("registered");
         let (router, _shared, _state) = build_router(config).unwrap();
 

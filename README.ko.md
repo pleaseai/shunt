@@ -28,6 +28,9 @@ OpenAI, ChatGPT/Codex, xAI, Grok, Cursor, Kimi Code, Zhipu, MiniMax 중국, Open
 # Homebrew (macOS / Linux)
 brew install pleaseai/tap/shunt
 
+# 설치 스크립트 (macOS / Linux) — GitHub 릴리스의 사전 빌드 바이너리
+curl -fsSL https://shunt.sh/install.sh | sh
+
 # Cargo — 소스 저장소에서 직접 설치
 cargo install --git https://github.com/pleaseai/shunt
 ```
@@ -130,7 +133,7 @@ codex-fallback = "gpt-5.6-sol"
 | `openai` | `responses` | `OPENAI_API_KEY` | `api.openai.com/v1` |
 | `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` — `~/.codex/auth.json`(`codex login`)을 재사용 |
 | `xai` | `responses` | `XAI_API_KEY` | `api.x.ai/v1` — 개발자 API, 토큰당 과금 |
-| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` — Grok CLI 프록시, `~/.shunt/xai-auth.json`을 재사용(SuperGrok / X Premium+ 구독으로 `shunt login xai`) |
+| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` — Grok CLI 프록시, `~/.shunt/xai-auth.json`을 재사용(SuperGrok / X Premium+ 구독으로 `shunt login xai`), 또는 `~/.shunt/accounts/xai` 아래 이름 있는 계정을 페일오버와 함께 풀로 묶음(`shunt login xai --name <이름>`). 레거시 파일은 이 풀이 비어 있을 때만 사용되므로 첫 이름 있는 계정을 추가하면 자격 증명이 전환됩니다 |
 | `cursor` | `cursor` | Cursor OAuth | `api2.cursor.sh` — `~/.shunt/cursor-auth.json`(`shunt login cursor`)을 재사용 |
 | `gemini` | `gemini` | Google OAuth | `cloudcode-pa.googleapis.com` — Google Code Assist 백엔드, `~/.gemini/oauth_creds.json`을 재사용 |
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — HTTP로 통신하는 Google Antigravity 백엔드, `~/.shunt/antigravity-auth.json`(`shunt login antigravity`)을 사용(또는 `shunt login antigravity --name`으로 `~/.shunt/accounts/antigravity` 아래 이름 지정 계정을 만들어 `accounts = [...]`로 선택) |
@@ -199,17 +202,18 @@ OpenAI의 Thibault Sottiaux는 다른 코딩 하네스를 통해 Codex를 실행
 | LLM 판정 라우팅 (`type = "llm_classifier"`, `type = "composite"`) — 판정 모델이 `classify_trigger`에 따라 턴마다 목적지를 고르며, 그 답은 클라이언트에게 제공되지 않습니다 | `type = "llm_classifier"`(`mode = "capability"` 또는 `"custom"`)나 `type = "composite"`를 지정한 `[models.router]` 테이블, 또는 classifier 형태의 `[models.subagents]` 오버레이 | [레퍼런스](https://shunt.sh/ko/reference/configuration/#type--llm_classifier) |
 | 완성된 턴을 판정하는 라우팅 (`mode = "escalation"`, `type = "advisor"`) — 답을 먼저 만들어 붙잡아 두고, 판정 모델이나 리뷰어가 완성된 턴을 판정한 뒤에만 보냅니다. 스트리밍 호출자는 판정이 끝난 뒤 그 턴을 재생받습니다 | `type = "llm_classifier"`와 `mode = "escalation"`, 또는 `type = "advisor"`를 지정한 `[models.router]` 테이블 | [레퍼런스](https://shunt.sh/ko/reference/configuration/#type--advisor) |
 | 검증 전용 인바운드 JWT — 자체 ID 공급자가 발급한 JWT를 해당 JWKS로 검증해 수락하며, shunt는 아무것도 발급하지 않으므로 클라이언트는 퍼스트파티 모드를 유지 | 하나 이상의 `[[server.auth.jwt]]` 항목(각각 `issuer`, `audience`, 그리고 `email_domains` 또는 `allowed_emails`)을 갖춘 `[server.auth]` | [레퍼런스](https://shunt.sh/ko/reference/configuration/#serverauthjwt-선택) |
-| Claude 앱 게이트웨이 로그인 — OAuth device flow, managed settings, 사용자별 정책 | `public_url`, 32바이트 이상 JWT 시크릿, 정적 사용자 또는 `[server.gateway.oidc]`를 갖춘 `[server.gateway]` | [가이드](https://shunt.sh/ko/guides/gateway-login/) |
+| Claude 앱 게이트웨이 로그인 — OAuth device flow, managed settings, 사용자별 정책, Claude Desktop bootstrap(`GET /user/bootstrap`) | `public_url`, 32바이트 이상 JWT 시크릿, 정적 사용자 또는 `[server.gateway.oidc]`를 갖춘 `[server.gateway]`. Desktop bootstrap에는 `template` 경로를 지정한 `[server.gateway.desktop_bootstrap]`도 필요 | [가이드](https://shunt.sh/ko/guides/gateway-login/) |
 | 게이트웨이 텔레메트리 인제스트 — 관리 클라이언트의 OTLP를 그대로 릴레이 | 구성된 `[server.gateway]`와 `forward_to`가 비어 있지 않은 `[server.gateway.telemetry]` | [레퍼런스](https://shunt.sh/ko/reference/configuration/#servergatewaytelemetry-선택) |
 | 관리자 웹 화면 — 계정·사용량 대시보드, 브라우저 프로비저닝 | `[server.admin]`에 관리자 자격 증명(`tokens_env`, `tokens_file`, 또는 `write_keys` 항목)을 직접 작성하거나(`read_keys` 항목만 있어도 대시보드는 읽기 전용으로 뜹니다 — 로그인과 모든 조회는 되지만 프로비저닝에는 write가 필요합니다), **또는** `shunt dashboard setup`으로 테이블 작성과 토큰 발급을 한 번에 처리합니다. 단 테이블 작성과 토큰 발급은 `[server.admin]`이 없을 때만 일어납니다 — 이미 있으면 기존 자격 증명을 그대로 두고 빠진 `[server.oauth_usage]`만 추가합니다. 대시보드 자체는 `--features ui` 빌드만 임베드하는 번들에서 제공됩니다 — 사전 빌드 릴리스 바이너리와 Homebrew 포뮬러에는 포함되어 있고, 그냥 `cargo build`/`cargo install`로 빌드하면 포함되지 않습니다 | [가이드](https://shunt.sh/ko/guides/admin-remote-provisioning/) |
 | 풀 계정 제어 — 계정을 일시정지하거나, 사용 가능한 계정을 가장 빨리 쿼터가 리셋되는 순으로 정렬 — 대시보드나 admin API에서 런타임에, `shunt.toml` 편집이나 재시작 없이 | `[server.admin]` write 자격 증명; `sort_by_reset`은 대응하는 `[server.pool]` 설정 키도 있음 | [가이드](https://shunt.sh/ko/guides/pool-account-controls/) |
 | 지출 한도 — Admin API로 저장하는 조직·사용자 단위 상한을 게이트웨이가 비용을 내는 `/v1/messages` 요청에 적용 — passthrough 또는 `noop` 라우트만으로 이루어진 체인은 제한도 계측도 하지 않음(`429 billing_error`, 주체별 `anthropic-ratelimit-*` 헤더, `GET /v1/organizations/spend_limits/effective`). `[server.spend.pricing]`에서 지출 측정기가 요청 비용을 계산할 때 쓰는 배수와 업스트림·모델별 요금 재정의를 설정. 인바운드 Codex 엔드포인트에는 아직 적용하지 않음([#733](https://github.com/pleaseai/shunt/issues/733)) | `[server.admin]`(관리자 자격 증명 필요: `tokens_env`, `tokens_file`, 또는 `write_keys`/`read_keys` 항목 — read 등급은 GET만 처리) + `[server.spend]` | [레퍼런스](https://shunt.sh/ko/reference/configuration/#serverspend-선택) |
-| 클라이언트 사용량 엔드포인트 — `GET /usage`가 정제·집계된 풀 여유를 반환 | `[server.auth]`(`tokens_env`에 클라이언트 토큰 필요, 기본값 `SHUNT_CLIENT_TOKENS`) + `[server.usage]` | [레퍼런스](https://shunt.sh/ko/reference/configuration/#serverusage-선택) |
-| Claude Code CLI 네이티브 사용량 막대 — `GET /api/oauth/usage` 제공 | `[server.oauth_usage]`, 루프백이 아닌 bind에서는 `[server.auth]`(`tokens_env`에 클라이언트 토큰 필요, 기본값 `SHUNT_CLIENT_TOKENS`) 또는 `[server.gateway]` 추가 필요 | [레퍼런스(영문)](https://shunt.sh/reference/configuration/#serveroauth_usage-optional) |
+| 클라이언트 사용량 엔드포인트 — `GET /usage`가 정제·집계된 풀 여유를 반환 | `[server.usage]`, 그리고 `[server.auth]`(클라이언트 토큰은 `tokens_env`(기본값 `SHUNT_CLIENT_TOKENS`) 또는 `[[server.auth.jwt]]`로 제공) 또는 `[server.gateway]`(게이트웨이 로그인) 필요 | [레퍼런스](https://shunt.sh/ko/reference/configuration/#serverusage-선택) |
+| Claude Code CLI 네이티브 사용량 막대 — `GET /api/oauth/usage` 제공 | `[server.oauth_usage]`, 루프백이 아닌 bind에서는 `[server.auth]`(클라이언트 토큰은 `tokens_env`(기본값 `SHUNT_CLIENT_TOKENS`) 또는 `[[server.auth.jwt]]`로 제공) 또는 `[server.gateway]` 추가 필요 | [레퍼런스(영문)](https://shunt.sh/reference/configuration/#serveroauth_usage-optional) |
 | 업스트림 상태 폴링 — Statuspage 지표를 메트릭으로, 그리고 `--features ui` 빌드에서는 대시보드에도 노출 | `[[server.status.sources]]` 항목이 하나 이상 있는 `[server.status]` | [레퍼런스](https://shunt.sh/ko/reference/configuration/#serverstatus-선택) |
 | 제한된 업스트림 재시도 — **기본 활성**, 보수적이며 스트림 도중에는 재시도하지 않음 | `[providers.<name>.retry]` | [레퍼런스(영문)](https://shunt.sh/reference/configuration/#providersnameretry) |
 | 공유 배포 제한 — **기본 활성**(동시 1024, 본문 32 MiB, TTFB 120초, device-flow 레이트 리밋), CIDR·헤더·URL 제한은 선택 | `[server] max_concurrent_requests`, `[server.access_control]`, `[server.limits]`, `[server.timeouts]`, `[server.rate_limits]` | [가이드](https://shunt.sh/ko/guides/shared-gateway/) |
 | 시크릿 참조 — 모든 문자열 값에 `${VAR}` 또는 `${file:/abs/path}`, 핫 리로드마다 다시 확인(`[sentry]`·`[otel]` 제외 — 기동 시 1회 구성이라 재시작 필요) | 구성의 모든 문자열(**항상 활성**) | [레퍼런스](https://shunt.sh/ko/reference/configuration/) |
+| 선택적 저장소 — 풀 쿼터, 게이트웨이 refresh token, 지출 한도·감사 기록을 JSON 스냅샷 대신 SQLite 또는 PostgreSQL에 보관하며, 기존 스냅샷은 한 번만 가져옵니다. 저장소당 shunt 프로세스는 하나입니다. 저장소에는 refresh token 해시가 들어 있으므로 데이터베이스 접근과 백업을 제한하세요 | `backend`와 `url`이 있는 `[store]`; `backend = "postgres"`는 `store-postgres` 빌드가 필요합니다(사전 빌드된 릴리스 바이너리에는 포함, `cargo build`에는 미포함) | [레퍼런스](https://shunt.sh/ko/reference/configuration/#store-선택) |
 | OpenTelemetry 메트릭과 트레이스 | `endpoint`가 비어 있지 않은 `[otel]` | [가이드](https://shunt.sh/ko/guides/opentelemetry/) |
 
 ## 문서

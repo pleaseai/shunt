@@ -20,7 +20,7 @@ description: 組み込みプロバイダーと、TOML テーブルで任意の A
 | [`openai`](/ja/providers/openai/) | `responses` | `api_key`（`OPENAI_API_KEY`） | `api.openai.com/v1` |
 | [`codex`](/ja/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — `~/.codex/auth.json` を再利用 |
 | [`xai`](/ja/guides/xai/) | `responses` | `api_key`（`XAI_API_KEY`） | `api.x.ai/v1` — xAI 開発者 API |
-| [`grok`](/ja/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai` 経由の SuperGrok / X Premium+ サブスクリプション |
+| [`grok`](/ja/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai` 経由の SuperGrok / X Premium+ サブスクリプション。または `~/.shunt/accounts/xai/` の名前付きログインをプール（`shunt login xai --name`） |
 | [`cursor`](/ja/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json`（`shunt login cursor`）を再利用 |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — `~/.gemini/oauth_creds.json` を再利用 |
 | [`antigravity`](/ja/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` — `~/.shunt/antigravity-auth.json`（`shunt login antigravity`）を再利用 |
@@ -199,6 +199,8 @@ ChatGPT アカウントの Codex バックエンドは `gpt-*-codex` スラッ�
 OAuth 経由であなたの **SuperGrok / X Premium+** サブスクリプションを消費し（`shunt login xai`、トークン単位の課金なし）、一方 **`xai`** は従量制の開発者 API に対して `XAI_API_KEY` を使います。サブスクリプションの bearer と API キーは**互換ではありません** — それぞれ自身のプロバイダーに対してのみ機能します。
 
 ログイン、両方のプロバイダーブロック、モデルスラッグ、オプトインのエフォートダイヤル、entitlement の落とし穴を含む完全なセットアップについては、専用の [xAI / Grok ガイド](/ja/guides/xai/)を参照してください。
+
+複数の SuperGrok アカウントをプールするには、各アカウントを `shunt login xai --name <name>` でログインします。詳細は [xAI / Grok ガイド](/ja/guides/xai/)を参照してください。
 
 ## Anthropic 互換バックエンドを追加する
 

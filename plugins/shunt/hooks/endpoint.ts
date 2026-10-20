@@ -10,6 +10,12 @@ export type Environment = {
   shuntToken?: string
   anthropicAuthToken?: string
   anthropicApiKey?: string
+  /**
+   * What shunt's own `apiKeyHelper` printed: the gateway login token of a
+   * `shunt gateway claude` session, which keeps no credential in the
+   * environment. Asked for only when none of the variables above holds one.
+   */
+  helperToken?: string
 }
 
 /**
@@ -33,6 +39,23 @@ export type Resolved = { endpoint: Endpoint } | { problem: string }
  */
 const usageUrlOf = (base: string) => `${base.replace(/\/+$/, '')}${USAGE_PATH}`
 
+const baseOf = (url: string | undefined): string =>
+  (url ?? '').trim().replace(/\/+$/, '')
+
+/**
+ * Whether the helper's gateway login may be sent to the gateway this
+ * environment resolves to. The helper prints the login of the gateway the
+ * session talks to (`ANTHROPIC_BASE_URL`); `SHUNT_BASE_URL` can name another
+ * gateway, and that one must never receive it. So it rides only when
+ * `SHUNT_BASE_URL` is unset or blank, or names the same base — compared after
+ * trimming and dropping trailing slashes, exactly otherwise.
+ */
+export function helperMayRideTo(env: Environment): boolean {
+  const shunt = baseOf(env.shuntBaseUrl)
+
+  return shunt === '' || shunt === baseOf(env.anthropicBaseUrl)
+}
+
 /**
  * Resolves the gateway endpoint from the session's environment.
  *
@@ -44,7 +67,9 @@ const usageUrlOf = (base: string) => `${base.replace(/\/+$/, '')}${USAGE_PATH}`
  * The credential rides the header Claude Code itself uses for that variable —
  * `ANTHROPIC_AUTH_TOKEN` as a `Bearer`, `ANTHROPIC_API_KEY` as `x-api-key` —
  * so whichever shape the operator's `[server.auth]` matches on, it matches the
- * same way here. `SHUNT_TOKEN` overrides both and rides as a `Bearer`.
+ * same way here. `SHUNT_TOKEN` overrides both and rides as a `Bearer`, and the
+ * helper's gateway login token rides as a `Bearer` when nothing else is set and
+ * `helperMayRideTo` allows it; otherwise it resolves as no credential.
  *
  * A credential that is set but blank is no credential: `$.env.get` reads an
  * exported-but-empty variable as `''`, so every candidate is normalized to
@@ -62,12 +87,15 @@ export function endpointOf(env: Environment): Resolved {
 
   const bearer = env.shuntToken?.trim() || env.anthropicAuthToken?.trim()
   const apiKey = env.anthropicApiKey?.trim()
+  const helper = helperMayRideTo(env) ? env.helperToken?.trim() : undefined
 
   const headers: Record<string, string> | undefined = bearer
     ? { authorization: `Bearer ${bearer}` }
     : apiKey
       ? { 'x-api-key': apiKey }
-      : undefined
+      : helper
+        ? { authorization: `Bearer ${helper}` }
+        : undefined
 
   if (headers === undefined) {
     return { problem: NO_TOKEN_TEXT }

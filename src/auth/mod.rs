@@ -376,6 +376,87 @@ pub async fn resolve_kimi_account(
         })
 }
 
+/// The client a pooled xAI account refreshes with. One definition, so the
+/// redirect-refusal test exercises exactly what `resolve_xai_account` uses.
+fn pooled_xai_client() -> reqwest::Client {
+    crate::auth::shared::token_refresh_client()
+}
+
+fn pooled_xai_store(path: PathBuf) -> xai::auth::XaiAuthStore {
+    xai::auth::XaiAuthStore::new(path, pooled_xai_client())
+}
+
+#[cfg(test)]
+fn pooled_xai_store_with_token_url(path: PathBuf, token_url: String) -> xai::auth::XaiAuthStore {
+    xai::auth::XaiAuthStore::with_token_url(path, pooled_xai_client(), token_url)
+}
+
+/// Resolve one xAI subscription OAuth account for the account pool. Mirrors
+/// [`resolve_kimi_account`]: `token_env` and an explicit `credentials` path
+/// override the default named-account file (`~/.shunt/accounts/xai/<name>.json`,
+/// see [`xai::store`]). A `token_env` token is used verbatim and never
+/// refreshed. Every other account gets its own [`xai::auth::XaiAuthStore`] over
+/// its own file, so the store's single-flight refresh and atomic `0600`
+/// writeback stay per file and two accounts never share a token.
+pub async fn resolve_xai_account(
+    account: &crate::config::AccountConfig,
+    // Unlike the legacy `xai_oauth` arm of `resolve_credential`, the store is
+    // not handed the caller's proxy client: its refresh POST carries the
+    // account's refresh_token, and xAI rotates it on every refresh, so it goes
+    // through the redirect-hardened `token_refresh_client()` instead — it
+    // refuses a 307/308 from the token endpoint to a plaintext non-loopback
+    // host, so that body is not forwarded there. The legacy arm is unchanged
+    // pending a maintainer decision.
+    _client: &reqwest::Client,
+) -> Result<Credential, AdapterError> {
+    if let Some(token_env) = account.token_env.as_deref() {
+        let access_token = env::var(token_env)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| auth_error(format!("{token_env} is not set")))?;
+        return Ok(Credential::XaiOauth { access_token });
+    }
+    let store = pooled_xai_store(xai_account_file(account));
+    // The bare `shunt login xai` writes the single-account file, which a
+    // non-empty pool ignores, so a store account's errors name its own login.
+    let store = if account.credentials.is_none() {
+        store.with_login_command(format!("shunt login xai --name {}", account.name))
+    } else {
+        store
+    };
+    store
+        .get_valid()
+        .await
+        .map(|credential| Credential::XaiOauth {
+            access_token: credential.access_token,
+        })
+}
+
+/// The credential file a pooled xAI account reads: its explicit
+/// `credentials` path, else its named file in the account store.
+fn xai_account_file(account: &crate::config::AccountConfig) -> PathBuf {
+    account
+        .credentials
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| xai::store::account_path(&account.name))
+}
+
+/// Mark a pooled xAI account whose token xAI rejected (an upstream 401) so its
+/// next [`resolve_xai_account`] refreshes instead of resending that token
+/// until its JWT `exp`. A `token_env` token is static and has nothing to
+/// refresh, so it gets no handle. The mark lands in a blocking task that runs
+/// to completion on its own ([`xai::auth::force_refresh_next`]), so the caller
+/// need not await the handle.
+pub fn force_xai_refresh(
+    account: &crate::config::AccountConfig,
+) -> Option<tokio::task::JoinHandle<()>> {
+    account
+        .token_env
+        .is_none()
+        .then(|| xai::auth::force_refresh_next(&xai_account_file(account)))
+}
+
 /// Resolve one ChatGPT (Codex) OAuth account for the account pool. Unlike
 /// [`resolve_claude_account`], there is no account UUID to carry: the
 /// account id is embedded in the ChatGPT access token itself and is read back
@@ -540,8 +621,9 @@ mod tests {
     use crate::routing::AdapterKind;
 
     use super::{
-        resolve_api_key, resolve_chatgpt_account, resolve_claude_account, resolve_credential,
-        resolve_kimi_account, with_credential_timeout, Credential, Route,
+        pooled_xai_store_with_token_url, resolve_api_key, resolve_chatgpt_account,
+        resolve_claude_account, resolve_credential, resolve_kimi_account, resolve_xai_account,
+        with_credential_timeout, Credential, Route,
     };
 
     #[tokio::test]
@@ -658,6 +740,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_claude_account_token_env_verbatim_with_uuid() {
+        let _env_lock = crate::config::test_env_lock();
         let env_name = format!("SHUNT_TEST_CLAUDE_TOKEN_{}", std::process::id());
         std::env::set_var(&env_name, "  setup-token-verbatim  ");
         let account = AccountConfig {
@@ -683,6 +766,7 @@ mod tests {
 
     #[tokio::test]
     async fn chatgpt_token_env_without_account_id_names_the_env_var() {
+        let _env_lock = crate::config::test_env_lock();
         use axum::body::to_bytes;
         // A `token_env` token whose JWT payload has no decodable
         // `chatgpt_account_id` claim: the error must point at the environment
@@ -712,8 +796,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pooled_xai_refresh_refuses_a_307_to_plain_http_and_keeps_the_file() {
+        use axum::body::to_bytes;
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // A 307 replays the POST body, which carries the refresh token. The
+        // client the pooled account refreshes with must refuse a hop to a
+        // non-loopback `http://` host instead of following it, and the stored
+        // pair must stay byte-for-byte as it was. The refusal text in the body
+        // distinguishes this from a transport failure (see the control test in
+        // `auth/xai/auth.rs`).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", "http://refresh-thief.invalid/token"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // `exp: 0` makes the access token expired, so `get_valid` must refresh.
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-pooled-xai-redirect-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let file = dir.join("xai-auth.json");
+        let expired = format!("x.{}.y", URL_SAFE_NO_PAD.encode(br#"{"exp":0}"#));
+        crate::auth::xai::auth::write_tokens(&file, &expired, "old-refresh", None).unwrap();
+        let before = std::fs::read(&file).unwrap();
+        let store =
+            pooled_xai_store_with_token_url(file.clone(), format!("{}/token", server.uri()));
+
+        let error = store.get_valid().await.unwrap_err();
+        let bytes = to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(body.contains("redirect refused"), "got: {body}");
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        server.verify().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn name_only_claude_account_resolves_store_token() {
-        let _guard = crate::auth::claude::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-name-only-auth-{}-{}",
             std::process::id(),
@@ -750,6 +885,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_kimi_account_token_env_verbatim() {
+        let _env_lock = crate::config::test_env_lock();
         // Mirrors `resolves_claude_account_token_env_verbatim_with_uuid`: a
         // `token_env`-sourced Kimi credential carries no device id (no
         // account file to have persisted one in).
@@ -780,7 +916,7 @@ mod tests {
         // Mirrors `name_only_claude_account_resolves_store_token`: a
         // name-only account resolves through the on-disk store, which does
         // carry a device id.
-        let _guard = crate::auth::kimi::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-name-only-kimi-auth-{}-{}",
             std::process::id(),
@@ -819,6 +955,156 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// An unsigned JWT that `is_token_valid_at` accepts until 2096, distinct per `tag`.
+    fn xai_token(tag: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let payload = serde_json::json!({ "exp": 4_000_000_000u64, "sub": tag });
+        format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+        )
+    }
+
+    #[tokio::test]
+    async fn resolves_xai_account_token_env_verbatim() {
+        let _guard = crate::config::test_env_lock();
+        let _env = crate::auth::shared::EnvVarGuard::set(
+            "SHUNT_TEST_XAI_POOL_TOKEN",
+            "  xai-token-verbatim  ",
+        );
+        let account = AccountConfig {
+            name: "ci".to_string(),
+            token_env: Some("SHUNT_TEST_XAI_POOL_TOKEN".to_string()),
+            ..Default::default()
+        };
+
+        let credential = resolve_xai_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            credential,
+            Credential::XaiOauth {
+                access_token: "  xai-token-verbatim  ".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn xai_account_with_an_unset_token_env_fails_resolution() {
+        let _guard = crate::config::test_env_lock();
+        let account = AccountConfig {
+            name: "ci".to_string(),
+            token_env: Some("SHUNT_TEST_XAI_POOL_TOKEN_UNSET".to_string()),
+            ..Default::default()
+        };
+
+        assert!(resolve_xai_account(&account, &reqwest::Client::new())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn name_only_xai_account_resolves_the_store_file() {
+        let _guard = crate::config::test_env_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-name-only-xai-pool-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        crate::auth::xai::store::store_oauth_tokens("main", &xai_token("main"), "refresh", None)
+            .unwrap();
+        let account = AccountConfig {
+            name: "main".to_string(),
+            ..Default::default()
+        };
+
+        let credential = resolve_xai_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            credential,
+            Credential::XaiOauth {
+                access_token: xai_token("main"),
+            }
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn xai_account_credentials_path_overrides_the_store() {
+        let _guard = crate::config::test_env_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-xai-pool-credentials-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        crate::auth::xai::store::store_oauth_tokens("main", &xai_token("main"), "refresh", None)
+            .unwrap();
+        crate::auth::xai::auth::write_tokens(
+            &dir.join("other.json"),
+            &xai_token("other"),
+            "refresh",
+            None,
+        )
+        .unwrap();
+        let account = AccountConfig {
+            name: "main".to_string(),
+            credentials: Some(dir.join("other.json").to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let credential = resolve_xai_account(&account, &reqwest::Client::new())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            credential,
+            Credential::XaiOauth {
+                access_token: xai_token("other"),
+            }
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn missing_xai_account_file_fails_resolution() {
+        let _guard = crate::config::test_env_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-xai-pool-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        let account = AccountConfig {
+            name: "main".to_string(),
+            ..Default::default()
+        };
+
+        let Err(error) = resolve_xai_account(&account, &reqwest::Client::new()).await else {
+            panic!("a missing account file must fail resolution");
+        };
+        // The bare `shunt login xai` writes the single-account file, which a
+        // non-empty pool ignores, so the hint must name this account.
+        let bytes = axum::body::to_bytes(error.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(body.contains("run shunt login xai --name main"), "{body}");
+    }
+
     /// Build a fake ChatGPT access token carrying the `chatgpt_account_id`
     /// claim `jwt_account_id` reads. Mirrors the `token()` helper in
     /// `auth/codex/auth.rs`'s own test module.
@@ -836,6 +1122,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_chatgpt_account_token_env_verbatim_with_account_id() {
+        let _env_lock = crate::config::test_env_lock();
         let env_name = format!("SHUNT_TEST_CHATGPT_TOKEN_{}", std::process::id());
         let access_token = chatgpt_access_token("acct-from-jwt");
         std::env::set_var(&env_name, &access_token);
@@ -861,7 +1148,7 @@ mod tests {
 
     #[tokio::test]
     async fn name_only_chatgpt_account_resolves_store_token() {
-        let _guard = crate::auth::codex::store::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-name-only-chatgpt-auth-{}-{}",
             std::process::id(),
@@ -911,6 +1198,7 @@ mod tests {
 
     #[test]
     fn resolves_openai_key_from_codex_auth_json_when_env_missing() {
+        let _env_lock = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!(
             "shunt-auth-test-{}",
             std::time::SystemTime::now()
@@ -938,6 +1226,7 @@ mod tests {
 
     #[test]
     fn api_key_provider_requires_env_var() {
+        let _env_lock = crate::config::test_env_lock();
         let config = Config::default();
         // A fresh temp env with no key set and no codex fallback for a non-openai
         // env var name must error rather than silently pass.

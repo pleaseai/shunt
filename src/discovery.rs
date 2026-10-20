@@ -297,6 +297,7 @@ fn codex_models_response() -> Response {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -730,6 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn codex_catalog_variants_share_the_model_discovery_auth_gate() {
+        let _env_lock = crate::config::test_env_lock();
         let env = format!(
             "SHUNT_TEST_CODEX_CATALOG_AUTH_{}_{}",
             std::process::id(),

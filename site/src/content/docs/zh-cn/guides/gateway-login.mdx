@@ -185,6 +185,10 @@ refresh 会话默认能在 shunt 重启后存活:shunt 在每次授权或轮换�
 
 同时配置 [`[server.auth]`](/zh-cn/guides/shared-gateway/) 与 `[server.gateway]` 时,两者可以组合:有效的静态客户端 token 或有效的网关 bearer 都能获得访问权限。这支持分阶段迁移而不破坏现有客户端。
 
+## Claude Desktop
+
+Claude Desktop 也可以使用同一套登录。它的 bootstrap 模式会针对 shunt 执行设备码 grant，随后由 shunt 通过 `GET /user/bootstrap` 提供该用户的 Desktop 配置，因此设备上无需 CLI。Desktop 不发送 `client_id`，所以登录端点接受没有 `client_id` 的请求(同时接受 `client_id=claude-code`，其他取值一律拒绝)。对于这类请求，被拒绝的 refresh token 返回 `400 {"error":"invalid_grant"}`，而不是 `401`。参见[连接 Claude Desktop](/zh-cn/guides/connect-claude-desktop/#bootstrap-登录设备码)。
+
 ## 后续计划
 
 托管策略、`ETag` 缓存、遥测环境变量下发、需认证的入站 OTLP 遥测接收与中继,以及服务端模型允许列表的强制执行已在上文描述。

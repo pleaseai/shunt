@@ -108,14 +108,36 @@ written as "what shunt minted", never as "what looks valid".
 
 Every non-Anthropic provider surfaced through the Messages protocol has to put
 something in the field, because Claude Code round-trips assistant blocks
-verbatim. Three do, and `crate::model::thinking_signature` owns all three so the
-strip cannot fall out of step with them.
+verbatim. Three do, and a fourth form wraps a signature shunt did not mint;
+`crate::model::thinking_signature` owns all four so the strip cannot fall out of
+step with them.
 
 | Producer | Value | Why it is not Anthropic's |
 |---|---|---|
 | Responses / Codex | base64url of `{"id", "enc"}` | shunt's own round-trip envelope for a Responses `reasoning` item |
 | Gemini | `gemini_thinking` | Gemini issues no signature; the literal exists to make the block well-formed |
 | Cursor | `""` | the agent stream carries reasoning text and nothing signature-shaped |
+| Third-party Anthropic-kind upstream | base64url of `{"upstream", "sig"}`, `upstream` a digest of the `base_url` | wraps a signature a host other than `api.anthropic.com` issued (issue #783) |
+
+The last row is the one that is not shunt's invention underneath. A third-party
+Anthropic-kind provider (MiniMax, Kimi, Zhipu, …) is relayed untranslated, so
+any signature it emits would otherwise reach the client indistinguishable from
+Anthropic's and be forwarded to `api.anthropic.com` on a later turn. Whether a
+given host emits one, and whether Anthropic rejects it with a 400, is not yet
+confirmed against a live upstream (issue #783).
+`src/adapters/anthropic/thinking_wrap.rs` wraps it on the response path, keyed
+on a digest of the provider's `base_url` with any trailing `/` trimmed (the first 16 bytes of its SHA-256, in
+lowercase hex; the envelope is client-visible and a `base_url` can carry credentials, so the URL itself is never
+exposed; the digest is unsalted, so it still confirms a guess of the whole `base_url`, credentials included) — not for `claude_oauth` pools or a
+first-party host, whose responses stay passthrough — and restores the original
+only for a request going back to a provider with that same `base_url`. The
+strip runs first and spares that provider's own envelopes, so a restored value
+that is itself another shunt's envelope survives the hop. Everywhere else the envelope is recognised as shunt-minted and
+dropped. The field names are disjoint from the Responses form's, so neither
+decoder accepts the other's value.
+A request to such a provider also carries `Accept-Encoding: identity` in place
+of the client's value: shunt's HTTP client decodes no content coding, so a
+compressed reply could not be parsed to wrap and would pass through raw.
 
 The empty string is the one to watch, because Anthropic's own streaming shape
 uses it too: [the thinking page][thinking]'s worked event sequence opens the

@@ -144,7 +144,13 @@ fn load(path: &Path, now_secs: u64) -> io::Result<Option<Loaded>> {
             ),
         ));
     }
-    let (parsed, opaque) = parse_records::<CounterRecord>(wire.counters, path, "spend counter")?;
+    let (parsed, opaque) = parse_records::<CounterRecord>(wire.counters, path, "spend counter")
+        .map_err(|issue| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("gateway spend counters: {issue}"),
+            )
+        })?;
     let mut opaque: Vec<serde_json::Value> =
         opaque.into_iter().map(|record| record.value).collect();
     let mut typed = Vec::with_capacity(parsed.len());

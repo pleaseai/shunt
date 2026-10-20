@@ -229,6 +229,10 @@ Refresh grant는 세션에 저장된 아이덴티티로 토큰을 발급하며 �
 
 [`[server.auth]`](/ko/guides/shared-gateway/)와 `[server.gateway]`가 모두 구성되면 둘은 함께 동작합니다: 유효한 정적 클라이언트 토큰이나 유효한 게이트웨이 bearer 중 하나면 접근이 허용됩니다. 이는 기존 클라이언트를 깨뜨리지 않는 단계적 마이그레이션을 지원합니다.
 
+## Claude Desktop
+
+Claude Desktop도 같은 로그인을 사용할 수 있습니다. bootstrap 모드는 shunt를 상대로 디바이스 코드 grant를 실행하고, shunt는 `GET /user/bootstrap`에서 사용자의 Desktop 구성을 제공하므로 디바이스에 CLI가 필요 없습니다. Desktop은 `client_id`를 보내지 않으므로 로그인 엔드포인트는 `client_id`가 없는 요청도 받습니다(`client_id=claude-code`도 받으며, 다른 값은 거부합니다). 이런 요청에서 거부된 refresh 토큰은 `401` 대신 `400 {"error":"invalid_grant"}`를 반환합니다. [Claude Desktop 연결](/ko/guides/connect-claude-desktop/#bootstrap-로그인-디바이스-코드)을 참고하세요.
+
 ## 다음 단계
 
 관리형 정책, `ETag` 캐싱, 텔레메트리 환경 푸시, 인증된 인바운드 OTLP 텔레메트리

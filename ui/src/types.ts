@@ -54,6 +54,8 @@ export interface PoolAccount {
   name: string;
   /** Opaque provider-scoped identity used by runtime account mutations. */
   account_ref?: string | null;
+  /** The account reads an explicit `credentials` file or `token_env`, not its store file. */
+  credential_override?: boolean;
   plan?: string | null;
   status?: string | null;
   disabled?: boolean;
@@ -106,6 +108,12 @@ export interface ClaudeStoreAccount {
 export interface CodexStoreAccount {
   name: string;
   expires_at?: number | null;
+  account_id?: string | null;
+}
+
+/** `GET /admin/api/accounts/xai`: the xAI user id each stored login belongs to. */
+export interface XaiStoreAccount {
+  name: string;
   account_id?: string | null;
 }
 

@@ -28,6 +28,9 @@
 # Homebrew (macOS / Linux)
 brew install pleaseai/tap/shunt
 
+# 安装脚本 (macOS / Linux) —— 来自 GitHub release 的预构建二进制文件
+curl -fsSL https://shunt.sh/install.sh | sh
+
 # Cargo —— 直接从源码仓库安装
 cargo install --git https://github.com/pleaseai/shunt
 ```
@@ -127,7 +130,7 @@ codex-fallback = "gpt-5.6-sol"
 | `openai` | `responses` | `OPENAI_API_KEY` | `api.openai.com/v1` |
 | `codex` | `responses` | ChatGPT OAuth | `chatgpt.com/backend-api` —— 复用 `~/.codex/auth.json`(`codex login`) |
 | `xai` | `responses` | `XAI_API_KEY` | `api.x.ai/v1` —— 开发者 API,按 token 计费 |
-| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` —— Grok CLI 代理;复用 `~/.shunt/xai-auth.json`(使用 SuperGrok / X Premium+ 订阅执行 `shunt login xai`) |
+| `grok` | `responses` | xAI OAuth | `cli-chat-proxy.grok.com/v1` —— Grok CLI 代理;复用 `~/.shunt/xai-auth.json`(使用 SuperGrok / X Premium+ 订阅执行 `shunt login xai`),或 `~/.shunt/accounts/xai` 下的命名账户(`shunt login xai --name <name>`,带故障转移的账户池;旧文件仅在该账户池为空时使用,因此添加第一个命名账户会切换所用凭据) |
 | `cursor` | `cursor` | Cursor OAuth | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
 | `gemini` | `gemini` | Google OAuth | `cloudcode-pa.googleapis.com` —— Google Code Assist 后端,复用 `~/.gemini/oauth_creds.json` |
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` —— 通过 HTTP 访问的 Google Antigravity 后端,使用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`;或用 `shunt login antigravity --name` 在 `~/.shunt/accounts/antigravity` 下使用具名账号,通过 `accounts = [...]` 选择) |
@@ -196,17 +199,18 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 | LLM 裁判路由 (`type = "llm_classifier"`、`type = "composite"`) —— 由裁判模型按 `classify_trigger` 逐轮挑选目标,其回复永远不会提供给客户端 | 带 `type = "llm_classifier"`(`mode = "capability"` 或 `"custom"`)或 `type = "composite"` 的 `[models.router]` 表,或 classifier 形态的 `[models.subagents]` 覆盖层 | [参考](https://shunt.sh/zh-cn/reference/configuration/#type--llm_classifier) |
 | 裁决已完成轮次的路由 (`mode = "escalation"`、`type = "advisor"`) —— 先生成回答并扣住,等裁判或审阅模型对完成的这一轮作出裁决后才发出;流式调用方会在裁决之后收到这一轮的重放 | 带 `type = "llm_classifier"` 加 `mode = "escalation"`,或带 `type = "advisor"` 的 `[models.router]` 表 | [参考](https://shunt.sh/zh-cn/reference/configuration/#type--advisor) |
 | 仅验证的入站 JWT —— 接受由你自己的身份提供方签发的 JWT,并用其 JWKS 验证;shunt 不签发任何内容,客户端因此保持第一方模式 | 具备一个或多个 `[[server.auth.jwt]]` 条目（每个包含 `issuer`、`audience`,以及 `email_domains` 或 `allowed_emails`）的 `[server.auth]` | [参考](https://shunt.sh/zh-cn/reference/configuration/#serverauthjwt可选) |
-| Claude 应用网关登录 —— OAuth 设备流、managed settings、按用户策略 | 具备 `public_url`、不少于 32 字节的 JWT 密钥,以及静态用户或 `[server.gateway.oidc]` 的 `[server.gateway]` | [指南](https://shunt.sh/zh-cn/guides/gateway-login/) |
+| Claude 应用网关登录 —— OAuth 设备流、managed settings、按用户策略、Claude Desktop bootstrap(`GET /user/bootstrap`) | 具备 `public_url`、不少于 32 字节的 JWT 密钥,以及静态用户或 `[server.gateway.oidc]` 的 `[server.gateway]`;Desktop bootstrap 还需要指定 `template` 路径的 `[server.gateway.desktop_bootstrap]` | [指南](https://shunt.sh/zh-cn/guides/gateway-login/) |
 | 网关遥测接收 —— 原样转发受管客户端的 OTLP | 已配置的 `[server.gateway]`,以及 `forward_to` 非空的 `[server.gateway.telemetry]` | [参考](https://shunt.sh/zh-cn/reference/configuration/#servergatewaytelemetry可选) |
 | 管理 Web 界面 —— 账号与用量看板、浏览器预配 | 手写 `[server.admin]` 并提供管理员凭据（`tokens_env`、`tokens_file` 或一条 `write_keys`；仅有一条 `read_keys` 也能让看板以只读方式启动 —— 可以登录并查看全部视图，但预配需要 write），**或者**用 `shunt dashboard setup` 一次性写入配置表并签发令牌 —— 但写入配置表和签发令牌仅发生在 `[server.admin]` 不存在时；若已存在，它会保留现有凭据，只补上缺失的 `[server.oauth_usage]`。看板本身由只有 `--features ui` 构建才会内嵌的前端包提供 —— 预构建的发布二进制和 Homebrew formula 已包含，普通的 `cargo build`/`cargo install` 则没有 | [指南](https://shunt.sh/zh-cn/guides/admin-remote-provisioning/) |
 | 账户池控制 —— 暂停某个账户,或按配额最快重置的顺序对可用账户排序 —— 在仪表盘或 admin API 中运行时完成,无需编辑 `shunt.toml` 或重启 | `[server.admin]` write 凭据;`sort_by_reset` 也有对应的 `[server.pool]` 配置键 | [指南](https://shunt.sh/zh-cn/guides/pool-account-controls/) |
 | 支出上限 —— 通过 Admin API 存储的组织级和用户级上限,在由网关付费的 `/v1/messages` 请求上实施 —— 仅由 passthrough 或 `noop` 路由组成的链既不实施也不计量(`429 billing_error`、按主体的 `anthropic-ratelimit-*` 头部、`GET /v1/organizations/spend_limits/effective`);由 `[server.spend.pricing]` 设置计量器计算请求费用时使用的乘数,以及按上游和模型指定的费率覆盖。尚未应用于入站 Codex 端点([#733](https://github.com/pleaseai/shunt/issues/733)) | `[server.admin]`（必须提供管理员凭据: `tokens_env`、`tokens_file` 或一条 `write_keys`/`read_keys` —— read 级别只服务 GET） + `[server.spend]` | [参考](https://shunt.sh/zh-cn/reference/configuration/#serverspend可选) |
-| 客户端用量端点 —— `GET /usage` 返回脱敏聚合后的池余量 | `[server.auth]`（必须在 `tokens_env` 中提供客户端令牌,默认 `SHUNT_CLIENT_TOKENS`） + `[server.usage]` | [参考](https://shunt.sh/zh-cn/reference/configuration/#serverusage可选) |
-| Claude Code CLI 原生用量条 —— 提供 `GET /api/oauth/usage` | `[server.oauth_usage]`;非回环 bind 还需 `[server.auth]`（必须在 `tokens_env` 中提供客户端令牌,默认 `SHUNT_CLIENT_TOKENS`）或 `[server.gateway]` | [参考(英文)](https://shunt.sh/reference/configuration/#serveroauth_usage-optional) |
+| 客户端用量端点 —— `GET /usage` 返回脱敏聚合后的池余量 | `[server.usage]`;另需 `[server.auth]`（客户端令牌通过 `tokens_env`（默认 `SHUNT_CLIENT_TOKENS`）或 `[[server.auth.jwt]]` 提供）或 `[server.gateway]`（网关登录） | [参考](https://shunt.sh/zh-cn/reference/configuration/#serverusage可选) |
+| Claude Code CLI 原生用量条 —— 提供 `GET /api/oauth/usage` | `[server.oauth_usage]`;非回环 bind 还需 `[server.auth]`（客户端令牌通过 `tokens_env`（默认 `SHUNT_CLIENT_TOKENS`）或 `[[server.auth.jwt]]` 提供）或 `[server.gateway]` | [参考(英文)](https://shunt.sh/reference/configuration/#serveroauth_usage-optional) |
 | 上游状态轮询 —— 将 Statuspage 指示灯作为指标展示,在 `--features ui` 构建中还会出现在看板上 | 至少含一个 `[[server.status.sources]]` 条目的 `[server.status]` | [参考(英文)](https://shunt.sh/reference/configuration/#serverstatus-optional) |
 | 有界的上游重试 —— **默认开启**,保守,且绝不在流中途重试 | `[providers.<name>.retry]` | [参考(英文)](https://shunt.sh/reference/configuration/#providersnameretry) |
 | 共享部署限制 —— **默认启用**(并发 1024、请求体 32 MiB、TTFB 120 秒、设备流限速),CIDR、请求头与 URL 限制需显式配置 | `[server] max_concurrent_requests`、`[server.access_control]`、`[server.limits]`、`[server.timeouts]`、`[server.rate_limits]` | [指南](https://shunt.sh/zh-cn/guides/shared-gateway/) |
 | 密钥引用 —— 任意字符串值可写成 `${VAR}` 或 `${file:/abs/path}`,每次热重载重新解析(`[sentry]`/`[otel]` 除外,启动时构建一次,需重启) | 配置中的任意字符串(**始终启用**) | [参考](https://shunt.sh/zh-cn/reference/configuration/) |
+| 可选存储 —— 用 SQLite 或 PostgreSQL 保存池配额、网关 refresh token 以及支出限制与审计记录,取代 JSON 快照;已有快照只导入一次。每个存储只能有一个 shunt 进程。存储中保存着 refresh token 的哈希,请限制对数据库的访问和备份 | 带 `backend` 和 `url` 的 `[store]`;`backend = "postgres"` 需要带 `store-postgres` 的构建(预构建的发布二进制包含,`cargo build` 不包含) | [参考](https://shunt.sh/zh-cn/reference/configuration/#store可选) |
 | OpenTelemetry 指标与链路追踪 | `endpoint` 非空的 `[otel]` | [指南](https://shunt.sh/zh-cn/guides/opentelemetry/) |
 
 ## 文档

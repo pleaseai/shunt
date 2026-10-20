@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 use super::*;
 use crate::adapters::responses::sse_parse::MachineBuild;
 use crate::model::responses::AnthropicSseMachine;
@@ -1819,6 +1820,7 @@ async fn a_winner_with_a_pending_estimate_returns_a_pending_relay_build() {
     // `chatgpt_oauth`, whose single-credential resolution reads the real
     // account store — box-dependent.
     let key = "SHUNT_TEST_CHAIN_ATTEMPT_KEY";
+    let _env_lock = crate::config::test_env_lock();
     let _env = EnvVarGuard::set(key, "probe");
     let mut config = crate::config::Config::default();
     let mut provider = config

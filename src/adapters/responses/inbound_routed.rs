@@ -21,10 +21,12 @@
 //! slot) cannot silently start reaching a third party because nobody remembered
 //! to add it to a denylist.
 //!
-//! There is no pool and no failover here: one credential, one attempt, and the
-//! upstream response — 200, 429, or 5xx — relayed verbatim with its own
-//! `retry-after`, so the Codex CLI backs off against the third party's real
-//! signal instead of a rotation shunt invented.
+//! There is no failover here: one credential, one attempt, and the upstream
+//! response — 200, 429, or 5xx — relayed verbatim with its own `retry-after`, so
+//! the Codex CLI backs off against the third party's real signal instead of a
+//! rotation shunt invented. An `xai_oauth` route with named accounts takes that
+//! one credential from the first account in pool selection order; it never
+//! rotates or cools an account down.
 
 use axum::{
     body::Bytes,
@@ -37,11 +39,13 @@ use axum::{
 use crate::{
     adapters::AdapterError,
     auth::{resolve_credential, slots::ShuntCredentials, Credential},
+    config::AuthMode,
     routing::Route,
     server::AppState,
 };
 
 use super::{
+    error::own_error,
     inbound::{apply_credential, relay_passthrough, send_error},
     request::{grok_identity_headers, responses_url, session_affinity_headers},
 };
@@ -52,14 +56,23 @@ use super::{
 /// (`codex_endpoint::dispatch_routed`) with its `model` rewritten to the route's
 /// `upstream_model`, because a stock Responses API accepts neither the Codex
 /// CLI's zstd request encoding nor a model id it does not serve.
+///
+/// `pool_key` is the session-sticky account-selection key, namespaced with the
+/// authenticated inbound client (`codex_endpoint::pool_sticky_key`) so one
+/// client cannot steer another's session onto an account; `session_id` stays
+/// the raw id for the upstream's own affinity headers.
 pub(crate) async fn forward_codex_routed(
     state: AppState,
     route: Route,
     client_headers: HeaderMap,
     body: Bytes,
+    pool_key: Option<String>,
     session_id: Option<String>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
-    let credential = resolve_credential(&state.config, &route, &state.http_client).await?;
+    let credential = match routed_xai_pool_credential(&state, &route, pool_key.as_deref()).await? {
+        Some(credential) => credential,
+        None => resolve_credential(&state.config, &route, &state.http_client).await?,
+    };
     let request = routed_request(
         &state,
         &route,
@@ -76,6 +89,61 @@ pub(crate) async fn forward_codex_routed(
 
     let status = upstream.status();
     Ok((status, relay_passthrough(upstream)))
+}
+
+/// The credential for a route to an `xai_oauth` provider whose account pool is
+/// non-empty: the first account in pool selection order whose credential
+/// loads. The order honors the provider's configured `account`/`accounts`
+/// scope, `priority`, `disabled`, and the admin pause; an account whose
+/// credential fails to load is cooled down and skipped, as on the outbound
+/// pool. `None` for any other provider, or for an empty xAI pool, where
+/// `resolve_credential`'s single-account file applies — the same rule as the
+/// outbound pool (docs/m18-xai-multi-account.md), mirroring
+/// `adapters::gemini::forward`'s empty-pool fallback. One send: a request that
+/// fails upstream is not retried on another account. When `max_utilization`
+/// caps exclude every account, the pool's cap-exhaustion 429 is returned, as on
+/// the ChatGPT inbound path.
+async fn routed_xai_pool_credential(
+    state: &AppState,
+    route: &Route,
+    pool_key: Option<&str>,
+) -> Result<Option<Credential>, AdapterError> {
+    let Some(provider) = state.config.provider(&route.provider) else {
+        return Ok(None);
+    };
+    if provider.auth != AuthMode::XaiOauth {
+        return Ok(None);
+    }
+    let accounts = provider.resolve_pool_accounts().await.map_err(own_error)?;
+    if accounts.is_empty() {
+        return Ok(None);
+    }
+    let (order, cap) = state.accounts.select_order_with_cap(
+        &route.provider,
+        &accounts,
+        pool_key,
+        Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
+    );
+    if order.is_empty() {
+        if let Some(error) = crate::adapters::cap_exhausted(route, cap) {
+            return Err(error);
+        }
+    }
+    // An empty order relays this; otherwise the last account's own resolution
+    // error, which names the cause (a missing file, an unset `token_env`).
+    let mut last_error = own_error(format!(
+        "provider '{}' has {} account(s) but none are selectable",
+        route.provider,
+        accounts.len()
+    ));
+    for index in order {
+        match super::pool::resolve_xai_or_cooldown(state, route, &accounts[index]).await {
+            Ok(credential) => return Ok(Some(credential)),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
 }
 
 /// Compose the routed upstream request: the allowlisted header set, the
@@ -183,6 +251,7 @@ fn routed_request_headers(state: &AppState, route: &Route, client: &HeaderMap) -
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use crate::{config::Config, routing::AdapterKind};
 
@@ -294,6 +363,273 @@ mod tests {
         );
         // Grok-flavored, so the OpenAI-only beta header stays off.
         assert!(headers.get("openai-beta").is_none());
+    }
+
+    /// A route's config with the `openai` provider re-pointed at the Grok
+    /// subscription host as an `xai_oauth` provider, the shape the routed xAI
+    /// selection needs.
+    fn xai_config() -> Config {
+        let mut config = Config::default();
+        let provider = config.providers.get_mut("openai").unwrap();
+        provider.base_url = "https://cli-chat-proxy.grok.com/v1".to_string();
+        provider.auth = crate::config::AuthMode::XaiOauth;
+        config
+    }
+
+    /// A far-future JWT-shaped access token, as T6's `xai_token` builds: the
+    /// xAI store reads `exp` from the payload.
+    fn xai_token(tag: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let payload = serde_json::json!({ "exp": 4_000_000_000u64, "sub": tag });
+        format!(
+            "x.{}.y",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+        )
+    }
+
+    fn fresh_accounts_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "shunt-routed-xai-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[tokio::test]
+    async fn an_xai_route_with_named_accounts_uses_the_first_selected_account() {
+        let _guard = crate::config::test_env_lock();
+        let dir = fresh_accounts_dir("first");
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        let (token_a, token_b) = (xai_token("a"), xai_token("b"));
+        crate::auth::xai::store::store_oauth_tokens("a", &token_a, "refresh", None).unwrap();
+        crate::auth::xai::store::store_oauth_tokens("b", &token_b, "refresh", None).unwrap();
+
+        let state = AppState::new(xai_config(), reqwest::Client::new()).unwrap();
+        let Ok(Some(Credential::XaiOauth { access_token })) =
+            routed_xai_pool_credential(&state, &route("openai"), None).await
+        else {
+            panic!("expected the first xAI pool account");
+        };
+        assert_eq!(access_token, token_a);
+
+        let mut config = xai_config();
+        config.providers.get_mut("openai").unwrap().account_scope = vec!["b".into()];
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let Ok(Some(Credential::XaiOauth { access_token })) =
+            routed_xai_pool_credential(&state, &route("openai"), None).await
+        else {
+            panic!("expected the scoped xAI pool account");
+        };
+        assert_eq!(access_token, token_b);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// One broken login must not blackhole the route: an account whose
+    /// credential cannot be loaded is cooled down and the next account serves.
+    #[tokio::test]
+    async fn an_xai_route_skips_an_account_whose_login_cannot_be_loaded() {
+        let _guard = crate::config::test_env_lock();
+        let dir = fresh_accounts_dir("skip");
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        let token_b = xai_token("b");
+        crate::auth::xai::store::store_oauth_tokens("a", &xai_token("a"), "refresh", None).unwrap();
+        crate::auth::xai::store::store_oauth_tokens("b", &token_b, "refresh", None).unwrap();
+        // `a` still scans as an account, but its file no longer loads.
+        std::fs::write(dir.join("a.json"), "not json").unwrap();
+
+        let state = AppState::new(xai_config(), reqwest::Client::new()).unwrap();
+        let Ok(Some(Credential::XaiOauth { access_token })) =
+            routed_xai_pool_credential(&state, &route("openai"), None).await
+        else {
+            panic!("expected the next xAI pool account");
+        };
+        assert_eq!(access_token, token_b);
+
+        // `a` is cooled down, so selection no longer leads with it; a cooling
+        // account stays in the order only as a last resort.
+        let accounts = state
+            .config
+            .provider("openai")
+            .unwrap()
+            .resolve_pool_accounts()
+            .await
+            .unwrap();
+        let (order, _) = state
+            .accounts
+            .select_order_with_cap("openai", &accounts, None, None, None);
+        let names: Vec<&str> = order
+            .iter()
+            .map(|&index| accounts[index].name.as_str())
+            .collect();
+        assert_eq!(names, ["b", "a"]);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_xai_route_with_an_empty_store_falls_back_to_the_single_account_file() {
+        let _guard = crate::config::test_env_lock();
+        let dir = fresh_accounts_dir("empty");
+        // The directory is never created, so the store is empty.
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+
+        let state = AppState::new(xai_config(), reqwest::Client::new()).unwrap();
+        let credential = routed_xai_pool_credential(&state, &route("openai"), None).await;
+        assert!(matches!(credential, Ok(None)));
+    }
+
+    #[tokio::test]
+    async fn a_non_xai_route_never_consults_the_xai_store() {
+        let _guard = crate::config::test_env_lock();
+        let dir = fresh_accounts_dir("non-xai");
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        crate::auth::xai::store::store_oauth_tokens("a", &xai_token("a"), "refresh", None).unwrap();
+
+        // The default `openai` provider authenticates with an api key.
+        let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
+        let credential = routed_xai_pool_credential(&state, &route("openai"), None).await;
+        assert!(matches!(credential, Ok(None)));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_xai_route_whose_accounts_are_all_disabled_is_a_gateway_error() {
+        let _guard = crate::config::test_env_lock();
+        let dir = fresh_accounts_dir("disabled");
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+
+        let mut config = xai_config();
+        config.providers.get_mut("openai").unwrap().accounts = vec![crate::config::AccountConfig {
+            name: "off".into(),
+            disabled: true,
+            ..Default::default()
+        }];
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let Err(error) = routed_xai_pool_credential(&state, &route("openai"), None).await else {
+            panic!("expected a gateway error for an unselectable pool");
+        };
+        assert_eq!(error.response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    /// Stickiness keys on the client-namespaced pool key, not the raw session
+    /// id: two clients sending the same session id can land on different
+    /// accounts, so neither can steer the other's session onto an account.
+    #[tokio::test]
+    async fn an_xai_route_selects_by_the_client_namespaced_pool_key() {
+        let _guard = crate::config::test_env_lock();
+        let dir = fresh_accounts_dir("pool-key");
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        let (token_a, token_b) = (xai_token("a"), xai_token("b"));
+        crate::auth::xai::store::store_oauth_tokens("a", &token_a, "refresh", None).unwrap();
+        crate::auth::xai::store::store_oauth_tokens("b", &token_b, "refresh", None).unwrap();
+
+        let state = AppState::new(xai_config(), reqwest::Client::new()).unwrap();
+        let route = route("openai");
+        let accounts = state
+            .config
+            .provider("openai")
+            .unwrap()
+            .resolve_pool_accounts()
+            .await
+            .unwrap();
+        let first = |key: &str| {
+            let (order, _) = state.accounts.select_order_with_cap(
+                "openai",
+                &accounts,
+                Some(key),
+                Some(route.upstream_model.as_str()),
+                None,
+            );
+            accounts[order[0]].name.clone()
+        };
+        let session = (0..64)
+            .map(|index| format!("sess-{index}"))
+            .find(|session| {
+                first(&format!("client-x:{session}")) != first(&format!("client-y:{session}"))
+            })
+            .expect("some session id hashes the two clients onto different accounts");
+
+        for client in ["client-x", "client-y"] {
+            let key = format!("{client}:{session}");
+            let Ok(Some(Credential::XaiOauth { access_token })) =
+                routed_xai_pool_credential(&state, &route, Some(&key)).await
+            else {
+                panic!("expected an xAI pool account for {key}");
+            };
+            let expected = if first(&key) == "a" {
+                &token_a
+            } else {
+                &token_b
+            };
+            assert_eq!(&access_token, expected, "{key}");
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// When `max_utilization` caps hold every account out, the route answers
+    /// with the pool's cap-exhaustion 429 (and its `retry-after`), not the
+    /// generic "none are selectable" 502.
+    #[tokio::test]
+    async fn an_xai_route_whose_accounts_are_all_capped_returns_the_cap_429() {
+        let _guard = crate::config::test_env_lock();
+        let dir = fresh_accounts_dir("capped");
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+
+        let mut config = xai_config();
+        config.providers.get_mut("openai").unwrap().accounts = ["a", "b"]
+            .into_iter()
+            .map(|name| crate::config::AccountConfig {
+                name: name.into(),
+                token_env: Some("SHUNT_TEST_ROUTED_XAI_CAPPED_UNSET".into()),
+                max_utilization_5h: Some(0.5),
+                ..Default::default()
+            })
+            .collect();
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let accounts = state
+            .config
+            .provider("openai")
+            .unwrap()
+            .resolve_pool_accounts()
+            .await
+            .unwrap();
+        let reset = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3_600;
+        let mut quota = HeaderMap::new();
+        quota.insert(
+            "anthropic-ratelimit-unified-5h-utilization",
+            HeaderValue::from_static("0.9"),
+        );
+        quota.insert(
+            "anthropic-ratelimit-unified-5h-reset",
+            HeaderValue::from(reset),
+        );
+        for account in &accounts {
+            state.accounts.note_quota("openai", account, &quota);
+        }
+
+        let Err(error) = routed_xai_pool_credential(&state, &route("openai"), None).await else {
+            panic!("expected the cap-exhaustion error");
+        };
+        assert_eq!(error.response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            error.message.contains("max_utilization"),
+            "{}",
+            error.message
+        );
+        assert!(error
+            .response
+            .headers()
+            .contains_key(axum::http::header::RETRY_AFTER));
     }
 
     #[test]

@@ -29,6 +29,7 @@ pub enum StoreFamily {
     Chatgpt,
     Kimi,
     Antigravity,
+    Xai,
 }
 
 /// Stable physical-account identity used by every runtime state map.
@@ -459,6 +460,15 @@ pub struct AccountSnapshot {
     /// admin view (`model = None`) still sees it; only `available` is
     /// model-scoped.
     pub capped_fable: bool,
+    /// When the shared (5h/7d) cap exclusion clears, as selection computes it
+    /// ([`cap_exclusion`]'s `eligible_at` for a non-Fable request): every capping
+    /// window's reset or observation expiry, whichever comes first. `None` when
+    /// no shared cap applies or a capping window has neither. Not serialized.
+    #[serde(skip)]
+    pub(crate) cap_clears_at: Option<u64>,
+    /// The same for a Fable request, whose exclusion also counts the `7d_oi` cap.
+    #[serde(skip)]
+    pub(crate) cap_clears_at_fable: Option<u64>,
     /// Seconds until the account-wide cooldown expires, when active.
     pub cooldown_secs_remaining: Option<u64>,
     /// Seconds until the Fable-only cooldown expires, when active.
@@ -550,6 +560,8 @@ impl AccountSnapshot {
             near_quota: false,
             capped: false,
             capped_fable: false,
+            cap_clears_at: None,
+            cap_clears_at_fable: None,
             cooldown_secs_remaining: None,
             cooldown_fable_secs_remaining: None,
             priority: account.priority,
@@ -865,16 +877,21 @@ impl AccountPool {
     /// Return account indices without opportunistic re-probing, plus the
     /// hard-cap verdict from the same pass that built the order.
     ///
-    /// Responses pools use this entry point when WebSocket transport is
-    /// enabled. An in-stream rate-limit error arrives as a normal event, so
+    /// The ChatGPT OAuth pool uses this entry point only on the WebSocket
+    /// branch of `forward_chatgpt_oauth`, taken when `codex_websocket_enabled`
+    /// holds for the provider. Its other pool paths select through
+    /// [`select_order_deferred_with_cap`](Self::select_order_deferred_with_cap).
+    /// An in-stream rate-limit error arrives as a normal event, so
     /// the pool does not rotate; the streaming path then calls `mark_healthy`,
     /// which clears the cooldown and, when the turn is treated as successful
     /// and the account already has a positive ramp allowance, doubles that
     /// allowance. That contamination predates re-probing, and this entry point
-    /// only removes re-probing as its new trigger while the deeper fix remains
-    /// deferred. The provider-labelled re-probe metric therefore counts only
-    /// inbound probes for providers with WebSocket enabled. Callers read the
-    /// verdict only when the order is empty; `None` means no selectable
+    /// only removes re-probing as its new trigger on that WebSocket branch
+    /// while the deeper fix remains deferred. For a provider with WebSocket
+    /// enabled, the provider-labelled re-probe metric therefore counts only
+    /// probes from the inbound Codex endpoint (`[server.codex_endpoint]`),
+    /// which still selects through the deferred entry point. Callers read
+    /// the verdict only when the order is empty; `None` means no selectable
     /// representative is capped.
     pub(crate) fn select_order_without_reprobe_with_cap(
         &self,
@@ -1567,18 +1584,18 @@ impl AccountPool {
         self.mark_dirty();
     }
 
-    /// Apply one successfully polled Antigravity `retrieveUserQuotaSummary` response.
-    /// Google's response is a full authoritative snapshot on every call, so the
-    /// buckets wholesale replace whatever the previous tick recorded — no
-    /// partial-window reconciliation like Claude's per-window
+    /// Apply one successfully polled set of named quota buckets: Antigravity's
+    /// `retrieveUserQuotaSummary`, or the Grok CLI proxy's billing for an xAI
+    /// account. Each response is a full authoritative snapshot on every call,
+    /// so the buckets wholesale replace whatever the previous tick recorded —
+    /// no partial-window reconciliation like Claude's per-window
     /// overwrite-if-present or Codex's clear-flags dance.
     ///
     /// Display-only on purpose: this leaves `health.quota` (5h/7d/aggregate
-    /// status) untouched and records no utilization metric, so Antigravity
-    /// pool selection/rotation behavior is unchanged (it already ignores quota
-    /// for this family) — matching the `/admin/observed` display-only
-    /// precedent.
-    pub fn note_antigravity_usage(
+    /// status) untouched and records no utilization metric, so pool
+    /// selection/rotation behavior is unchanged (both families already ignore
+    /// quota) — matching the `/admin/observed` display-only precedent.
+    pub fn note_quota_buckets(
         &self,
         provider: &str,
         account: &AccountConfig,
@@ -2448,6 +2465,10 @@ impl AccountPool {
                         near_quota: quota.near,
                         capped,
                         capped_fable,
+                        cap_clears_at: cap_exclusion(&health.quota, account, false, pool)
+                            .and_then(|exclusion| exclusion.eligible_at),
+                        cap_clears_at_fable: cap_exclusion(&health.quota, account, true, pool)
+                            .and_then(|exclusion| exclusion.eligible_at),
                         cooldown_secs_remaining,
                         cooldown_fable_secs_remaining,
                         priority: account.priority,
@@ -2926,7 +2947,9 @@ pub(crate) fn account_key(upstream: &str, account: &AccountConfig) -> AccountKey
         // Claude. Kimi is matched before the Claude fallback because it would
         // otherwise be keyed as a Claude account and could collide with a
         // real Claude account of the same name — note `kimi-code`, the
-        // preset's own name, does *not* contain `codex`.
+        // preset's own name, does *not* contain `codex`. An unstamped account on
+        // the built-in xAI `grok` provider lands on Claude here; every xAI caller
+        // goes through `resolve_pool_accounts`, which stamps `StoreFamily::Xai`.
         let lower = upstream.to_lowercase();
         if lower.contains("codex") || lower.contains("chatgpt") {
             StoreFamily::Chatgpt
@@ -3807,6 +3830,34 @@ pub fn classify_codex(status: StatusCode, _headers: &HeaderMap) -> FailoverActio
         return FailoverAction::Rotate;
     }
     FailoverAction::Relay
+}
+
+/// Classify an xAI subscription OAuth (Grok CLI proxy) upstream response for
+/// account-pool failover. Takes the same `(status, headers)` shape as
+/// [`classify_codex`], which it extends: 401 and 402 rotate too.
+///
+/// - 401: like the Kimi pool, a rejected bearer cools down and rotates instead
+///   of a same-account refresh retry. The pool also marks the account's file
+///   for a forced refresh (`auth::force_xai_refresh`), so its next use after
+///   the cooldown refreshes rather than resending the rejected token until its
+///   JWT `exp`.
+/// - 402: a payment/entitlement refusal is account-specific and persistent,
+///   the Kimi membership case ([`classify_kimi`]).
+/// - 403 relays, as in every other classifier. xAI's documented tier gate
+///   surfaces at token refresh, where a failed credential resolution already
+///   cools the account down and rotates; an inference 403 can be a
+///   content-policy refusal, and re-sending it to every pool account could
+///   get all of them flagged.
+///
+/// Never returns `RefreshRetry` or `PauseSame`.
+pub fn classify_xai(status: StatusCode, headers: &HeaderMap) -> FailoverAction {
+    if matches!(
+        status,
+        StatusCode::UNAUTHORIZED | StatusCode::PAYMENT_REQUIRED
+    ) {
+        return FailoverAction::Rotate;
+    }
+    classify_codex(status, headers)
 }
 
 /// How long a Codex pool account stays skipped for one model after the
@@ -5069,6 +5120,86 @@ mod tests {
             rotation_reason(StatusCode::BAD_GATEWAY, &HeaderMap::new()),
             "server_error"
         );
+    }
+
+    #[test]
+    fn classify_xai_rotates_auth_membership_quota_and_server_errors() {
+        let headers = HeaderMap::new();
+        assert_eq!(
+            classify_xai(StatusCode::OK, &headers),
+            FailoverAction::Relay
+        );
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::PAYMENT_REQUIRED,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert_eq!(
+                classify_xai(status, &headers),
+                FailoverAction::Rotate,
+                "{status} must rotate"
+            );
+        }
+        // 403 relays: an inference 403 can be a content-policy refusal, and
+        // the tier gate is handled at token refresh instead.
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ] {
+            assert_eq!(
+                classify_xai(status, &headers),
+                FailoverAction::Relay,
+                "{status} must relay"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_xai_never_asks_for_a_refresh_retry_or_a_pause() {
+        for code in 100..=599 {
+            let Ok(status) = StatusCode::from_u16(code) else {
+                continue;
+            };
+            let action = classify_xai(status, &HeaderMap::new());
+            assert!(
+                !matches!(
+                    action,
+                    FailoverAction::RefreshRetry | FailoverAction::PauseSame
+                ),
+                "{code} returned {action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_classifier_relays_a_403() {
+        let headers = HeaderMap::new();
+        for (name, action) in [
+            ("classify", classify(StatusCode::FORBIDDEN, &headers)),
+            (
+                "classify_codex",
+                classify_codex(StatusCode::FORBIDDEN, &headers),
+            ),
+            (
+                "classify_kimi",
+                classify_kimi(StatusCode::FORBIDDEN, &headers),
+            ),
+            (
+                "classify_antigravity",
+                classify_antigravity(StatusCode::FORBIDDEN, &headers),
+            ),
+            (
+                "classify_xai",
+                classify_xai(StatusCode::FORBIDDEN, &headers),
+            ),
+        ] {
+            assert_eq!(action, FailoverAction::Relay, "{name} must relay a 403");
+        }
     }
 
     #[test]
@@ -8649,7 +8780,7 @@ mod tests {
         let sibling = account("agy-sibling");
         pool.sync_enabled_accounts(provider, &[target.clone(), sibling.clone()]);
 
-        pool.note_antigravity_usage(
+        pool.note_quota_buckets(
             provider,
             &target,
             vec![
@@ -8683,7 +8814,7 @@ mod tests {
 
         // A second poll fully replaces the first bucket list — Google's
         // response is authoritative each call, so nothing merges.
-        pool.note_antigravity_usage(
+        pool.note_quota_buckets(
             provider,
             &target,
             vec![QuotaBucketSnapshot {
@@ -9552,6 +9683,46 @@ mod tests {
         assert_eq!(
             (none[2].capped, none[2].capped_fable, none[2].available),
             (false, false, true)
+        );
+    }
+
+    #[test]
+    fn snapshot_cap_clearing_time_folds_observation_expiry() {
+        // `expire_stale_quota` drops a capping observation at the end of its
+        // lifetime, so the cap clears then when no earlier reset is known:
+        // a reset-less 7d cap, and a Fable cap whose reset lies past it.
+        let pool = AccountPool::new();
+        let mut accts = vec![account("weekly"), account("fable")];
+        accts[0].max_utilization_7d = Some(0.5);
+        accts[1].max_utilization_fable = Some(0.5);
+        let observed = unix_now() - 100;
+        set_quota(&pool, "anthropic", &accts[0], |q| {
+            q.utilization_7d = Some(0.6);
+            q.observed_at_7d = Some(observed);
+        });
+        set_quota(&pool, "anthropic", &accts[1], |q| {
+            q.utilization_7d_oi = Some(0.6);
+            q.reset_7d_oi = Some(observed + 2 * WINDOW_7D_SECS);
+            q.observed_at_7d_oi = Some(observed);
+        });
+        {
+            let mut entries = pool.entries.lock().unwrap();
+            for acct in &accts {
+                entries
+                    .get_mut(&account_key("anthropic", acct))
+                    .unwrap()
+                    .observed = true;
+            }
+        }
+        let snapshot = pool.snapshot("anthropic", &accts, None, None);
+        let expiry = Some(observed + WINDOW_7D_SECS);
+        assert_eq!(
+            (snapshot[0].cap_clears_at, snapshot[0].cap_clears_at_fable),
+            (expiry, expiry)
+        );
+        assert_eq!(
+            (snapshot[1].cap_clears_at, snapshot[1].cap_clears_at_fable),
+            (None, expiry)
         );
     }
 

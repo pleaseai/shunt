@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::{accounts::StoreFamily, config::AccountConfig};
 
 pub mod file_lock;
+pub(crate) mod refresh_lock;
 
 const EXPIRY_BUFFER: Duration = Duration::from_secs(5 * 60);
 
@@ -608,12 +609,12 @@ fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -
             path,
         } => crate::auth::codex::store::credential_account_id(Path::new(path)),
         InlineIdentityKey::Credentials {
-            family: StoreFamily::Kimi | StoreFamily::Antigravity,
+            family: StoreFamily::Kimi | StoreFamily::Antigravity | StoreFamily::Xai,
             ..
         } => {
             // Unreachable by construction: `inline_identity_key` only builds a
-            // `Credentials` key for `Claude`/`Chatgpt` — Kimi and Antigravity
-            // have no verified identity source, so they never enter the
+            // `Credentials` key for `Claude`/`Chatgpt` — Kimi, Antigravity, and
+            // xAI have no verified identity source, so they never enter the
             // inline-identity cache at all and always fall back to their
             // account name (see `inline_identity_key` and `accounts::account_key`).
             None
@@ -927,8 +928,8 @@ async fn wait_for_browser_open(mut command: tokio::process::Command) -> anyhow::
 /// removes it on drop, so a panic between set and cleanup cannot leak the
 /// override into a sibling test. Shared by the Claude and Codex store test
 /// modules — both drive `SHUNT_*_ACCOUNTS_DIR` — so their cleanup cannot drift.
-/// Pair it with each store's `TEST_ENV_LOCK` (declare the guard *after* the lock
-/// so it drops first, removing the var while the lock is still held).
+/// Pair it with [`crate::config::test_env_lock`] (declare the guard *after* the
+/// lock so it drops first, removing the var while the lock is still held).
 #[cfg(test)]
 pub(crate) struct EnvVarGuard {
     key: &'static str,
@@ -1113,6 +1114,7 @@ mod tests {
 
     #[test]
     fn default_accounts_dir_prefers_the_env_override() {
+        let _env_lock = crate::config::test_env_lock();
         // A per-pid var name no other test reads, so no cross-test env race.
         let env_name = format!("SHUNT_TEST_SHARED_DIR_{}", std::process::id());
         std::env::set_var(&env_name, "/tmp/shunt-shared-override");
@@ -1125,6 +1127,7 @@ mod tests {
 
     #[test]
     fn default_accounts_dir_treats_a_blank_env_override_as_unset() {
+        let _env_lock = crate::config::test_env_lock();
         // An override set but empty (or whitespace-only) must not resolve to a
         // cwd-relative path — it should fall through to the same HOME-based
         // default as an unset override.
@@ -1144,6 +1147,7 @@ mod tests {
 
     #[test]
     fn admin_token_url_override_returns_safe_overrides_and_falls_back_otherwise() {
+        let _env_lock = crate::config::test_env_lock();
         // A per-pid var name no other test reads, so no cross-test env race.
         let env_name = format!("SHUNT_TEST_ADMIN_TOKEN_URL_{}", std::process::id());
         let default = "https://auth.example.com/oauth/token";

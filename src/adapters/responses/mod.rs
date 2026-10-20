@@ -29,7 +29,7 @@ use serde_json::Value;
 
 use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
-    auth::{self, resolve_credential, Credential},
+    auth::{resolve_credential, Credential},
     config::{AuthMode, CountTokens},
     model::{
         responses::translate_request_value,
@@ -52,11 +52,11 @@ use self::early_stream::{
 };
 use self::error::{adapter_error_envelope, own_error, transport_error};
 use self::http::forward_http;
-pub(crate) use self::inbound::forward_codex_inbound;
+pub(crate) use self::inbound::{forward_codex_inbound, CodexOperation};
 pub(crate) use self::inbound_routed::forward_codex_routed;
 use self::pool::{
-    forward_chatgpt_oauth, forward_chatgpt_oauth_stream, pool_events_stream, PoolForwardStream,
-    PoolStreamContext,
+    forward_chatgpt_oauth, forward_chatgpt_oauth_stream, no_upstream_response_message,
+    pool_events_stream, PoolForwardStream, PoolStreamContext,
 };
 use self::sse_parse::pool_relay_build;
 use self::websocket::forward_websocket;
@@ -297,9 +297,10 @@ async fn forward(
     // adapter's claude_oauth branch: pooled credentials are resolved per-account
     // inside forward_chatgpt_oauth rather than once up front, so a single
     // account's expired/rejected token can rotate to the next one instead of
-    // failing the whole request.
+    // failing the whole request. The xAI pool (docs/m18) uses the same branch,
+    // keyed on its own store family.
     let mut single_started_at: Option<std::time::Instant> = None;
-    if auth == AuthMode::ChatgptOauth {
+    if matches!(auth, AuthMode::ChatgptOauth | AuthMode::XaiOauth) {
         let provider = state
             .config
             .provider(&route.provider)
@@ -311,19 +312,7 @@ async fn forward(
             // slow filesystem nor a saturated pool may delay the committed
             // response (keepalive pings cover the wait). The empty-scan
             // single-credential fallback runs inside the same stream.
-            let accounts_config = provider.accounts.clone();
-            let account_scope = provider.account_scope.clone();
-            let scan = Box::pin(async move {
-                auth::shared::resolve_pool_accounts(
-                    "codex",
-                    &accounts_config,
-                    &account_scope,
-                    crate::accounts::StoreFamily::Chatgpt,
-                    auth::codex::store::default_accounts_dir(),
-                    auth::codex::store::scan_accounts,
-                )
-                .await
-            });
+            let scan = Box::pin(provider.pool_scan());
             let credential_state = state.clone();
             let credential_route = route.clone();
             let credential = CredentialSource::Deferred(Box::pin(async move {
@@ -356,16 +345,7 @@ async fn forward(
         // sample clock here so `shunt.latency` keeps the dispatch span the
         // pre-commit loop records.
         single_started_at = Some(std::time::Instant::now());
-        let accounts = auth::shared::resolve_pool_accounts(
-            "codex",
-            &provider.accounts,
-            &provider.account_scope,
-            crate::accounts::StoreFamily::Chatgpt,
-            auth::codex::store::default_accounts_dir(),
-            auth::codex::store::scan_accounts,
-        )
-        .await
-        .map_err(own_error)?;
+        let accounts = provider.resolve_pool_accounts().await.map_err(own_error)?;
         if !accounts.is_empty() {
             return forward_chatgpt_oauth(
                 state,
@@ -505,8 +485,8 @@ pub(super) fn codex_quota_account(credential: &Credential) -> Option<crate::conf
 /// One upstream attempt for the multi-upstream streaming chain
 /// (`proxy::chain_stream`): the per-route preparation of [`forward`] without
 /// the response commit, so the chain can drive the send inside the committed
-/// stream and classify the outcome itself. A pooled `chatgpt_oauth` route
-/// yields the account-rotating pool stream as its attempt — pool exhaustion
+/// stream and classify the outcome itself. A pooled `chatgpt_oauth` or
+/// `xai_oauth` route yields the account-rotating pool stream as its attempt — pool exhaustion
 /// surfaces as the pool's own terminal error frame, mirroring the pre-commit
 /// path's terminal behavior for that route.
 pub(crate) async fn chain_attempt(
@@ -585,21 +565,12 @@ pub(crate) async fn chain_attempt(
         .map(|provider| provider.auth)
         .unwrap_or_default();
 
-    if auth == AuthMode::ChatgptOauth {
+    if matches!(auth, AuthMode::ChatgptOauth | AuthMode::XaiOauth) {
         let provider = state
             .config
             .provider(&route.provider)
             .expect("route provider was validated");
-        let accounts = match auth::shared::resolve_pool_accounts(
-            "codex",
-            &provider.accounts,
-            &provider.account_scope,
-            crate::accounts::StoreFamily::Chatgpt,
-            auth::codex::store::default_accounts_dir(),
-            auth::codex::store::scan_accounts,
-        )
-        .await
-        {
+        let accounts = match provider.resolve_pool_accounts().await {
             Ok(accounts) => accounts,
             Err(error) => {
                 let envelope = adapter_error_envelope(own_error(error)).await;
@@ -643,7 +614,7 @@ pub(crate) async fn chain_attempt(
             let events = pool_events_stream(PoolStreamContext {
                 state: state.clone(),
                 route: route.clone(),
-                auth: AuthMode::ChatgptOauth,
+                auth,
                 session_id,
                 window_key: window_key.clone(),
                 compact: compact.clone(),
@@ -753,8 +724,7 @@ pub(crate) async fn chain_attempt(
                         remember: false,
                         envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(
                             adapter_error_envelope(transport_error(
-                                "all Codex OAuth accounts failed before receiving an upstream response"
-                                    .to_string(),
+                                no_upstream_response_message(auth).to_string(),
                             ))
                             .await,
                         ),

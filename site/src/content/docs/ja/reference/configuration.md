@@ -137,7 +137,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 | `spend_retention_months` | `13` | counters ファイルに保持するメーターカウンターの暦月数。まだ開いているウィンドウは削除しません |
 | `identity_retention_days` | `90` | 将来のアイデンティティ保持日数 |
 | `group_limit_mode` | `min` | `min` または `max`。将来のグループ上限解決用 |
-| `state_path` | `~/.shunt/gateway-spend.json` | 上限と監査レコードを保存するバージョン付き JSON。`""` はメモリのみ。メーターのカウンターは兄弟ファイル `<stem>.counters.json`（デフォルト `~/.shunt/gateway-spend.counters.json`）に保存され、10 秒ごとと終了時に flush されます |
+| `state_path` | `~/.shunt/gateway-spend.json` | 上限と監査レコードを保存するバージョン付き JSON。`""` はメモリのみ。[`[store]`](#storeオプション) を設定すると上限と監査レコードのインポート元としてだけ使われます。メーターのカウンターは `[store]` の有無にかかわらず兄弟ファイル `<stem>.counters.json`（デフォルト `~/.shunt/gateway-spend.counters.json`）に保存され、10 秒ごとと終了時に flush されます |
 
 管理認証情報は設定された `[server.admin] header` または `x-api-key` で送信します。`read_keys` の認証情報は `GET` のみ使用できます。状態ファイルは変更のたびに非公開の一時ファイルを使ってアトミックに置換されます。ホームディレクトリを解決できない場合、デフォルトはメモリのみです。上限の適用と支出の計測は現在の設定を読むため、リロードでテーブルを削除すると即座に停止し、追加すると即座に開始します。spend-limit Admin API のルートと永続化は起動時に固定されます。テーブルを追加・削除してもルートは登録も削除もされず、状態パスを変えてもストアは移動しません。再起動までは、どちらの場合もリロード時に警告が記録されます。
 
@@ -197,12 +197,13 @@ rate は upstream ごとに、最も具体的なものから順に一致しま�
 | `users_env` | `SHUNT_GATEWAY_USERS` | カンマ区切りの `email:secret` approval user を保持する env 変数 |
 | `token_ttl_seconds` | `3600` | access token の寿命。`expires_in` として返される。**Deprecated**。単独使用では引き続き完全にサポートされる — [`session.ttl_hours`](#servergatewaysessionオプション) に置き換えられたが、1 時間未満の寿命を指定できる唯一の方法として残る |
 | `trust_forwarded_for` | `false` | `/device` の rate-limit identity として `X-Forwarded-For`／`X-Real-IP` を信頼する。client 提供値を置換する trusted proxy の背後でのみ有効化 |
+| `state_path` | `~/.shunt/gateway-sessions.json` | restart をまたいで refresh session を保持するファイル。token は SHA-256 hash で保存し、アトミックに書き込む（Unix では所有者のみの権限 `0600`）。`""` にすると memory-only session（home directory を解決できない場合も同様）。[`[store]`](#storeオプション) を設定するとインポート元としてだけ使われます |
 
 URL が path 等を含まない HTTPS origin でない場合（`http` は loopback のみ許可）、TTL が 0 の場合、secret がないか 32 bytes 未満の場合、または user list が空・不正な場合、起動は fail closed します。secret には `:` を含められ、最初の colon だけが email と secret を分けます。`jwt_secret_env` と `users_env` の値も、他の設定ファイル文字列と同様に `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。env-backed secret と user の変更は config reload で反映されますが、route tree は boot 時に固定されるため、テーブルの追加・削除には restart が必要です。
 
 Deprecated なキーと、それに対応する `[server.gateway.session]` の置き換えキーを両方設定すると、キーごとに起動が失敗します: `jwt_secret_env` と `session.jwt_secret` を併用するとエラー、`token_ttl_seconds` と `session.ttl_hours` を併用するとエラーです。2 つのペアをまたいで組み合わせる(例: `session.jwt_secret` と `token_ttl_seconds` の併用)のは問題ありません。shunt は、deprecated なキーが設定ファイルであれ `SHUNT_*` 環境変数 override であれ明示的に設定されるたびに deprecation 警告を 1 回記録し、そのキー自体が一切設定されずデフォルトが適用される場合にのみ警告なしのままです — `jwt_secret_env` を設定せず `SHUNT_GATEWAY_JWT_SECRET` env 変数に secret の値だけを入れておく設定は、その変数が deprecated なキー自体ではなく secret の値を保持しているだけなので、引き続き警告しません。ペアの片方だけが設定されている場合、`session.*` があればそちらが優先され、なければ deprecated なキー、どちらもなければデフォルトが使われます。
 
-発行された bearer は、選択された provider が server-side credential を注入する場合に `/v1/models`、`/v1/messages`、`/v1/messages/count_tokens` を認証します。passthrough provider は open のままです。`[server.auth]` もある場合は、どちらかの credential で access できます。device grant と rotating refresh token は process-lifetime の in-memory state です。config reload では維持されますが、restart では無効になります。
+発行された bearer は、選択された provider が server-side credential を注入する場合に `/v1/models`、`/v1/messages`、`/v1/messages/count_tokens` を認証します。passthrough provider は open のままです。`[server.auth]` もある場合は、どちらかの credential で access できます。refresh session はデフォルトで restart をまたいで維持されます。boot 時に `state_path`（token は hash 化して保存）を復元するため、ユーザーは引き続き silent refresh できます。このファイルを複数の shunt process で同時に共有してはいけません。`state_path = ""` の場合 session は memory-only で、config reload では維持されますが、shunt を restart すると無効になり、access JWT の期限切れ後にユーザーは再度サインインします。Device grant と rate-limit counter は常に memory-only なので、ログインの途中で restart するとその試行だけが失われます。期限切れの grant と idle な rate-limit identity は opportunistic に掃除されます。Device grant と rate-limit identity はそれぞれ 4,096 件が上限です。使用済み refresh-token の tombstone は family あたり最大 64 件を 30 日間保持し、30 日間使われなかった active refresh token は失効します。
 
 ### `[server.gateway.session]`（オプション）
 
@@ -230,11 +231,26 @@ jwt_secret = ["new-secret-value", "old-secret-value"]
 
 `[server.gateway]` が存在すると、認証済み `GET /managed/settings` が登録されます。順序付きの空でない policy list は、その managed document を提供します。各 policy は任意の `[server.gateway.policies.match]` と、必須の open-schema `[server.gateway.policies.cli]` object を持ちます。`match` の省略、`match = {}`、または `emails` なしは catch-all です。明示的な空の `emails` list または空白 entry は起動エラーです。
 
-すべての catch-all policy を順番に merge し、その上に最初の完全一致（case-sensitive）email policy を merge します。object は再帰的に merge し、array は置換します。ただし key に `deny` を含む array は重複なしの union になります。既知の key は起動時と hot reload 時に検証されます。`availableModels` は string のみの array、`env` は string・number・boolean の scalar value のみを含む table でなければなりません。未知の key は open-schema のままですが、すべての value は JSON で表現可能でなければならず、非有限 float は拒否されます。
+すべての catch-all policy を順番に merge し、その上に、大文字小文字を区別せず完全一致した最初の email policy を merge します（`match.emails` の各項目とサインインしたメールアドレスはどちらも小文字にしてから比較します）。object は再帰的に merge し、array は置換します。ただし key に `deny` を含む array は重複なしの union になります。既知の key は起動時と hot reload 時に検証されます。`availableModels` は string のみの array、`env` は string・number・boolean の scalar value のみを含む table でなければなりません。未知の key は open-schema のままですが、すべての value は JSON で表現可能でなければならず、非有限 float は拒否されます。
 
 `policies` がなければ endpoint は `404` を返します。policy が設定されていても user-specific または catch-all settings が一致しない場合、telemetry が有効なら telemetry のみの `settings.env` を、無効なら `settings: {}` を含む `200` を返します。response は `uuid`、`checksum`、checksum を含む quoted `ETag` を持ち、一致する `If-None-Match` には `304` を返します。
 
 解決された `cli.availableModels` は gateway JWT request の `/v1/messages` と `/v1/messages/count_tokens` に適用されます。top-level `model` から末尾の Claude Code context-window hint（`[1m]` または `[1M]`）を 1 つ取り除いてから比較し、list にない場合は `400 invalid_request_error` になります。static `[server.auth]` credential は gateway policy user を識別しないため、この制限の対象外です。
+
+### `[server.gateway.desktop_bootstrap]`（オプション）
+
+デバイスコードログインの後に Claude Desktop の [bootstrap サインイン](/ja/guides/connect-claude-desktop/#bootstrap-サインインデバイスコード)が取得する構成エンドポイント `GET /user/bootstrap` を提供します。このテーブルがなければルートは `404` を返します。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `template` | 必須 | トップレベルがオブジェクトの JSON ファイルへのパス。設定のロードと `shunt check` の時点で存在し、パースできる必要があります。リクエストごとに読み込まれるため、編集は再起動なしで反映されます。相対パスは設定ファイルではなく shunt の作業ディレクトリを基準に解決されます |
+
+指定できるのはパスのみで、URL は使えません。レスポンスはテンプレートそのままで、文字列値の中の `${user.email}`、`${user.sub}`、`${user.name}` だけがサインインしたユーザーの値に置き換わります（未知の `${...}` トークンとオブジェクトのキーはそのままです）。`[[server.gateway.policies]]` がない場合、policy の `match.emails` にユーザーが含まれる場合、または catch-all policy がある場合、そのユーザーは対象です。それ以外のユーザーは `403` を受け取ります。
+
+```toml
+[server.gateway.desktop_bootstrap]
+template = "/etc/shunt/claude-desktop-bootstrap.json"
+```
 
 ### `[server.gateway.telemetry]`（オプション）
 
@@ -278,16 +294,16 @@ headers = { "x-api-key" = "..." }
 | `provider` | *(必須)* | このモデルを提供する provider。`kind = "responses"` でなければならず、credential を持たない auth モード（`passthrough` または `none`）は使えません |
 | `upstream_model` | `model` | アップストリームへ送るモデル id。`model` と異なる場合、shunt は本文トップレベルの `model` だけを書き換え、他のフィールドはそのまま残します |
 
-未知の provider、`responses` 以外の provider、credential を持たない auth モード（`passthrough` または `none`）の provider へ向かう route は検証で拒否され、重複した `model` や空のフィールドも拒否されます。route はライブの設定スナップショットから読み込まれるため、追加・編集・削除は**リロード**時に反映されます。再起動が必要なのは `[server.codex_endpoint]` テーブル自体を有効化・無効化するときだけです。ChatGPT 以外の provider へルーティングされた request は、新しいヘッダー許可リストから始まります。クライアントから引き継ぐのは `content-type`（なければ `application/json`）と `accept` だけで、shunt が解決された credential、flavor ゲートを通過した `OpenAI-Beta`、`xai_oauth` route の Grok CLI identity ヘッダー一式、そして host が正確に `api.openai.com` で、空でない conversation id が解決された `api_key` route に新しく生成した `session-id`、`thread-id`、`x-client-request-id`、`x-codex-window-id` を加えます。呼び出し元が送った credential、Codex identity、session、`x-codex-*` ヘッダーは引き続き削除されます。xAI とその他のサードパーティ OpenAI 互換 host にはアフィニティヘッダーを追加せず、API キーパスは `accept: text/event-stream` も生成しません。request は identity エンコードの本文と credential 1 つだけを使い、プールもフェイルオーバーもありません。
+未知の provider、`responses` 以外の provider、credential を持たない auth モード（`passthrough` または `none`）の provider へ向かう route は検証で拒否され、重複した `model` や空のフィールドも拒否されます。route はライブの設定スナップショットから読み込まれるため、追加・編集・削除は**リロード**時に反映されます。再起動が必要なのは `[server.codex_endpoint]` テーブル自体を有効化・無効化するときだけです。ChatGPT 以外の provider へルーティングされた request は、新しいヘッダー許可リストから始まります。クライアントから引き継ぐのは `content-type`（なければ `application/json`）と `accept` だけで、shunt が解決された credential、flavor ゲートを通過した `OpenAI-Beta`、`xai_oauth` route の Grok CLI identity ヘッダー一式、そして host が正確に `api.openai.com` で、空でない conversation id が解決された `api_key` route に新しく生成した `session-id`、`thread-id`、`x-client-request-id`、`x-codex-window-id` を加えます。呼び出し元が送った credential、Codex identity、session、`x-codex-*` ヘッダーは引き続き削除されます。xAI とその他のサードパーティ OpenAI 互換 host にはアフィニティヘッダーを追加せず、API キーパスは `accept: text/event-stream` も生成しません。request は identity エンコードの本文と credential 1 つだけを使い、フェイルオーバーはありません。`xai_oauth` route では、xAI プールが空でない場合、その credential はプール選択順でログインを読み込める最初のアカウントになります（provider の `account`/`accounts` スコープ、`priority`、`disabled`、管理画面の一時停止がすべて適用されます）。xAI プールが空の場合は、従来の `~/.shunt/xai-auth.json` です。ログインを読み込めないアカウントはクールダウンされてスキップされますが、上流で失敗した request を別のアカウントで再送することはありません。
 同じオプトインで `GET /models` と `GET /backend-api/codex/models` も登録され、通常のモデル検出認証ゲートの後に有効な Codex フォールバック `{"models":[]}` を返します。共有の `GET /v1/models` でも、`client_version` クエリがある場合は Anthropic 風のヘッダーより優先して Codex の空形式を選択します。`client_version` がなければ、既存の Anthropic 検出レスポンスは変わりません。shunt は不完全な Codex `ModelInfo` 行を生成しません。
 
 ## `[server.usage]`（オプション）
 
 このテーブルの存在により、共有アカウントプールのクォータ状態をサニタイズして集約した `GET /usage` が登録されます。管理サーフェスを使わずに、クライアントがスロットリングを予測するためのエンドポイントです（[エンドポイントの詳細](/ja/reference/endpoints/)）。テーブルがなければ、ルートは登録されません。
 
-現在このテーブルにキーはなく、存在だけで有効になります。[`[server.auth]`](#serverauthオプション) が必須です。呼び出し元をクライアントトークンで識別するため、`[server.auth]` なしで `[server.usage]` を設定すると起動に失敗し、プールのテレメトリーを未認証で提供することはありません。
+現在このテーブルにキーはなく、存在だけで有効になります。[`[server.auth]`](#serverauthオプション) または [`[server.gateway]`](#servergatewayオプション) が必須です。呼び出し元をクライアントトークンまたはゲートウェイログインで識別するため、どちらもないまま `[server.usage]` を設定すると起動に失敗し（`UsageEndpointRequiresAuth`）、プールのテレメトリーを未認証で提供することはありません。
 
-`GET /usage` は `/v1/messages` と同じクライアントトークン（設定されたヘッダー、`x-api-key`、または `Authorization: Bearer`）で認証し、ウィンドウごとの残り余裕（そのウィンドウを報告した無効化されていないアカウントの `mean(1 - utilization)`、つまりプール全体の容量のうちまだ使われていない割合 — 使い切ったアカウント 9 つと新しいアカウント 1 つなら `0.1` — プール全体の集約値であり、次のリクエストが受け付けられるかの予測ではありません）、それらのアカウントが報告した最も早いリセット時刻、`ok`／`degraded`／`exhausted` のステータスを返します。アカウント名、件数、priority、`disabled`、しきい値、アカウント単位の数値は返しません。ウィンドウが `null` になるのは、無効化されていないアカウントがそのウィンドウを一度も報告していない場合だけです。Codex の `x-codex-*` レスポンスヘッダーは 5 時間と共有週次ウィンドウを埋めます。Codex 自体には Fable スコープ（`7d_oi`）のシグナルはありませんが、混在したプロバイダープールでは別のプロバイダーが集約 Fable 値を提供できます。正の `usage_refresh_seconds` を設定すると、オプションの `wham/usage` ポーラーも imported かつ更新可能な `chatgpt_oauth` アカウントのそのウィンドウを埋めます。ポーリングはデフォルトで無効です。
+`GET /usage` は `/v1/messages` と同じクライアントトークン（設定されたヘッダー、`x-api-key`、または `Authorization: Bearer`）、または `Authorization: Bearer` で送られた[ゲートウェイログイン](/ja/guides/gateway-login/)のアクセストークン（`shunt gateway claude` のセッションが送るもの）で認証し、ウィンドウごとの残り余裕（そのウィンドウを報告した無効化されていないアカウントの `mean(clamp(cap - utilization, 0, 1))`（`cap` はそのウィンドウについてのアカウントの解決済み `max_utilization*` ハードキャップで、該当するものがなければ `1.0`）、つまりキャップによってアカウントが除外されるまでにプール全体の容量のうちまだ使える割合 — 使い切ったアカウント 9 つとキャップなしの新しいアカウント 1 つなら `0.1`、50% のキャップの下で 44% のアカウントは `0.06` として数えられます。キャップがそのウィンドウのリクエストからすでに除外しているアカウントは 0 として数えられ、`5h` または `7d` のキャップは Fable リクエストからもそのアカウントを除外します — プール全体の集約値であり、次のリクエストが受け付けられるかの予測ではありません）、それらのアカウントが報告した最も早いリセット時刻、`ok`／`degraded`／`exhausted`／`capped` のステータスを返します。アカウント名、件数、priority、`disabled`、しきい値、アカウント単位の数値は返しません。ウィンドウが `null` になるのは、無効化されていないアカウントがそのウィンドウを一度も報告していない場合だけです。Codex の `x-codex-*` レスポンスヘッダーは 5 時間と共有週次ウィンドウを埋めます。Codex 自体には Fable スコープ（`7d_oi`）のシグナルはありませんが、混在したプロバイダープールでは別のプロバイダーが集約 Fable 値を提供できます。正の `usage_refresh_seconds` を設定すると、オプションの `wham/usage` ポーラーも imported かつ更新可能な `chatgpt_oauth` アカウントのそのウィンドウを埋めます。ポーリングはデフォルトで無効です。
 
 レスポンスはプール全体の集計を `pool` に持ち、`providers` にはプールされるプロバイダーごとの同じサニタイズ済み集計を、設定されたプロバイダー名（`[providers.<name>]` の `<name>`、または `[[upstreams]]` エントリの `name` であり、アカウントの身元ではありません）をキーとして持ちます。モデルをそのキーに対応付けるのはクライアントの役割です。[`GET /routes`](/ja/reference/endpoints/) は `[[routes]]` に明示されたモデルだけを扱い、`[[models]].upstream_model`、`[[route_prefixes]]`、`server.default_provider` の対応付けを公開するエンドポイントはなく、`GET /v1/models` のエントリにはプロバイダーのフィールドがありません。混在プールでは `pool` がすべてのプロバイダーのアカウントを 1 つの平均にまとめて報告するため、特定のプロバイダーにルーティングするクライアントは、そのプロバイダーの余裕とステータスを `providers.<name>` から読み取ってください。プールされない認証モードのプロバイダーは省略され、Fable スコープのシグナルを持たないプロバイダーの `fable` ウィンドウは、`pool` が値を報告していても `null` です。完全な形は[エンドポイントリファレンス](/ja/reference/endpoints/)を参照してください。
 
@@ -310,8 +326,8 @@ headers = { "x-api-key" = "..." }
 | `default_max_utilization_fable` | 未設定 | fable 専用の週次（`7d_oi`）ウィンドウのハードキャップのデフォルト。Fable モデルのリクエストにのみ適用されます |
 | `burn_rate_avoidance` | `false` | ウィンドウのリセット前にソフトしきい値を使い切ると予測されるアカウントも回避する |
 | `sort_by_reset` | `false` | バーンレートのヘッドルームではなく、利用可能なアカウントをクォータのリセットが最も早い順(昇順、不明なリセットは最後)に並べ替える。`shunt.toml` を編集せずに、管理ダッシュボードまたは `PATCH /admin/api/pool` でランタイムに切り替え可能 — [プールアカウント制御](/ja/guides/pool-account-controls/)を参照 |
-| `usage_refresh_seconds` | 無効（`0`/未設定） | Claude `GET /api/oauth/usage`、Codex `GET /wham/usage`、Antigravity `POST :retrieveUserQuotaSummary` のポーリング間隔（秒）。60 未満の正の値は 60 秒の下限に切り上げられます |
-| `state_path` | 未設定 | プールのアカウント単位のクォータ状態を保存するファイル。再起動時に空のプールではなく、最後に観測された使用率からウォームスタートします。未設定で永続化は無効（デフォルト） |
+| `usage_refresh_seconds` | 無効（`0`/未設定） | Claude `GET /api/oauth/usage`、Codex `GET /wham/usage`、Antigravity `POST :retrieveUserQuotaSummary`、プールされた xAI（Grok）アカウントの `GET /billing` のポーリング間隔（秒）。60 未満の正の値は 60 秒の下限に切り上げられます |
+| `state_path` | 未設定 | プールのアカウント単位のクォータ状態を保存するファイル。再起動時に空のプールではなく、最後に観測された使用率からウォームスタートします。未設定で永続化は無効（デフォルト）。[`[store]`](#storeオプション) を設定するとストアがクォータを保持し、このファイルはインポート元としてだけ使われます |
 | `ramp_initial_concurrency` | 無効（`0`/未設定） | ストーム制御: トラフィックを受け始めたばかりのアカウントアイデンティティに対する初期の並行受け入れ許容量。`0` または未設定で受け入れゲーティングは無効 |
 | `reprobe_seconds` | このテーブルが存在すれば `900`。`0` で無効 | 陳腐化した近接クォータの Codex/ChatGPT アカウントに対する日和見的な再プローブ間隔（秒）。60 未満の正の値は 60 秒の下限に切り上げられます。`0` で再プローブは無効。`[server.pool]` 自体が存在しない場合、この値に関係なく再プローブは無効（issue #135 以前の挙動）。WebSocket を使わない outbound Responses 選択とオプションの inbound Codex HTTP エンドポイントは再プローブを維持し、WebSocket 有効時の outbound 選択では無効 |
 
@@ -321,7 +337,7 @@ headers = { "x-api-key" = "..." }
 
 アカウントレベルのキー `max_utilization`、`max_utilization_5h`、`max_utilization_7d`、`max_utilization_fable` は、各 `[[providers.X.accounts]]` エントリに設定します。詳細は英語版リファレンスの [accounts テーブル](/reference/configuration/#providersnameaccounts)を参照してください。
 
-正の `usage_refresh_seconds` は、Claude の公式 usage API、Codex/ChatGPT の非公式 `wham/usage`、Antigravity の非公開 `retrieveUserQuotaSummary` RPC を対象にバックグラウンドポーラーを起動します。未設定または `0` で無効（デフォルト）です。ポーリングするのは imported（更新可能）なアカウントだけで、長期の `claude setup-token` と `token_env` 資格情報はスキップします。Claude では報告された各ウィンドウの使用率・リセット時刻・使用率観測時刻を補正し、status の鮮度はヘッダー由来のままです。Codex では使用率とその観測時刻を補正し、リセットメタデータは応答由来、status はヘッダー由来のままです。保存済みの未来のリセットは保持し、経過したものだけを新しい使用率の書き込み前に消去します。wham の `reset_at` は実際のリセットメタデータとして採用しません。Antigravity では本番ホスト表記を既存の daily-host resolver で正規化し、Gemini / Claude+GPT の grouped windows をダッシュボード用フィールドにだけ保存します。generic な選択用 quota state には反映しません。非公開 schema は fail-soft に扱い、間隔は起動時に固定され、設定リロードでは開始・停止・再調整しません。
+正の `usage_refresh_seconds` は、Claude の公式 usage API、Codex/ChatGPT の非公式 `wham/usage`、Antigravity の非公開 `retrieveUserQuotaSummary` RPC、プールされたリフレッシュ可能な xAI アカウント（ストアのログインと `credentials` ファイルを持つインラインエントリ）向けの Grok CLI プロキシの非公開 `billing` エンドポイントを対象にバックグラウンドポーラーを起動します。未設定または `0` で無効（デフォルト）です。ポーリングするのは imported（更新可能）なアカウントだけで、長期の `claude setup-token` と `token_env` 資格情報はスキップします。Claude では報告された各ウィンドウの使用率・リセット時刻・使用率観測時刻を補正し、status の鮮度はヘッダー由来のままです。Codex では使用率とその観測時刻を補正し、リセットメタデータは応答由来、status はヘッダー由来のままです。保存済みの未来のリセットは保持し、経過したものだけを新しい使用率の書き込み前に消去します。wham の `reset_at` は実際のリセットメタデータとして採用しません。Antigravity では本番ホスト表記を既存の daily-host resolver で正規化し、Gemini / Claude+GPT の grouped windows をダッシュボード用フィールドにだけ保存します。generic な選択用 quota state には反映しません。xAI では、プールされた各アカウントのクレジット合計と製品別の使用量（例: "Grok Build"）を同じく表示専用で保存し、プロバイダーが推論をどのホストに送るかにかかわらず、常に Grok CLI プロキシに問い合わせます。非公開 schema は fail-soft に扱い、間隔は起動時に固定され、設定リロードでは開始・停止・再調整しません。
 
 `state_path` はプールのクォータ状態（すべてのプロバイダーのアカウントについて、ウィンドウごとの使用率と各ウィンドウ固有のリセット時刻、使用率と status の独立した観測時刻およびキャプチャ済み status のリセット境界）をディスクに保存します。設定しない場合、再起動は空のプールから始まり、各アカウントは再起動後の最初のレスポンスまで未観測に見えるため、burn-rate 回避が無効になり、トラフィックでプールが再充填されるまで `GET /usage` は空を返します。このファイルは権威あるソースではなくベストエフォートのキャッシュです — クォータはいずれにせよアップストリームのレスポンスから再導出されるため、ファイルが欠落・陳腐化・破損していてもコールドスタートになるだけで、起動失敗にはなりません。書き込みは非公開の temp ファイル（Unix では `0600`）を対象にアトミックにリネームする方式で、クォータが変化したときだけバックグラウンドタイマーで行われます。書き込みに失敗した場合は次の tick で再試行します。クールダウンは保存されず（再起動で失効）、復元されたウィンドウのうちすでにリセットを過ぎたものは、復元時の import 中に最初の選択または snapshot より前に破棄されます。使用率は自身の観測時刻による上限と、そのウィンドウのリセットの早い方で失効し、上限だけが過ぎた場合はそのウィンドウの未来のリセットが残ります。status は自身の観測時刻による上限と観測時にキャプチャした status リセット境界の早い方で失効し、キャプチャした境界も status とともに消去されます。バージョン2のファイルは明示的な移行経路でバージョン3に書き直され、バージョン3のリセットなし status はリセットのみの更新後もリセットなしのままです。パスは起動時に固定され、設定のリロードでは永続化の開始・停止・パス変更は行われません。
 
@@ -385,7 +401,7 @@ codex-fallback = "gpt-5.2"
 | `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 | `opencode` | `anthropic` | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, ヘッダー `x_api_key` |
 
-`auth = "claude_oauth"` のような文字列は `auth = { mode = "claude_oauth" }` の省略形です。`api_key` マップは `env`（preset が提供しない場合は必須）と `header` を受け取ります。`header` を省略するとデフォルト（`bearer`、または `opencode` preset の `x_api_key`）がそのまま使われます。`claude_oauth` と `chatgpt_oauth` のマップは `account = "name"` または `accounts = [...]` で範囲を絞れますが、両方は指定できません。`accounts` にはストアエントリ名の文字列と完全なアカウントテーブルを指定できます。明示的な `accounts = []` は拒否され、両方のスコープフィールドを省略するとストア全体を走査します。ChatGPT ストアが空の場合、`chatgpt_oauth` は従来どおり `~/.codex/auth.json` にフォールバックします。`passthrough`、`xai_oauth`、`cursor_oauth`、`antigravity_oauth` のマップは `mode` のみを受け付け、mode 固有の未知のキーはエラーです。
+`auth = "claude_oauth"` のような文字列は `auth = { mode = "claude_oauth" }` の省略形です。`api_key` マップは `env`（preset が提供しない場合は必須）と `header` を受け取ります。`header` を省略するとデフォルト（`bearer`、または `opencode` preset の `x_api_key`）がそのまま使われます。`claude_oauth`、`chatgpt_oauth`、`kimi_oauth`、`xai_oauth`、`antigravity_oauth` のマップは `account = "name"` または `accounts = [...]` で範囲を絞れますが、両方は指定できません。`accounts` にはストアエントリ名の文字列と完全なアカウントテーブルを指定できます。明示的な `accounts = []` は拒否され、両方のスコープフィールドを省略するとストア全体を走査します。ChatGPT ストアが空の場合、`chatgpt_oauth` は従来どおり `~/.codex/auth.json` にフォールバックします。Antigravity ストアが空で何も設定されていない場合、`antigravity_oauth` は `~/.shunt/antigravity-auth.json` に、xAI ストアが空で何も設定されていない場合、`xai_oauth` は `~/.shunt/xai-auth.json` にフォールバックします。`passthrough`、`cursor_oauth` のマップは `mode` のみを受け付け、mode 固有の未知のキーはエラーです。
 
 設定ファイル内で `[[upstreams]]` と `[providers.*]` を混在させないでください。ファイル層に両方の宣言形式があると起動に失敗します。環境変数はどちらの形式でも、正規化後のアップストリーム／provider 名を指定する `SHUNT_PROVIDERS__<name>__<field>` により個々のフィールドを上書きできます。順序付き `[[upstreams]]` 配列そのものは、1 つの環境変数で合成しようとせず、設定ファイルで宣言してください。レガシー `[providers.<name>]` は引き続きサポートされ、名前順の暗黙的アップストリームに正規化されます。この形式はフェイルオーバー順を宣言しないため、モデルマップは 0 または 1 エントリだけをサポートします。モデルマップに複数エントリを追加する前に `[[upstreams]]` へ移行してください。
 
@@ -421,7 +437,7 @@ origin に関係なく、保持された各スロットはそのスロットが�
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` \| `antigravity_cli` | 上流プロトコル / アダプター。`anthropic` = Messages API（パススルー、オプションで再キー付け）。`responses` = Anthropic Messages を OpenAI Responses API へ変換（Responses API には `stop` パラメーターがないため、`stop_sequences` は黙って捨てられるのではなく、変換内でゲートウェイ側からエミュレートされます）。`cursor` = ネイティブな Cursor ConnectRPC/protobuf AgentService アダプター。`gemini` = Anthropic Messages を Google Code Assist バックエンドの Gemini `generateContent`/`streamGenerateContent` へ変換。`antigravity` = Google Antigravity バックエンドに HTTP で接続。`gemini` と同じ Code Assist プロトコルを話しますが、Antigravity のサブスクリプショントークンで認証し、プロジェクト探索では `ideType: ANTIGRAVITY` として自身を識別します。`antigravity_cli` = **非推奨** — 上流を持たず、ローカルの Antigravity CLI バイナリ（`agy`）をサブプロセスとして実行。`agy` が自身のツール呼び出しを解決し、`tool_use` ブロックを返せないため、実際にツール呼び出しを要求するリクエスト（空でない `tools` 配列、または `any`・`tool` の `tool_choice`）は、テキストとして黙って応答するのではなく `400 invalid_request_error` で拒否されます。`tool_choice: none`（`tools` と併用していても）、ツールのない `tool_choice: auto`、空の `tools: []` はいずれもツール呼び出しを強制しないため受け付けられます。 |
 | `base_url` | URL | 上流のベース。shunt がエンドポイントパスを追加します。`kind = "cursor"` ではログイン／トークン更新用エンドポイントにのみ使われ、エージェント／推論ホストは選択しません。 |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough` はクライアント自身の credential を転送。`api_key` は `api_key_env` からキーを注入。`chatgpt_oauth` は `~/.codex/auth.json` を再利用。`claude_oauth` は明示的な Anthropic アカウントから選択。`xai_oauth` は `shunt login xai` からの `~/.shunt/xai-auth.json` を再利用（HTTPS 上の x.ai/grok.com ホストへのみ送信）。`cursor_oauth` は `~/.shunt/cursor-auth.json`（`shunt login cursor`）を再利用。`google_oauth` は gemini CLI ログインの `~/.gemini/oauth_creds.json` を再利用し、`kind = "gemini"` でのみ有効。`antigravity_oauth` は `shunt login antigravity` からの `~/.shunt/antigravity-auth.json` を再利用し、`kind = "antigravity"` でのみ有効で、`google_oauth` とは**互換性がありません** — Antigravity は Gemini CLI のトークンには含まれない 2 つのスコープ（`cclog`、`experimentsandconfigs`）を要求します。`none` は認証すべき上流を持たないアダプター（`kind = "antigravity_cli"`）向けに、credential を一切送信しません。 |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `kimi_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough` はクライアント自身の credential を転送。`api_key` は `api_key_env` からキーを注入。`chatgpt_oauth` は `~/.codex/auth.json` を再利用。`claude_oauth` は明示的な Anthropic アカウントから選択。`kimi_oauth` は明示的な Kimi Code アカウント（`shunt login kimi`）から選択し、`kind = "anthropic"` と `kimi.com` の `base_url` の組み合わせでのみ有効。`xai_oauth` は `~/.shunt/accounts/xai/` の名前付きログイン（`shunt login xai --name`）をプールし、それ以外の場合は `shunt login xai` からの `~/.shunt/xai-auth.json` を再利用（HTTPS 上の x.ai/grok.com ホストへのみ送信）。`cursor_oauth` は `~/.shunt/cursor-auth.json`（`shunt login cursor`）を再利用。`google_oauth` は gemini CLI ログインの `~/.gemini/oauth_creds.json` を再利用し、`kind = "gemini"` でのみ有効。`antigravity_oauth` は `shunt login antigravity` からの `~/.shunt/antigravity-auth.json` を再利用し、`kind = "antigravity"` でのみ有効で、`google_oauth` とは**互換性がありません** — Antigravity は Gemini CLI のトークンには含まれない 2 つのスコープ（`cclog`、`experimentsandconfigs`）を要求します。`none` は認証すべき上流を持たないアダプター（`kind = "antigravity_cli"`）向けに、credential を一切送信しません。 |
 | `api_key_env` | 環境変数名 | `auth = "api_key"` のとき、キーを読み取る場所。この値自体も `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。 |
 | `api_key_header` | `bearer`（デフォルト） \| `x_api_key` | 注入されたキーを送るヘッダー。 |
 | `effort` | `low` … `max` | オプションのデフォルト reasoning エフォート（`responses` プロバイダー）。`kind = "antigravity"` にも適用され、サフィックスのない `gemini-*` の `upstream_model` にカタログの effort サフィックスとして付与されます。 |
@@ -433,9 +449,9 @@ origin に関係なく、保持された各スロットはそのスロットが�
 
 ### `[providers.<name>.retry]`
 
-サポートされる単一クレデンシャル呼び出しにおける**一時的な**上流障害に対する有界のリトライです。対象は `passthrough`/`api_key` の Anthropic パスと、単一クレデンシャルの Responses パス（`api_key`、`xai_oauth`/Grok、プールされたアカウントを持たない `chatgpt_oauth` provider）です。接続レベルのトランスポートエラー（接続の reset/refused、タイムアウト）が起きると、リクエストを再送します（クライアントにレスポンスのバイトが 1 つも届かないうちに、リクエストボディ全体で）。これらは冪等でない生成 POST であり、上流がすでに課金対象の生成を受け付けている可能性があるため、一時的なレスポンスステータスはリトライしません。現在の Cursor アダプターのストリーミングターンはこのリトライ層で包まれていないため、正規化された `retry` テーブルは効果を持たず、レスポンス前の接続障害はそのまま表面化します。サポートされるどのパスも `4xx` レスポンスをリトライせず、レスポンスボディのストリーミングが始まった後にリトライが始まることはありません。
+サポートされる単一クレデンシャル呼び出しにおける**一時的な**上流障害に対する有界のリトライです。対象は `passthrough`/`api_key` の Anthropic パスと、単一クレデンシャルの Responses パス（`api_key`、プールされたアカウントを持たない `chatgpt_oauth` provider、そして xAI プールが空の間だけの `xai_oauth` provider。その場合は従来の `~/.shunt/xai-auth.json` を読みます。空でない xAI プールはプールのルールに従ってローテーションします）です。接続レベルのトランスポートエラー（接続の reset/refused、タイムアウト）が起きると、リクエストを再送します（クライアントにレスポンスのバイトが 1 つも届かないうちに、リクエストボディ全体で）。これらは冪等でない生成 POST であり、上流がすでに課金対象の生成を受け付けている可能性があるため、一時的なレスポンスステータスはリトライしません。現在の Cursor アダプターのストリーミングターンはこのリトライ層で包まれていないため、正規化された `retry` テーブルは効果を持たず、レスポンス前の接続障害はそのまま表面化します。サポートされるどのパスも `4xx` レスポンスをリトライせず、レスポンスボディのストリーミングが始まった後にリトライが始まることはありません。
 
-バックオフはランダム化（full）ジッター付きの指数方式で、`max_backoff_ms` が上限です。サーバーが返す `Retry-After` が優先されます（delta-seconds 形式と HTTP-date 形式の両方に従います）。小数の delta-seconds も受け付けて次の整数秒に切り上げ、形式が不正な値や長すぎる値は無視します。`max_backoff_ms` より長い待機を求められた場合は、予算を超えて待機せず、レスポンスを即座に表面化します。この設定にかかわらず、**`count_tokens` にはリトライを適用しません**。`claude_oauth` / `chatgpt_oauth` / `kimi_oauth` のアカウントプールは独自のアカウントローテーションによるフェイルオーバーを行い、このテーブルの影響を受けません。
+バックオフはランダム化（full）ジッター付きの指数方式で、`max_backoff_ms` が上限です。サーバーが返す `Retry-After` が優先されます（delta-seconds 形式と HTTP-date 形式の両方に従います）。小数の delta-seconds も受け付けて次の整数秒に切り上げ、形式が不正な値や長すぎる値は無視します。`max_backoff_ms` より長い待機を求められた場合は、予算を超えて待機せず、レスポンスを即座に表面化します。この設定にかかわらず、**`count_tokens` にはリトライを適用しません**。`claude_oauth` / `chatgpt_oauth` / `kimi_oauth` / `xai_oauth` のアカウントプールは独自のアカウントローテーションによるフェイルオーバーを行い、このテーブルの影響を受けません。
 
 ```toml
 [providers.openai.retry]
@@ -1276,6 +1292,51 @@ policy = { type = "target_selector", selector = "/target" }
 
 6 つの[呼び出しごとの上限](#呼び出しごとの上限)は、呼び出しを行う当事者であるこの
 テーブルに置きます。ジャッジは他と同じ規則に従います — 1 ホップ、passthrough ルート禁止。
+
+## `[store]`（オプション）
+
+プールのクォータ、ゲートウェイの refresh token、支出上限とその監査記録を保存する、オプションのトランザクション対応ストアです。SQLite または PostgreSQL を使えます。このテーブルがなければ何も変わらず、3 つのサブシステムはこれまでどおり JSON の `state_path` スナップショットと復元経路を使います。設定すると、ストアがスナップショットを置き換え、既存のスナップショットは一度だけインポートされます。詳しい動作は [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)（英語）を参照してください。`[store]` は再起動が必要な設定です。設定のリロードで変更すると警告をログに出し、再起動後に反映されます。
+
+| キー | デフォルト | 意味 |
+| :-- | :-- | :-- |
+| `backend` | —（必須） | `"sqlite"` または `"postgres"`。`"postgres"` には `store-postgres` Cargo feature 付きのビルドが必要です。ビルド済みのリリースバイナリには含まれ、`cargo build` と `cargo install` には含まれません（`--features store-postgres` でビルドします）。feature がないと設定の読み込みが失敗し、エラーに feature 名が表示されます |
+| `url` | —（必須） | SQLite: ファイルパス（記述どおりに使用）、または `sqlite:` / `sqlite://` URL（パスはパーセントデコードされるため、`sqlite:///data/my%20store.db` は `/data/my store.db` を開きます）。SQLite の `file:` URI、URL クエリオプション（`?...`）、インメモリデータベースは設定の読み込み時に拒否されます。PostgreSQL: `postgres://` URL。Redacting secret — 診断出力では `[redacted]` と表示されます（[Secret 参照](#secret-参照)を参照） |
+| `max_connections` | `4` | PostgreSQL のプールサイズで、`1` 以上。常に 1 接続を使う SQLite では拒否されます |
+| `password_env` | 未設定 | PostgreSQL のみ: パスワードを保持する環境変数の名前。URL にパスワードがない場合（userinfo にも `?password=` にもない場合）だけ使います。必要なのに変数が未設定または空なら起動に失敗します |
+| `allow_insecure_remote_tls` | `false` | `localhost`、ループバック IP、unix ソケット以外の PostgreSQL ホストを `sslmode=verify-full` なしで許可します。警告をログに出します |
+| `hold_stale_seconds` | `30` | ハートビートのないままこの秒数が過ぎると、インスタンスホールドは stale になり、次のプロセスが引き継げます。`3` 以上。保持しているプロセスは `hold_stale_seconds / 3` 秒ごとにホールドを更新します |
+
+**TLS ルール。** ループバック以外の PostgreSQL ホストでは、`allow_insecure_remote_tls = true` でない限り URL に `sslmode=verify-full` が必要で、ないと設定の読み込み（と `shunt check`）が失敗します。このルールは sqlx が URL から解析したホストと `sslmode` で判定するため、`?host=` や `?hostaddr=` では回避できません。TLS クライアントは OS の証明書ストアではなく、同梱の Mozilla ルート証明書で検証します。プライベート CA を使う場合は URL に `sslrootcert=/path/ca.pem` を追加してください。
+
+**SQLite ファイル。** ファイルがなければ起動時にモード `0600` で作成し（`-wal` と `-shm` の補助ファイルも同じモードを引き継ぎます）、既存ファイルのモードは変更しません。shunt は WAL モードで 1 接続を開きます。
+
+**永続性。** 支出上限とゲートウェイの refresh token は、admin API 呼び出しやトークンレスポンスが返る前に同期的に書き込みます。プールのクォータは write-behind で 15 秒ごとと正常終了時に一度書き込むため、クラッシュすると最大で直近 15 秒分のクォータが失われることがあります。クォータはアップストリームのレスポンスから再取得されます。
+
+**一度だけのインポート。** 初回起動時に、プール、ゲートウェイ（`[server.gateway]` 設定時）、支出（`[server.spend]` 設定時）のスナップショットを各 `state_path`（ゲートウェイと支出はデフォルトパスも対象）から、サブシステムごとに 1 つのトランザクションでストアへコピーし、その記録も残します。記録のあるサブシステムは、その後データを削除しても再インポートせず、後から現れたスナップショットも無視します。shunt はスナップショットを変更せず、インポートしたスナップショットの隣に `<state_path>.imported` サイドカーを書きます。不正な形式やバージョン不一致のスナップショットは起動を失敗させ、エラーにサブシステムとファイルを示し、そのサブシステムには何もインポートしません。ストアを使っている間、`state_path` はインポート元としてだけ使われます。
+
+**ロールバック。** インポートは同期ではなくコピーです。後で `[store]` を外すと、インポート時点のスナップショットから起動するため、その後ストアで失効させたセッションが戻ったり、変更した支出上限が元に戻ったりすることがあります。インポートしたものと同一のスナップショットを読むストアなしの起動は、その旨の警告をログに出します。その起動がファイルを書き直すと警告は止まります。
+
+**ストアごとに 1 プロセス。** ストアにはインスタンスホールドがあります。生きているホールドのあるストアに対して 2 つ目の `shunt run` を起動すると、保持しているプロセス（`{HOSTNAME}:{pid}`）と最後の更新からの経過時間を示して異常終了します。PostgreSQL では、開いたまま残ったトランザクション（多くはクライアントが消えたバックエンド）がホールド行を保持していて 5 秒以内にその行のロックを取得できなかった 2 つ目のプロセスは、代わりに lock timeout エラーで終了します。`hold_stale_seconds` のあいだ更新されなかったホールドは引き継がれ、そのことがログに出ます。そのため、クラッシュ後の再起動は最大でその時間拒否されることがあります。実行中のプロセスがホールドを奪われたことを検出すると、以後のストアへの書き込みを拒否しますが、プロキシリクエストは処理し続けます。正常終了時にホールドを解放します。
+
+**ストアへの書き込みが失敗したとき。** プロキシ経路はストアを待ちません。書き込めなかった admin の支出上限変更は従来どおり Anthropic 形式の `500` を返し、何も変わりません。ゲートウェイの `/oauth/token` エンドポイントでは、トークンの発行（device grant）や refresh token のローテーションを書き込めないと `Cache-Control: no-store` 付きで `503` `{"error":"temporarily_unavailable"}` を返し、ローテーションはロールバックされるので、クライアントの再試行は成功します。grant を消費した後に device grant の発行が失敗した場合、そのユーザーはログインをやり直す必要があります。ローテーション済みトークンの再利用（replay）は従来どおり `401` `invalid_grant` を返し、そのファミリーは失効したままです。ストアがこの失効を書き込めない場合は、次に成功したストア書き込みか次の 15 秒ごとのフラッシュで書き込まれ、それより前にプロセスがクラッシュすると失われます。失敗した書き込みごとに `shunt.store.write_failures` カウンター（`subsystem` = `pool`、`spend`、`gateway`）が増えます。
+
+**`shunt check`。** `[store]` があると、[`shunt check`](/ja/reference/cli/#shunt-check) はストアを読み取り専用で開き、スキーマバージョンを報告します。マイグレーションの実行、データベースの変更、存在しない SQLite ファイルの作成は行いません（WAL モードのデータベースを検査する間、SQLite が `-wal` / `-shm` の補助ファイルを作成または削除することがあります）。
+
+**セキュリティ。** ストアには refresh token のハッシュ（SHA-256。生のトークンは保存しません）と、各トークンの発行先のアイデンティティ、支出の監査記録が入っています。データベースへのアクセスとバックアップを制限してください。
+
+```toml
+# SQLite（常に利用可能）
+[store]
+backend = "sqlite"
+url = "/var/lib/shunt/shunt.db"
+
+# PostgreSQL（store-postgres feature が必要）
+# [store]
+# backend = "postgres"
+# url = "postgres://shunt@db.example.com:5432/shunt?sslmode=verify-full"
+# password_env = "SHUNT_STORE_PASSWORD"
+# max_connections = 4
+```
 
 ## `[sentry]`(任意)
 

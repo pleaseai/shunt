@@ -479,6 +479,7 @@ fn gateway_enabled_config(
     let mut config = Config::default();
     config.providers.get_mut("anthropic").unwrap().base_url = upstream_base_url;
     config.server.gateway = Some(GatewayConfig {
+        desktop_bootstrap: None,
         public_url: "https://gateway.example".to_string(),
         // The deprecated env-var pair, deliberately: `session` stays `None`
         // because setting a deprecated key alongside its `[server.gateway.session]

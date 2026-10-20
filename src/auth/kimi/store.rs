@@ -72,9 +72,6 @@ pub fn store_oauth_tokens(
 }
 
 #[cfg(test)]
-pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::{
@@ -106,7 +103,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_tokens_round_trip_with_device_id() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("oauth");
         let _env = shared::EnvVarGuard::set("SHUNT_KIMI_ACCOUNTS_DIR", &dir);
 
@@ -131,7 +128,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_tokens_reject_blank_fields() {
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("blank");
         let _env = shared::EnvVarGuard::set("SHUNT_KIMI_ACCOUNTS_DIR", &dir);
 
@@ -147,7 +144,7 @@ mod tests {
     async fn written_file_and_directory_are_private() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _guard = TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::test_env_lock();
         let dir = temp_dir("perms");
         let _env = shared::EnvVarGuard::set("SHUNT_KIMI_ACCOUNTS_DIR", &dir);
 

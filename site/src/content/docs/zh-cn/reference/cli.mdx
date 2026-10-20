@@ -45,7 +45,25 @@ shunt check
 
 报告具体错误:错误的 bind 地址、路由中的未知提供方、缺失的 `api_key_env`、错误的 `base_url`、错误的适配器/认证组合。
 
-它还会执行与 `shunt run` 启动时相同的「已路由 Antigravity 凭据」检查:如果配置路由到原生 `antigravity` 上游却没有存储凭据,检查会直接失败并提示 `shunt login antigravity`,而不是先输出 `config ok`、再在启动时失败。该检查仍然是离线的 —— 只读取路由并探测凭据是否存在(单例文件或具名池候选项均可),既不刷新令牌也不访问后端。仅声明内置 `antigravity` 提供方但没有路由到它的配置不受影响,`kind = "antigravity_cli"` 路由同样不受影响。
+它还会执行与 `shunt run` 启动时相同的「已路由 Antigravity 凭据」检查:如果配置路由到原生 `antigravity` 上游却没有存储凭据,检查会直接失败并提示 `shunt login antigravity`,而不是先输出 `config ok`、再在启动时失败。该守卫是离线的 —— 只读取路由并探测凭据是否存在(单例文件或具名池候选项均可),既不刷新令牌也不访问后端。仅声明内置 `antigravity` 提供方但没有路由到它的配置不受影响,`kind = "antigravity_cli"` 路由同样不受影响。
+
+配置了 [`[store]`](/zh-cn/reference/configuration/#store可选) 时,检查不再完全离线:在 `config ok` 之后,它会以只读方式打开存储(读取 SQLite 文件,或连接 PostgreSQL),再输出一行。它不会执行迁移、修改数据库,也不会创建不存在的 SQLite 文件;但检查 WAL 模式的数据库时,SQLite 可能会创建或删除 `-wal` / `-shm` 辅助文件。
+
+```bash
+shunt check
+# -> config ok
+# -> store ok: sqlite sqlite:/var/lib/shunt/shunt.db, schema v1 (binary supports v1)
+```
+
+| 存储状态 | `config ok` 之后的输出 | 退出码 |
+| :-- | :-- | :-- |
+| 已是最新 | `store ok: <backend> <target>, schema vN (binary supports vM)` | `0` |
+| schema 比二进制旧 | 同一行末尾追加 `; 1 pending migration applies at boot`(K > 1 时为 `; K pending migrations apply at boot`) | `0` |
+| SQLite 文件不存在 | `store ok: sqlite sqlite:<path>, file does not exist yet; it is created with mode 0600 at boot` | `0` |
+| 无法连接 | `store check failed`,原因为 `store <target> is unreachable: <reason>` | `1` |
+| schema 比二进制新 | `store check failed`,原因为 `store <target> is at schema version N, newer than the M this binary supports; upgrade shunt` | `1` |
+
+`<target>` 是 `sqlite:<path>` 或 `postgres://host:port/db`,不会输出任何凭据。检查最长 15 秒。校验不通过的 `[store]`(例如没有 `sslmode=verify-full` 的远程 PostgreSQL 主机)会更早以 `config check failed` 失败。
 
 ## `shunt init`
 
@@ -215,7 +233,14 @@ name = "primary"
 
 ```bash
 shunt login xai
+shunt login xai --name <account-name>
 ```
+
+不带 `--name` 时,credential 保存到 `~/.shunt/xai-auth.json`(可用 `SHUNT_XAI_AUTH_FILE` 覆盖)。带 `--name` 时,它改为保存到 `~/.shunt/accounts/xai/<account-name>.json`(0600;shunt 新建的存储目录权限为 `0700`,但已存在的目录保持其原有权限;`SHUNT_XAI_ACCOUNTS_DIR` 可覆盖存储目录),因此命名登录绝不会覆盖单账户文件。复用名称会替换其文件。`--mode` 和 `--long-lived` 会被拒绝,因为 xAI OAuth token 始终可刷新;`--manual` 仅限 claude 使用。
+
+在提供方上用 `[[providers.grok.accounts]]` 条目或 `auth = { mode = "xai_oauth", accounts = [...] }` 引用命名账户;若都不配置,则扫描整个存储。若没有配置账户且存储为空,提供方会回退到单账户文件;一旦存在任何命名账户,就不再读取该文件。两个文件使用相同格式,因此在停止 shunt 后,先以仅属主可访问的方式创建存储目录,再移动文件,即可把现有登录移入账户池:`install -d -m 700 ~/.shunt/accounts/xai && mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<account-name>.json`。从单账户配置迁移时,该目录尚不存在。
+
+xAI 每次刷新都会轮换刷新 token,因此每个可刷新登录只能有一个所有者:绝不要把同一个 credential 文件复制到两个位置,也不要在两个正在运行的 shunt 进程之间共享。
 
 ## `shunt login kimi`
 
@@ -260,5 +285,7 @@ Kimi 在每次刷新时都会轮换 refresh token,而且签发的 access token �
 | `CLAUDE_CREDENTIALS` | 面向 `shunt token` 和可刷新 `shunt login claude` 导入的备用 credential 文件路径 |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt 管理的 Claude 账户存储的备用目录 |
 | `SHUNT_KIMI_ACCOUNTS_DIR` | shunt 管理的 Kimi Code 账户存储的备用目录 |
+| `SHUNT_XAI_AUTH_FILE` | 不带 `--name` 的 `shunt login xai` 所用的备用 credential 文件(默认 `~/.shunt/xai-auth.json`) |
+| `SHUNT_XAI_ACCOUNTS_DIR` | shunt 管理的 xAI 账户存储的备用目录 |
 | 由 `token_env` 指定的按账户变量 | Anthropic `claude_oauth` 池条目的 setup token;原样使用 |
 | `OPENAI_API_KEY` | `openai` 提供方的默认密钥环境变量(每个提供方通过 `api_key_env`) |

@@ -25,6 +25,16 @@ shunt run
 
 该可选功能也使 Codex CLI 的模型发现可被正确解析。`GET /models` 和 `GET /backend-api/codex/models` 返回有效的回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 路径上,`client_version` 查询字段优先于类 Anthropic 的头部并选择 Codex 形状;没有该字段时,现有 Anthropic 发现响应保持不变。这些请求先通过常规模型发现认证门,且 shunt 不会伪造不完整的 Codex 模型行。
 
+## 网页搜索
+
+Codex CLI 的内置网页搜索工具(`web.run`)会向 `{base_url}/alpha/search` 发送 POST 请求,这与它追加 `/responses` 的 base URL 相同。shunt 为每种 base URL 形式都注册了该路径:
+
+- `POST /backend-api/codex/alpha/search`
+- `POST /alpha/search`
+- `POST /v1/alpha/search`
+
+搜索与 Responses 轮次使用相同的 `[server.auth]` 策略和相同的 ChatGPT/Codex 账户池(会话粘性选择、故障转移、刷新),并把请求体和响应逐字中继到后端的 `/codex/alpha/search`。搜索不是模型轮次,因此 `[[server.codex_endpoint.routes]]` 不适用,它总是发往 `[server.codex_endpoint].provider`。这些路由只接受 `POST` —— 该工具没有 WebSocket 形式。
+
 ## 客户端分析数据接收端
 
 Codex CLI 还会向 base URL 提交产品分析数据。shunt 接受该 CLI 可能产生的两条路径:
@@ -160,7 +170,7 @@ shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，�
 - **请求头白名单。** 新白名单起初只从客户端取得 `content-type`（缺省为 `application/json`）和 `accept`，然后加入解析出的凭据，以及被路由到的上游自身所需的请求头：xAI/Grok 会省略的 `OpenAI-Beta: responses=experimental`、`xai_oauth` 路由的整套 Grok CLI identity 请求头，以及当 `api_key` 路由的目标主机恰好是 `api.openai.com` 且解析出了非空 conversation id 时，重新生成的四个会话亲和请求头（`session-id`、`thread-id`、`x-client-request-id`、`x-codex-window-id`）。客户端发送的 `authorization`、`x-api-key`、`chatgpt-account-id`、`originator`、`version`、`user-agent`、`session-id`、`thread-id`、`x-client-request-id`、`x-codex-*`、`x-shunt-*` 仍会被剥离；原生 OpenAI 所用的值也是重新生成，而不是转发。xAI 和其他第三方 OpenAI 兼容主机都不会收到这些会话亲和请求头。API 密钥路径也不会生成 `accept: text/event-stream`。
 - **改写请求体的 `model`。** 当 `upstream_model` 与请求的模型不同时，shunt 只改写顶层的 `model`，其余字段原样保留。不是 JSON 对象的请求体会以 `400` 拒绝，而不会被继续转发。
 - **identity 编码。** zstd 请求体会先解码（原生 Responses API 不接受该编码），且不转发 `content-encoding`。
-- **单一凭据，无故障转移。** 被路由到的第三方背后没有账号池，因此 429 或 5xx 会连同 `retry-after` 原样转发，不会触发轮换。
+- **单一凭据，无故障转移。** 被路由到的第三方背后没有故障转移账号池，因此 429 或 5xx 会连同 `retry-after` 原样转发，不会触发轮换。唯一感知账户池的例外是带命名账户的 `xai_oauth` 路由：它同样只发送一次请求（上游失败会原样转发，不会轮换），其凭据是账户池选择顺序中第一个能加载登录的账户（遵循提供方的 `account`/`accounts` 范围），无法加载登录的账户会被冷却并跳过；没有命名账户时，它是 `~/.shunt/xai-auth.json`。
 
 匹配是精确且区分大小写的，并且不限制字符集，所以 `MiniMax-M3`、`openai/gpt-5.6-sol`、`~openai/gpt-latest` 这类厂商标识都会按写法路由。指向另一个 `chatgpt_oauth` 提供方的路由则仍保留完整的账号池透传。路由从实时配置读取，因此在重载时生效。
 

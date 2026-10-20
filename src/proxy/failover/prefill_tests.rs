@@ -24,6 +24,7 @@
 //! envelope instead — wider than what they dispatch, deliberately, since the
 //! question a driving probe asks is whether the caller may cause inference
 //! and an affinity write at all.
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -328,6 +329,7 @@ async fn an_admitted_turn_is_driven_once_and_routed_to_the_decision() {
         .expect(1)
         .mount(&server)
         .await;
+    let _env_lock = crate::config::test_env_lock();
     let _env = crate::auth::shared::EnvVarGuard::set(PROVIDER_KEY_ENV, "upstream-key");
     let (state, stub) = state(server.uri());
 

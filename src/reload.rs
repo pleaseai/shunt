@@ -281,6 +281,13 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
             "[otel] configuration changed but requires a restart to apply; the OpenTelemetry exporters are initialized once at startup"
         );
     }
+    // `[store]` opens its pool once at boot. `StoreConfig` compares `url` as a
+    // `Secret` and the warning names no value, so nothing sensitive is logged.
+    if previous.store != next.store {
+        tracing::warn!(
+            "[store] configuration changed but requires a restart to apply; the store is opened once at startup"
+        );
+    }
 }
 
 /// Structural comparison of two optional `[sentry]` sections. `SentryConfig`
@@ -542,6 +549,7 @@ mod tests {
 
     #[test]
     fn env_var_guard_restores_a_prior_value_on_drop() {
+        let _env_lock = crate::config::test_env_lock();
         // The bug this guard fixes: overwriting a real env var and then
         // unconditionally removing it (rather than restoring what was there
         // before) would clobber a value the surrounding environment had set.
@@ -562,6 +570,7 @@ mod tests {
 
     #[test]
     fn env_var_guard_removes_a_previously_unset_var_on_drop() {
+        let _env_lock = crate::config::test_env_lock();
         let key = "SHUNT_RELOAD_ENV_GUARD_TEST_UNSET";
         std::env::remove_var(key); // start from a clean slate
         {
@@ -862,6 +871,7 @@ mod tests {
 
     #[test]
     fn reload_reresolves_inbound_auth() {
+        let _env_lock = crate::config::test_env_lock();
         let dir = temp_dir("auth");
         let _guard = TempDirGuard(dir.clone());
         let path = dir.join("shunt.toml");
@@ -888,6 +898,7 @@ mod tests {
 
     #[test]
     fn reload_reresolves_gateway_auth() {
+        let _env_lock = crate::config::test_env_lock();
         let dir = temp_dir("gateway-auth");
         let _guard = TempDirGuard(dir.clone());
         let path = dir.join("shunt.toml");
@@ -967,6 +978,7 @@ mod tests {
 
     #[test]
     fn reload_keeps_gateway_capability_fixed_at_boot() {
+        let _env_lock = crate::config::test_env_lock();
         let dir = temp_dir("gateway-toggle");
         let _guard = TempDirGuard(dir.clone());
         let path = dir.join("shunt.toml");
@@ -1003,6 +1015,48 @@ mod tests {
             state_path,
             ..crate::config::SpendConfig::default()
         }
+    }
+
+    fn store_config(url: &str) -> crate::store::StoreConfig {
+        crate::store::StoreConfig {
+            backend: crate::store::StoreBackend::Sqlite,
+            url: url.into(),
+            max_connections: None,
+            password_env: None,
+            allow_insecure_remote_tls: false,
+            hold_stale_seconds: 30,
+        }
+    }
+
+    #[test]
+    fn store_change_warns_that_restart_is_required_without_leaking_the_url() {
+        let previous = Config {
+            store: Some(Box::new(store_config("/var/lib/shunt/hunter2-before.db"))),
+            ..Config::default()
+        };
+        let mut next = previous.clone();
+        next.store = Some(Box::new(store_config("/var/lib/shunt/hunter2-after.db")));
+
+        let logs = capture_logs(|| super::warn_on_restart_only_changes(&previous, &next));
+        assert!(logs.contains("[store] configuration changed"), "{logs}");
+        assert!(logs.contains("requires a restart"), "{logs}");
+        assert!(!logs.contains("hunter2"), "{logs}");
+
+        // Enabling the section is also a change.
+        let logs =
+            capture_logs(|| super::warn_on_restart_only_changes(&Config::default(), &previous));
+        assert!(logs.contains("[store] configuration changed"), "{logs}");
+    }
+
+    #[test]
+    fn unchanged_store_does_not_warn() {
+        let previous = Config {
+            store: Some(Box::new(store_config("/var/lib/shunt/a.db"))),
+            ..Config::default()
+        };
+        let next = previous.clone();
+        let logs = capture_logs(|| super::warn_on_restart_only_changes(&previous, &next));
+        assert!(!logs.contains("[store]"), "{logs}");
     }
 
     #[test]

@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 //! Tests for [`super`]: the device-authorization flow and its poll loop.
 //!
 //! In a sibling file rather than inline, matching the convention already used
@@ -677,7 +678,7 @@ async fn login_waits_for_an_in_flight_refresh_before_storing_the_session() {
     let server = MockServer::start().await;
     mount_device_flow(&server, granted()).await;
 
-    let _env = store::TEST_ENV_LOCK.lock().await;
+    let _env = crate::config::test_env_lock();
     let dir = store::temp_dir("login-race");
     let path = dir.join("session.json");
     let _session_file =
@@ -858,7 +859,7 @@ async fn a_login_token_claude_code_would_reject_fails_and_stores_no_session() {
     )
     .await;
 
-    let _env = store::TEST_ENV_LOCK.lock().await;
+    let _env = crate::config::test_env_lock();
     let dir = store::temp_dir("login-unsafe-token");
     let path = dir.join("session.json");
     let _session_file =

@@ -101,7 +101,7 @@ enum Command {
         /// `antigravity`, or `kimi`).
         provider: String,
         /// Stable account name used by a name-only pool entry (`claude`,
-        /// `codex`, `kimi`, and `antigravity` only).
+        /// `codex`, `kimi`, `antigravity`, and `xai` only).
         #[arg(long)]
         name: Option<String>,
         /// Generate and store a one-year `claude setup-token` value (`claude`
@@ -377,14 +377,20 @@ fn login(
 ) -> anyhow::Result<()> {
     ensure_manual_flag_valid(provider, mode, manual)?;
     match provider {
-        "xai" if name.is_none() && !long_lived && mode.is_none() => {
-            runtime()?.block_on(shunt::auth::xai::login::run(provider))
-        }
-        "xai" => {
+        "xai" if long_lived => {
             anyhow::bail!(
-                "--name, --long-lived, and --mode are only valid for `shunt login claude`"
+                "--long-lived is not supported for `shunt login xai`; xAI OAuth tokens are always refreshable"
             )
         }
+        "xai" if mode.is_some() => {
+            anyhow::bail!(
+                "--mode is not supported for `shunt login xai`; xAI OAuth tokens are always refreshable"
+            )
+        }
+        "xai" => match name {
+            Some(name) => runtime()?.block_on(shunt::auth::xai::login::run_named(name)),
+            None => runtime()?.block_on(shunt::auth::xai::login::run(provider)),
+        },
         "cursor" if name.is_none() && !long_lived && mode.is_none() => runtime()?.block_on(async {
             // Logging in should not require a fully valid gateway config:
             // read the optional override best-effort and fall back to the
@@ -736,24 +742,33 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // Reload triggers (SIGHUP and config-file watch) run as background tasks and
     // hot-swap the shared runtime state that the router reads per request.
     shunt::reload::spawn_reload_watchers(shared, path).await;
-    // Opt-in `[server.pool] state_path`: warm-start the pool from the last
-    // persisted quota before serving, then flush changes in the background. Both
-    // are no-ops when the key is unset.
-    shunt::state_persist::restore(&state).await;
-    shunt::state_persist::spawn_state_persister(state.clone());
-    // Opt-in `[server.gateway] state_path`: restore gateway-login refresh
-    // sessions before serving; later mutations are written by the token
-    // endpoint itself. A no-op when the key is unset.
-    shunt::gateway::persist::restore(&state).await;
-    // Spend-limit caps and audit records share a versioned, atomic state file.
-    // Restore it before accepting admin mutations; memory-only configuration is
-    // a no-op.
-    shunt::gateway::spend::persist::restore(&state)
+    // Opt-in `[store]`: open it, import the JSON snapshots once, and restore
+    // pool, gateway sessions, and spend from it; any failure refuses to boot.
+    // Without one, the three JSON restores below run exactly as before.
+    let store_runtime = shunt::store::boot::start(&state.config, &state)
         .await
-        .context("failed to restore gateway spend-limit state")?;
-    // Spend counters live in a sibling file so a rollback binary that only
-    // knows the caps file still boots. An unreadable envelope aborts startup
-    // like the caps file does; an unreadable record only flags its principal.
+        .context("failed to start the store")?;
+    if store_runtime.is_none() {
+        // Opt-in `[server.pool] state_path`: warm-start the pool from the last
+        // persisted quota before serving, then flush changes in the background.
+        // Both are no-ops when the key is unset.
+        shunt::state_persist::restore(&state).await;
+        shunt::state_persist::spawn_state_persister(state.clone(), None);
+        // Opt-in `[server.gateway] state_path`: restore gateway-login refresh
+        // sessions before serving; later mutations are written by the token
+        // endpoint itself. A no-op when the key is unset.
+        shunt::gateway::persist::restore(&state).await;
+        // Spend-limit caps and audit records share a versioned, atomic state
+        // file. Restore it before accepting admin mutations; memory-only
+        // configuration is a no-op.
+        shunt::gateway::spend::persist::restore(&state)
+            .await
+            .context("failed to restore gateway spend-limit state")?;
+    }
+    // Spend counters live in a sibling file of the caps file's `state_path`,
+    // with or without `[store]`, so a rollback binary that only knows the caps
+    // file still boots. An unreadable envelope aborts startup like the caps
+    // file does; an unreadable record only flags its principal.
     shunt::gateway::spend::meter::persist::restore(&state)
         .await
         .context("failed to restore gateway spend counters")?;
@@ -797,8 +812,15 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // timed-out drain cannot double the documented worst case
     // (docs/bounded-shutdown.md).
     shunt::gateway::spend::meter::persist::flush_final(&state, FINAL_SPEND_FLUSH_BOUND).await;
+    // Both drain outcomes: write pending store state, release the hold, close.
+    if let Some(store_runtime) = store_runtime {
+        store_runtime.shutdown(STORE_SHUTDOWN_TIMEOUT).await;
+    }
     Ok(())
 }
+
+/// Bound on the store's final flush, hold release, and close after the drain.
+const STORE_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     let config = Config::load(config_path.as_deref())
@@ -822,6 +844,24 @@ fn check(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     // config a run would actually get.
     warn_if_antigravity_pinned_to_production(&config);
     println!("config ok");
+    if let Some(store) = config.store.as_deref() {
+        // Read-only and bounded: unlike the rest of `check` this reaches the
+        // network for a PostgreSQL store, which is the point (AC-021).
+        let line = block_on_bounded(
+            runtime()?,
+            async {
+                tokio::time::timeout(
+                    shunt::store::inspect::INSPECT_TIMEOUT,
+                    shunt::store::inspect::inspect(store),
+                )
+                .await
+            },
+            std::time::Duration::from_secs(1),
+        )
+        .map_err(|_| anyhow::anyhow!("store check timed out"))?
+        .context("store check failed")?;
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -1420,6 +1460,28 @@ mod tests {
         )
         .expect_err("--mode must be rejected for kimi");
         assert!(error.to_string().contains("--mode is not supported"));
+    }
+
+    #[test]
+    fn xai_login_rejects_long_lived_and_mode_with_xai_wording() {
+        let error = login("xai", None, true, None, false, None)
+            .expect_err("--long-lived must fail for xai");
+        assert!(error
+            .to_string()
+            .contains("--long-lived is not supported for `shunt login xai`"));
+
+        let error = login(
+            "xai",
+            Some("primary"),
+            false,
+            Some(LoginMode::Import),
+            false,
+            None,
+        )
+        .expect_err("--mode must fail for xai");
+        assert!(error
+            .to_string()
+            .contains("--mode is not supported for `shunt login xai`"));
     }
 
     #[test]

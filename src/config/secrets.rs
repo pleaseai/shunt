@@ -229,7 +229,7 @@ pub(crate) fn format_literal_path(path: &str) -> String {
 }
 
 /// Closed-form allowlist of the dotted field paths that are actually
-/// `Secret` fields in the config schema: `sentry.dsn`,
+/// `Secret` fields in the config schema: `sentry.dsn`, `store.url`,
 /// `otel.headers.<key>`,
 /// `server.gateway.telemetry.forward_to.<index>.headers.<key>`,
 /// `server.gateway.session.jwt_secret` (scalar or, per array element,
@@ -249,7 +249,7 @@ pub(crate) fn format_literal_path(path: &str) -> String {
 /// than naming it — it must never go silent. Add the new path shape here
 /// when adding a `Secret` field, to keep the warning message precise.
 fn is_secret_field_path(path: &str) -> bool {
-    if path == "sentry.dsn" {
+    if path == "sentry.dsn" || path == "store.url" {
         return true;
     }
     if is_admin_key_path(path) {
@@ -692,6 +692,7 @@ mod tests {
 
     #[test]
     fn var_reference_resolves() {
+        let _guard = crate::config::test_env_lock();
         std::env::set_var("SHUNT_SECRETS_TEST_VAR_A", "hello");
         assert_eq!(resolve("${SHUNT_SECRETS_TEST_VAR_A}").unwrap(), "hello");
         std::env::remove_var("SHUNT_SECRETS_TEST_VAR_A");
@@ -699,6 +700,7 @@ mod tests {
 
     #[test]
     fn var_reference_resolves_embedded_and_multiple() {
+        let _guard = crate::config::test_env_lock();
         std::env::set_var("SHUNT_SECRETS_TEST_VAR_B", "tok");
         std::env::set_var("SHUNT_SECRETS_TEST_VAR_C", "en");
         assert_eq!(
@@ -711,6 +713,7 @@ mod tests {
 
     #[test]
     fn undefined_var_reference_names_path_and_var() {
+        let _guard = crate::config::test_env_lock();
         std::env::remove_var("SHUNT_SECRETS_TEST_VAR_UNDEFINED");
         let error = resolve("${SHUNT_SECRETS_TEST_VAR_UNDEFINED}").unwrap_err();
         let message = error.to_string();
@@ -724,6 +727,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn non_unicode_var_reference_is_distinguished_from_undefined() {
+        let _guard = crate::config::test_env_lock();
         // `std::env::var` returns `Err` both when a variable is unset and
         // when it is set to bytes that are not valid Unicode; these must not
         // be reported with the same "which is not set" message.
@@ -744,6 +748,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn shunt_env_values_survives_non_unicode_variables() {
+        let _guard = crate::config::test_env_lock();
         // `std::env::vars` panics when *any* variable in the environment is
         // not valid Unicode -- including one that has nothing to do with
         // shunt, because the conversion happens before a caller can filter
@@ -834,6 +839,7 @@ mod tests {
 
     #[test]
     fn escape_yields_literal_and_is_not_resolved() {
+        let _guard = crate::config::test_env_lock();
         // The variable is set so this is non-vacuous: it proves the escape
         // suppressed a resolution that would otherwise have happened, rather
         // than just echoing a string that had nothing to resolve.
@@ -899,6 +905,7 @@ mod tests {
 
     #[test]
     fn substitution_reaches_nested_tables_and_arrays() {
+        let _guard = crate::config::test_env_lock();
         std::env::set_var("SHUNT_SECRETS_TEST_VAR_NESTED", "nested-value");
         let raw = "[a]\nb = [\"x\", \"${SHUNT_SECRETS_TEST_VAR_NESTED}\"]\n[[a.c]]\nd = \"${SHUNT_SECRETS_TEST_VAR_NESTED}\"\n";
         let substituted = substitute(raw, ConfigFormat::Toml).unwrap();
@@ -980,6 +987,21 @@ mod tests {
                 "server.gateway.session.jwt_secret.1".to_string(),
             ]
         );
+        assert_eq!(LiteralScope::unattributed_count(), 0);
+    }
+
+    #[test]
+    fn is_secret_field_path_matches_the_store_url() {
+        // `[store] url` is a `Secret` (a PostgreSQL URL commonly embeds a
+        // password); without its arm a literal URL degrades to unattributed.
+        let mut map = HashMap::new();
+        map.insert(
+            "postgres://shunt:pw@db.internal/shunt".to_string(),
+            vec!["store.url".to_string()],
+        );
+        let _scope = LiteralScope::enter(map, HashSet::new());
+        record_literal_hit("postgres://shunt:pw@db.internal/shunt");
+        assert_eq!(LiteralScope::hits(), vec!["store.url".to_string()]);
         assert_eq!(LiteralScope::unattributed_count(), 0);
     }
 

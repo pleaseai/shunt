@@ -4,21 +4,25 @@
 //! No loopback callback server is needed: shunt requests a device code, prints
 //! a verification URL and short user code, and long-polls xAI's token endpoint
 //! until the user approves in a browser (on any device). The resulting tokens
-//! are written to the shunt-owned credential file (see [`super::auth`]).
+//! are written to the shunt-owned credential file (see [`super::auth`]). With
+//! `--name` they go to `~/.shunt/accounts/xai/<name>.json` via [`super::store`]
+//! instead of the legacy file.
 //!
 //! Logs go to stderr (the crate convention); the URL and user code are printed
 //! to stdout with plain `println!` so they are always visible to the operator.
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use serde_json::Value;
-use tokio::time::{sleep, Instant};
+use tokio::time::{sleep, timeout_at, Instant};
 
 use super::auth::{
     parse_token_response, write_tokens, CLIENT_ID, DEVICE_CODE_GRANT_TYPE, DEVICE_CODE_URL, SCOPE,
     TOKEN_URL,
 };
+use super::store;
 use crate::auth::default_xai_auth_path;
 use crate::auth::shared::jwt_exp;
 
@@ -53,6 +57,55 @@ pub async fn run(provider: &str) -> anyhow::Result<()> {
     if provider != "xai" {
         bail!("unknown login provider {provider:?}; supported: xai");
     }
+    let tokens = device_login().await?;
+
+    let refresh_token = tokens
+        .refresh_token
+        .as_deref()
+        .ok_or_else(|| anyhow!("xAI did not return a refresh_token; cannot persist login"))?;
+    let path = default_xai_auth_path();
+    write_tokens(
+        &path,
+        &tokens.access_token,
+        refresh_token,
+        tokens.id_token.as_deref(),
+    )
+    .with_context(|| format!("failed to write xAI credentials to {}", path.display()))?;
+
+    report_login(&path, &tokens.access_token);
+    Ok(())
+}
+
+/// `shunt login xai --name <account-name>`: the same device flow as [`run`],
+/// persisted as a named account file (see [`super::store`]) so the account can
+/// join an xAI account pool. The legacy single-account file is never written
+/// here. Mirrors `auth::antigravity::login::run_named`.
+pub async fn run_named(name: &str) -> anyhow::Result<()> {
+    store::validate_account_name(name)?;
+    let tokens = device_login().await?;
+    let refresh_token = tokens
+        .refresh_token
+        .as_deref()
+        .ok_or_else(|| anyhow!("xAI did not return a refresh_token; cannot persist login"))?;
+    let path = store::store_oauth_tokens(
+        name,
+        &tokens.access_token,
+        refresh_token,
+        tokens.id_token.as_deref(),
+    )
+    .with_context(|| format!("failed to write xAI credentials for account {name:?}"))?;
+    report_login(&path, &tokens.access_token);
+    if let Some(notice) = legacy_notice(&default_xai_auth_path(), &store::default_accounts_dir()) {
+        println!("\n{notice}");
+    }
+    Ok(())
+}
+
+/// The device-code flow shared by [`run`] and [`run_named`]: request a code,
+/// print the verification URL and user code, and poll until the user
+/// approves. `poll_for_tokens` already rejects a response with no
+/// refresh token.
+async fn device_login() -> anyhow::Result<super::auth::TokenResponse> {
     let client = reqwest::Client::new();
     let device = request_device_code(&client)
         .await
@@ -69,34 +122,42 @@ pub async fn run(provider: &str) -> anyhow::Result<()> {
         device.user_code
     );
 
-    let tokens = poll_for_tokens(&client, &device, TOKEN_URL)
+    poll_for_tokens(&client, &device, TOKEN_URL)
         .await
-        .context("xAI device authorization failed")?;
+        .context("xAI device authorization failed")
+}
 
-    let refresh_token = tokens
-        .refresh_token
-        .as_deref()
-        .ok_or_else(|| anyhow!("xAI did not return a refresh_token; cannot persist login"))?;
-    let path = default_xai_auth_path();
-    write_tokens(
-        &path,
-        &tokens.access_token,
-        refresh_token,
-        tokens.id_token.as_deref(),
-    )
-    .with_context(|| format!("failed to write xAI credentials to {}", path.display()))?;
-
+/// Print the success lines shared by both login paths.
+fn report_login(path: &Path, access_token: &str) {
     println!(
         "\nLogin successful. Credentials saved to {}",
         path.display()
     );
-    if let Some(exp) = jwt_exp(&tokens.access_token) {
+    if let Some(exp) = jwt_exp(access_token) {
         println!(
             "Access token valid until {} (shunt refreshes it automatically).",
             crate::auth::shared::format_iso8601(exp)
         );
     }
-    Ok(())
+}
+
+/// The migration hint [`run_named`] prints when the legacy single-account
+/// file exists: an xAI provider reads that file only while its account pool
+/// is empty (docs/m18-xai-multi-account.md), so the first named login takes
+/// it out of service. Both files share one format, so moving it keeps it.
+fn legacy_notice(legacy: &Path, accounts_dir: &Path) -> Option<String> {
+    legacy.exists().then(|| {
+        format!(
+            "Note: while any named xAI account exists, shunt pools the accounts in {} and no longer reads {}.\n\
+             To keep that older login in the pool, stop shunt and move it into the store:\n    \
+             install -d -m 700 {} && mv {} {}/<account-name>.json",
+            accounts_dir.display(),
+            legacy.display(),
+            accounts_dir.display(),
+            legacy.display(),
+            accounts_dir.display(),
+        )
+    })
 }
 
 async fn request_device_code(client: &reqwest::Client) -> anyhow::Result<DeviceCode> {
@@ -148,20 +209,31 @@ async fn poll_for_tokens(
     token_url: &str,
 ) -> anyhow::Result<super::auth::TokenResponse> {
     let deadline = Instant::now() + Duration::from_secs(device.expires_in);
+    let timed_out =
+        || anyhow!("xAI device authorization timed out; run shunt login xai to try again");
     let mut interval = device.interval.max(MIN_INTERVAL_SECS);
     while Instant::now() < deadline {
-        let response = client
-            .post(token_url)
-            .header("accept", "application/json")
-            .form(&[
-                ("grant_type", DEVICE_CODE_GRANT_TYPE),
-                ("client_id", CLIENT_ID),
-                ("device_code", device.device_code.as_str()),
-            ])
-            .send()
-            .await?;
+        // Both awaits are bounded by the device code's own expiry, so a token
+        // endpoint that stalls mid-poll cannot hang the login past it.
+        let response = timeout_at(
+            deadline,
+            client
+                .post(token_url)
+                .header("accept", "application/json")
+                .form(&[
+                    ("grant_type", DEVICE_CODE_GRANT_TYPE),
+                    ("client_id", CLIENT_ID),
+                    ("device_code", device.device_code.as_str()),
+                ])
+                .send(),
+        )
+        .await
+        .map_err(|_| timed_out())??;
         let success = response.status().is_success();
-        let text = response.text().await.unwrap_or_default();
+        let text = timeout_at(deadline, response.text())
+            .await
+            .map_err(|_| timed_out())?
+            .unwrap_or_default();
         if success {
             let value: Value = serde_json::from_str(&text).context("invalid token response")?;
             let tokens = parse_token_response(&value)
@@ -179,9 +251,12 @@ async fn poll_for_tokens(
             }
             PollOutcome::Failed(reason) => bail!("{reason}"),
         }
-        sleep(Duration::from_secs(interval)).await;
+        // Clamped to the time left: a server interval longer than that would
+        // otherwise hold the login past the device code's expiry.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        sleep(remaining.min(Duration::from_secs(interval))).await;
     }
-    bail!("xAI device authorization timed out; run shunt login xai to try again")
+    Err(timed_out())
 }
 
 /// Apply the RFC 8628 `slow_down` backoff: bump the poll interval by
@@ -355,6 +430,39 @@ mod tests {
         assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-1"));
     }
 
+    #[test]
+    fn legacy_notice_appears_only_when_the_legacy_file_exists() {
+        let dir = std::env::temp_dir().join(format!(
+            "shunt-xai-login-notice-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("xai-auth.json");
+        let accounts = dir.join("accounts").join("xai");
+
+        assert!(legacy_notice(&legacy, &accounts).is_none());
+
+        std::fs::write(&legacy, "{}").unwrap();
+        let notice = legacy_notice(&legacy, &accounts).expect("legacy file exists");
+        assert!(notice.contains(&legacy.display().to_string()));
+        assert!(notice.contains(&accounts.display().to_string()));
+        assert!(notice.contains(&format!("install -d -m 700 {} && mv ", accounts.display())));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_named_rejects_an_invalid_name_before_any_network_call() {
+        let error = run_named("Not Valid")
+            .await
+            .expect_err("invalid account name must fail");
+        assert!(error.to_string().contains("must match [a-z0-9-]+"));
+    }
+
     // The slow_down clamp arithmetic (+5s, capped at 30s) is covered by
     // `next_interval_bumps_and_caps` above without sleeping. A full
     // integration test would need a real ~6s sleep to observe the bumped
@@ -385,5 +493,60 @@ mod tests {
             .await
             .expect_err("poll should time out");
         assert!(error.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn a_stalled_token_poll_times_out_at_the_expiry_deadline() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // The endpoint accepts the poll and never answers: the login must
+        // still give up when the device code expires, not hang on the request.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let device = test_device(1, 1);
+        let token_url = format!("{}/token", server.uri());
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            poll_for_tokens(&client, &device, &token_url),
+        )
+        .await
+        .expect("the poll hung past the device code's expiry")
+        .expect_err("poll should time out");
+        assert!(error.to_string().contains("timed out"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_poll_interval_longer_than_the_expiry_does_not_outlast_it() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_json(json!({"error": "authorization_pending"})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        // A 30 s interval against a code that expires in 1 s.
+        let device = test_device(30, 1);
+        let token_url = format!("{}/token", server.uri());
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            poll_for_tokens(&client, &device, &token_url),
+        )
+        .await
+        .expect("the poll slept past the device code's expiry")
+        .expect_err("poll should time out");
+        assert!(error.to_string().contains("timed out"), "{error}");
     }
 }

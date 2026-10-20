@@ -45,7 +45,25 @@ shunt check
 
 具体的なエラーを報告します: 不正なバインドアドレス、ルート内の未知のプロバイダー、`api_key_env` の欠落、不正な `base_url`、誤ったアダプター/認証の組み合わせ。
 
-`shunt run` の起動時と同じ、ルーティング済み Antigravity 資格情報ガードも実行します: ネイティブ `antigravity` アップストリームへルーティングしていて資格情報が保存されていない設定は、`config ok` を出力してから起動時に失敗するのではなく、このチェックで失敗し `shunt login antigravity` を案内します。チェックはオフラインのままです — ルートを読み、資格情報の有無（シングルトンファイルまたは名前付きプール候補）を確認するだけで、トークンの更新もバックエンドへの接続も行いません。組み込みの `antigravity` プロバイダーを宣言しているだけでルーティングしていない設定は影響を受けず、`kind = "antigravity_cli"` のルーティングも同様です。
+`shunt run` の起動時と同じ、ルーティング済み Antigravity 資格情報ガードも実行します: ネイティブ `antigravity` アップストリームへルーティングしていて資格情報が保存されていない設定は、`config ok` を出力してから起動時に失敗するのではなく、このチェックで失敗し `shunt login antigravity` を案内します。このガードはオフラインです — ルートを読み、資格情報の有無（シングルトンファイルまたは名前付きプール候補）を確認するだけで、トークンの更新もバックエンドへの接続も行いません。組み込みの `antigravity` プロバイダーを宣言しているだけでルーティングしていない設定は影響を受けず、`kind = "antigravity_cli"` のルーティングも同様です。
+
+[`[store]`](/ja/reference/configuration/#storeオプション) がある場合、チェックは完全なオフラインではなくなります。`config ok` の後にストアを読み取り専用で開き（SQLite ファイルを読むか、PostgreSQL に接続します）、もう 1 行出力します。マイグレーションの実行、データベースの変更、存在しない SQLite ファイルの作成は行いません。ただし、WAL モードのデータベースを検査している間に、SQLite が `-wal` / `-shm` の補助ファイルを作成または削除することがあります。
+
+```bash
+shunt check
+# -> config ok
+# -> store ok: sqlite sqlite:/var/lib/shunt/shunt.db, schema v1 (binary supports v1)
+```
+
+| ストアの状態 | `config ok` の後の出力 | 終了コード |
+| :-- | :-- | :-- |
+| 最新 | `store ok: <backend> <target>, schema vN (binary supports vM)` | `0` |
+| スキーマがバイナリより古い | 同じ行の末尾に `; 1 pending migration applies at boot`（K > 1 なら `; K pending migrations apply at boot`） | `0` |
+| SQLite ファイルが存在しない | `store ok: sqlite sqlite:<path>, file does not exist yet; it is created with mode 0600 at boot` | `0` |
+| 接続できない | `store check failed`、原因は `store <target> is unreachable: <reason>` | `1` |
+| スキーマがバイナリより新しい | `store check failed`、原因は `store <target> is at schema version N, newer than the M this binary supports; upgrade shunt` | `1` |
+
+`<target>` は `sqlite:<path>` または `postgres://host:port/db` で、認証情報は出力されません。検査は最大 15 秒で打ち切られます。検証に失敗する `[store]`（例: `sslmode=verify-full` のないリモートの PostgreSQL ホスト）は、それより前に `config check failed` で失敗します。
 
 ## `shunt init`
 
@@ -215,7 +233,14 @@ xAI の device-code OAuth フローを実行し、リフレッシュ可能な cr
 
 ```bash
 shunt login xai
+shunt login xai --name <account-name>
 ```
+
+`--name` を省略すると、credential は `~/.shunt/xai-auth.json` に保存されます（`SHUNT_XAI_AUTH_FILE` で上書き）。`--name` を指定すると、代わりに `~/.shunt/accounts/xai/<account-name>.json` に保存されます（0600。shunt が作成するストアディレクトリは `0700` になりますが、既存のディレクトリは元の権限のままです。ストアは `SHUNT_XAI_ACCOUNTS_DIR` で上書き）。そのため名前付きログインが単一アカウントのファイルを上書きすることはありません。同じ名前を再利用するとファイルは置き換えられます。xAI の OAuth トークンは常にリフレッシュ可能なため `--mode` と `--long-lived` は拒否され、`--manual` は claude 専用です。
+
+`[[providers.grok.accounts]]` エントリー、または `auth = { mode = "xai_oauth", accounts = [...] }` で名前付きアカウントを参照するか、何も設定せずストア全体をスキャンさせます。設定されたアカウントがなく、ストアも空の場合、provider は単一アカウントのファイルへフォールバックします。名前付きアカウントが 1 つでも存在すると、そのファイルは読まれなくなります。両方のファイルは同じ形式なので、shunt を停止した状態で、まずストアディレクトリを所有者専用で作成してから移すと、既存のログインをプールへ移せます: `install -d -m 700 ~/.shunt/accounts/xai && mv ~/.shunt/xai-auth.json ~/.shunt/accounts/xai/<account-name>.json`。単一アカウント構成から移行する場合、このディレクトリはまだ存在しません。
+
+xAI はリフレッシュのたびにリフレッシュトークンをローテーションするため、上記の「リフレッシュ可能なログインごとに所有者は 1 つ」というルールが適用されます。1 つの credential ファイルを 2 か所にコピーしたり、2 つの実行中の shunt プロセスで共有したりしないでください。
 
 ## `shunt login kimi`
 
@@ -260,5 +285,7 @@ Kimi はリフレッシュのたびに refresh token をローテーションし
 | `CLAUDE_CREDENTIALS` | `shunt token` とリフレッシュ可能な `shunt login claude` インポート向けの代替 credential ファイルパス |
 | `SHUNT_CLAUDE_ACCOUNTS_DIR` | shunt 管理の Claude アカウントストア用の代替ディレクトリ |
 | `SHUNT_KIMI_ACCOUNTS_DIR` | shunt 管理の Kimi Code アカウントストア用の代替ディレクトリ |
+| `SHUNT_XAI_AUTH_FILE` | `--name` なしの `shunt login xai` 向けの代替 credential ファイル（既定 `~/.shunt/xai-auth.json`） |
+| `SHUNT_XAI_ACCOUNTS_DIR` | shunt 管理の xAI アカウントストア用の代替ディレクトリ |
 | `token_env` で指定するアカウント別変数 | Anthropic `claude_oauth` プールエントリーの setup token。値を変更せずに使用 |
 | `OPENAI_API_KEY` | `openai` プロバイダーのデフォルトキー環境変数（プロバイダーごとに `api_key_env` で） |

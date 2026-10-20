@@ -26,6 +26,8 @@
     is not subject to API billing. Sends the Grok-CLI identity headers (§6).
 - A `shunt login xai` subcommand that runs the device-code flow and writes a shunt-owned
   credential file, refreshed automatically on expiry.
+- Multi-account pooling of `xai_oauth` (named accounts, rotation, failover) is specified in
+  [`m18-xai-multi-account.md`](m18-xai-multi-account.md).
 - xAI-flavored request translation, with a distinct Grok CLI flavor for capabilities such as
   hosted web search that are verified only on the subscription proxy.
 
@@ -83,6 +85,9 @@ Written atomically (temp file + rename) at `0600`.
   omits `refresh_token` is treated as an invalid response (nothing persisted) rather than
   leaving the consumed token on disk.
 
+Named pool accounts (`~/.shunt/accounts/xai/<name>.json`) use this same shape. This file is read
+only while that store is empty and no accounts are configured (M18).
+
 ## 4. Device-code flow (`shunt login xai`, `auth/xai_login.rs`)
 
 1. `POST device/code` with `client_id` + `scope`. Response: `device_code`, `user_code`,
@@ -94,7 +99,8 @@ Written atomically (temp file + rename) at `0600`.
      `+5s` capped at 30s; `access_denied` / `authorization_denied` / `expired_token` → terminal;
      loop until the `expires_in` deadline (then time out).
    - success must contain **both** `access_token` and `refresh_token`.
-4. Persist to `~/.shunt/xai-auth.json` (§3) and print success + the token expiry.
+4. Persist to `~/.shunt/xai-auth.json` (§3), or with `--name <name>` to
+   `~/.shunt/accounts/xai/<name>.json` (M18), and print success + the token expiry.
 
 No loopback callback server is needed — the polling loop is the only surface, so this works on
 VPS / SSH / Docker / CI where an inbound `127.0.0.1` port isn't reachable from the browser.
@@ -104,11 +110,14 @@ VPS / SSH / Docker / CI where an inbound `127.0.0.1` port isn't reachable from t
 `get_valid()`:
 1. Read the credential file fresh; decode the access-token `exp`.
 2. If `now < exp − 5min`: return the access token.
-3. Else take the process-wide **refresh lock** (`tokio::sync::Mutex` single-flight — xAI
-   rotates the refresh token, so a losing concurrent refresh would replay a consumed token),
-   then **re-read** and re-check: a waiter finds the winner's rotated pair and returns it.
+3. Else take the credential file's **refresh lock** (a `tokio::sync::Mutex` single-flight keyed
+   by the file's canonical path — xAI rotates the refresh token, so a losing concurrent refresh
+   of the same file would replay a consumed token), then **re-read** and re-check: a waiter
+   finds the winner's rotated pair and returns it. Other credential files (pooled accounts,
+   docs/m18-xai-multi-account.md) have their own locks.
 4. Else **refresh** under the lock (`grant_type=refresh_token`, `client_id`,
-   `refresh_token`), write the rotated pair back atomically, return the new access token.
+   `refresh_token`, bounded at 30 seconds), write the rotated pair back atomically, return the
+   new access token.
    Cross-process races are out of scope — shunt owns the file and one gateway process is
    the norm.
 
@@ -132,7 +141,7 @@ only on the subscription proxy.
 
 **Grok-CLI identity headers.** The subscription OAuth path (`Credential::XaiOauth`) additionally
 sends `x-xai-token-auth: xai-grok-cli`, `x-grok-client-identifier: grok-shell`,
-`x-grok-client-version: 0.2.93`, and `accept: text/event-stream` — the CLI proxy
+`x-grok-client-version: 1.0.46`, and `accept: text/event-stream` — the CLI proxy
 (`cli-chat-proxy.grok.com`) gates on them and otherwise answers as if the caller were an
 unentitled API client. The API-key `xai` path sends the bearer only. Neither sends `OpenAI-Beta`.
 
@@ -206,5 +215,8 @@ reject it.
   surfacing as a 402/403 even for active standard subscribers. shunt keeps both paths so an
   un-entitled account can fall back to `XAI_API_KEY`. If the CLI proxy proves to honor all tiers,
   this note can be relaxed.
-- **`grok_client_version` pinning.** `0.2.93` is hardcoded (mirrors the reference Grok CLI). If the
-  proxy starts rejecting stale client versions, make it configurable like the base_url.
+- **`GROK_CLIENT_VERSION` pinning.** `1.0.46` is hardcoded in `src/adapters/responses/request.rs`
+  (the `latest` dist-tag of the official `@xai-official/grok` npm package). The proxy rejects a
+  stale client version with `426 Upgrade Required`: the original `0.2.93` pin broke once the floor
+  rose to `1.0.13` (issue #755). Bump the constant when the floor moves again. If bumps become
+  frequent, make it configurable like the base_url.
