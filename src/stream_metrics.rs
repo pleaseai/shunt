@@ -459,9 +459,10 @@ impl ObserverState {
         self.finished = true;
         if let Some(mut spend) = self.spend.take() {
             // A last block with no closing blank line still reached the
-            // client: the WebSocket relay serves it at EOF
+            // client on a clean EOF: the WebSocket relay serves it then
             // (`BoundedSseFrameBuffer::finish`), so its usage is billed too.
-            if end.natural() {
+            // On a body error the relay returns without serving it.
+            if matches!(end, StreamEnd::Eof) {
                 if let Some(tail) = self.oversized.take() {
                     spend.observe_oversized(&tail);
                 } else if !self.buffer.is_empty() {

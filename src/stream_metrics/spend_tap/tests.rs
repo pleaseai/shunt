@@ -698,12 +698,20 @@ async fn an_oversized_responses_terminal_still_bills_its_reported_usage() {
 }
 
 async fn served_responses_spent(frames: &str) -> u64 {
-    let tap = tap();
     let chunks = frames
         .as_bytes()
         .chunks(60_000)
-        .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)))
+        .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
         .collect::<Vec<_>>();
+    let (relayed, spent) = served_chunks_spent(chunks).await;
+    assert_eq!(relayed.unwrap(), frames.as_bytes());
+    spent
+}
+
+async fn served_chunks_spent(
+    chunks: Vec<Result<Bytes, std::io::Error>>,
+) -> (Result<Bytes, axum::Error>, u64) {
+    let tap = tap();
     let response = observe_served(
         Response::builder()
             .header(CONTENT_TYPE, "text/event-stream")
@@ -716,9 +724,28 @@ async fn served_responses_spent(frames: &str) -> u64 {
         Instant::now(),
         Some(tap.clone()),
     );
-    let relayed = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    assert_eq!(relayed, frames.as_bytes());
-    spent(&tap)
+    let relayed = to_bytes(response.into_body(), usize::MAX).await;
+    (relayed, spent(&tap))
+}
+
+/// A pending block is billed on a clean EOF, but not when a transport error
+/// ends the stream: the WebSocket relay returns on the error without serving
+/// it.
+#[tokio::test]
+async fn a_pending_block_is_billed_on_eof_but_not_after_a_transport_error() {
+    let delivered = || Ok(Bytes::from(format!("{}\n\n", responses_text("hi"))));
+    let pending = || Ok(Bytes::from(responses_text(&"x".repeat(400))));
+    let (_, delivered_only) = served_chunks_spent(vec![delivered()]).await;
+    let (_, at_eof) = served_chunks_spent(vec![delivered(), pending()]).await;
+    let (relayed, after_error) = served_chunks_spent(vec![
+        delivered(),
+        pending(),
+        Err(std::io::Error::other("connection reset")),
+    ])
+    .await;
+    assert!(relayed.is_err());
+    assert!(at_eof > delivered_only, "{at_eof} > {delivered_only}");
+    assert_eq!(after_error, delivered_only);
 }
 
 /// The WebSocket relay serves a last block that has no closing blank line,
