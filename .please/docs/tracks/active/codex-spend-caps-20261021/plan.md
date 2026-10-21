@@ -121,14 +121,32 @@ Considered and not built:
 - [x] (2026-10-21 KST) T007 Stop flagging Codex-endpoint pricing overrides as never pricing anything
   Evidence: `cargo test --all-features --lib config` → 543 passed (incl. `pricing_override_is_requestable_through_the_codex_endpoint`, `pricing_warning_skips_codex_endpoint_models`); fmt and clippy clean
 
+- [x] (2026-10-21 KST) T004 Meter completed streamed Codex turns from Responses usage
+  Evidence: `cargo test --all-features --test codex_spend_metering` → 7 passed (6 go red with the tap replaced by `None` in `forward_turn`, 6 with the cached subtraction removed, the routed test with the target priced on the client model); `--lib` 3552 passed (incl. 5 `spend_tap::responses` and 3 Responses `spend_tap` tests), `codex_spend_enforcement` 7, `inbound_codex_endpoint` 33, `inbound_codex_routes` 11, `inbound_codex_websocket` 16, `inbound_codex_search` 7, `spend_metering` 10 passed; fmt and clippy clean
+
 ## Decision Log
 
 - 2026-10-21: Designed inline from one exploration pass, with no architect agent. The existing tap and gate fixed the seams; rejected alternatives are listed above.
 
 - 2026-10-21 (T007): Codex-route matching in the pricing predicate is case-insensitive on the trimmed, `[1m]`-stripped model, unlike `CodexEndpointConfig::route_for` (exact match), because `PriceTable::resolve` matches override rows case-insensitively.
 
+- Decision: (T004) `observe_served` leaves a non-streamed Responses body unmetered until T005 builds the JSON Responses mode, instead of handing it to the Anthropic `JsonSpendBody`.
+  Rationale: the Anthropic tee reads `input_tokens` as uncached, so it would bill the cached tokens at the full input rate. Before T004 the endpoint metered nothing, so this keeps the JSON path where it was.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T004) `StreamSpend::new` stays the Anthropic constructor, and `StreamSpend::for_protocol` takes the protocol; `observe_served` calls the latter.
+  Rationale: existing `spend_tap` tests and `bill_sse` call `new(tap)`, and they stay unedited.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T004) The Responses floor counts `response.function_call_arguments.delta`, `response.reasoning_summary_text.delta` and `response.reasoning_text.delta` as well as `response.output_text.delta`. A frame with no `event:` line is named by its payload `type`.
+  Rationale: the first mirrors the Anthropic floor, which counts text, tool-input JSON and thinking deltas. The second is how the Codex CLI reads frames, and the existing WS test upstreams send `data:`-only frames.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T004) A WS turn builds its tap with `spend::tap_for` (no admission check). T003 replaces that call with `spend::admit` and uses `Admitted::tap`.
+  Rationale: WS refusal is T003; this keeps WS turns metered now with a one-line seam.
+  Date/Author: 2026-10-21 / implement-executor
+
 ## Surprises & Discoveries
 
 - 2026-10-21: `/v1/messages` has no input estimator, contrary to the spec's assumption. The spec is corrected, and T006 builds the estimator.
 - Observation: `HeaderValue::from_str` accepts non-ASCII UTF-8 (obs-text bytes `0x80..`), so "valid header value" alone would send a non-ASCII `blocked_message` as the promo header. `promo_header` in `src/codex_endpoint/spend.rs` also requires `is_ascii()`; T003 must reuse it.
   Evidence: the non-ASCII case in `tests/codex_spend_enforcement.rs` failed on the header until the ASCII check was added; unit test `only_visible_ascii_becomes_a_promo_header`.
+- Observation: (T004) `stream_metrics::observe_responses` recognises terminals by the `event:` name only, so a `data:`-only Responses stream records no token metrics. The spend tap falls back to the payload `type` and is not affected; the metrics gap is pre-existing and out of scope.
+  Evidence: `tests/inbound_codex_websocket.rs` upstream bodies are `data: {"type":"response.completed",...}` with no `event:` line; unit test `a_frame_without_an_event_line_is_named_by_its_type`.
