@@ -697,6 +697,62 @@ async fn an_oversized_responses_terminal_still_bills_its_reported_usage() {
     );
 }
 
+async fn served_responses_spent(frames: &str) -> u64 {
+    let tap = tap();
+    let chunks = frames
+        .as_bytes()
+        .chunks(60_000)
+        .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)))
+        .collect::<Vec<_>>();
+    let response = observe_served(
+        Response::builder()
+            .header(CONTENT_TYPE, "text/event-stream")
+            .body(Body::from_stream(stream::iter(chunks)))
+            .unwrap(),
+        Protocol::Responses,
+        Arc::default(),
+        Arc::default(),
+        crate::client_attribution::ClientAttribution::UNATTRIBUTED,
+        Instant::now(),
+        Some(tap.clone()),
+    );
+    let relayed = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(relayed, frames.as_bytes());
+    spent(&tap)
+}
+
+/// The WebSocket relay serves a last block that has no closing blank line,
+/// so the observer bills that block's usage at EOF, whether it fit the parse
+/// buffer or was oversized.
+#[tokio::test]
+async fn a_last_responses_terminal_without_a_closing_blank_line_bills_its_usage() {
+    let reported = priced(Usage {
+        input_tokens: 400,
+        output_tokens: 50,
+        cache_read_input_tokens: 600,
+        cache_creation_input_tokens: 0,
+    });
+    let small = format!(
+        "{}\n\n{}",
+        responses_text("hi"),
+        responses_completed(1000, 600, 50)
+    );
+    assert_eq!(served_responses_spent(&small).await, reported);
+
+    let oversized = format!(
+        "{}\n\ndata: {}\n",
+        responses_text("hi"),
+        json!({"type": "response.completed", "response": {
+            "output": [{"type": "message", "content": [
+                {"type": "output_text", "text": "x".repeat(300 * 1024)}]}],
+            "usage": {"input_tokens": 1000,
+                      "input_tokens_details": {"cached_tokens": 600},
+                      "output_tokens": 50}}})
+    );
+    assert!(oversized.len() > 256 * 1024);
+    assert_eq!(served_responses_spent(&oversized).await, reported);
+}
+
 const RESPONSES_MESSAGE: &[u8] = br#"{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1000,"input_tokens_details":{"cached_tokens":600},"output_tokens":50,"total_tokens":1050}}"#;
 
 fn responses_json_usage(body: &[u8], truncated: bool) -> Usage {

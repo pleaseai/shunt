@@ -56,16 +56,24 @@ impl OversizedTail {
     }
 
     /// The frame's `usage` object, when it is a terminal frame and the object
-    /// lies whole inside the window.
+    /// lies whole inside the window. The last `"usage"` key whose value is an
+    /// object wins: the `metadata` serialized after it may hold a `usage` key
+    /// too, but its values are strings.
     pub(super) fn usage(&self) -> Option<UsageFields> {
         if !self.terminal {
             return None;
         }
         let key: &[u8] = b"\"usage\"";
-        let at = self.window.windows(key.len()).rposition(|w| w == key)?;
-        let rest = trim_space(&self.window[at + key.len()..]);
-        let rest = trim_space(rest.strip_prefix(b":")?);
-        serde_json::from_slice(balanced_object(rest)?).ok()
+        self.window
+            .windows(key.len())
+            .enumerate()
+            .rev()
+            .filter(|(_, candidate)| *candidate == key)
+            .find_map(|(at, _)| {
+                let rest = trim_space(&self.window[at + key.len()..]);
+                let rest = trim_space(rest.strip_prefix(b":")?);
+                serde_json::from_slice(balanced_object(rest)?).ok()
+            })
     }
 }
 
@@ -126,6 +134,30 @@ mod tests {
         );
         let usage = tail(&frame).usage().expect("usage in the tail");
         assert!(usage.reports_input());
+    }
+
+    /// `user` and a full `metadata` (16 pairs of 64-character keys and
+    /// 512-character values) follow `usage`, and one metadata key is `usage`.
+    #[test]
+    fn usage_followed_by_user_and_full_metadata_is_still_read() {
+        let mut pairs = vec![format!(r#""usage":"{}""#, "v".repeat(512))];
+        pairs.extend((1..16).map(|i| format!(r#""{i:k<64}":"{}""#, "v".repeat(512))));
+        let frame = format!(
+            r#"data: {{"type":"response.completed","response":{{"output":["{}"],"usage":{{"input_tokens":9,"output_tokens":3}},"user":"{}","metadata":{{{}}}}}}}"#,
+            "y".repeat(100_000),
+            "u".repeat(64),
+            pairs.join(",")
+        );
+        let usage_at = frame.find(r#""usage":{"#).unwrap();
+        assert!(frame.len() - usage_at > 8 * 1024, "metadata outgrows 8 KiB");
+
+        let fields = tail(&frame).usage().expect("usage in the tail");
+        let mut usage = crate::gateway::spend::meter::RequestUsage::default();
+        assert!(fields.apply_to(&mut usage));
+        assert_eq!(
+            (usage.tokens.input_tokens, usage.tokens.output_tokens),
+            (9, 3)
+        );
     }
 
     #[test]
