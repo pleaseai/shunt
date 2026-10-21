@@ -468,6 +468,9 @@ there is no equivalent upstream endpoint, so the provider's `count_tokens` setti
   image/tool-schema encoding or cache accounting. Each count is answered in-process (~ms), which
   matters because Claude Code's `/context` issues one `count_tokens` call **per displayed item**
   (system-prompt section, memory file, agent, deferred tool, …) — 30–50 calls per invocation.
+  The encoder's vocabulary loads once at startup (about half a second) whenever a non-Anthropic
+  provider uses this setting, so neither the first count nor the first streaming turn's
+  `message_start` input estimate waits on it.
 - `count_tokens = "estimate"` (opt-in) — shunt returns **501 `not_supported`**, telling Claude
   Code that the endpoint is unavailable and triggering its fallback. Note what Claude Code actually
   does then: the main-loop context bar estimates locally, but `/context` re-runs **every** category

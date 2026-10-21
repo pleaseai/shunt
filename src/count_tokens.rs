@@ -18,9 +18,24 @@ const PER_MESSAGE_OVERHEAD: u64 = 4;
 /// Rough per-tool framing overhead on top of the tool's own text.
 const PER_TOOL_OVERHEAD: u64 = 8;
 
+static ENCODER: OnceLock<CoreBPE> = OnceLock::new();
+
 fn encoder() -> &'static CoreBPE {
-    static ENCODER: OnceLock<CoreBPE> = OnceLock::new();
     ENCODER.get_or_init(|| o200k_base().expect("o200k_base vocab is bundled with tiktoken-rs"))
+}
+
+/// Load the o200k_base vocab now, blocking the calling thread for the
+/// one-time cold load (~0.6 s); later calls return immediately. Called once at
+/// startup so that load never lands inside a turn's one-second estimate bound,
+/// where it would seed `message_start` with `input_tokens: 0` (issue #642).
+pub fn warm_encoder() {
+    encoder();
+}
+
+/// Whether this process has loaded the encoder yet. Test-only observability.
+#[doc(hidden)]
+pub fn encoder_is_loaded() -> bool {
+    ENCODER.get().is_some()
 }
 
 /// Approximate the prompt token count of an Anthropic `count_tokens` request
