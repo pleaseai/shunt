@@ -64,29 +64,29 @@ Considered and not built:
 
 ## Tasks
 
-- [ ] T001 Refuse over-cap HTTP turns with the Codex usage-limit error (file: src/codex_endpoint/spend.rs)
+- [ ] T001 Refuse over-cap HTTP turns with the Codex usage-limit error (file: src/codex_endpoint/spend.rs) [FR-1, FR-2, FR-3, FR-8, FR-9, FR-11, NFR-3, AC-002, AC-012, AC-003, AC-013, AC-010]
   Validation: An over-cap POST to each response path gets 429 with `type`/`code` `usage_limit_reached`, plus `resets_at` and `retry-after` for the cap that resets last. `x-codex-promo-message` is present when `blocked_message` is set. The upstream sees nothing. Fail-closed refuses a capped principal whose state is unavailable. Without `[server.spend]` the request is forwarded as before.
   Method: new `tests/codex_spend_enforcement.rs` mirroring `tests/spend_enforcement.rs`, plus unit tests in the new module
-- [ ] T002 Refuse web search for over-cap principals without metering it (file: src/codex_endpoint/search.rs) (depends on T001)
+- [ ] T002 Refuse web search for over-cap principals without metering it (file: src/codex_endpoint/search.rs) (depends on T001) [FR-5, AC-006]
   Validation: An over-cap `/alpha/search` call, and its aliases, gets the T001 error and is not forwarded. An under-cap search leaves every counter unchanged.
   Method: `tests/codex_spend_enforcement.rs` search cases
-- [ ] T003 Refuse over-cap WebSocket turns while keeping the socket open (file: src/codex_endpoint/websocket/turn.rs) (depends on T001)
+- [ ] T003 Refuse over-cap WebSocket turns while keeping the socket open (file: src/codex_endpoint/websocket/turn.rs) (depends on T001) [FR-4, AC-004, AC-014, AC-005, AC-015]
   Validation: An over-cap `response.create` gets one error frame with `status` 429, `usage_limit_reached` type/code, `error.resets_at`, and the promo header. The upstream sees nothing, and the socket stays open and refuses each later turn. A turn after the cap's period resets (meter clock) is forwarded. A `generate:false` warmup is unchanged.
   Method: new `tests/codex_spend_websocket.rs` on the `tests/inbound_codex_websocket.rs` harness
-- [ ] T004 Meter completed streamed Codex turns from Responses usage (file: src/stream_metrics/spend_tap/responses.rs)
+- [ ] T004 Meter completed streamed Codex turns from Responses usage (file: src/stream_metrics/spend_tap/responses.rs) [FR-6, FR-12, NFR-1, NFR-2, AC-001, AC-007, AC-008, AC-016]
   Validation: `response.completed` usage reaches the principal's counter, with cached tokens at the cache-read rate and the rest of the input at the input rate. `cached_tokens > input_tokens` bills zero uncached input without panicking. `/v1/messages` and Codex spend land in one counter. A third-party route is priced by its provider and upstream model, and an un-overridden GPT model at the unknown-model rate. Relayed bytes are unchanged.
   Method: new `tests/codex_spend_metering.rs` mirroring `tests/spend_metering.rs` (byte-identity and decoy-row checks), plus `spend_tap` unit tests
-- [ ] T005 Meter non-streamed Codex turns from the JSON body (file: src/stream_metrics/spend_tap/json.rs) (depends on T004)
+- [ ] T005 Meter non-streamed Codex turns from the JSON body (file: src/stream_metrics/spend_tap/json.rs) (depends on T004) [FR-6]
   Validation: A 2xx JSON Responses body is billed from its `usage` with the T004 cached split, and its bytes reach the client unchanged.
   Method: `tests/codex_spend_metering.rs` JSON case
   STOP: if the endpoint never returns a non-SSE 2xx turn body, record it in Surprises and drop this task.
-- [ ] T006 Bill incomplete Codex turns at the estimated-input floor (file: src/count_tokens.rs) (depends on T004)
+- [ ] T006 Bill incomplete Codex turns at the estimated-input floor (file: src/count_tokens.rs) (depends on T004) [FR-7, AC-009]
   Validation: A WS closed by the client after output deltas but before `response.completed`, and an HTTP stream broken mid-turn, each record at least estimated input plus delivered output. A turn that reports usage never runs the estimator.
   Method: floor cases in `tests/codex_spend_metering.rs` and `tests/codex_spend_websocket.rs`, using the `replacement_and_disconnect_drop_active_upstream_bodies` pattern
-- [ ] T007 Stop flagging Codex-endpoint pricing overrides as never pricing anything (file: src/config.rs)
+- [ ] T007 Stop flagging Codex-endpoint pricing overrides as never pricing anything (file: src/config.rs) [FR-12]
   Validation: An override for a model the Codex endpoint's provider or routes serve loads without the "will never price anything" warning. An override no surface serves still warns.
   Method: `config` unit tests beside the existing `pricing_model_is_requestable` cases
-- [ ] T008 Document Codex-endpoint spend enforcement across docs, README, and site (file: docs/gateway-spend-limits.md) (depends on T003, T006)
+- [ ] T008 Document Codex-endpoint spend enforcement across docs, README, and site (file: docs/gateway-spend-limits.md) (depends on T003, T006) [FR-10]
   Validation: `docs/gateway-spend-limits.md` and `docs/m11-inbound-codex-endpoint.md` cover the refusal shape, CLI display, WS and search behavior, the floor, and GPT pricing overrides, and the #733 "not yet implemented" bullet is gone. The four README spend rows and the site `reference/configuration`, `reference/endpoints` and `guides/inbound-codex-endpoint` pages, including their ko/ja/zh-cn copies, all agree. The `SpendEnforcementConfig` doc comment is no longer limited to `/v1/messages`.
   Method: `bun run build` in `site/` with no new dead anchors, plus a cross-surface grep for `usage_limit_reached` and `#733`
 
