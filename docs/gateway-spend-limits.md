@@ -164,7 +164,7 @@ The Codex endpoint writes the same daily, weekly and monthly counters as `/v1/me
   ```toml
   [[server.spend.pricing.overrides]]
   upstream = "codex"
-  model = "gpt-5.2"            # the model id Codex clients request
+  model = "gpt-6.1-sol"        # the model id Codex clients request
   input = 1.00                 # placeholder rates, USD per million tokens: use your own
   output = 8.00
   cache_read = 0.10

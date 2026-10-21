@@ -189,7 +189,7 @@ shunt는 Codex CLI 디스커버리 요청에 유효한 폴백인 `{"models":[]}`
 ```toml
 [[server.spend.pricing.overrides]]
 upstream = "codex"       # 엔드포인트의 provider
-model = "gpt-5.2"
+model = "gpt-6.1-sol"
 input = 1.00             # 예시 요율, 100만 토큰당 USD
 output = 8.00
 cache_read = 0.10

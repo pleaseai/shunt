@@ -189,7 +189,7 @@ With [`[server.spend]`](/reference/configuration/#serverspend-optional) configur
 ```toml
 [[server.spend.pricing.overrides]]
 upstream = "codex"       # the endpoint's provider
-model = "gpt-5.2"
+model = "gpt-6.1-sol"
 input = 1.00             # placeholder rates, USD per million tokens
 output = 8.00
 cache_read = 0.10

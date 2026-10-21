@@ -189,7 +189,7 @@ shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，�
 ```toml
 [[server.spend.pricing.overrides]]
 upstream = "codex"       # 端点的 provider
-model = "gpt-5.2"
+model = "gpt-6.1-sol"
 input = 1.00             # 示例费率,每百万 token 的美元数
 output = 8.00
 cache_read = 0.10

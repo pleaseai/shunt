@@ -189,7 +189,7 @@ shunt は Codex CLI のディスカバリー要求に対して有効なフォー
 ```toml
 [[server.spend.pricing.overrides]]
 upstream = "codex"       # エンドポイントの provider
-model = "gpt-5.2"
+model = "gpt-6.1-sol"
 input = 1.00             # 例のレート、100 万トークンあたり USD
 output = 8.00
 cache_read = 0.10
