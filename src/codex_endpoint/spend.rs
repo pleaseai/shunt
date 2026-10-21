@@ -13,12 +13,13 @@
 //! frame.
 
 use axum::{
-    http::{header::RETRY_AFTER, HeaderName, HeaderValue, StatusCode},
+    http::{header::RETRY_AFTER, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde_json::{json, Value};
 
 use crate::{
+    codex_endpoint::frame::safe_response_headers,
     gateway::spend::meter::{now_secs, Check},
     proxy::spend_gate::{period_name, principal_for, reached_message, with_blocked_message},
     server::AppState,
@@ -86,6 +87,22 @@ impl Refusal {
         }
         response
     }
+
+    /// The refusal as one terminal WebSocket error frame: the same `error`
+    /// object and status as [`Self::into_response`], with the headers projected
+    /// through [`safe_response_headers`] like an upstream error frame's. The
+    /// Codex CLI maps a `429` frame whose `error.type` is `usage_limit_reached`
+    /// to its usage-limit error.
+    pub(super) fn ws_frame(&self) -> String {
+        let headers: HeaderMap = self.headers().into_iter().collect();
+        json!({
+            "type": "error",
+            "status": StatusCode::TOO_MANY_REQUESTS.as_u16(),
+            "error": self.error(),
+            "headers": safe_response_headers(&headers),
+        })
+        .to_string()
+    }
 }
 
 /// Admits or refuses one metered Codex turn for `client` (the authenticated
@@ -143,12 +160,6 @@ pub(super) fn admit(state: &AppState, client: Option<&str>) -> Result<Admitted, 
         }
         (Check::Allow, _) => Ok(admitted()),
     }
-}
-
-/// The metering tap for one turn by `client`, without the admission check.
-/// A WebSocket turn uses it until it is gated like an HTTP one.
-pub(super) fn tap_for(state: &AppState, client: Option<&str>) -> Option<SpendTap> {
-    SpendTap::for_request(state, principal_for(client, true).as_deref())
 }
 
 /// `blocked_message` as an `x-codex-promo-message` value, or `None` when it is
@@ -224,6 +235,19 @@ mod tests {
             .headers()
             .iter()
             .any(|(name, _)| name == PROMO_MESSAGE));
+    }
+
+    #[test]
+    fn the_ws_frame_carries_the_error_object_and_safe_headers() {
+        let refusal = refusal(Some("Ask FinOps."));
+        let frame: Value = serde_json::from_str(&refusal.ws_frame()).unwrap();
+        assert_eq!(frame["type"], "error");
+        assert_eq!(frame["status"], 429);
+        assert_eq!(frame["error"], refusal.error());
+        assert_eq!(frame["headers"]["retry-after"], "42");
+        // `x-should-retry` is not on the safe-header allowlist.
+        assert!(frame["headers"].get("x-should-retry").is_none());
+        assert_eq!(frame["headers"]["x-codex-promo-message"], "Ask FinOps.");
     }
 
     #[test]

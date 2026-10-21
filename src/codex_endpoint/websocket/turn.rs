@@ -170,8 +170,19 @@ pub(super) async fn run_turn(context: TurnContext) {
     if let Some(admin_auth) = state.admin_auth.as_ref() {
         headers.remove(admin_auth.header());
     }
+    // Admitted after this turn's re-authentication, so the principal is this
+    // turn's client. A refusal ends only the turn: the socket stays open and
+    // the next turn is assessed afresh.
+    let spend = match crate::codex_endpoint::spend::admit(&state, inbound_client.as_deref()) {
+        Ok(admitted) => admitted.tap,
+        Err(refusal) => {
+            let _ = out_tx
+                .send((turn_gen, Message::Text(refusal.ws_frame().into())))
+                .await;
+            return;
+        }
+    };
     let started_at = Instant::now();
-    let spend = crate::codex_endpoint::spend::tap_for(&state, inbound_client.as_deref());
     let dispatch_res = forward_turn(
         state,
         model,

@@ -127,6 +127,9 @@ Considered and not built:
 - [x] (2026-10-21 KST) T002 Refuse web search for over-cap principals without metering it
   Evidence: `cargo test --all-features --test codex_spend_enforcement --test inbound_codex_search` → 9 + 7 passed (over-cap search refused on all 3 aliases with 0 upstream hits; under-cap search leaves daily/weekly/monthly counters unchanged)
 
+- [x] (2026-10-21 KST) T003 Refuse over-cap WebSocket turns while keeping the socket open
+  Evidence: `cargo test --all-features --test codex_spend_websocket` -> 4 passed (all 4 go red with the refusal arm of `spend::admit` in `run_turn` bypassed); with `codex_spend_enforcement` 9, `codex_spend_metering` 7, `inbound_codex_websocket` 16 passed; `--lib` 3553 passed; fmt and clippy clean
+
 ## Decision Log
 
 - 2026-10-21: Designed inline from one exploration pass, with no architect agent. The existing tap and gate fixed the seams; rejected alternatives are listed above.
@@ -144,6 +147,9 @@ Considered and not built:
   Date/Author: 2026-10-21 / implement-executor
 - Decision: (T004) A WS turn builds its tap with `spend::tap_for` (no admission check). T003 replaces that call with `spend::admit` and uses `Admitted::tap`.
   Rationale: WS refusal is T003; this keeps WS turns metered now with a one-line seam.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T003) The "turn after the period resets" check lifts the cap through the admin API on the same open socket instead of rolling the meter clock.
+  Rationale: `admit` reads `now_secs()` and neither the meter nor the store takes an injected clock; a production seam just for this test was ruled out. The test proves the same property: a refused turn leaves no state and the next turn on the socket is assessed afresh (it is forwarded, and a re-imposed cap refuses again).
   Date/Author: 2026-10-21 / implement-executor
 
 ## Surprises & Discoveries
