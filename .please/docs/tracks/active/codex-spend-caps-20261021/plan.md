@@ -64,7 +64,7 @@ Considered and not built:
 
 ## Tasks
 
-- [ ] T001 Refuse over-cap HTTP turns with the Codex usage-limit error (file: src/codex_endpoint/spend.rs) [FR-1, FR-2, FR-3, FR-8, FR-9, FR-11, NFR-3, AC-002, AC-012, AC-003, AC-013, AC-010]
+- [x] T001 Refuse over-cap HTTP turns with the Codex usage-limit error (file: src/codex_endpoint/spend.rs) [FR-1, FR-2, FR-3, FR-8, FR-9, FR-11, NFR-3, AC-002, AC-012, AC-003, AC-013, AC-010]
   Validation: An over-cap POST to each response path gets 429 with `type`/`code` `usage_limit_reached`, plus `resets_at` and `retry-after` for the cap that resets last. `x-codex-promo-message` is present when `blocked_message` is set. The upstream sees nothing. Fail-closed refuses a capped principal whose state is unavailable. Without `[server.spend]` the request is forwarded as before.
   Method: new `tests/codex_spend_enforcement.rs` mirroring `tests/spend_enforcement.rs`, plus unit tests in the new module
 - [ ] T002 Refuse web search for over-cap principals without metering it (file: src/codex_endpoint/search.rs) (depends on T001) [FR-5, AC-006]
@@ -83,7 +83,7 @@ Considered and not built:
 - [ ] T006 Bill incomplete Codex turns at the estimated-input floor (file: src/count_tokens.rs) (depends on T004) [FR-7, AC-009]
   Validation: A WS closed by the client after output deltas but before `response.completed`, and an HTTP stream broken mid-turn, each record at least estimated input plus delivered output. A turn that reports usage never runs the estimator.
   Method: floor cases in `tests/codex_spend_metering.rs` and `tests/codex_spend_websocket.rs`, using the `replacement_and_disconnect_drop_active_upstream_bodies` pattern
-- [ ] T007 Stop flagging Codex-endpoint pricing overrides as never pricing anything (file: src/config.rs) [FR-12]
+- [x] T007 Stop flagging Codex-endpoint pricing overrides as never pricing anything (file: src/config.rs) [FR-12]
   Validation: An override for a model the Codex endpoint's provider or routes serve loads without the "will never price anything" warning. An override no surface serves still warns.
   Method: `config` unit tests beside the existing `pricing_model_is_requestable` cases
 - [ ] T008 Document Codex-endpoint spend enforcement across docs, README, and site (file: docs/gateway-spend-limits.md) (depends on T003, T006) [FR-10]
@@ -118,9 +118,14 @@ Considered and not built:
 - [x] (2026-10-21 KST) T001 Refuse over-cap HTTP turns with the Codex usage-limit error
   Evidence: `cargo test --all-features --test codex_spend_enforcement` → 7 passed (5 go red with `spend::admit` stubbed out); `--lib` 3542 passed, `inbound_codex_endpoint` 33 passed, `spend_enforcement` 13 passed
 
+- [x] (2026-10-21 KST) T007 Stop flagging Codex-endpoint pricing overrides as never pricing anything
+  Evidence: `cargo test --all-features --lib config` → 543 passed (incl. `pricing_override_is_requestable_through_the_codex_endpoint`, `pricing_warning_skips_codex_endpoint_models`); fmt and clippy clean
+
 ## Decision Log
 
 - 2026-10-21: Designed inline from one exploration pass, with no architect agent. The existing tap and gate fixed the seams; rejected alternatives are listed above.
+
+- 2026-10-21 (T007): Codex-route matching in the pricing predicate is case-insensitive on the trimmed, `[1m]`-stripped model, unlike `CodexEndpointConfig::route_for` (exact match), because `PriceTable::resolve` matches override rows case-insensitively.
 
 ## Surprises & Discoveries
 
