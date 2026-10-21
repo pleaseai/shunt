@@ -273,6 +273,11 @@ async fn forward(
             .await
         }
         CodexOperation::AlphaSearch => {
+            // An over-cap principal gets the same refusal as a turn. Search is
+            // never metered, so the `Admitted` value is dropped: no tap.
+            if let Err(refusal) = spend::admit(&state, inbound_client.as_deref()) {
+                return Ok((StatusCode::TOO_MANY_REQUESTS, refusal.into_response()));
+            }
             search::forward(
                 state,
                 provider,

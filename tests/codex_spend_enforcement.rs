@@ -42,6 +42,13 @@ const ACCOUNT_ENV: &str = "SHUNT_TEST_CODEX_SPEND_ACCOUNT";
 const ADMIN_TOKEN: &str = "admin-secret";
 const BLOCKED: &str = "Ask FinOps.";
 const BODY: &str = r#"{"model":"gpt-5.6-sol","instructions":"be brief","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":false,"store":false}"#;
+const SEARCH_PATHS: [&str; 3] = [
+    "/backend-api/codex/alpha/search",
+    "/alpha/search",
+    "/v1/alpha/search",
+];
+const SEARCH_BODY: &str =
+    r#"{"model":"gpt-5.6-sol","search_query":[{"q":"spend caps"}],"response_length":"short"}"#;
 const PATHS: [&str; 3] = [
     "/backend-api/codex/responses",
     "/responses",
@@ -384,5 +391,79 @@ async fn an_under_cap_principal_is_forwarded_while_an_over_cap_one_is_refused() 
 
     assert_eq!(alice.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(bob.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+async fn search_upstream(expect: u64) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/alpha/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"results":[]}"#))
+        .expect(expect)
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn post_search(gateway: &Gateway, route: &str, token: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}{route}", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("x-shunt-token", token)
+        .body(SEARCH_BODY)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn an_over_cap_search_is_refused_on_every_alias_and_never_forwarded() {
+    let _env = env().await;
+    let upstream = search_upstream(0).await;
+    let gateway = start(config(&upstream.uri(), Some(spend(Some(BLOCKED), false)))).await;
+    set_cap(&gateway, user("alice"), "daily", 100).await;
+    seed(&gateway, "alice", 100);
+    let reset = window(Period::Daily, now()).end;
+
+    for route in SEARCH_PATHS {
+        let response = post_search(&gateway, route, "tok-a").await;
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS, "{route}");
+        assert_eq!(response.headers()["x-should-retry"], "false", "{route}");
+        assert_eq!(response.headers()["x-codex-promo-message"], BLOCKED);
+        assert!(response.headers().contains_key("retry-after"), "{route}");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["type"], "usage_limit_reached", "{route}");
+        assert_eq!(body["error"]["code"], "usage_limit_reached", "{route}");
+        assert_eq!(body["error"]["resets_at"], reset, "{route}");
+    }
+    upstream.verify().await;
+}
+
+#[tokio::test]
+async fn an_under_cap_search_is_forwarded_and_leaves_every_counter_unchanged() {
+    let _env = env().await;
+    let upstream = search_upstream(3).await;
+    let gateway = start(config(&upstream.uri(), Some(spend(None, false)))).await;
+    set_cap(&gateway, org(), "daily", 100).await;
+    seed(&gateway, "bob", 50);
+    let meter = gateway.state.gateway_stores.spend.meter();
+    let counters = || {
+        [Period::Daily, Period::Weekly, Period::Monthly]
+            .map(|period| meter.spent("bob", period, now()))
+    };
+    let before = counters();
+    assert!(
+        before.iter().all(|spent| *spent > 0),
+        "seed must be visible"
+    );
+
+    for route in SEARCH_PATHS {
+        let response = post_search(&gateway, route, "tok-b").await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+    }
+
+    assert_eq!(counters(), before);
+    assert_eq!(meter.principals(), vec!["bob".to_string()]);
     upstream.verify().await;
 }
