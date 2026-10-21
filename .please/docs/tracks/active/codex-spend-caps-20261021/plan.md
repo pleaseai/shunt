@@ -67,13 +67,13 @@ Considered and not built:
 - [x] T001 Refuse over-cap HTTP turns with the Codex usage-limit error (file: src/codex_endpoint/spend.rs) [FR-1, FR-2, FR-3, FR-8, FR-9, FR-11, NFR-3, AC-002, AC-012, AC-003, AC-013, AC-010]
   Validation: An over-cap POST to each response path gets 429 with `type`/`code` `usage_limit_reached`, plus `resets_at` and `retry-after` for the cap that resets last. `x-codex-promo-message` is present when `blocked_message` is set. The upstream sees nothing. Fail-closed refuses a capped principal whose state is unavailable. Without `[server.spend]` the request is forwarded as before.
   Method: new `tests/codex_spend_enforcement.rs` mirroring `tests/spend_enforcement.rs`, plus unit tests in the new module
-- [ ] T002 Refuse web search for over-cap principals without metering it (file: src/codex_endpoint/search.rs) (depends on T001) [FR-5, AC-006]
+- [x] T002 Refuse web search for over-cap principals without metering it (file: src/codex_endpoint/search.rs) (depends on T001) [FR-5, AC-006]
   Validation: An over-cap `/alpha/search` call, and its aliases, gets the T001 error and is not forwarded. An under-cap search leaves every counter unchanged.
   Method: `tests/codex_spend_enforcement.rs` search cases
 - [ ] T003 Refuse over-cap WebSocket turns while keeping the socket open (file: src/codex_endpoint/websocket/turn.rs) (depends on T001) [FR-4, AC-004, AC-014, AC-005, AC-015]
   Validation: An over-cap `response.create` gets one error frame with `status` 429, `usage_limit_reached` type/code, `error.resets_at`, and the promo header. The upstream sees nothing, and the socket stays open and refuses each later turn. A turn after the cap's period resets (meter clock) is forwarded. A `generate:false` warmup is unchanged.
   Method: new `tests/codex_spend_websocket.rs` on the `tests/inbound_codex_websocket.rs` harness
-- [ ] T004 Meter completed streamed Codex turns from Responses usage (file: src/stream_metrics/spend_tap/responses.rs) [FR-6, FR-12, NFR-1, NFR-2, AC-001, AC-007, AC-008, AC-016]
+- [x] T004 Meter completed streamed Codex turns from Responses usage (file: src/stream_metrics/spend_tap/responses.rs) [FR-6, FR-12, NFR-1, NFR-2, AC-001, AC-007, AC-008, AC-016]
   Validation: `response.completed` usage reaches the principal's counter, with cached tokens at the cache-read rate and the rest of the input at the input rate. `cached_tokens > input_tokens` bills zero uncached input without panicking. `/v1/messages` and Codex spend land in one counter. A third-party route is priced by its provider and upstream model, and an un-overridden GPT model at the unknown-model rate. Relayed bytes are unchanged.
   Method: new `tests/codex_spend_metering.rs` mirroring `tests/spend_metering.rs` (byte-identity and decoy-row checks), plus `spend_tap` unit tests
 - [ ] T005 Meter non-streamed Codex turns from the JSON body (file: src/stream_metrics/spend_tap/json.rs) (depends on T004) [FR-6]
@@ -123,6 +123,9 @@ Considered and not built:
 
 - [x] (2026-10-21 KST) T004 Meter completed streamed Codex turns from Responses usage
   Evidence: `cargo test --all-features --test codex_spend_metering` → 7 passed (6 go red with the tap replaced by `None` in `forward_turn`, 6 with the cached subtraction removed, the routed test with the target priced on the client model); `--lib` 3552 passed (incl. 5 `spend_tap::responses` and 3 Responses `spend_tap` tests), `codex_spend_enforcement` 7, `inbound_codex_endpoint` 33, `inbound_codex_routes` 11, `inbound_codex_websocket` 16, `inbound_codex_search` 7, `spend_metering` 10 passed; fmt and clippy clean
+
+- [x] (2026-10-21 KST) T002 Refuse web search for over-cap principals without metering it
+  Evidence: `cargo test --all-features --test codex_spend_enforcement --test inbound_codex_search` → 9 + 7 passed (over-cap search refused on all 3 aliases with 0 upstream hits; under-cap search leaves daily/weekly/monthly counters unchanged)
 
 ## Decision Log
 
