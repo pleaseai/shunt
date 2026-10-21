@@ -33,6 +33,9 @@ pub(super) struct TurnContext {
     pub(super) auth_header: Option<HeaderName>,
     pub(super) admin_header: Option<HeaderName>,
     pub(super) body: Bytes,
+    /// What the spend estimate counts when `body` is a continuation holding
+    /// only the new input (see `continuation::estimate_body`); never sent.
+    pub(super) estimate_body: Option<Bytes>,
     pub(super) generation: u64,
     pub(super) current_generation: Arc<AtomicU64>,
     pub(super) out_tx: mpsc::Sender<(u64, Message)>,
@@ -76,6 +79,7 @@ pub(super) async fn run_turn(context: TurnContext) {
         auth_header,
         admin_header,
         body,
+        estimate_body,
         generation: turn_gen,
         current_generation,
         out_tx,
@@ -193,6 +197,7 @@ pub(super) async fn run_turn(context: TurnContext) {
         body,
         started_at,
         spend,
+        estimate_body,
     )
     .await;
 

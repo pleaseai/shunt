@@ -260,6 +260,22 @@ fn a_json_reply_past_the_tee_bound_still_bills_the_estimated_input() {
 }
 
 #[test]
+fn a_json_reply_dropped_before_its_first_poll_stays_unmetered() {
+    let tap = tap(request_json(), BodyEncoding::Identity);
+    let before = ESTIMATES.with(std::cell::Cell::get);
+    let reply = JsonSpendBody::with_bound(
+        axum::body::Body::from(b"{}".to_vec()),
+        tap.clone(),
+        StatusCode::OK,
+        MAX_BYTES,
+    )
+    .protocol(Protocol::Responses);
+    drop(reply);
+    assert_eq!(ESTIMATES.with(std::cell::Cell::get), before);
+    assert_eq!(spent(&tap), 0);
+}
+
+#[test]
 fn a_json_reply_that_reports_its_input_never_runs_the_estimator() {
     let tap = tap(request_json(), BodyEncoding::Identity);
     let body = serde_json::to_vec(&json!({

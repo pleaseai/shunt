@@ -107,7 +107,9 @@ impl JsonSpend {
     /// final `Ready(None)`); a cut one does not parse and bills the floor.
     ///
     /// A Responses body whose usage did not report its input bills the
-    /// request's estimated input, as an incomplete stream does.
+    /// request's estimated input, as an incomplete stream does — unless no
+    /// byte was ever polled (a body dropped before the client read it), which
+    /// stays unmetered.
     fn settle(self) {
         let (usage, input_reported) = json_usage_parts(
             self.protocol,
@@ -115,7 +117,8 @@ impl JsonSpend {
             self.bytes,
             self.truncated,
         );
-        let estimate = matches!(self.protocol, Protocol::Responses) && !input_reported;
+        let estimate =
+            matches!(self.protocol, Protocol::Responses) && !input_reported && self.bytes > 0;
         self.tap.record_estimating_input(usage, estimate);
     }
 }

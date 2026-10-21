@@ -292,6 +292,7 @@ async fn forward(
                 body,
                 started_at,
                 admitted.tap,
+                None,
             )
             .await
         }
@@ -376,6 +377,7 @@ pub(crate) async fn forward_turn(
     body: Bytes,
     started_at: Instant,
     spend: Option<SpendTap>,
+    estimate_body: Option<Bytes>,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     let Some(codex_endpoint) = &state.config.server.codex_endpoint else {
         return Err(ForwardError {
@@ -431,10 +433,11 @@ pub(crate) async fn forward_turn(
 
     crate::observability::record_requested_model(&model_name);
 
-    // A turn that ends without reported usage bills an estimate of this body.
+    // A turn that ends without reported usage bills an estimate of this body
+    // (or of `estimate_body`, the whole input of a continuation).
     let spend = spend.map(|tap| {
         tap.with_request_body(
-            body.clone(),
+            estimate_body.unwrap_or_else(|| body.clone()),
             crate::compression::body_encoding(&headers),
             max_request_bytes,
         )

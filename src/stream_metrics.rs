@@ -201,6 +201,9 @@ struct ObserverState {
     skipping_oversized: bool,
     skip_tail: [u8; 4],
     skip_tail_len: usize,
+    /// The end of the oversized frame being skipped, kept so a Responses
+    /// terminal's usage can still be read (see [`spend_tap::OversizedTail`]).
+    oversized: Option<spend_tap::OversizedTail>,
     terminal_seen: bool,
     error_seen: bool,
     /// Set once the [`UPSTREAM_TRUNCATED_MARKER`] frame is observed; forces
@@ -252,6 +255,7 @@ impl ObserverState {
             skipping_oversized: false,
             skip_tail: [0; 4],
             skip_tail_len: 0,
+            oversized: None,
             terminal_seen: false,
             error_seen: false,
             truncated_seen: false,
@@ -291,6 +295,15 @@ impl ObserverState {
         while !bytes.is_empty() {
             if self.skipping_oversized {
                 let consumed = self.skip_to_boundary(bytes);
+                if let Some(tail) = self.oversized.as_mut() {
+                    tail.push(&bytes[..consumed]);
+                }
+                if !self.skipping_oversized {
+                    if let (Some(spend), Some(tail)) = (self.spend.as_mut(), self.oversized.take())
+                    {
+                        spend.observe_oversized(&tail);
+                    }
+                }
                 bytes = &bytes[consumed..];
                 continue;
             }
@@ -346,6 +359,10 @@ impl ObserverState {
                 self.record_ttft();
             }
         }
+        self.oversized = self
+            .spend
+            .as_ref()
+            .and_then(|spend| spend.begin_oversized(&self.buffer));
         self.buffer.clear();
         self.skipping_oversized = true;
     }

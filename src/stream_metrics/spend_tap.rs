@@ -55,10 +55,12 @@ use crate::{
 };
 
 mod json;
+mod oversized;
 mod responses;
 
 use json::json_usage;
 pub(in crate::stream_metrics) use json::JsonSpendBody;
+pub(in crate::stream_metrics) use oversized::OversizedTail;
 
 /// Characters of delivered text billed as one output token when the upstream's
 /// own count is missing — the reference gateway's estimate.
@@ -334,8 +336,11 @@ fn floor_tokens(units: u64) -> u64 {
 /// Spend accounting over one streamed response, Anthropic or Responses.
 ///
 /// A frame larger than the observer's parse cap is skipped without being
-/// seen here, so its text does not count toward the floor; its usage, which
-/// rides on small frames, still does.
+/// seen here, so its text does not count toward the floor. An Anthropic usage
+/// rides on small frames and still counts; a Responses terminal frame carries
+/// the whole output ahead of its usage, so the observer hands the end of an
+/// oversized one to [`StreamSpend::observe_oversized`], which recovers the
+/// usage from that bounded window or leaves the turn at the floor.
 pub(super) struct StreamSpend {
     tap: SpendTap,
     protocol: Protocol,
@@ -386,10 +391,7 @@ impl StreamSpend {
                 responses::Observed::Delivered(chars) => {
                     self.delivered_chars = self.delivered_chars.saturating_add(chars);
                 }
-                responses::Observed::Usage(usage) => {
-                    self.input_reported |= usage.reports_input();
-                    self.output_reported |= usage.apply_to(&mut self.usage);
-                }
+                responses::Observed::Usage(usage) => self.apply_responses_usage(&usage),
                 responses::Observed::Nothing => {}
             }
             return;
@@ -421,6 +423,25 @@ impl StreamSpend {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn apply_responses_usage(&mut self, usage: &responses::UsageFields) {
+        self.input_reported |= usage.reports_input();
+        self.output_reported |= usage.apply_to(&mut self.usage);
+    }
+
+    /// Starts a tail window over an oversized frame the observer is about to
+    /// skip; `None` for a protocol whose usage never rides on a large frame.
+    pub(super) fn begin_oversized(&self, prefix: &[u8]) -> Option<OversizedTail> {
+        matches!(self.protocol, Protocol::Responses).then(|| OversizedTail::begin(prefix))
+    }
+
+    /// Reads the usage out of a skipped oversized frame's tail, when it holds
+    /// one; otherwise the turn bills as it would have before.
+    pub(super) fn observe_oversized(&mut self, tail: &OversizedTail) {
+        if let Some(usage) = tail.usage() {
+            self.apply_responses_usage(&usage);
         }
     }
 

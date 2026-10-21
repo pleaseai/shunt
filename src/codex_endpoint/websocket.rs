@@ -29,7 +29,8 @@ use super::frame::{
     build_warmup_completion_frames, build_ws_error_frame, parse_client_frame, ClientFrame,
 };
 use continuation::{
-    prepare_body, prepare_routed_body, resolve_target, SharedContinuation, TurnRecorder,
+    estimate_body, prepare_body, prepare_routed_body, resolve_target, SharedContinuation,
+    TurnRecorder,
 };
 use turn::{run_turn, TurnContext};
 
@@ -225,6 +226,7 @@ async fn handle_socket(
                         } else {
                             prepare_routed_body(&mut raw_json, &continuation, &target.provider)
                         };
+                        let estimate_body = estimate_body(&raw_json, &logical_input);
                         let body_signature =
                             crate::adapters::responses::codex_continuation::signature(&raw_json);
                         let body_bytes = Bytes::from(serde_json::to_vec(&raw_json).unwrap_or_default());
@@ -262,6 +264,7 @@ async fn handle_socket(
                                 auth_header: auth_header_clone,
                                 admin_header: admin_header_clone,
                                 body: body_bytes,
+                                estimate_body,
                                 generation: turn_gen,
                                 current_generation: gen_clone,
                                 out_tx: out_tx_clone,
