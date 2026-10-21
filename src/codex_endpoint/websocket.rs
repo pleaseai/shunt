@@ -226,7 +226,11 @@ async fn handle_socket(
                         } else {
                             prepare_routed_body(&mut raw_json, &continuation, &target.provider)
                         };
-                        let estimate_body = estimate_body(&raw_json, &logical_input);
+                        let estimate_body = if super::spend::metered(&turn_state.config) {
+                            estimate_body(&raw_json, &logical_input)
+                        } else {
+                            None
+                        };
                         let body_signature =
                             crate::adapters::responses::codex_continuation::signature(&raw_json);
                         let body_bytes = Bytes::from(serde_json::to_vec(&raw_json).unwrap_or_default());

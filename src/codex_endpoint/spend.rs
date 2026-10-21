@@ -105,6 +105,12 @@ impl Refusal {
     }
 }
 
+/// Whether `[server.spend]` is configured, the one condition under which
+/// [`admit`] can return a tap.
+pub(super) fn metered(config: &crate::config::Config) -> bool {
+    config.server.spend.is_some()
+}
+
 /// Admits or refuses one metered Codex turn for `client` (the authenticated
 /// caller, `None` when `[server.auth]` is off). Always admits without
 /// `[server.spend]`. Every turn is assessed afresh, so a refused principal
@@ -184,6 +190,14 @@ mod tests {
             retry_after: Some(42),
             promo: promo.and_then(promo_header),
         }
+    }
+
+    #[test]
+    fn metering_follows_the_spend_config() {
+        let mut config = crate::config::Config::default();
+        assert!(!metered(&config));
+        config.server.spend = Some(crate::config::SpendConfig::default());
+        assert!(metered(&config));
     }
 
     #[test]
