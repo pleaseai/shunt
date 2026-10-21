@@ -15,7 +15,7 @@ source_tracks: ["spend-enforcement-20261003", "codex-spend-caps-20261021"]
 
 ## Purpose
 
-Spend limits Specification 관련 요구사항.
+Requirements for gateway spend limits.
 
 ## Requirements
 
@@ -149,10 +149,10 @@ The system MUST carry a configured `blocked_message` on the refusal in the `x-co
 - GIVEN `blocked_message` is configured
 - THEN send its text in the refusal's `x-codex-promo-message` header
 
-### Requirement: refuse an over-cap turn on an open inbound WebSocket by sending that turn a terminal error event carrying the same error as FR-3, and keep the socket open for later turns
+### Requirement: refuse an over-cap turn on an open inbound WebSocket by sending that turn a terminal error event carrying the same error as REQ-024, and keep the socket open for later turns
 <!-- req: REQ-026 tracks=codex-spend-caps-20261021 -->
 
-The system MUST refuse an over-cap turn on an open inbound WebSocket by sending that turn a terminal error event carrying the same error as FR-3, and keep the socket open for later turns.
+The system MUST refuse an over-cap turn on an open inbound WebSocket by sending that turn a terminal error event carrying the same error as REQ-024, and keep the socket open for later turns.
 
 #### Scenario: When an over-cap principal sends `response.create` on an open inbound WebSocket, the system shall answer that turn with a terminal error event.
 
@@ -174,15 +174,15 @@ The system MUST refuse an over-cap turn on an open inbound WebSocket by sending 
 - WHEN the period of every cap that refused the principal has reset
 - THEN accept turns again on a WebSocket that stayed open across the reset
 
-### Requirement: refuse the Codex CLI's web-search calls (`/alpha/search` and its aliases) for an over-cap principal with the same error as FR-3, without metering them
+### Requirement: refuse the Codex CLI's web-search calls (`/alpha/search` and its aliases) for an over-cap principal with the same error as REQ-024, without metering them
 <!-- req: REQ-027 tracks=codex-spend-caps-20261021 -->
 
-The system MUST refuse the Codex CLI's web-search calls (`/alpha/search` and its aliases) for an over-cap principal with the same error as FR-3, without metering them.
+The system MUST refuse the Codex CLI's web-search calls (`/alpha/search` and its aliases) for an over-cap principal with the same error as REQ-024, without metering them.
 
-#### Scenario: If an over-cap principal calls `/alpha/search`, then the system shall refuse the call with the FR-3 error.
+#### Scenario: If an over-cap principal calls `/alpha/search`, then the system shall refuse the call with the REQ-024 error.
 
 - WHEN an over-cap principal calls `/alpha/search`
-- THEN refuse the call with the FR-3 error
+- THEN refuse the call with the REQ-024 error
 
 ### Requirement: meter each Codex-endpoint turn that completes from the upstream-reported Responses `usage` (input tokens, cached input tokens, output tokens), priced through the existing pricing table by the serving provider, the client-requested model, and the upstream model, into the same counters `/v1/messages` writes
 <!-- req: REQ-028 tracks=codex-spend-caps-20261021 -->

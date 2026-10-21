@@ -394,7 +394,8 @@ here applies.
   which would drop `code`, `resets_at` and the promo header. The named cap is the reached cap that
   resets last.
 - **Fail-closed.** With `fail_closed_on_error`, a capped principal whose spend state is unavailable
-  is refused with the same type, `spend limit unavailable`, and no `resets_at` and no `retry-after`.
+  is refused with the same `usage_limit_reached` type and the message `spend limit unavailable`, with
+  no `resets_at` and no `retry-after`.
 - **What the Codex CLI shows.** At the pinned version `rust-v0.159.3`, a `429` with
   `usage_limit_reached` becomes the CLI's usage-limit error, which it does not retry. The CLI
   renders its own "You've hit your usage limit … Try again at <resets_at>" text, with the promo
@@ -417,7 +418,8 @@ here applies.
   is billed the input estimated from the request body plus the output text already delivered.
 - **Non-streamed bodies.** A non-streamed 2xx JSON Responses body is billed from its `usage` with the
   same cached split. One that reports no input (no readable `usage`, a cut body, or a body over 4 MiB)
-  bills the input estimated from the request body instead, alongside the output floor.
+  bills the input estimated from the request body instead, alongside the output floor. A body the
+  client drops before its first byte is polled is not billed, as on `/v1/messages`.
 
 ## Reload behavior
 

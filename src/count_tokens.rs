@@ -118,7 +118,8 @@ pub fn count_responses_input_tokens_value(request: &Value) -> u64 {
 
 /// One Responses `input` item's text: a message's content, a function call's
 /// `arguments`, a function call output's `output`, or a reasoning item's
-/// `summary` text. An item with no `type` is an easy-input message.
+/// `summary` and `content` text (its `encrypted_content` is opaque). An item
+/// with no `type` is an easy-input message.
 fn push_input_item_text(item: &Value, out: &mut String) {
     match item.get("type").and_then(Value::as_str) {
         Some("message") | None => push_parts_text(item.get("content"), out),
@@ -127,7 +128,10 @@ fn push_input_item_text(item: &Value, out: &mut String) {
         Some("function_call_output" | "custom_tool_call_output") => {
             push_parts_text(item.get("output"), out);
         }
-        Some("reasoning") => push_parts_text(item.get("summary"), out),
+        Some("reasoning") => {
+            push_parts_text(item.get("summary"), out);
+            push_parts_text(item.get("content"), out);
+        }
         Some(_) => {}
     }
 }
@@ -254,16 +258,19 @@ mod tests {
                 {"type": "function_call_output", "call_id": "c1", "output": "a.txt"},
                 {"type": "reasoning",
                  "summary": [{"type": "summary_text", "text": "thinking"}]},
+                {"type": "reasoning", "summary": [],
+                 "content": [{"type": "reasoning_text", "text": "raw chain"}],
+                 "encrypted_content": "opaque"},
                 {"type": "web_search_call", "id": "ws_1"}
             ],
             "tools": [tool]
         });
         let text = format!(
-            "be brief\nlist files\nsure\nuntyped\n{{\"cmd\":\"ls\"}}\na.txt\nthinking\n{tool}\n"
+            "be brief\nlist files\nsure\nuntyped\n{{\"cmd\":\"ls\"}}\na.txt\nthinking\nraw chain\n{tool}\n"
         );
         assert_eq!(
             count_responses_input_tokens(&serde_json::to_vec(&body).unwrap()),
-            tokens(&text) + 7 * PER_MESSAGE_OVERHEAD + PER_TOOL_OVERHEAD
+            tokens(&text) + 8 * PER_MESSAGE_OVERHEAD + PER_TOOL_OVERHEAD
         );
     }
 

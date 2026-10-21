@@ -7,8 +7,10 @@
 //! `usage_limit_reached` type and code, `resets_at`, `retry-after` and the
 //! promo header, with no request reaching the upstream.
 //!
-//! Non-vacuity: delete the `spend::admit` call in `codex_endpoint::forward`
-//! and every refusal test goes red on a `200`.
+//! Non-vacuity: `codex_endpoint::forward` admits turns and web search through
+//! two separate `spend::admit` calls. Delete the turn call and the
+//! `/responses` refusal tests go red on a `200`; delete the search call and
+//! the web-search refusal test does.
 
 use std::{
     net::SocketAddr,

@@ -35,15 +35,17 @@ const TERMINAL_EVENTS: [&[u8]; 3] = [
 
 /// A failed turn: not terminal for the stream metrics (they count it as an
 /// error), but its `response.usage`, when the backend fills it, is what the
-/// turn cost. `null` usage leaves the bill to the floor, as an `error` frame
-/// (which carries no usage) does.
+/// turn cost. `null` usage leaves the bill to the floor (the estimated input
+/// plus the delivered output), as an `error` frame (which carries no usage)
+/// does.
 const FAILED_EVENT: &[u8] = b"response.failed";
 
-/// Events whose `delta` is generated output the client was sent: answer text,
-/// tool-call arguments, and reasoning text — the Responses twins of the
-/// Anthropic `text`, `partial_json` and `thinking` deltas.
-const DELTA_EVENTS: [&[u8]; 5] = [
+/// Events whose `delta` is generated output the client was sent: answer and
+/// refusal text, tool-call arguments, and reasoning text — the Responses twins
+/// of the Anthropic `text`, `partial_json` and `thinking` deltas.
+const DELTA_EVENTS: [&[u8]; 6] = [
     b"response.output_text.delta",
+    b"response.refusal.delta",
     b"response.function_call_arguments.delta",
     b"response.custom_tool_call_input.delta",
     b"response.reasoning_summary_text.delta",
@@ -310,6 +312,10 @@ mod tests {
         for event in DELTA_EVENTS {
             assert_eq!(observe(Some(event), &delta), Observed::Delivered(5));
         }
+        assert_eq!(
+            observe(Some(b"response.refusal.delta"), &delta),
+            Observed::Delivered(5)
+        );
         let usage = completed(json!({"input_tokens": 1, "output_tokens": 1}));
         assert_eq!(
             observe(Some(b"response.created"), &usage),

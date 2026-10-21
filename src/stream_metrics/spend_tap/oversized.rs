@@ -11,8 +11,10 @@
 use super::responses::UsageFields;
 
 /// Bytes of an oversized frame's end kept to look for `usage` in. A usage
-/// block is a few hundred bytes.
-const WINDOW: usize = 8 * 1024;
+/// block is a few hundred bytes, but the response's `user` and `metadata`
+/// (up to 16 pairs of 64-character keys and 512-character values, ~9 KiB)
+/// are serialized after it.
+const WINDOW: usize = 16 * 1024;
 
 /// How much of a frame's start is read to tell whether it is a terminal one.
 const HEAD: usize = 1024;
