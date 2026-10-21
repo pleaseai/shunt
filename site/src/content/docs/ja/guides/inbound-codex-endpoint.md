@@ -174,6 +174,28 @@ shunt は Codex CLI のディスカバリー要求に対して有効なフォー
 
 マッチングは完全一致で大文字小文字を区別し、文字種の制限もありません。そのため `MiniMax-M3`、`openai/gpt-5.6-sol`、`~openai/gpt-latest` といったベンダーのスラッグも書いたとおりにルーティングされます。別の `chatgpt_oauth` プロバイダーへのルートであれば、プールのパススルーがそのまま維持されます。ルートはライブ設定から読まれるため、リロードで反映されます。
 
+## 支出上限
+
+[`[server.spend]`](/ja/reference/configuration/#serverspendオプション)を設定すると、このエンドポイントも `/v1/messages` と同じプリンシパル単位の上限をチェックし、計測します。設定しない場合、以下は適用されません。完全な動作は [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)（英語）を参照してください。
+
+- **チェックの時点。** すべてのターンは、アップストリームを呼ぶ前にチェックされます。3 つの Responses パスの HTTP `POST` と Responses WebSocket の両方が対象です。プリンシパルは静的な `[server.auth]` トークン名、検証済み JWT のメール、または `[server.auth]` がオフのときの匿名プリンシパルです。このエンドポイントは gateway ログインセッションを受け付けません。
+- **拒否レスポンス。** 上限を超えたターンには `429` と `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<エポック秒>}}` が返り、`retry-after`、`x-should-retry: false`、`x-codex-promo-message: <blocked_message>` ヘッダーが付きます。promo ヘッダーは `blocked_message` が純粋な ASCII の場合にのみ送られ、テキストは常にメッセージにも含まれます。名前が挙がる上限は、到達した上限のうち最後にリセットされるものです。`fail_closed_on_error` が有効なとき、支出状態を確認できない上限付きプリンシパルは同じ type で拒否され、`resets_at` と `retry-after` はありません。
+- **Codex CLI の表示。** 固定バージョン `rust-v0.159.3` では、Codex CLI はこのエラーを再試行しません。`resets_at` から独自の文面（"You've hit your usage limit … Try again at"）を表示し、ヘッダーがあれば promo メッセージも表示して、サーバーのメッセージは無視します。これは Codex CLI の動作であり、他のバージョンでは異なる可能性があります。
+- **WebSocket。** 拒否された `response.create` には、同じエラーと `retry-after`、`x-codex-promo-message` を載せた `{"type":"error","status":429,"error":{…},"headers":{…}}` フレームが 1 つ返ります。ソケットは開いたままで、以降の各ターンは改めてチェックされ、`generate: false` のウォームアップはチェックされません。
+- **Web 検索。** `/alpha/search` とそのエイリアスは、上限を超えていると拒否され、計測されません。
+- **計測。** 完了したターンは Responses の `usage` から課金され、`/v1/messages` が書き込むのと同じカウンターに加算されるため、1 つの上限が両方のサーフェスを制限します。キャッシュされたトークンはキャッシュ読み取りレート、残りの入力は入力レートで課金され、推論トークンは出力に含まれ、キャッシュ書き込みはありません。使用量が報告されずに終わったターン（クライアントの切断、置き換えられたターン、途切れたストリーム）は、リクエスト本文から推定した入力に配信済みの出力を加えた下限で課金されます。ストリーミングでない 2xx の JSON 本文も、同様に `usage` から課金されます。
+- **GPT の価格。** 組み込みの料金表には GPT/Codex の価格がないため、これらのモデルは行を追加するまで不明モデルのレート（100 万トークンあたり `$5 / $25 / $0.50 / $6.25`、モデルごとに警告 1 回）で課金されます。
+
+```toml
+[[server.spend.pricing.overrides]]
+upstream = "codex"       # エンドポイントの provider
+model = "gpt-5.2"
+input = 1.00             # 例のレート、100 万トークンあたり USD
+output = 8.00
+cache_read = 0.10
+cache_write = 1.00
+```
+
 ## `/v1/messages` との違い
 
 - **変換なし。** インバウンドの Responses ボディはバイト単位でそのまま上流へ転送され、上流のレスポンス — SSE でも JSON でも、成功でもエラーでも — はそのまま中継されます（ステータスと `content-type` は保たれます）。Anthropic Messages ⇄ Responses の変換ステップは一切ありません。

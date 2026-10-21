@@ -376,6 +376,48 @@ the `Host` header. That check cannot tell `http` from `https` on the same host �
 see the client-facing scheme when TLS terminates at a proxy — so gate the endpoint with
 `[server.auth]` for anything beyond loopback.
 
+## Spend limits
+
+With `[server.spend]` configured, the endpoint enforces and meters the same per-principal caps as
+`/v1/messages` ([Gateway spend limits](gateway-spend-limits.md), issue #733). Without it, nothing
+here applies.
+
+- **Checked before any upstream call.** Every turn is assessed first, on the HTTP `POST` of all
+  three Responses paths and on the Responses WebSocket. The principal is the one `/v1/messages`
+  uses: the static `[server.auth]` token name, the verified JWT email, or `shunt:anonymous` without
+  `[server.auth]`. This endpoint does not accept gateway-login sessions.
+- **HTTP refusal.** An over-cap turn gets `429` with
+  `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<epoch s>}}`
+  and the headers `retry-after`, `x-should-retry: false` and `x-codex-promo-message: <blocked_message>`.
+  The promo header is sent only when `blocked_message` is plain ASCII; the text always rides in the
+  message. The refusal is built by the endpoint itself, not by the generic OpenAI error shaping,
+  which would drop `code`, `resets_at` and the promo header. The named cap is the reached cap that
+  resets last.
+- **Fail-closed.** With `fail_closed_on_error`, a capped principal whose spend state is unavailable
+  is refused with the same type, `spend limit unavailable`, and no `resets_at` and no `retry-after`.
+- **What the Codex CLI shows.** At the pinned version `rust-v0.159.3`, a `429` with
+  `usage_limit_reached` becomes the CLI's usage-limit error, which it does not retry. The CLI
+  renders its own "You've hit your usage limit … Try again at <resets_at>" text, with the promo
+  message when the header is present, and ignores the server message.
+- **WebSocket.** A refused `response.create` gets one frame,
+  `{"type":"error","status":429,"error":{…as above…},"headers":{"retry-after":…,"x-codex-promo-message":…}}`.
+  The socket stays open and each later turn is assessed afresh. A `generate: false` warmup makes no
+  upstream call and is not checked.
+- **Web search.** `/alpha/search` and its aliases are refused with the same error when over cap, and
+  are never metered.
+- **Metering.** A completed turn is billed from the Responses `usage` into the counters
+  `/v1/messages` writes, so one cap bounds both surfaces. Cached tokens are billed at the cache-read
+  rate and the rest of the input at the input rate; reasoning is inside output; there is no cache
+  write. Pricing is keyed by the serving provider, the client model and the upstream model.
+- **GPT pricing.** The built-in catalog has no GPT or Codex prices, so those models bill at the
+  unknown-model rate unless the operator adds `[[server.spend.pricing.overrides]]` rows (an example
+  is in [Gateway spend limits](gateway-spend-limits.md#inbound-codex-endpoint-metering)). Rows for
+  the endpoint's provider or its routes are not flagged as unreachable.
+- **Floor.** A turn that ends without reported usage (client close, replaced turn, broken stream)
+  is billed the input estimated from the request body plus the output text already delivered.
+- **Non-streamed bodies.** A non-streamed 2xx JSON Responses body is billed from its `usage` with the
+  same cached split.
+
 ## Reload behavior
 
 Like `[server.admin]`, the route set is decided **once at boot** from the initial config — a

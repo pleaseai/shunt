@@ -174,6 +174,28 @@ shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，�
 
 匹配是精确且区分大小写的，并且不限制字符集，所以 `MiniMax-M3`、`openai/gpt-5.6-sol`、`~openai/gpt-latest` 这类厂商标识都会按写法路由。指向另一个 `chatgpt_oauth` 提供方的路由则仍保留完整的账号池透传。路由从实时配置读取，因此在重载时生效。
 
+## 支出限制
+
+配置 [`[server.spend]`](/zh-cn/reference/configuration/#serverspend可选)后,该端点会按与 `/v1/messages` 相同的主体上限进行检查和计量;未配置时下列内容均不适用。完整行为见 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(英文)。
+
+- **检查时机。** 每个回合在调用任何上游之前检查,覆盖三条 Responses 路径的 HTTP `POST` 和 Responses WebSocket。主体是静态 `[server.auth]` 令牌名、已验证的 JWT 邮箱,或 `[server.auth]` 关闭时的匿名主体。该端点不接受 gateway 登录会话。
+- **拒绝响应。** 超限的回合收到 `429` 和 `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<纪元秒>}}`,并带有 `retry-after`、`x-should-retry: false` 和 `x-codex-promo-message: <blocked_message>` 头部。仅当 `blocked_message` 为纯 ASCII 时才发送 promo 头部,文本始终也在 message 中。被点名的上限是已达上限中最晚重置的一个。启用 `fail_closed_on_error` 时,支出状态不可用的有上限主体会以相同的 type 被拒绝,且没有 `resets_at` 和 `retry-after`。
+- **Codex CLI 的显示。** 在固定版本 `rust-v0.159.3` 上,Codex CLI 不会重试该错误。它根据 `resets_at` 显示自己的文案("You've hit your usage limit … Try again at"),头部存在时一并显示 promo 消息,并忽略服务器消息。这是 Codex CLI 的行为,其他版本可能不同。
+- **WebSocket。** 被拒绝的 `response.create` 会收到一个 `{"type":"error","status":429,"error":{…},"headers":{…}}` 帧,其中包含相同的错误以及 `retry-after` 和 `x-codex-promo-message`。套接字保持打开,之后每个回合都会重新检查,`generate: false` 的预热不检查。
+- **网页搜索。** `/alpha/search` 及其别名在超限时被拒绝,且从不计量。
+- **计量。** 已完成的回合按 Responses 的 `usage` 计费,计入 `/v1/messages` 所写的同一组计数器,因此一个上限同时约束两个界面。缓存 token 按缓存读取费率计费,其余输入按输入费率计费;推理计入输出,没有缓存写入。未报告用量就结束的回合(客户端关闭、被替换的回合、中断的流)按"由请求体估算的输入加上已送达的输出"这一下限计费。非流式的 2xx JSON 响应体同样按其 `usage` 计费。
+- **GPT 价格。** 内置价目表没有 GPT/Codex 的价格,因此这些模型在添加行之前按未知模型费率计费(每百万 token `$5 / $25 / $0.50 / $6.25`,每个模型一次警告):
+
+```toml
+[[server.spend.pricing.overrides]]
+upstream = "codex"       # 端点的 provider
+model = "gpt-5.2"
+input = 1.00             # 示例费率,每百万 token 的美元数
+output = 8.00
+cache_read = 0.10
+cache_write = 1.00
+```
+
 ## 与 `/v1/messages` 的差异
 
 - **没有转换**。入站的 Responses 请求体会逐字节转发到上游,而上游的响应 —— 无论 SSE 还是 JSON、成功还是错误 —— 都逐字中继回来(状态码与 `content-type` 保留)。完全没有 Anthropic Messages ⇄ Responses 的转换步骤。

@@ -174,6 +174,28 @@ What changes for a routed request to a **non-ChatGPT** upstream:
 
 Matching is exact and case-sensitive with no charset restriction, so vendor slugs like `MiniMax-M3`, `openai/gpt-5.6-sol`, and `~openai/gpt-latest` route as written. A route to another `chatgpt_oauth` provider instead keeps the full pool passthrough. Routes are read from the live config, so they take effect on reload.
 
+## Spend limits
+
+With [`[server.spend]`](/reference/configuration/#serverspend-optional) configured, the endpoint checks and meters the same per-principal caps as `/v1/messages`; without it nothing here applies. See [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md) for the full behavior.
+
+- **Checked first.** Every turn is checked before any upstream call, on the HTTP `POST` of all three Responses paths and on the Responses WebSocket. The principal is the static `[server.auth]` token name, the verified JWT email, or the anonymous principal when `[server.auth]` is off. This endpoint does not accept gateway-login sessions.
+- **Refusal.** An over-cap turn gets `429` with `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<epoch seconds>}}`, plus `retry-after`, `x-should-retry: false` and `x-codex-promo-message: <blocked_message>`. The promo header is sent only when `blocked_message` is plain ASCII; the text always rides in the message. The named cap is the reached one that resets last. With `fail_closed_on_error`, a capped principal whose spend state is unavailable is refused with the same type, no `resets_at` and no `retry-after`.
+- **What the Codex CLI shows.** At the pinned version `rust-v0.159.3`, the Codex CLI does not retry this error. It renders its own "You've hit your usage limit … Try again at" text from `resets_at`, with the promo message when the header is present, and ignores the server message. That is Codex CLI behavior, so another version can differ.
+- **WebSocket.** A refused `response.create` gets one `{"type":"error","status":429,"error":{…},"headers":{…}}` frame carrying the same error plus `retry-after` and `x-codex-promo-message`. The socket stays open, each later turn is checked afresh, and `generate: false` warmups are not checked.
+- **Web search.** `/alpha/search` and its aliases are refused when over cap, and are never metered.
+- **Metering.** A completed turn is billed from the Responses `usage` into the counters `/v1/messages` writes, so one cap bounds both surfaces. Cached tokens bill at the cache-read rate and the rest of the input at the input rate; reasoning is inside the output and there is no cache write. A turn that ends without reported usage (a client close, a replaced turn, a broken stream) is billed a floor: the input estimated from the request body plus the output already delivered. A non-streamed 2xx JSON body is billed from its `usage` the same way.
+- **GPT pricing.** The built-in catalog has no GPT or Codex prices, so those models bill at the unknown-model rate (`$5 / $25 / $0.50 / $6.25` per million tokens, with one warning per model) until you add a row:
+
+```toml
+[[server.spend.pricing.overrides]]
+upstream = "codex"       # the endpoint's provider
+model = "gpt-5.2"
+input = 1.00             # placeholder rates, USD per million tokens
+output = 8.00
+cache_read = 0.10
+cache_write = 1.00
+```
+
 ## What's different from `/v1/messages`
 
 - **No translation.** The inbound Responses body is forwarded upstream byte-for-byte, and the upstream response — SSE or JSON, success or error — is relayed back verbatim (status and `content-type` preserved). There is no Anthropic Messages ⇄ Responses translation step at all.

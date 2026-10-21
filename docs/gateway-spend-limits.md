@@ -1,6 +1,6 @@
 # Gateway spend limits
 
-shunt stores per-user and organization spend caps behind an authenticated Admin API, meters what each principal spends on `/v1/messages`, and refuses a principal that has reached a cap with a `429 billing_error`. The sections below cover [configuration](#configuration), [enforcement](#enforcement), [metering](#metering), [rate-limit headers](#rate-limit-headers), [counter persistence](#counter-persistence), the [Admin API](#admin-api) and the [effective spend endpoint](#get-effective), and finish with what is [not yet implemented](#not-yet-implemented).
+shunt stores per-user and organization spend caps behind an authenticated Admin API, meters what each principal spends on `/v1/messages` and on the [inbound Codex endpoint](#inbound-codex-endpoint), and refuses a principal that has reached a cap with a `429` (`billing_error` on `/v1/messages`, `usage_limit_reached` on the Codex endpoint). The sections below cover [configuration](#configuration), [enforcement](#enforcement), [metering](#metering), [rate-limit headers](#rate-limit-headers), [counter persistence](#counter-persistence), the [Admin API](#admin-api) and the [effective spend endpoint](#get-effective), and finish with what is [not yet implemented](#not-yet-implemented).
 
 ## Configuration
 
@@ -41,7 +41,7 @@ cache_read = 0.33
 cache_write = 4.125
 ```
 
-`multiplier` scales every resolved rate, list price and override alike, and models a discount: it must be a finite number of at least `0.000001` and at most `1`. Each override row supplies all four rates in USD per million tokens, and each must be finite, at least `0.001`, and at most `18,446,744,073` (above that the femto-USD conversion saturates). Both floors exist because rates are stored as whole femto-USD (1e-15 USD) per token: their product is exactly 1 femto-USD per token, the smallest nonzero rate the meter can carry, so every accepted rate and multiplier together price at least 1 femto-USD per token. A value below its floor is rejected because, combined with a small enough value on the other side, it rounds down to `0` and prices requests at nothing while looking like a valid discount. A missing rate is a parse error; an out-of-range rate, an out-of-range multiplier, a blank `upstream`, an `upstream` that names no configured upstream (the error lists the ones that exist), and two rows pricing the same model on one upstream all fail configuration validation at boot. Two rows collide when they name the same model, not merely the same string: `claude-sonnet-4-6` and `claude-sonnet-4-6-20260217` are one model on one upstream. A row whose `model` is neither a built-in nor a model that any `[[models]]`, `[[routes]]`, or `[[route_prefixes]]` entry can request **on that row's own `upstream`** is a warning rather than an error — the row is kept, but nothing will ever match it. The check is per upstream and covers prefix routes, matching them case-insensitively even though routing itself is case-sensitive (a prefix shadowed by an earlier prefix routed elsewhere, one that is a case-exact prefix of it, does not count, because routing takes the first match) — a row matches the request model case-insensitively, so it is reachable whenever *any* spelling of its model routes to that upstream, and the client picks the spelling: a model mapped only as another upstream's `upstream_model` does not make the row usable, while a model served by a `[[route_prefixes]]` entry on the row's own upstream does. A `[models.router]` id is requestable on the upstreams its targets and judges resolve to — a judge call is priced under the router's id too — while a `noop` router calls no upstream of its own; a `[models.subagents]` overlay on the same entry adds the upstreams its targets and judges resolve to, since its calls are priced under the parent id. A row for the id on any other upstream warns. A row on `server.default_provider` is never warned about, because routing sends everything no route or prefix claimed to that provider.
+`multiplier` scales every resolved rate, list price and override alike, and models a discount: it must be a finite number of at least `0.000001` and at most `1`. Each override row supplies all four rates in USD per million tokens, and each must be finite, at least `0.001`, and at most `18,446,744,073` (above that the femto-USD conversion saturates). Both floors exist because rates are stored as whole femto-USD (1e-15 USD) per token: their product is exactly 1 femto-USD per token, the smallest nonzero rate the meter can carry, so every accepted rate and multiplier together price at least 1 femto-USD per token. A value below its floor is rejected because, combined with a small enough value on the other side, it rounds down to `0` and prices requests at nothing while looking like a valid discount. A missing rate is a parse error; an out-of-range rate, an out-of-range multiplier, a blank `upstream`, an `upstream` that names no configured upstream (the error lists the ones that exist), and two rows pricing the same model on one upstream all fail configuration validation at boot. Two rows collide when they name the same model, not merely the same string: `claude-sonnet-4-6` and `claude-sonnet-4-6-20260217` are one model on one upstream. A row whose `model` is neither a built-in nor a model that any `[[models]]`, `[[routes]]`, or `[[route_prefixes]]` entry can request **on that row's own `upstream`** is a warning rather than an error — the row is kept, but nothing will ever match it. The check is per upstream and covers prefix routes, matching them case-insensitively even though routing itself is case-sensitive (a prefix shadowed by an earlier prefix routed elsewhere, one that is a case-exact prefix of it, does not count, because routing takes the first match) — a row matches the request model case-insensitively, so it is reachable whenever *any* spelling of its model routes to that upstream, and the client picks the spelling: a model mapped only as another upstream's `upstream_model` does not make the row usable, while a model served by a `[[route_prefixes]]` entry on the row's own upstream does. A `[models.router]` id is requestable on the upstreams its targets and judges resolve to — a judge call is priced under the router's id too — while a `noop` router calls no upstream of its own; a `[models.subagents]` overlay on the same entry adds the upstreams its targets and judges resolve to, since its calls are priced under the parent id. A row for the id on any other upstream warns. A row on `server.default_provider` is never warned about, because routing sends everything no route or prefix claimed to that provider. The same holds for a row on the inbound Codex endpoint's provider, and for a row on a `[[server.codex_endpoint.routes]]` entry's provider that names the route's model or upstream model.
 
 Model ids are normalized before matching: Claude Code's `[1m]` context-window hint, a Bedrock region prefix and `anthropic.` namespace (including hyphenated regions such as `us-gov.`), a Bedrock `-v<major>:<minor>` version suffix, and a dated snapshot suffix in either the Anthropic (`-20260217`) or Vertex (`@20251101`) form are all stripped. The OpenRouter and Vercel AI Gateway form is normalized too: the `anthropic/` namespace is stripped and the dotted version is hyphenated, so `anthropic/claude-opus-4.8` prices as `claude-opus-4-8`. OpenRouter's floating aliases (`~anthropic/claude-sonnet-latest`) name no version and stay unpriceable.
 
@@ -84,7 +84,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 
 ## Enforcement
 
-Enforcement applies to `POST /v1/messages` when `[server.spend]` is configured. It reads the same state the Admin API writes.
+Enforcement applies to `POST /v1/messages` and to the [inbound Codex endpoint](#inbound-codex-endpoint) when `[server.spend]` is configured. It reads the same state the Admin API writes. The rest of this section describes `/v1/messages`; the Codex endpoint differs only in the refusal's shape and in the transports it covers.
 
 **Principal.** A request is attributed to one principal, matched verbatim against a `user` cap's `user_id`: the static `[server.auth]` token's name, the verified inbound JWT's email, or the gateway-login email. A request whose chain injects a gateway-held credential but carries no identity shares the reserved principal `shunt:anonymous`. A chain made only of passthrough routes (the caller's own upstream credential) is neither enforced nor metered, since the caller pays; the same holds for a chain made only of `type = "noop"` entries, which never reach an upstream.
 
@@ -106,6 +106,39 @@ When `blocked_message` is set it follows after an em dash (`... UTC) — Request
 
 **`fail_closed_on_error`.** The meter is "unavailable" for a principal when one of that principal's persisted counter records failed to restore (see [Counter persistence](#counter-persistence)); the flag lifts when the windows that record could cover have elapsed. The default (`false`) forwards the request and logs a warning. With `true` a principal that has a cap (in any period) is refused with `429 billing_error` `spend limit unavailable` (plus the `blocked_message` suffix), no `retry-after`, and `anthropic-ratelimit-unified-overage-disabled-reason: fetch_error`; a principal with no cap has nothing to enforce and is forwarded.
 
+### Inbound Codex endpoint
+
+When `[server.codex_endpoint]` is enabled, every Codex turn is checked against the same caps and counters before any upstream call. That covers the HTTP `POST` on `/backend-api/codex/responses`, `/responses` and `/v1/responses`, and the Responses WebSocket on the same paths. `[server.spend]` absent means no check and no metering, as before.
+
+**Principal.** It is the principal `/v1/messages` uses: the static `[server.auth]` token name, the verified JWT email, or `shunt:anonymous` when the endpoint runs without `[server.auth]`. The endpoint does not accept gateway-login sessions, so the gateway-login email never appears here. Every route on the endpoint injects a gateway-held credential, so no route is exempt as a passthrough.
+
+**Refusal (HTTP).** A principal at or over any cap gets `429` in the OpenAI Responses error shape, because the Codex CLI recognises that shape and not the Anthropic one:
+
+```json
+{"error":{"message":"spend limit reached (monthly; resets 2026-11-01 00:00 UTC)","type":"usage_limit_reached","code":"usage_limit_reached","resets_at":1793491200}}
+```
+
+- The message is the `/v1/messages` text, with `blocked_message` appended after an em dash when set.
+- `resets_at` is the reset time of the reached cap that resets last, in epoch seconds, and the message names that cap's period. This is the cap `retry-after` is computed from too.
+- The response carries `retry-after` (seconds to the reset, at least 1) and `x-should-retry: false`.
+- When `blocked_message` is set and is plain ASCII, the response also carries it as `x-codex-promo-message`. Text that is not plain ASCII, or that is not a valid header value, is omitted from the header and stays in the message.
+
+**`fail_closed_on_error`.** It applies as on `/v1/messages`: with `true`, a principal that has a cap and whose spend state is unavailable is refused with the same `usage_limit_reached` type and the message `spend limit unavailable` (plus the `blocked_message` suffix). That refusal has no `resets_at` and no `retry-after`, so a client has no reset time to wait for. With `false`, or for a principal with no cap, the turn is forwarded and a warning is logged.
+
+**What the Codex CLI shows.** At the pinned version `rust-v0.159.3`, the Codex CLI maps a `429` whose `error.type` is `usage_limit_reached` to its own usage-limit error and does not retry it. It renders its own text ("You've hit your usage limit … Try again at" the `resets_at` time) and appends the `x-codex-promo-message` header when it is present. It ignores the error's `message`, so a `blocked_message` reaches a Codex user only through that header. This is Codex CLI behaviour, not shunt's, and a different CLI version can differ.
+
+**WebSocket.** A refused `response.create` gets one terminal error frame, and the socket stays open:
+
+```json
+{"type":"error","status":429,"error":{"message":"…","type":"usage_limit_reached","code":"usage_limit_reached","resets_at":1793491200},"headers":{"retry-after":"42","x-codex-promo-message":"…"}}
+```
+
+The `headers` object holds the safe subset only (`retry-after`, and `x-codex-promo-message` when set). Each later `response.create` on the same socket is assessed afresh, so a turn after the cap is raised or its period resets is forwarded without reconnecting. A `generate: false` warmup makes no upstream call and is not checked.
+
+**Web search.** An over-cap principal's `/alpha/search` call (on `/backend-api/codex/alpha/search`, `/alpha/search` and `/v1/alpha/search`) gets the same refusal and is not forwarded. Search is never metered.
+
+Like `/v1/messages`, the check is a pre-check with no reservation, and the Codex endpoint adds no rate-limit headers to allowed responses.
+
 ## Metering
 
 The meter records a charge for each billed response, on the daily, weekly and monthly counters of the principal at once.
@@ -118,6 +151,30 @@ The meter records a charge for each billed response, on the daily, weekly and mo
 - **Side calls.** Router judge, classifier and escalation calls, and gated turns, are metered exactly once against the requesting principal. A gated streamed capture that `gated_max_duration_ms` or `gated_max_bytes` cuts is billed for what it received (including the chunk that crossed the byte cap). An Anthropic request pinned to the provider's `classifier_model` is priced on that model; a translated reply marked truncated bills at least the delivered-text floor.
 
 Known unmetered cases: a router judge reply that is truncated, times out, breaks mid-read, or exceeds its size bound, a non-streamed gated capture that was cut, a non-streamed `2xx` body dropped before its first byte was polled (the client disconnected after the upstream answered), and a streamed `2xx` response dropped before any billable frame was observed (no usage-bearing `message_start` or `message_delta`, and no `content_block_delta` text toward the floor). One under-billed case: when an aborted stream falls back to the delivered-text floor, text inside a single SSE frame larger than 256 KiB (the stream observer's parse cap) is relayed but not counted toward that floor.
+
+### Inbound Codex endpoint metering
+
+The Codex endpoint writes the same daily, weekly and monthly counters as `/v1/messages`, so one cap bounds a principal's combined spend across both surfaces.
+
+- **Completed turns** are billed from the Responses `usage` on the terminal frame (`response.completed`, `response.done` or `response.incomplete`). `input_tokens` includes `input_tokens_details.cached_tokens`, so the cached tokens are billed at the `cache_read` rate and the rest of the input (never below zero) at the `input` rate. `output_tokens` already includes reasoning tokens, and Responses usage reports no cache writes, so nothing is billed at the `cache_write` rate.
+- **Pricing key.** The charge is priced by the serving provider, the client model and the upstream model, through the [pricing table](#pricing). A route to a third-party Responses upstream is priced by that route's provider and upstream model.
+- **Only 2xx is billed**, and the relayed bytes are not altered or buffered by metering.
+- **GPT and Codex models need override rows.** The built-in catalog has no GPT or Codex prices, so those models bill at the unknown-model rate (`$5 / $25 / $0.50 / $6.25` per million tokens, with one warning per model id) until you add a row. For a Codex endpoint whose provider is `codex`:
+
+  ```toml
+  [[server.spend.pricing.overrides]]
+  upstream = "codex"
+  model = "gpt-5.2"            # the model id Codex clients request
+  input = 1.00                 # placeholder rates, USD per million tokens: use your own
+  output = 8.00
+  cache_read = 0.10
+  cache_write = 1.00           # the table requires all four; Responses reports no cache writes
+  ```
+
+  A row whose `upstream` is the endpoint's provider is never reported as unreachable, and neither is a row on a `[[server.codex_endpoint.routes]]` entry's provider that names the route's model or upstream model.
+- **Turns without reported usage.** A turn that ends without a usage report (the client closes the socket, a turn is replaced, or the stream breaks) is billed at a floor: the input estimated from the request body plus the output text already delivered to the client. A turn that reports usage never runs the estimator.
+- **Non-streamed bodies.** A non-streamed 2xx JSON Responses body is billed from its `usage` with the same cached split.
+- **Web search** is never metered.
 
 Limit: counters are u64 femto-USD and saturate at about $18,446.74 per principal per window, so a cap of 1,844,675 cents or more can never be reached (a follow-up issue tracks widening).
 
@@ -201,4 +258,3 @@ Without `user_ids[]` the rows cover every principal with a counter in a retained
 - Retention sweeps of audit records and identity data (`audit_retention_days`, `identity_retention_days`)
 - `rbac_group`, `seat_tier` and `organization_service` scopes, and `group_limit_mode`
 - The dollar figure Claude Code requests from `GET /api/oauth/usage`
-- The inbound Codex endpoint (`[server.codex_endpoint]`): it is neither enforced nor metered, so a principal reaching shunt only through it spends uncapped. Tracked in [#733](https://github.com/pleaseai/shunt/issues/733)

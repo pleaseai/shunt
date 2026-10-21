@@ -174,6 +174,28 @@ shunt는 Codex CLI 디스커버리 요청에 유효한 폴백인 `{"models":[]}`
 
 매칭은 정확 일치이며 대소문자를 구분하고 문자 집합 제한이 없습니다. 따라서 `MiniMax-M3`, `openai/gpt-5.6-sol`, `~openai/gpt-latest` 같은 벤더 슬러그도 적은 그대로 라우팅됩니다. 다른 `chatgpt_oauth` 프로바이더로 향하는 라우트라면 전체 풀 패스스루가 그대로 유지됩니다. 라우트는 라이브 구성에서 읽으므로 리로드 시점에 반영됩니다.
 
+## 지출 한도
+
+[`[server.spend]`](/ko/reference/configuration/#serverspend-선택)를 구성하면 이 엔드포인트도 `/v1/messages`와 같은 주체별 상한을 검사하고 계측합니다. 구성하지 않으면 아래 내용은 적용되지 않습니다. 전체 동작은 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(영문)를 참고하세요.
+
+- **검사 시점.** 모든 턴은 업스트림을 호출하기 전에 검사합니다. 세 Responses 경로의 HTTP `POST`와 Responses WebSocket이 모두 대상입니다. 주체는 정적 `[server.auth]` 토큰 이름, 검증된 JWT 이메일, 또는 `[server.auth]`가 꺼져 있을 때의 익명 주체입니다. 이 엔드포인트는 gateway 로그인 세션을 받지 않습니다.
+- **거부 응답.** 상한을 넘은 턴은 `429`와 `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<에포크 초>}}`를 받고, `retry-after`, `x-should-retry: false`, `x-codex-promo-message: <blocked_message>` 헤더가 붙습니다. promo 헤더는 `blocked_message`가 순수 ASCII일 때만 보내며, 텍스트는 항상 메시지에도 들어갑니다. 이름이 붙는 상한은 도달한 상한 중 가장 늦게 리셋되는 것입니다. `fail_closed_on_error`가 켜져 있으면, 지출 상태를 확인할 수 없는 상한 보유 주체를 같은 type으로 거부하며 `resets_at`과 `retry-after`는 없습니다.
+- **Codex CLI가 보여 주는 것.** 고정된 버전 `rust-v0.159.3`에서 Codex CLI는 이 오류를 재시도하지 않습니다. `resets_at`으로 만든 자체 문구("You've hit your usage limit … Try again at")를 표시하고, 헤더가 있으면 promo 메시지를 함께 보여 주며, 서버 메시지는 무시합니다. 이는 Codex CLI의 동작이므로 다른 버전에서는 다를 수 있습니다.
+- **WebSocket.** 거부된 `response.create`에는 같은 오류와 `retry-after`, `x-codex-promo-message`를 담은 `{"type":"error","status":429,"error":{…},"headers":{…}}` 프레임 하나가 갑니다. 소켓은 열린 채로 유지되고, 이후 각 턴을 새로 검사하며, `generate: false` 워밍업은 검사하지 않습니다.
+- **웹 검색.** `/alpha/search`와 그 별칭은 상한을 넘으면 거부되며 계측하지 않습니다.
+- **계측.** 완료된 턴은 Responses `usage`로 청구되어 `/v1/messages`가 쓰는 것과 같은 카운터에 합산되므로, 하나의 상한이 두 표면을 함께 제한합니다. 캐시된 토큰은 캐시 읽기 요율, 나머지 입력은 입력 요율로 청구하며, 추론 토큰은 출력에 포함되고 캐시 쓰기는 없습니다. 사용량 보고 없이 끝난 턴(클라이언트 종료, 교체된 턴, 끊어진 스트림)은 요청 본문으로 추정한 입력에 이미 전달된 출력을 더한 하한으로 청구합니다. 스트리밍이 아닌 2xx JSON 본문도 같은 방식으로 `usage`에서 청구합니다.
+- **GPT 가격.** 내장 요금표에는 GPT/Codex 가격이 없으므로 해당 모델은 행을 추가하기 전까지 알 수 없는 모델 요율(백만 토큰당 `$5 / $25 / $0.50 / $6.25`, 모델당 경고 한 번)로 청구됩니다.
+
+```toml
+[[server.spend.pricing.overrides]]
+upstream = "codex"       # 엔드포인트의 provider
+model = "gpt-5.2"
+input = 1.00             # 예시 요율, 100만 토큰당 USD
+output = 8.00
+cache_read = 0.10
+cache_write = 1.00
+```
+
 ## `/v1/messages`와 다른 점
 
 - **변환이 없습니다.** 인바운드 Responses 본문은 바이트 단위로 그대로 업스트림에 전달되고, 업스트림 응답도 — SSE든 JSON이든, 성공이든 오류든 — 그대로 릴레이됩니다(status와 `content-type` 보존). Anthropic Messages ⇄ Responses 변환 단계는 아예 없습니다.

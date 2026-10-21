@@ -128,7 +128,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 
 ## `[server.spend]`(可选)
 
-存在此表即注册 `/v1/organizations/spend_limits` 下的 spend-limit Admin API,并对 `/v1/messages` 启用支出计量与限制实施。它是**只含策略**的顶层小节,不持有任何 key 材料:这些路由使用 [`[server.admin]`](#serveradmin可选) 凭据认证,因此启用 spend limit 不需要 gateway 登录界面。只有 `[server.spend]` 而没有 `[server.admin]` 会导致配置校验失败。
+存在此表即注册 `/v1/organizations/spend_limits` 下的 spend-limit Admin API,并对 `/v1/messages` 和[入站 Codex 端点](#servercodex_endpoint可选)启用支出计量与限制实施。它是**只含策略**的顶层小节,不持有任何 key 材料:这些路由使用 [`[server.admin]`](#serveradmin可选) 凭据认证,因此启用 spend limit 不需要 gateway 登录界面。只有 `[server.spend]` 而没有 `[server.admin]` 会导致配置校验失败。
 
 | 键 | 默认 | 含义 |
 | :-- | :-- | :-- |
@@ -143,7 +143,7 @@ key = "${file:/run/secrets/shunt-reporting-key}"
 
 ### `[server.spend.pricing]`(可选)
 
-定义一次请求的成本。省略该表表示使用内置标价并以 multiplier 1 计算。计量器会用该表、按实际响应请求的上游模型为每个被计量的 `/v1/messages` 响应计价;无法定价的模型按每百万 token 输入 / 输出 / 缓存读取 / 缓存写入 `$5 / $25 / $0.50 / $6.25`(再乘以 `multiplier`)计费,对前 256 个不同的模型 id 各记录一次警告,之后只记录一次"不再报告更多 id"的警告。
+定义一次请求的成本。省略该表表示使用内置标价并以 multiplier 1 计算。计量器会用该表、按实际响应请求的上游模型为每个被计量的 `/v1/messages` 响应和每个已完成的入站 Codex 回合计价;无法定价的模型按每百万 token 输入 / 输出 / 缓存读取 / 缓存写入 `$5 / $25 / $0.50 / $6.25`(再乘以 `multiplier`)计费,对前 256 个不同的模型 id 各记录一次警告,之后只记录一次"不再报告更多 id"的警告。
 
 | 键 | 默认值 | 含义 |
 | :-- | :-- | :-- |
@@ -172,7 +172,7 @@ cache_read = 0.33
 cache_write = 4.125
 ```
 
-超出范围的 multiplier、缺失或超出范围的费率、空的 `upstream`、指向未配置 upstream 的 `upstream`,以及在同一个 upstream 上为同一模型配置的两行,都会导致启动时校验失败。两行冲突的判定依据是指向同一个模型,而非字符串相同:`claude-sonnet-4-6` 与 `claude-sonnet-4-6-20260217` 是同一个模型。若 `model` 既不是内置模型,也不是**在该行自己的 `upstream` 上**任何 `[[models]]`、`[[routes]]`、`[[route_prefixes]]` 条目能够请求的模型,则只记录警告。该检查按 upstream 进行,并涵盖前缀路由,且与路由不同,按大小写不敏感匹配前缀(但路由采用第一个匹配,因此被前面路由到别处、且以大小写完全一致的方式作为其前缀的条目所遮蔽的前缀不计入)——行与请求模型按大小写不敏感匹配,因此只要该模型的任一拼写能路由到该 upstream,该行就是可达的,而拼写由客户端决定:仅作为其他 upstream 的 `upstream_model` 映射的模型仍会告警,而由该行 upstream 上的 `[[route_prefixes]]` 条目提供的模型则不会。`[models.router]` 的 id 可在其 target 与 judge 解析到的 upstream 上请求(judge 调用同样按路由器 id 计价),而 `noop` 路由器自身不调用任何 upstream;同一条目上的 `[models.subagents]` 覆盖层的调用同样按父 id 计价,因此还会加入其 target 与 judge 解析到的 upstream。该 id 在其他 upstream 上的行会告警。指向 `server.default_provider` 的行不会告警,因为路由会把所有未被 route 或 prefix 认领的模型都发往该 provider。
+超出范围的 multiplier、缺失或超出范围的费率、空的 `upstream`、指向未配置 upstream 的 `upstream`,以及在同一个 upstream 上为同一模型配置的两行,都会导致启动时校验失败。两行冲突的判定依据是指向同一个模型,而非字符串相同:`claude-sonnet-4-6` 与 `claude-sonnet-4-6-20260217` 是同一个模型。若 `model` 既不是内置模型,也不是**在该行自己的 `upstream` 上**任何 `[[models]]`、`[[routes]]`、`[[route_prefixes]]` 条目能够请求的模型,则只记录警告。该检查按 upstream 进行,并涵盖前缀路由,且与路由不同,按大小写不敏感匹配前缀(但路由采用第一个匹配,因此被前面路由到别处、且以大小写完全一致的方式作为其前缀的条目所遮蔽的前缀不计入)——行与请求模型按大小写不敏感匹配,因此只要该模型的任一拼写能路由到该 upstream,该行就是可达的,而拼写由客户端决定:仅作为其他 upstream 的 `upstream_model` 映射的模型仍会告警,而由该行 upstream 上的 `[[route_prefixes]]` 条目提供的模型则不会。`[models.router]` 的 id 可在其 target 与 judge 解析到的 upstream 上请求(judge 调用同样按路由器 id 计价),而 `noop` 路由器自身不调用任何 upstream;同一条目上的 `[models.subagents]` 覆盖层的调用同样按父 id 计价,因此还会加入其 target 与 judge 解析到的 upstream。该 id 在其他 upstream 上的行会告警。指向 `server.default_provider` 的行不会告警,因为路由会把所有未被 route 或 prefix 认领的模型都发往该 provider。指向入站 Codex 端点 provider 的行,以及指向 `[[server.codex_endpoint.routes]]` 条目 provider 且写明该 route 的模型或 upstream 模型的行,同样不会告警。内置价目表没有 GPT/Codex 的价格,因此在添加 override 行之前,Codex 端点的模型按未知模型费率计费。
 
 模型 id 在匹配前会被规范化:Claude Code 的 `[1m]` 上下文窗口提示、Bedrock 区域前缀与 `anthropic.` 命名空间、Bedrock 的 `-v<major>:<minor>` 版本后缀、日期快照后缀(`-20260217`、`@20251101`),以及 OpenRouter / Vercel AI Gateway 形式——后者会去掉 `anthropic/` 命名空间并把点号版本改为连字符,因此 `anthropic/claude-opus-4.8` 按 `claude-opus-4-8` 计价;而 `~anthropic/claude-sonnet-latest` 这类浮动别名未指定版本,仍无法计价。
 
@@ -184,7 +184,9 @@ cache_write = 4.125
 | :-- | :-- | :-- |
 | `fail_closed_on_error` | `false` | 当某个主体的计量器不可信时(有计数记录恢复失败,直到其窗口结束):`false` 转发请求并记录警告;`true` 对设有上限的主体以 `429` `spend limit unavailable` 拒绝(无上限的主体照常转发) |
 
-限制实施作用于 `POST /v1/messages`(不含 `count_tokens`)。主体(principal)是静态 `[server.auth]` 令牌名、已验证的 JWT 邮箱或 gateway 登录邮箱,并与 `user` 限制的 `user_id` 逐字匹配;注入凭据但没有身份的请求共用 `shunt:anonymous`,仅由 passthrough 或 `type = "noop"` 路由组成的链既不实施也不计量。每个 UTC 周期(日、周一起始的周、月)的上限依次取该主体的 `user` 行、`organization` 行(按人的默认值,而非共享池),都没有则不限。`amount: null` 的 `user` 行表示显式不限。检查是不做预留的事前检查,因此处理中的请求可能超出上限。达到上限的主体会收到带 `retry-after` 与 `x-should-retry: false` 的 `429 billing_error`(`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`),对有上限的主体,计量请求(仅由 passthrough 或 `noop` 路由组成的链不计量,保留上游头部)在任何状态码下的响应都会移除上游的 `anthropic-ratelimit-*` 头部,而该主体自己的 `anthropic-ratelimit-unified-*` 头部只在 `2xx` 响应和两种支出上限拒绝中写入,即超出上限的 `429`,以及带有 `anthropic-ratelimit-unified-overage-disabled-reason: fetch_error` 的 fail-closed `429 spend limit unavailable`(其他错误和 fail-open 转发都没有)。入站 Codex 端点(`[server.codex_endpoint]`)目前既不实施也不计量([#733](https://github.com/pleaseai/shunt/issues/733))。`/audit`、审计与身份保留清理以及 group scope 尚未实现。完整行为见 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(英文)。
+限制实施作用于 `POST /v1/messages`(不含 `count_tokens`)。主体(principal)是静态 `[server.auth]` 令牌名、已验证的 JWT 邮箱或 gateway 登录邮箱,并与 `user` 限制的 `user_id` 逐字匹配;注入凭据但没有身份的请求共用 `shunt:anonymous`,仅由 passthrough 或 `type = "noop"` 路由组成的链既不实施也不计量。每个 UTC 周期(日、周一起始的周、月)的上限依次取该主体的 `user` 行、`organization` 行(按人的默认值,而非共享池),都没有则不限。`amount: null` 的 `user` 行表示显式不限。检查是不做预留的事前检查,因此处理中的请求可能超出上限。达到上限的主体会收到带 `retry-after` 与 `x-should-retry: false` 的 `429 billing_error`(`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`),对有上限的主体,计量请求(仅由 passthrough 或 `noop` 路由组成的链不计量,保留上游头部)在任何状态码下的响应都会移除上游的 `anthropic-ratelimit-*` 头部,而该主体自己的 `anthropic-ratelimit-unified-*` 头部只在 `2xx` 响应和两种支出上限拒绝中写入,即超出上限的 `429`,以及带有 `anthropic-ratelimit-unified-overage-disabled-reason: fetch_error` 的 fail-closed `429 spend limit unavailable`(其他错误和 fail-open 转发都没有)。`/audit`、审计与身份保留清理以及 group scope 尚未实现。完整行为见 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(英文)。
+
+入站 Codex 端点(`[server.codex_endpoint]`)按同一组上限和计数器检查并计量,因此一个上限同时约束主体在两个界面上的支出。每个回合在调用任何上游之前检查,HTTP 和 Responses WebSocket 均如此;主体是静态令牌名、已验证的 JWT 邮箱,或没有 `[server.auth]` 时的 `shunt:anonymous`。超限的回合收到 `429`,`error.type` 与 `error.code` 均为 `usage_limit_reached`,并带有 `resets_at`(纪元秒,取已达上限中最晚重置的一个)、`retry-after`、`x-should-retry: false`,且当 `blocked_message` 为纯 ASCII 时通过 `x-codex-promo-message` 一并给出。`fail_closed_on_error` 会以相同的 type 拒绝有上限的主体,且不带 `resets_at` 和 `retry-after`。已完成的回合按 Responses 的 `usage` 计费:缓存输入 token 按 `cache_read` 费率,其余输入按 `input` 费率,推理计入输出。未报告用量就结束的回合,按估算输入的下限加上已送达的输出计费。面向客户端的行为见[入站 Codex 端点](/zh-cn/guides/inbound-codex-endpoint/#支出限制)。
 
 ## `[server.gateway]`(可选)
 
