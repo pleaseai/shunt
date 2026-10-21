@@ -82,8 +82,10 @@ pub fn count_responses_input_tokens(body: &[u8]) -> u64 {
 
 /// Same as [`count_responses_input_tokens`] but over an already-parsed request.
 ///
-/// Counts `instructions`, every `input` item (or a bare string `input`), and
-/// each tool's serialized JSON.
+/// Counts `instructions`, the text of each `input` item (or a bare string
+/// `input`), and each tool's serialized JSON. An item kind with no readable
+/// text (`web_search_call`, `image_generation_call`, ...) adds only its
+/// per-item overhead.
 pub fn count_responses_input_tokens_value(request: &Value) -> u64 {
     let mut text = String::new();
     let mut overhead: u64 = 0;
