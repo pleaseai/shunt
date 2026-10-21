@@ -115,6 +115,9 @@ Considered and not built:
 
 ## Progress
 
+- [x] (2026-10-21 KST) T001 Refuse over-cap HTTP turns with the Codex usage-limit error
+  Evidence: `cargo test --all-features --test codex_spend_enforcement` → 7 passed (5 go red with `spend::admit` stubbed out); `--lib` 3542 passed, `inbound_codex_endpoint` 33 passed, `spend_enforcement` 13 passed
+
 ## Decision Log
 
 - 2026-10-21: Designed inline from one exploration pass, with no architect agent. The existing tap and gate fixed the seams; rejected alternatives are listed above.
@@ -122,3 +125,5 @@ Considered and not built:
 ## Surprises & Discoveries
 
 - 2026-10-21: `/v1/messages` has no input estimator, contrary to the spec's assumption. The spec is corrected, and T006 builds the estimator.
+- Observation: `HeaderValue::from_str` accepts non-ASCII UTF-8 (obs-text bytes `0x80..`), so "valid header value" alone would send a non-ASCII `blocked_message` as the promo header. `promo_header` in `src/codex_endpoint/spend.rs` also requires `is_ascii()`; T003 must reuse it.
+  Evidence: the non-ASCII case in `tests/codex_spend_enforcement.rs` failed on the header until the ASCII check was added; unit test `only_visible_ascii_becomes_a_promo_header`.

@@ -43,6 +43,7 @@ pub mod frame;
 mod model;
 mod routing;
 pub mod search;
+mod spend;
 pub mod websocket;
 
 #[cfg(test)]
@@ -244,6 +245,12 @@ async fn forward(
     let pool_key = pool_sticky_key(inbound_client.as_deref(), session_id.clone());
     match operation {
         CodexOperation::Responses => {
+            // Spend admission precedes every upstream-capable step. Its refusal
+            // is already OpenAI-shaped, so it returns `Ok` and skips the lossy
+            // re-shape in `serve`.
+            if let Err(refusal) = spend::admit(&state, inbound_client.as_deref()) {
+                return Ok((StatusCode::TOO_MANY_REQUESTS, refusal.into_response()));
+            }
             forward_turn(
                 state,
                 None,
