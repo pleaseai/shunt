@@ -31,3 +31,5 @@ freeform diff review as a replacement for the structured Greptile findings, sinc
 See also the broader note in the user's global auto-memory index: `review-engine-env-traps.md`
 ("cubic 기본 모드는 미추적 `.claude/agent-memory/` 때문에 죽는다 ... 로컬 greptile은 node/ada-url
 불일치로 불가").
+
+**Recurrence (2026-10-21, PR #814 review):** same dyld abort (exit 134) for both `--json -b main` and `--agent -b main`, node still 26.4.0, ada-url still missing. Still unavailable; no findings produced.
