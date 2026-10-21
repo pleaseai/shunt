@@ -4,6 +4,8 @@
 //! test: any other test in the same binary could load it first and make the
 //! "still cold" assertions meaningless.
 
+mod common;
+
 use shunt::{
     config::{Config, CountTokens, ProviderKind},
     count_tokens::encoder_is_loaded,
@@ -12,6 +14,10 @@ use shunt::{
 
 #[tokio::test]
 async fn build_router_loads_the_encoder_only_when_a_provider_counts_locally() {
+    // Building a config reads the environment, so the guard is held as
+    // `tests/AGENTS.md` requires. Nothing contends for it here: the one-test
+    // rule above still stands, guard or not.
+    let _vars = common::env_lock().await;
     assert!(
         !encoder_is_loaded(),
         "the encoder must start cold, or the assertions below prove nothing"
