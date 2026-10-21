@@ -4164,8 +4164,8 @@ impl Config {
                     upstream = %row.upstream,
                     model = %row.model,
                     "server.spend.pricing.overrides[{index}].model is neither a built-in model id \
-                     nor a model any [[models]], [[routes]], or [[route_prefixes]] entry can \
-                     request on that upstream; the row will never price anything"
+                     nor a model any [[models]], [[routes]], [[route_prefixes]], or \
+                     [server.codex_endpoint] entry can request on that upstream; the row will never price anything"
                 );
             }
         }
@@ -4218,6 +4218,21 @@ impl Config {
             return true;
         }
         let matches = |candidate: &str| candidate.eq_ignore_ascii_case(model);
+        // The inbound Codex endpoint serves models too. Its default provider
+        // takes any model the client names and forwards it unchanged, so a row
+        // on that provider can price anything. A `[[server.codex_endpoint.routes]]`
+        // entry serves its public model id (priced under the upstream model on
+        // the wire), so a row naming either spelling on the route's provider is
+        // reachable. `model` is already trimmed and hint-stripped above.
+        if self.server.codex_endpoint.as_ref().is_some_and(|endpoint| {
+            row.upstream == endpoint.provider
+                || endpoint.routes.iter().any(|route| {
+                    route.provider == row.upstream
+                        && (matches(&route.model) || matches(route.upstream_model()))
+                })
+        }) {
+            return true;
+        }
         self.models.iter().any(|entry| {
             // The id alone is not enough: `resolve_chain` returns as soon as a
             // `[[models]]` entry claims the id, and it returns only the
@@ -8663,6 +8678,105 @@ policy = { type = "target_selector", selector = "/target" }
         let passthrough = Config::default();
         assert!(requestable(&passthrough, "anthropic", "my-sonnet-alias"));
         assert!(!requestable(&passthrough, "codex", "my-sonnet-alias"));
+    }
+
+    /// The inbound Codex endpoint serves models the `/v1/messages` tables never
+    /// mention: its provider takes any client model, and each route serves its
+    /// public and upstream model ids on its own provider. A row for such a model
+    /// must not warn; one no surface serves still does.
+    #[test]
+    fn pricing_override_is_requestable_through_the_codex_endpoint() {
+        let mut config = Config::default();
+        for name in ["codex-b", "vendor"] {
+            config.providers.insert(
+                name.to_string(),
+                ProviderConfig::anthropic("https://other.example.invalid"),
+            );
+        }
+        config.server.codex_endpoint = Some(CodexEndpointConfig {
+            provider: "codex-b".to_string(),
+            routes: vec![CodexRouteConfig {
+                model: "Public-Model".to_string(),
+                provider: "vendor".to_string(),
+                upstream_model: Some("wire-model".to_string()),
+            }],
+        });
+        let requestable = |config: &Config, upstream: &str, model: &str| {
+            config.pricing_model_is_requestable(&pricing_override(upstream, model, 1.0))
+        };
+
+        for (upstream, model) in [
+            // The endpoint's default provider serves whatever the client names.
+            ("codex-b", "gpt-6.1-sol"),
+            ("codex-b", "gpt-6.1-sol[1m]"),
+            ("codex-b", "  anything-at-all "),
+            // A route's provider serves its public and its upstream model id.
+            ("vendor", "public-model"),
+            ("vendor", "Wire-Model"),
+            ("vendor", "public-model[1m]"),
+        ] {
+            assert!(
+                requestable(&config, upstream, model),
+                "{model} is requestable on {upstream} via the codex endpoint"
+            );
+        }
+        for (upstream, model) in [
+            // The route serves only its own two ids, and only on its provider.
+            ("vendor", "gpt-6.1-sol"),
+            ("codex-b", "   "),
+            // A provider neither the endpoint nor `server.default_provider` names.
+            ("codex", "gpt-6.1-sol"),
+        ] {
+            assert!(
+                !requestable(&config, upstream, model),
+                "{model} is not requestable on {upstream}"
+            );
+        }
+
+        // Without the endpoint configured, the same rows warn again.
+        config.server.codex_endpoint = None;
+        assert!(!requestable(&config, "codex-b", "gpt-6.1-sol"));
+        assert!(!requestable(&config, "vendor", "public-model"));
+    }
+
+    /// End to end through `validate_pricing`: the "never price anything"
+    /// warning stays silent for a Codex-endpoint model and fires for one no
+    /// surface serves.
+    #[test]
+    fn pricing_warning_skips_codex_endpoint_models() {
+        let mut config = Config::default();
+        config.server.codex_endpoint = Some(CodexEndpointConfig::default());
+        let with_rows = |config: &Config, rows: Vec<PricingOverride>| {
+            let mut config = config.clone();
+            config.server.spend = Some(SpendConfig {
+                pricing: Some(PricingConfig {
+                    multiplier: 1.0,
+                    overrides: rows,
+                }),
+                ..SpendConfig::default()
+            });
+            config
+        };
+
+        let served = with_rows(&config, vec![pricing_override("codex", "gpt-6.1-sol", 1.0)]);
+        let (result, logs) = capture_logs(|| served.validate_pricing());
+        result.expect("a codex-endpoint row validates");
+        assert!(
+            !logs.contains("will never price anything"),
+            "a model the codex endpoint serves must not warn: {logs}"
+        );
+
+        // Positive twin: with the endpoint absent the identical row warns, so
+        // the silence above cannot be a warning that never fires.
+        let mut unserved = served.clone();
+        unserved.server.codex_endpoint = None;
+        let (result, logs) = capture_logs(|| unserved.validate_pricing());
+        result.expect("an unserved row still validates");
+        assert_eq!(
+            logs.matches("will never price anything").count(),
+            1,
+            "a model no surface serves warns once: {logs}"
+        );
     }
 
     /// Pricing reachability resolves router and overlay targets and judges
