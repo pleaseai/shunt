@@ -3,6 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use axum::body::Bytes;
 use serde_json::Value;
 
 use crate::{
@@ -120,6 +121,21 @@ pub(super) fn prepare_routed_body(
         Some(full) => replace_input(raw_json, full),
         None => input,
     }
+}
+
+/// The body a turn's spend estimate counts when the wire body is a
+/// continuation: the forwarded body with `previous_response_id` dropped and
+/// `input` replaced by the full `logical_input`, since the estimator cannot
+/// resolve the id and would otherwise count only the new delta. `None` when
+/// the wire body carries no id, so it already holds the whole input. Never
+/// forwarded; the upstream receives `raw_json` as prepared.
+pub(super) fn estimate_body(raw_json: &Value, logical_input: &[Value]) -> Option<Bytes> {
+    raw_json.get("previous_response_id")?;
+    let mut body = raw_json.clone();
+    let obj = body.as_object_mut()?;
+    obj.remove("previous_response_id");
+    obj.insert("input".to_string(), Value::Array(logical_input.to_vec()));
+    serde_json::to_vec(&body).ok().map(Bytes::from)
 }
 
 /// The connection's stored continuation, when `previous` names its response.

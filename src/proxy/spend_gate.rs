@@ -139,7 +139,11 @@ pub(crate) fn enforce(
 }
 
 /// The over-cap refusal's message, naming the binding cap's period and reset.
-fn reached_message(period: Period, reset_at: u64, blocked_message: Option<&str>) -> String {
+pub(crate) fn reached_message(
+    period: Period,
+    reset_at: u64,
+    blocked_message: Option<&str>,
+) -> String {
     with_blocked_message(
         format!(
             "spend limit reached ({}; resets {})",
@@ -152,14 +156,14 @@ fn reached_message(period: Period, reset_at: u64, blocked_message: Option<&str>)
 
 /// Appends the operator's `blocked_message` after an em dash, as the reference
 /// gateway does, on both refusal messages.
-fn with_blocked_message(base: String, blocked_message: Option<&str>) -> String {
+pub(crate) fn with_blocked_message(base: String, blocked_message: Option<&str>) -> String {
     match blocked_message {
         Some(extra) => format!("{base} — {extra}"),
         None => base,
     }
 }
 
-pub(super) fn period_name(period: Period) -> &'static str {
+pub(crate) fn period_name(period: Period) -> &'static str {
     match period {
         Period::Daily => "daily",
         Period::Weekly => "weekly",

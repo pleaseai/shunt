@@ -19,6 +19,16 @@
 //!   `usage` parse, and bills a floor from the byte count when the body was
 //!   larger than that, cut, or carried no readable `usage`.
 //!
+//! A streamed inbound Codex endpoint turn speaks the OpenAI Responses protocol
+//! instead; [`StreamSpend`] reads it in its Responses mode ([`responses`]),
+//! which bills the terminal `response.usage` with the cached tokens split out
+//! of the input. Responses reports input only at completion, so a turn that
+//! ends without it — the client closed the socket, a `response.create`
+//! replaced it, or the upstream stream broke — bills an input estimate over the
+//! retained request body ([`RequestBody`]) plus the delivered-output floor. The
+//! estimate is made lazily, at settle time, on the blocking pool, and only for
+//! such a turn: a turn that reports its input never tokenizes its request.
+//!
 //! Only a `2xx` response is billed; an error the upstream answered with costs
 //! nothing. A response metered elsewhere — the gated capture, for one — is
 //! served with no tap at all, which is how a caller switches this hook off.
@@ -28,11 +38,12 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-use axum::http::StatusCode;
+use axum::{body::Bytes, http::StatusCode};
 use serde::Deserialize;
 
-use super::UPSTREAM_TRUNCATED_MARKER;
+use super::{Protocol, UPSTREAM_TRUNCATED_MARKER};
 use crate::{
+    compression::BodyEncoding,
     gateway::{
         spend::{
             meter::{now_secs, RequestUsage},
@@ -44,9 +55,12 @@ use crate::{
 };
 
 mod json;
+mod oversized;
+mod responses;
 
 use json::json_usage;
 pub(in crate::stream_metrics) use json::JsonSpendBody;
+pub(in crate::stream_metrics) use oversized::OversizedTail;
 
 /// Characters of delivered text billed as one output token when the upstream's
 /// own count is missing — the reference gateway's estimate.
@@ -54,14 +68,60 @@ const CHARS_PER_TOKEN: u64 = 4;
 
 /// The served-response spend hook for one request.
 ///
-/// Cheap to clone (three `Arc`s); the clones share one [`ServedTarget`] slot, so a
-/// committed stream can name its winner after the observer was built.
+/// Cheap to clone (`Arc`s and a refcounted body); the clones share one
+/// [`ServedTarget`] slot, so a committed stream can name its winner after the
+/// observer was built.
 #[derive(Clone)]
 pub(crate) struct SpendTap {
     stores: Arc<GatewayStores>,
     prices: Arc<PriceTable>,
     principal: Arc<str>,
     target: Arc<Mutex<Option<ServedTarget>>>,
+    /// The Responses request a usage-less turn estimates its input from;
+    /// `None` on `/v1/messages`, whose `message_start` reports the input.
+    request: Option<RequestBody>,
+}
+
+/// A Codex endpoint turn's request body, kept (a refcount, not a copy) for the
+/// input estimate of a turn that ends without reported usage.
+#[derive(Clone)]
+pub(crate) struct RequestBody {
+    bytes: Bytes,
+    encoding: BodyEncoding,
+    /// The request size limit, which also caps a zstd body's decode.
+    max_bytes: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Input estimates made on this thread: the seam that shows a turn which
+    /// reports its usage never runs the estimator.
+    static ESTIMATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl RequestBody {
+    /// The estimated input tokens. Blocking work — a zstd decode and a
+    /// tokenizer pass — so it runs off the async executor. A body that does
+    /// not decode or parse estimates zero.
+    fn estimate_input_tokens(&self) -> u64 {
+        #[cfg(test)]
+        ESTIMATES.with(|estimates| estimates.set(estimates.get() + 1));
+        let decoded;
+        let json = match self.encoding {
+            BodyEncoding::Zstd => {
+                match crate::compression::decode_zstd_blocking(&self.bytes, self.max_bytes) {
+                    Ok(Some(body)) => {
+                        decoded = body;
+                        &decoded
+                    }
+                    Ok(None) | Err(_) => return 0,
+                }
+            }
+            // An undecodable coding is tried as plain JSON, as the model label is.
+            BodyEncoding::Identity | BodyEncoding::Other => &self.bytes,
+        };
+        crate::count_tokens::count_responses_input_tokens(json)
+    }
 }
 
 impl SpendTap {
@@ -78,7 +138,25 @@ impl SpendTap {
             prices: state.spend_prices.clone(),
             principal: Arc::from(principal?),
             target: Arc::default(),
+            request: None,
         })
+    }
+
+    /// Keeps a Responses turn's request body for the floor's input estimate.
+    /// `encoding` is the request's `content-encoding`; `max_bytes` caps a zstd
+    /// body's decode.
+    pub(crate) fn with_request_body(
+        mut self,
+        bytes: Bytes,
+        encoding: BodyEncoding,
+        max_bytes: usize,
+    ) -> Self {
+        self.request = Some(RequestBody {
+            bytes,
+            encoding,
+            max_bytes,
+        });
+        self
     }
 
     /// Names the upstream that served the turn. Until this is called nothing
@@ -115,6 +193,27 @@ impl SpendTap {
             bytes = &bytes[boundary + delimiter..];
         }
         spend.settle(status);
+    }
+
+    /// Records `usage`; with `estimate`, its input is first replaced by the
+    /// estimate over the retained request body (a turn with none bills as is).
+    /// The one place the input estimate is computed.
+    fn record_estimating_input(self, usage: RequestUsage, estimate: bool) {
+        let Some(request) = self.request.clone().filter(|_| estimate) else {
+            self.record(&usage);
+            return;
+        };
+        let bill = move || {
+            let mut usage = usage;
+            usage.tokens.input_tokens = request.estimate_input_tokens();
+            self.record(&usage);
+        };
+        // Settling runs on the stream's poll or drop, inside the runtime, and
+        // tokenizing a long conversation would stall that worker.
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn_blocking(bill)),
+            Err(_) => bill(),
+        }
     }
 
     /// Prices `usage` on the target and adds it to the principal's counters.
@@ -234,28 +333,43 @@ fn floor_tokens(units: u64) -> u64 {
     units.div_ceil(CHARS_PER_TOKEN)
 }
 
-/// Spend accounting over one streamed Anthropic response.
+/// Spend accounting over one streamed response, Anthropic or Responses.
 ///
 /// A frame larger than the observer's parse cap is skipped without being
-/// seen here, so its text does not count toward the floor; its usage, which
-/// rides on small frames, still does.
+/// seen here, so its text does not count toward the floor. An Anthropic usage
+/// rides on small frames and still counts; a Responses terminal frame carries
+/// the whole output ahead of its usage, so the observer hands the end of an
+/// oversized one to [`StreamSpend::observe_oversized`], which recovers the
+/// usage from that bounded window or leaves the turn at the floor.
 pub(super) struct StreamSpend {
     tap: SpendTap,
+    protocol: Protocol,
     usage: RequestUsage,
-    /// Whether a `message_delta` reported `output_tokens`: the upstream's own
+    /// Whether a `message_delta` (or a Responses terminal) reported
+    /// `output_tokens`: the upstream's own
     /// final count, which the floor never overrides unless the stream was
     /// marked truncated.
     output_reported: bool,
+    /// Whether a Responses usage block reported `input_tokens`. Without one a
+    /// Responses turn bills the request's estimated input.
+    input_reported: bool,
     truncated: bool,
     delivered_chars: u64,
 }
 
 impl StreamSpend {
+    /// The Anthropic Messages accounting.
     pub(super) fn new(tap: SpendTap) -> Self {
+        Self::for_protocol(tap, Protocol::Anthropic)
+    }
+
+    pub(super) fn for_protocol(tap: SpendTap, protocol: Protocol) -> Self {
         Self {
             tap,
+            protocol,
             usage: RequestUsage::default(),
             output_reported: false,
+            input_reported: false,
             truncated: false,
             delivered_chars: 0,
         }
@@ -272,6 +386,16 @@ impl StreamSpend {
         let Some(data) = data else {
             return;
         };
+        if matches!(self.protocol, Protocol::Responses) {
+            match responses::observe(event, data) {
+                responses::Observed::Delivered(chars) => {
+                    self.delivered_chars = self.delivered_chars.saturating_add(chars);
+                }
+                responses::Observed::Usage(usage) => self.apply_responses_usage(&usage),
+                responses::Observed::Nothing => {}
+            }
+            return;
+        }
         match event {
             Some(b"content_block_delta") => {
                 if let Ok(frame) = serde_json::from_slice::<BlockDelta<'_>>(data) {
@@ -302,6 +426,25 @@ impl StreamSpend {
         }
     }
 
+    fn apply_responses_usage(&mut self, usage: &responses::UsageFields) {
+        self.input_reported |= usage.reports_input();
+        self.output_reported |= usage.apply_to(&mut self.usage);
+    }
+
+    /// Starts a tail window over an oversized frame the observer is about to
+    /// skip; `None` for a protocol whose usage never rides on a large frame.
+    pub(super) fn begin_oversized(&self, prefix: &[u8]) -> Option<OversizedTail> {
+        matches!(self.protocol, Protocol::Responses).then(|| OversizedTail::begin(prefix))
+    }
+
+    /// Reads the usage out of a skipped oversized frame's tail, when it holds
+    /// one; otherwise the turn bills as it would have before.
+    pub(super) fn observe_oversized(&mut self, tail: &OversizedTail) {
+        if let Some(usage) = tail.usage() {
+            self.apply_responses_usage(&usage);
+        }
+    }
+
     /// What this stream costs: the reported usage, with the output raised to
     /// the delivered-text floor when the final count is missing, was
     /// synthesized after a cut, or is zero.
@@ -324,12 +467,20 @@ impl StreamSpend {
 
     /// Bills the stream once, however it ended. `status` is the status the
     /// response opened with; a non-`2xx` stream is not billed.
+    ///
+    /// A Responses turn whose usage never reported its input bills the
+    /// request's estimated input (see `SpendTap::record_estimating_input`).
     pub(super) fn settle(self, status: StatusCode) {
-        if status.is_success() {
-            self.tap.record(&self.billable());
+        if !status.is_success() {
+            return;
         }
+        let usage = self.billable();
+        let estimate = matches!(self.protocol, Protocol::Responses) && !self.input_reported;
+        self.tap.record_estimating_input(usage, estimate);
     }
 }
 
+#[cfg(test)]
+mod estimate_tests;
 #[cfg(test)]
 mod tests;

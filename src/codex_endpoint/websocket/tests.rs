@@ -436,6 +436,42 @@ fn routed_turn_after_a_same_provider_turn_keeps_the_id() {
     assert_eq!(logical.len(), 4);
 }
 
+/// The wire body of a same-provider routed continuation keeps the id and the
+/// delta-only input, which the estimator cannot resolve; the estimate body
+/// carries the whole input instead, and the wire body is left as sent.
+#[test]
+fn a_routed_continuation_estimates_from_the_expanded_input() {
+    let long = "recall the earlier conversation ".repeat(200);
+    let continuation = stored_after_from(
+        "openai",
+        vec![user_item(&long)],
+        vec![assistant_item(&long)],
+    );
+    let mut frame = json!({
+        "model": "glm-5.3", "stream": true,
+        "previous_response_id": "resp_1",
+        "input": [user_item("again")],
+    });
+    let sent = frame.clone();
+
+    let logical = prepare_routed_body(&mut frame, &continuation, "openai");
+    let estimate = super::continuation::estimate_body(&frame, &logical)
+        .expect("a continuation has an estimate body");
+
+    assert_eq!(frame, sent, "the forwarded body is untouched");
+    let wire = serde_json::to_vec(&frame).unwrap();
+    let delta_only = crate::count_tokens::count_responses_input_tokens(&wire);
+    let expanded = crate::count_tokens::count_responses_input_tokens(&estimate);
+    assert!(expanded > delta_only + 100, "{expanded} vs {delta_only}");
+    let parsed: serde_json::Value = serde_json::from_slice(&estimate).unwrap();
+    assert!(parsed.get("previous_response_id").is_none());
+    assert_eq!(parsed["input"].as_array().unwrap(), &logical);
+
+    let mut fresh = json!({"model": "glm-5.3", "input": [user_item("hi")]});
+    let logical = prepare_routed_body(&mut fresh, &continuation, "openai");
+    assert!(super::continuation::estimate_body(&fresh, &logical).is_none());
+}
+
 #[test]
 fn routed_turn_with_an_unknown_id_is_forwarded_unchanged() {
     let continuation = stored_after(vec![user_item("hi")], vec![]);

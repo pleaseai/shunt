@@ -1,0 +1,218 @@
+# Plan: Spend Caps on the Inbound Codex Endpoint
+
+> Track: codex-spend-caps-20261021
+> Spec: [spec.md](./spec.md)
+
+## Overview
+
+- **Source**: /please:plan
+- **Track**: codex-spend-caps-20261021
+- **Issue**: #733
+- **Created**: 2026-10-21
+- **Approach**: a Codex-endpoint spend gate that renders its own OpenAI-shaped refusal, plus a Responses mode for the existing spend tap
+- **Execution**: code
+- **Plan Depth**: standard
+- **Planned At**: 5ebd404
+
+## Context
+
+### Problem
+
+Every stage-2 primitive is already reachable from the endpoint: `AppState.gateway_stores.spend` (`assess`, `meter`), `spend_prices`, and the crate-visible `SpendTap::for_request` and `ServedTarget`. The gaps are in the transport and parsing layers:
+
+- `into_openai_error_shape` keeps only `message`, `type` and `Retry-After`, so it drops `code`, `resets_at` and `x-codex-promo-message`.
+- `run_turn` turns every `ForwardError` into an `api_error` frame.
+- `StreamSpend` and `JsonSpendBody` parse only Anthropic usage. `observe_responses` parses Responses terminals, but only for metrics.
+- `count_tokens` reads Anthropic `system`/`messages`, so there is no input estimator for a Responses body.
+
+### Non-Goals
+
+Considered and not built:
+- Accepting gateway-login sessions on the endpoint. That is an auth change; revisit if the endpoint admits them.
+- Eager input estimation on every turn. It costs tokenizer time for a value only the floor uses (NFR-3).
+
+## Architecture Decision
+
+**Admission is its own gate, not a `ForwardError`.**
+
+- The new `src/codex_endpoint/spend.rs` assesses the principal via `SpendStore::assess` and reuses `spend_gate`'s period and reset wording (its helpers become `pub(crate)`).
+- It returns either a metering tap or a refusal. The refusal renders as a direct OpenAI-shaped HTTP response, or as a WS frame with the same error object and the safe headers.
+- The HTTP `forward` calls it before turn or search dispatch. `run_turn` calls it after its per-turn re-authentication.
+- Each turn re-assesses, so an open socket recovers at the period reset without extra state.
+- Search is refused but gets no tap. `generate:false` warmups make no upstream call and pass unchecked.
+
+**The refusal body:**
+
+- `type` and `code` are both `usage_limit_reached`.
+- `resets_at` is the binding cap's `reset_at`.
+- The message is the `/v1/messages` text.
+- Headers are `retry-after` and `x-codex-promo-message`. The promo header is sent only when `blocked_message` is a valid header value; the text always stays in the message.
+- A fail-closed refusal uses the same type with no reset, so the CLI stops rather than retries.
+
+**Metering reuses the tap.**
+
+- `forward_turn` takes the tap and `record_outcome` hands it to `observe_served(Protocol::Responses, …)`.
+- `dispatch_routed` also returns the route's upstream model, which completes the target: provider, client model and upstream model.
+- `StreamSpend` and `JsonSpendBody` gain a Responses mode. They read usage from the terminal `response.*` frame or the body's `usage`. The cached tokens are billed as cache-read and the input as `input_tokens − cached_tokens`, saturating. Output text comes from `response.output_text.delta` or the body's `output[]` text.
+- A 2xx turn with no usage bills the floor: a lazy input estimate over the retained request `Bytes`, made at settle time, plus the delivered output.
+
+**Rejected alternatives:**
+
+- Gating via `ForwardError`, which both transports flatten.
+- Widening `into_openai_error_shape` to smuggle spend fields through the Anthropic envelope.
+- A separate Responses tap type, which would duplicate `settle` and `record`.
+
+## Tasks
+
+- [x] T001 Refuse over-cap HTTP turns with the Codex usage-limit error (file: src/codex_endpoint/spend.rs) [FR-1, FR-2, FR-3, FR-8, FR-9, FR-11, NFR-3, AC-002, AC-012, AC-003, AC-013, AC-010]
+  Validation: An over-cap POST to each response path gets 429 with `type`/`code` `usage_limit_reached`, plus `resets_at` and `retry-after` for the cap that resets last. `x-codex-promo-message` is present when `blocked_message` is set. The upstream sees nothing. Fail-closed refuses a capped principal whose state is unavailable. Without `[server.spend]` the request is forwarded as before.
+  Method: new `tests/codex_spend_enforcement.rs` mirroring `tests/spend_enforcement.rs`, plus unit tests in the new module
+- [x] T002 Refuse web search for over-cap principals without metering it (file: src/codex_endpoint/search.rs) (depends on T001) [FR-5, AC-006]
+  Validation: An over-cap `/alpha/search` call, and its aliases, gets the T001 error and is not forwarded. An under-cap search leaves every counter unchanged.
+  Method: `tests/codex_spend_enforcement.rs` search cases
+- [x] T003 Refuse over-cap WebSocket turns while keeping the socket open (file: src/codex_endpoint/websocket/turn.rs) (depends on T001) [FR-4, AC-004, AC-014, AC-005, AC-015]
+  Validation: An over-cap `response.create` gets one error frame with `status` 429, `usage_limit_reached` type/code, `error.resets_at`, and the promo header. The upstream sees nothing, and the socket stays open and refuses each later turn. A turn after the cap's period resets (meter clock) is forwarded. A `generate:false` warmup is unchanged.
+  Method: new `tests/codex_spend_websocket.rs` on the `tests/inbound_codex_websocket.rs` harness
+- [x] T004 Meter completed streamed Codex turns from Responses usage (file: src/stream_metrics/spend_tap/responses.rs) [FR-6, FR-12, NFR-1, NFR-2, AC-001, AC-007, AC-008, AC-016]
+  Validation: `response.completed` usage reaches the principal's counter, with cached tokens at the cache-read rate and the rest of the input at the input rate. `cached_tokens > input_tokens` bills zero uncached input without panicking. `/v1/messages` and Codex spend land in one counter. A third-party route is priced by its provider and upstream model, and an un-overridden GPT model at the unknown-model rate. Relayed bytes are unchanged.
+  Method: new `tests/codex_spend_metering.rs` mirroring `tests/spend_metering.rs` (byte-identity and decoy-row checks), plus `spend_tap` unit tests
+- [x] T005 Meter non-streamed Codex turns from the JSON body (file: src/stream_metrics/spend_tap/json.rs) (depends on T004) [FR-6]
+  Validation: A 2xx JSON Responses body is billed from its `usage` with the T004 cached split, and its bytes reach the client unchanged.
+  Method: `tests/codex_spend_metering.rs` JSON case
+  STOP: if the endpoint never returns a non-SSE 2xx turn body, record it in Surprises and drop this task.
+- [x] T006 Bill incomplete Codex turns at the estimated-input floor (file: src/count_tokens.rs) (depends on T004) [FR-7, AC-009]
+  Validation: A WS closed by the client after output deltas but before `response.completed`, and an HTTP stream broken mid-turn, each record at least estimated input plus delivered output. A turn that reports usage never runs the estimator.
+  Method: floor cases in `tests/codex_spend_metering.rs` and `tests/codex_spend_websocket.rs`, using the `replacement_and_disconnect_drop_active_upstream_bodies` pattern
+- [x] T007 Stop flagging Codex-endpoint pricing overrides as never pricing anything (file: src/config.rs) [FR-12]
+  Validation: An override for a model the Codex endpoint's provider or routes serve loads without the "will never price anything" warning. An override no surface serves still warns.
+  Method: `config` unit tests beside the existing `pricing_model_is_requestable` cases
+- [x] T008 Document Codex-endpoint spend enforcement across docs, README, and site (file: docs/gateway-spend-limits.md) (depends on T003, T006) [FR-10]
+  Validation: `docs/gateway-spend-limits.md` and `docs/m11-inbound-codex-endpoint.md` cover the refusal shape, CLI display, WS and search behavior, the floor, and GPT pricing overrides, and the #733 "not yet implemented" bullet is gone. The four README spend rows and the site `reference/configuration`, `reference/endpoints` and `guides/inbound-codex-endpoint` pages, including their ko/ja/zh-cn copies, all agree. The `SpendEnforcementConfig` doc comment is no longer limited to `/v1/messages`.
+  Method: `bun run build` in `site/` with no new dead anchors, plus a cross-surface grep for `usage_limit_reached` and `#733`
+
+## Key Files
+
+- Create: `src/codex_endpoint/spend.rs`, `src/stream_metrics/spend_tap/responses.rs`, and three `tests/codex_spend_*.rs` files.
+- Modify:
+  - `src/codex_endpoint.rs` (628 lines already, so the logic stays in `spend.rs`) and `websocket/turn.rs`, `search.rs`.
+  - `src/stream_metrics.rs` (pass the protocol to `StreamSpend`), `spend_tap.rs`, `spend_tap/json.rs`.
+  - `src/count_tokens.rs`, `src/proxy/spend_gate.rs`, `src/config.rs`, `src/config/spend.rs`.
+- Reuse: `SpendStore::assess`, `SpendTap::for_request`/`set_target`, `ServedTarget`, `frame::safe_response_headers`, `observe_responses` (event-set reference).
+
+## Verification
+
+### Observable Outcomes
+
+- `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all-features --workspace` pass (build `ui/dist` first).
+- `/verify` live run: shunt with `[server.spend]`, a cap, and the Codex endpoint against a mock Responses upstream. HTTP and WS turns under and over the cap show the refusal body, its headers, and moving counters.
+
+## Review Focus
+
+- A non-ASCII `blocked_message` or one containing a newline omits the promo header but keeps the text in the message (T001).
+- An over-cap `generate:false` warmup is not refused (T003).
+- `cached_tokens > input_tokens` saturates to zero (T004).
+- A 2xx stream ending in `response.failed` or `error` bills its usage if reported, otherwise the floor (T006).
+
+## Progress
+
+- [x] (2026-10-21 KST) T001 Refuse over-cap HTTP turns with the Codex usage-limit error
+  Evidence: `cargo test --all-features --test codex_spend_enforcement` → 7 passed (5 go red with `spend::admit` stubbed out); `--lib` 3542 passed, `inbound_codex_endpoint` 33 passed, `spend_enforcement` 13 passed
+
+- [x] (2026-10-21 KST) T007 Stop flagging Codex-endpoint pricing overrides as never pricing anything
+  Evidence: `cargo test --all-features --lib config` → 543 passed (incl. `pricing_override_is_requestable_through_the_codex_endpoint`, `pricing_warning_skips_codex_endpoint_models`); fmt and clippy clean
+
+- [x] (2026-10-21 KST) T004 Meter completed streamed Codex turns from Responses usage
+  Evidence: `cargo test --all-features --test codex_spend_metering` → 7 passed (6 go red with the tap replaced by `None` in `forward_turn`, 6 with the cached subtraction removed, the routed test with the target priced on the client model); `--lib` 3552 passed (incl. 5 `spend_tap::responses` and 3 Responses `spend_tap` tests), `codex_spend_enforcement` 7, `inbound_codex_endpoint` 33, `inbound_codex_routes` 11, `inbound_codex_websocket` 16, `inbound_codex_search` 7, `spend_metering` 10 passed; fmt and clippy clean
+
+- [x] (2026-10-21 KST) T002 Refuse web search for over-cap principals without metering it
+  Evidence: `cargo test --all-features --test codex_spend_enforcement --test inbound_codex_search` → 9 + 7 passed (over-cap search refused on all 3 aliases with 0 upstream hits; under-cap search leaves daily/weekly/monthly counters unchanged)
+
+- [x] (2026-10-21 KST) T003 Refuse over-cap WebSocket turns while keeping the socket open
+  Evidence: `cargo test --all-features --test codex_spend_websocket` -> 4 passed (all 4 go red with the refusal arm of `spend::admit` in `run_turn` bypassed); with `codex_spend_enforcement` 9, `codex_spend_metering` 7, `inbound_codex_websocket` 16 passed; `--lib` 3553 passed; fmt and clippy clean
+
+- [x] (2026-10-21 KST) T006 Bill incomplete Codex turns at the estimated-input floor
+  Evidence: `cargo test --all-features --test codex_spend_metering --test codex_spend_websocket` → 8 + 6 passed (HTTP broken mid-turn, WS client close, WS replacement each billed exactly estimate + 4-token floor; all 3 go red with the estimate billed as zero, e.g. "expected 124000000000, got 32000000000"); `--lib` 3563 passed (6 `spend_tap::estimate_tests`: with the estimator forced to run on every settle, the reported-usage, failed-with-usage and Anthropic cases go red on the thread-local estimate counter); `codex_spend_enforcement` 9, `inbound_codex_websocket` 16, `inbound_codex_endpoint` 33, `spend_metering` 10 passed; fmt and clippy clean. Also touched: `src/compression.rs` (`decode_zstd_blocking` for a zstd body's estimate), `src/stream_metrics/spend_tap/tests.rs` (the `SpendTap` literal gains `request: None`), new `src/stream_metrics/spend_tap/estimate_tests.rs`.
+
+- [x] (2026-10-21 KST) T005 Meter non-streamed Codex turns from the JSON body
+  Evidence: `cargo test --all-features --test codex_spend_metering` → 9 passed (the 2 new JSON cases bill the cached split from the body's `usage` and relay the bytes unchanged); `--lib` 3553 passed, `spend_metering` 10, `inbound_codex_routes` 11 passed; fmt and clippy clean. STOP not triggered: the endpoint relays a non-SSE 2xx body through `relay_passthrough` (`src/adapters/inbound_routed.rs:92`, `src/adapters/inbound.rs:156`).
+
+- [x] (2026-10-21 KST) T008 Document Codex-endpoint spend enforcement across docs, README, and site
+  Evidence: 19 files updated (`docs/gateway-spend-limits.md`, `docs/m11-inbound-codex-endpoint.md`, the four READMEs, and `reference/configuration`, `reference/endpoints`, `guides/inbound-codex-endpoint` in en/ko/ja/zh-cn); `bun run build` in `site/` → 209 pages, `lint:docs` → 126 files clean; cross-surface grep for `usage_limit_reached` and `#733`; `SpendEnforcementConfig` doc comment updated.
+
+- [x] (2026-10-21 KST) Review-stage commits (SHA: `6482ab51`, `dc7f5ef8`, `2a9802f4`, `65a8d1be`, `16beec83`)
+
+## Decision Log
+
+- 2026-10-21: Designed inline from one exploration pass, with no architect agent. The existing tap and gate fixed the seams; rejected alternatives are listed above.
+
+- 2026-10-21 (T007): Codex-route matching in the pricing predicate is case-insensitive on the trimmed, `[1m]`-stripped model, unlike `CodexEndpointConfig::route_for` (exact match), because `PriceTable::resolve` matches override rows case-insensitively.
+
+- Decision: (T004) `observe_served` leaves a non-streamed Responses body unmetered until T005 builds the JSON Responses mode, instead of handing it to the Anthropic `JsonSpendBody`.
+  Rationale: the Anthropic tee reads `input_tokens` as uncached, so it would bill the cached tokens at the full input rate. Before T004 the endpoint metered nothing, so this keeps the JSON path where it was.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T004) `StreamSpend::new` stays the Anthropic constructor, and `StreamSpend::for_protocol` takes the protocol; `observe_served` calls the latter.
+  Rationale: existing `spend_tap` tests and `bill_sse` call `new(tap)`, and they stay unedited.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T004) The Responses floor counts `response.function_call_arguments.delta`, `response.reasoning_summary_text.delta` and `response.reasoning_text.delta` as well as `response.output_text.delta`. A frame with no `event:` line is named by its payload `type`.
+  Rationale: the first mirrors the Anthropic floor, which counts text, tool-input JSON and thinking deltas. The second is how the Codex CLI reads frames, and the existing WS test upstreams send `data:`-only frames.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T004) A WS turn builds its tap with `spend::tap_for` (no admission check). T003 replaces that call with `spend::admit` and uses `Admitted::tap`.
+  Rationale: WS refusal is T003; this keeps WS turns metered now with a one-line seam.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T003) The "turn after the period resets" check lifts the cap through the admin API on the same open socket instead of rolling the meter clock.
+  Rationale: `admit` reads `now_secs()` and neither the meter nor the store takes an injected clock; a production seam just for this test was ruled out. The test proves the same property: a refused turn leaves no state and the next turn on the socket is assessed afresh (it is forwarded, and a re-imposed cap refuses again).
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T006) The floor estimates input when no usage block reported `input_tokens`, not only when no terminal arrived. So `response.failed` with `null` usage, an `error` frame, and a terminal reporting only `output_tokens` all bill the estimate. `response.failed` usage is now read like a terminal's.
+  Rationale: Review Focus asks for a failed turn's usage when reported, otherwise the floor; a usage block without input still leaves the input unknown.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T006) `settle` runs the estimate (zstd decode plus tokenizer) through `Handle::spawn_blocking` when a runtime is present, inline otherwise. The bill therefore lands shortly after the stream ends, not synchronously.
+  Rationale: settle runs on a Tokio worker during the stream's poll or drop, and tokenizing a long conversation is milliseconds (the #291 rule). The inline fallback serves runtime-less unit tests, whose thread-local `ESTIMATES` counter is the "never runs" seam.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T006) A zstd request body (the Codex CLI's default against a ChatGPT base URL, #285) is decoded for the estimate with the same `max_request_bytes` and ratio budget as `resolve_model`; an undecodable body estimates zero.
+  Rationale: the tap retains the wire bytes, so a zstd body would otherwise always estimate zero.
+  Date/Author: 2026-10-21 / implement-executor
+
+- Decision: (T005) `JsonSpendBody` gains a `protocol(..)` builder and reads Responses usage through `json_usage_for`, sharing the T004 cached split; the T004 test `a_served_responses_stream_is_billed_and_a_json_body_is_left_alone` becomes `a_served_responses_stream_and_json_body_are_billed_with_the_cached_split`.
+  Rationale: that test pinned T004's interim "leave JSON unmetered" behavior, which this track added in `cd489790` and T005 retires by design; it is not a main-branch test.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T005) The JSON floor counts only `output[]` message text when the body reports no output count.
+  Rationale: recorded as a scope limit for review; reasoning and function-call items in `output[]` are not counted toward this floor.
+  Date/Author: 2026-10-21 / implement-executor
+
+## Surprises & Discoveries
+
+- 2026-10-21: `/v1/messages` has no input estimator, contrary to the spec's assumption. The spec is corrected, and T006 builds the estimator.
+- Observation: `HeaderValue::from_str` accepts non-ASCII UTF-8 (obs-text bytes `0x80..`), so "valid header value" alone would send a non-ASCII `blocked_message` as the promo header. `promo_header` in `src/codex_endpoint/spend.rs` also requires `is_ascii()`; T003 must reuse it.
+  Evidence: the non-ASCII case in `tests/codex_spend_enforcement.rs` failed on the header until the ASCII check was added; unit test `only_visible_ascii_becomes_a_promo_header`.
+- Observation: (T004) `stream_metrics::observe_responses` recognises terminals by the `event:` name only, so a `data:`-only Responses stream records no token metrics. The spend tap falls back to the payload `type` and is not affected; the metrics gap is pre-existing and out of scope.
+  Evidence: `tests/inbound_codex_websocket.rs` upstream bodies are `data: {"type":"response.completed",...}` with no `event:` line; unit test `a_frame_without_an_event_line_is_named_by_its_type`.
+- Observation: (T006) An HTTP upstream that writes its first frames and the transport error in one burst reaches the client as a 502, not a 2xx stream, so it is unbilled. The break has to trail the deltas for the turn to commit as 2xx.
+  Evidence: the first draft of `an_http_stream_broken_mid_turn_bills_estimated_input_plus_delivered_output` failed on `left: 502, right: 200`; delaying the error by 100 ms gave a 200 and the floor bill.
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+
+- Over-cap callers on the inbound Codex endpoint are refused for HTTP turns, WebSocket turns, and web search. The refusal is `429 usage_limit_reached`, which the Codex CLI shows as a usage limit. It carries `resets_at`, `retry-after`, `x-should-retry: false`, and an ASCII-only `x-codex-promo-message`. A WebSocket refusal ends only that turn; the socket stays open.
+- Completed Codex turns, streamed and non-streamed, are metered from Responses `usage` into the same counters `/v1/messages` uses. Cached tokens bill at the cache-read rate.
+- A turn that ends without reported input bills the estimated input from the retained request plus the output already delivered. The estimate is a tiktoken count run lazily on the blocking pool.
+- A routed WebSocket continuation bills its estimate from the full expanded input rather than the delta, and only when `[server.spend]` is set.
+- A `response.completed` frame larger than the 256 KiB parse cap still bills its reported usage, recovered from a bounded 8 KiB tail.
+- Pricing overrides that the Codex endpoint serves no longer warn that they price nothing.
+- Docs are updated in `docs/`, the four READMEs, and the site reference and guides in four locales.
+
+### What Went Well
+
+- Every stage-2 spend primitive (`assess`, `meter`, `SpendTap`) was reusable as-is. The new work was confined to the transport layer and to Responses parsing.
+- The live mock-upstream harness (seven steps: caps, refusals, WebSocket frames, counters) re-verified every fix commit in about a minute. A variant with a 300 KB final frame proved the oversized-frame recovery end to end.
+- Each review round's fixes went through independent validators, and those validators caught a regression from round 1: an unpolled JSON body started billing, contradicting the documented unmetered case. Round 2 fixed it.
+
+### What Could Improve
+
+- Review fixes created new findings. The round-1 fix billed unpolled bodies; the round-2 oversized-frame recovery introduced heuristic edge cases; the round-2 continuation estimate added eager serialization. Each fix needed its own review round, so the loop ran past its cap of 3 rounds.
+- The greptile engine never ran, because node 26.4.0 is missing `libada`. Fix the local toolchain before the next multi-engine review.
+- `src/codex_endpoint.rs` (710 lines) and `src/stream_metrics.rs` (903 lines) are over the 500-line guideline. New logic went into submodules, but neither file was split.
+
+### Tech Debt Created
+
+- TD-011 to TD-017 in `tech-debt-tracker.md`. These are review findings that were reviewed and deferred: all are confirmed but scored below 80, and most are unproven in practice.

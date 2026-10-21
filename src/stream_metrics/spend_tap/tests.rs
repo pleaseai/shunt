@@ -35,6 +35,7 @@ fn tap() -> SpendTap {
         prices: Arc::new(PriceTable::from_config(None)),
         principal: Arc::from(PRINCIPAL),
         target: Arc::default(),
+        request: None,
     };
     tap.set_target(&ServedTarget {
         provider: "anthropic".to_string(),
@@ -524,4 +525,302 @@ fn captured_sse_bytes_bill_like_the_stream_they_were() {
         }),
         "a non-2xx capture or reply is not billed"
     );
+}
+
+fn responses_completed(input: u64, cached: u64, output: u64) -> String {
+    event(
+        "response.completed",
+        json!({"type": "response.completed", "response": {"id": "resp_1", "usage": {
+            "input_tokens": input,
+            "input_tokens_details": {"cached_tokens": cached},
+            "output_tokens": output}}}),
+    )
+}
+
+fn responses_text(text: &str) -> String {
+    event(
+        "response.output_text.delta",
+        json!({"type": "response.output_text.delta", "delta": text}),
+    )
+}
+
+fn responses_spend(frames: &[String]) -> StreamSpend {
+    let mut spend = StreamSpend::for_protocol(tap(), Protocol::Responses);
+    for frame in frames {
+        spend.observe_frame(frame.as_bytes());
+    }
+    spend
+}
+
+/// The Responses mode bills the terminal usage with the cached tokens split
+/// out of the input, and never reads Anthropic events.
+#[test]
+fn a_responses_stream_bills_its_terminal_usage_with_the_cached_split() {
+    let spend = responses_spend(&[
+        start(9_999, 9_999),
+        responses_text("0123456789abcdef"),
+        responses_completed(1000, 600, 50),
+    ]);
+    assert_eq!(
+        spend.billable().tokens,
+        Usage {
+            input_tokens: 400,
+            output_tokens: 50,
+            cache_read_input_tokens: 600,
+            cache_creation_input_tokens: 0,
+        }
+    );
+
+    let saturated = responses_spend(&[responses_completed(10, 25, 3)]);
+    assert_eq!(
+        saturated.billable().tokens,
+        Usage {
+            input_tokens: 0,
+            output_tokens: 3,
+            cache_read_input_tokens: 25,
+            cache_creation_input_tokens: 0,
+        }
+    );
+}
+
+/// A Responses stream cut before its terminal bills the delivered-output
+/// floor, as an Anthropic one does; the Anthropic mode ignores Responses text.
+#[test]
+fn a_cut_responses_stream_bills_its_delivered_text_floor() {
+    let cut = responses_spend(&[responses_text("abcdefghijkl")]);
+    assert_eq!(cut.billable().tokens.output_tokens, 3);
+
+    let anthropic = stream_spend(&[responses_text("abcdefghijkl")]);
+    assert_eq!(anthropic.billable().tokens, Usage::default());
+}
+
+/// Through the observer: a Responses SSE body is billed once at its end and
+/// relayed byte-for-byte, and a non-streamed Responses body is read with
+/// Responses usage semantics rather than Anthropic ones.
+#[tokio::test]
+async fn a_served_responses_stream_and_json_body_are_billed_with_the_cached_split() {
+    let tap = tap();
+    let frames = format!(
+        "{}\n\n{}\n\n",
+        responses_text("hi"),
+        responses_completed(1000, 600, 50)
+    );
+    let response = observe_served(
+        Response::builder()
+            .header(CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(frames.clone()))
+            .unwrap(),
+        Protocol::Responses,
+        Arc::default(),
+        Arc::default(),
+        crate::client_attribution::ClientAttribution::UNATTRIBUTED,
+        Instant::now(),
+        Some(tap.clone()),
+    );
+    let relayed = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(relayed, frames.as_bytes());
+    let billed = priced(Usage {
+        input_tokens: 400,
+        output_tokens: 50,
+        cache_read_input_tokens: 600,
+        cache_creation_input_tokens: 0,
+    });
+    assert_eq!(spent(&tap), billed);
+
+    let response = observe_served(
+        Response::builder()
+            .header(CONTENT_TYPE, "application/json")
+            .body(json_body(RESPONSES_MESSAGE))
+            .unwrap(),
+        Protocol::Responses,
+        Arc::default(),
+        Arc::default(),
+        crate::client_attribution::ClientAttribution::UNATTRIBUTED,
+        Instant::now(),
+        Some(tap.clone()),
+    );
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        RESPONSES_MESSAGE
+    );
+    assert_eq!(
+        spent(&tap),
+        billed * 2,
+        "a non-streamed Responses body bills the same cached split"
+    );
+}
+
+/// A `response.completed` frame carries the whole output ahead of its usage, so
+/// one past the observer's 256 KiB parse cap is skipped unseen; its usage is
+/// still recovered from the bounded tail, and the relayed bytes are untouched.
+#[tokio::test]
+async fn an_oversized_responses_terminal_still_bills_its_reported_usage() {
+    let tap = tap();
+    let completed = format!(
+        "data: {}\n\n",
+        json!({"type": "response.completed", "response": {
+            "output": [{"type": "message", "content": [
+                {"type": "output_text", "text": "x".repeat(300 * 1024)}]}],
+            "usage": {"input_tokens": 1000,
+                      "input_tokens_details": {"cached_tokens": 600},
+                      "output_tokens": 50}}})
+    );
+    assert!(completed.len() > 256 * 1024);
+    let frames = format!("{}\n\n{completed}", responses_text("hi"));
+    let chunks = frames
+        .as_bytes()
+        .chunks(60_000)
+        .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)))
+        .collect::<Vec<_>>();
+    let response = observe_served(
+        Response::builder()
+            .header(CONTENT_TYPE, "text/event-stream")
+            .body(Body::from_stream(stream::iter(chunks)))
+            .unwrap(),
+        Protocol::Responses,
+        Arc::default(),
+        Arc::default(),
+        crate::client_attribution::ClientAttribution::UNATTRIBUTED,
+        Instant::now(),
+        Some(tap.clone()),
+    );
+    let relayed = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(relayed, frames.as_bytes());
+    assert_eq!(
+        spent(&tap),
+        priced(Usage {
+            input_tokens: 400,
+            output_tokens: 50,
+            cache_read_input_tokens: 600,
+            cache_creation_input_tokens: 0,
+        })
+    );
+}
+
+async fn served_responses_spent(frames: &str) -> u64 {
+    let chunks = frames
+        .as_bytes()
+        .chunks(60_000)
+        .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+        .collect::<Vec<_>>();
+    let (relayed, spent) = served_chunks_spent(chunks).await;
+    assert_eq!(relayed.unwrap(), frames.as_bytes());
+    spent
+}
+
+async fn served_chunks_spent(
+    chunks: Vec<Result<Bytes, std::io::Error>>,
+) -> (Result<Bytes, axum::Error>, u64) {
+    let tap = tap();
+    let response = observe_served(
+        Response::builder()
+            .header(CONTENT_TYPE, "text/event-stream")
+            .body(Body::from_stream(stream::iter(chunks)))
+            .unwrap(),
+        Protocol::Responses,
+        Arc::default(),
+        Arc::default(),
+        crate::client_attribution::ClientAttribution::UNATTRIBUTED,
+        Instant::now(),
+        Some(tap.clone()),
+    );
+    let relayed = to_bytes(response.into_body(), usize::MAX).await;
+    (relayed, spent(&tap))
+}
+
+/// A pending block is billed on a clean EOF, but not when a transport error
+/// ends the stream: the WebSocket relay returns on the error without serving
+/// it.
+#[tokio::test]
+async fn a_pending_block_is_billed_on_eof_but_not_after_a_transport_error() {
+    let delivered = || Ok(Bytes::from(format!("{}\n\n", responses_text("hi"))));
+    let pending = || Ok(Bytes::from(responses_text(&"x".repeat(400))));
+    let (_, delivered_only) = served_chunks_spent(vec![delivered()]).await;
+    let (_, at_eof) = served_chunks_spent(vec![delivered(), pending()]).await;
+    let (relayed, after_error) = served_chunks_spent(vec![
+        delivered(),
+        pending(),
+        Err(std::io::Error::other("connection reset")),
+    ])
+    .await;
+    assert!(relayed.is_err());
+    assert!(at_eof > delivered_only, "{at_eof} > {delivered_only}");
+    assert_eq!(after_error, delivered_only);
+}
+
+/// The WebSocket relay serves a last block that has no closing blank line,
+/// so the observer bills that block's usage at EOF, whether it fit the parse
+/// buffer or was oversized.
+#[tokio::test]
+async fn a_last_responses_terminal_without_a_closing_blank_line_bills_its_usage() {
+    let reported = priced(Usage {
+        input_tokens: 400,
+        output_tokens: 50,
+        cache_read_input_tokens: 600,
+        cache_creation_input_tokens: 0,
+    });
+    let small = format!(
+        "{}\n\n{}",
+        responses_text("hi"),
+        responses_completed(1000, 600, 50)
+    );
+    assert_eq!(served_responses_spent(&small).await, reported);
+
+    let oversized = format!(
+        "{}\n\ndata: {}\n",
+        responses_text("hi"),
+        json!({"type": "response.completed", "response": {
+            "output": [{"type": "message", "content": [
+                {"type": "output_text", "text": "x".repeat(300 * 1024)}]}],
+            "usage": {"input_tokens": 1000,
+                      "input_tokens_details": {"cached_tokens": 600},
+                      "output_tokens": 50}}})
+    );
+    assert!(oversized.len() > 256 * 1024);
+    assert_eq!(served_responses_spent(&oversized).await, reported);
+}
+
+const RESPONSES_MESSAGE: &[u8] = br#"{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1000,"input_tokens_details":{"cached_tokens":600},"output_tokens":50,"total_tokens":1050}}"#;
+
+fn responses_json_usage(body: &[u8], truncated: bool) -> Usage {
+    super::json::json_usage_for(
+        Protocol::Responses,
+        Some(body),
+        body.len() as u64,
+        truncated,
+    )
+    .tokens
+}
+
+/// A Responses body without `usage.output_tokens`, or reporting zero beside
+/// delivered `output_text`, bills the text floor from `output[]`; non-message
+/// items and non-text parts add nothing, and an unreadable body bills bytes.
+#[test]
+fn a_responses_json_body_without_an_output_count_bills_its_output_text_floor() {
+    let text = "0123456789abcdefg";
+    let body = |usage: serde_json::Value| {
+        json!({"output": [
+            {"type": "reasoning", "content": [{"type": "output_text", "text": "ignored ignored"}]},
+            {"type": "message", "content": [
+                {"type": "refusal", "text": "ignored ignored"},
+                {"type": "output_text", "text": text}]}],
+            "usage": usage})
+        .to_string()
+        .into_bytes()
+    };
+    let missing = body(json!({"input_tokens": 10}));
+    assert_eq!(
+        responses_json_usage(&missing, false),
+        Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Usage::default()
+        }
+    );
+    let zero = body(json!({"input_tokens": 10, "output_tokens": 0}));
+    assert_eq!(responses_json_usage(&zero, false).output_tokens, 5);
+    let low = body(json!({"input_tokens": 10, "output_tokens": 2}));
+    assert_eq!(responses_json_usage(&low, false).output_tokens, 2);
+    assert_eq!(responses_json_usage(&low, true).output_tokens, 5);
+    assert_eq!(responses_json_usage(b"not json", false).output_tokens, 2);
 }

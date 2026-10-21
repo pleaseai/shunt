@@ -33,6 +33,9 @@ pub(super) struct TurnContext {
     pub(super) auth_header: Option<HeaderName>,
     pub(super) admin_header: Option<HeaderName>,
     pub(super) body: Bytes,
+    /// What the spend estimate counts when `body` is a continuation holding
+    /// only the new input (see `continuation::estimate_body`); never sent.
+    pub(super) estimate_body: Option<Bytes>,
     pub(super) generation: u64,
     pub(super) current_generation: Arc<AtomicU64>,
     pub(super) out_tx: mpsc::Sender<(u64, Message)>,
@@ -76,6 +79,7 @@ pub(super) async fn run_turn(context: TurnContext) {
         auth_header,
         admin_header,
         body,
+        estimate_body,
         generation: turn_gen,
         current_generation,
         out_tx,
@@ -170,6 +174,18 @@ pub(super) async fn run_turn(context: TurnContext) {
     if let Some(admin_auth) = state.admin_auth.as_ref() {
         headers.remove(admin_auth.header());
     }
+    // Admitted after this turn's re-authentication, so the principal is this
+    // turn's client. A refusal ends only the turn: the socket stays open and
+    // the next turn is assessed afresh.
+    let spend = match crate::codex_endpoint::spend::admit(&state, inbound_client.as_deref()) {
+        Ok(admitted) => admitted.tap,
+        Err(refusal) => {
+            let _ = out_tx
+                .send((turn_gen, Message::Text(refusal.ws_frame().into())))
+                .await;
+            return;
+        }
+    };
     let started_at = Instant::now();
     let dispatch_res = forward_turn(
         state,
@@ -180,6 +196,8 @@ pub(super) async fn run_turn(context: TurnContext) {
         attribution,
         body,
         started_at,
+        spend,
+        estimate_body,
     )
     .await;
 
