@@ -76,17 +76,17 @@ Considered and not built:
 - [x] T004 Meter completed streamed Codex turns from Responses usage (file: src/stream_metrics/spend_tap/responses.rs) [FR-6, FR-12, NFR-1, NFR-2, AC-001, AC-007, AC-008, AC-016]
   Validation: `response.completed` usage reaches the principal's counter, with cached tokens at the cache-read rate and the rest of the input at the input rate. `cached_tokens > input_tokens` bills zero uncached input without panicking. `/v1/messages` and Codex spend land in one counter. A third-party route is priced by its provider and upstream model, and an un-overridden GPT model at the unknown-model rate. Relayed bytes are unchanged.
   Method: new `tests/codex_spend_metering.rs` mirroring `tests/spend_metering.rs` (byte-identity and decoy-row checks), plus `spend_tap` unit tests
-- [ ] T005 Meter non-streamed Codex turns from the JSON body (file: src/stream_metrics/spend_tap/json.rs) (depends on T004) [FR-6]
+- [x] T005 Meter non-streamed Codex turns from the JSON body (file: src/stream_metrics/spend_tap/json.rs) (depends on T004) [FR-6]
   Validation: A 2xx JSON Responses body is billed from its `usage` with the T004 cached split, and its bytes reach the client unchanged.
   Method: `tests/codex_spend_metering.rs` JSON case
   STOP: if the endpoint never returns a non-SSE 2xx turn body, record it in Surprises and drop this task.
-- [ ] T006 Bill incomplete Codex turns at the estimated-input floor (file: src/count_tokens.rs) (depends on T004) [FR-7, AC-009]
+- [x] T006 Bill incomplete Codex turns at the estimated-input floor (file: src/count_tokens.rs) (depends on T004) [FR-7, AC-009]
   Validation: A WS closed by the client after output deltas but before `response.completed`, and an HTTP stream broken mid-turn, each record at least estimated input plus delivered output. A turn that reports usage never runs the estimator.
   Method: floor cases in `tests/codex_spend_metering.rs` and `tests/codex_spend_websocket.rs`, using the `replacement_and_disconnect_drop_active_upstream_bodies` pattern
 - [x] T007 Stop flagging Codex-endpoint pricing overrides as never pricing anything (file: src/config.rs) [FR-12]
   Validation: An override for a model the Codex endpoint's provider or routes serve loads without the "will never price anything" warning. An override no surface serves still warns.
   Method: `config` unit tests beside the existing `pricing_model_is_requestable` cases
-- [ ] T008 Document Codex-endpoint spend enforcement across docs, README, and site (file: docs/gateway-spend-limits.md) (depends on T003, T006) [FR-10]
+- [x] T008 Document Codex-endpoint spend enforcement across docs, README, and site (file: docs/gateway-spend-limits.md) (depends on T003, T006) [FR-10]
   Validation: `docs/gateway-spend-limits.md` and `docs/m11-inbound-codex-endpoint.md` cover the refusal shape, CLI display, WS and search behavior, the floor, and GPT pricing overrides, and the #733 "not yet implemented" bullet is gone. The four README spend rows and the site `reference/configuration`, `reference/endpoints` and `guides/inbound-codex-endpoint` pages, including their ko/ja/zh-cn copies, all agree. The `SpendEnforcementConfig` doc comment is no longer limited to `/v1/messages`.
   Method: `bun run build` in `site/` with no new dead anchors, plus a cross-surface grep for `usage_limit_reached` and `#733`
 
@@ -133,6 +133,12 @@ Considered and not built:
 - [x] (2026-10-21 KST) T006 Bill incomplete Codex turns at the estimated-input floor
   Evidence: `cargo test --all-features --test codex_spend_metering --test codex_spend_websocket` → 8 + 6 passed (HTTP broken mid-turn, WS client close, WS replacement each billed exactly estimate + 4-token floor; all 3 go red with the estimate billed as zero, e.g. "expected 124000000000, got 32000000000"); `--lib` 3563 passed (6 `spend_tap::estimate_tests`: with the estimator forced to run on every settle, the reported-usage, failed-with-usage and Anthropic cases go red on the thread-local estimate counter); `codex_spend_enforcement` 9, `inbound_codex_websocket` 16, `inbound_codex_endpoint` 33, `spend_metering` 10 passed; fmt and clippy clean. Also touched: `src/compression.rs` (`decode_zstd_blocking` for a zstd body's estimate), `src/stream_metrics/spend_tap/tests.rs` (the `SpendTap` literal gains `request: None`), new `src/stream_metrics/spend_tap/estimate_tests.rs`.
 
+- [x] (2026-10-21 KST) T005 Meter non-streamed Codex turns from the JSON body
+  Evidence: `cargo test --all-features --test codex_spend_metering` → 9 passed (the 2 new JSON cases bill the cached split from the body's `usage` and relay the bytes unchanged); `--lib` 3553 passed, `spend_metering` 10, `inbound_codex_routes` 11 passed; fmt and clippy clean. STOP not triggered: the endpoint relays a non-SSE 2xx body through `relay_passthrough` (`src/adapters/inbound_routed.rs:92`, `src/adapters/inbound.rs:156`).
+
+- [x] (2026-10-21 KST) T008 Document Codex-endpoint spend enforcement across docs, README, and site
+  Evidence: 19 files updated (`docs/gateway-spend-limits.md`, `docs/m11-inbound-codex-endpoint.md`, the four READMEs, and `reference/configuration`, `reference/endpoints`, `guides/inbound-codex-endpoint` in en/ko/ja/zh-cn); `bun run build` in `site/` → 209 pages, `lint:docs` → 126 files clean; cross-surface grep for `usage_limit_reached` and `#733`; `SpendEnforcementConfig` doc comment updated.
+
 ## Decision Log
 
 - 2026-10-21: Designed inline from one exploration pass, with no architect agent. The existing tap and gate fixed the seams; rejected alternatives are listed above.
@@ -162,6 +168,13 @@ Considered and not built:
   Date/Author: 2026-10-21 / implement-executor
 - Decision: (T006) A zstd request body (the Codex CLI's default against a ChatGPT base URL, #285) is decoded for the estimate with the same `max_request_bytes` and ratio budget as `resolve_model`; an undecodable body estimates zero.
   Rationale: the tap retains the wire bytes, so a zstd body would otherwise always estimate zero.
+  Date/Author: 2026-10-21 / implement-executor
+
+- Decision: (T005) `JsonSpendBody` gains a `protocol(..)` builder and reads Responses usage through `json_usage_for`, sharing the T004 cached split; the T004 test `a_served_responses_stream_is_billed_and_a_json_body_is_left_alone` becomes `a_served_responses_stream_and_json_body_are_billed_with_the_cached_split`.
+  Rationale: that test pinned T004's interim "leave JSON unmetered" behavior, which this track added in `cd489790` and T005 retires by design; it is not a main-branch test.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T005) The JSON floor counts only `output[]` message text when the body reports no output count.
+  Rationale: recorded as a scope limit for review; reasoning and function-call items in `output[]` are not counted toward this floor.
   Date/Author: 2026-10-21 / implement-executor
 
 ## Surprises & Discoveries
