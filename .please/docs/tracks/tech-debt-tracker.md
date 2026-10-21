@@ -14,12 +14,11 @@
 | TD-008 | spend-enforcement-20261003 | `shunt:anonymous` not reserved against authenticated identities | Low | 2026-10-05 |
 | TD-009 | spend-enforcement-20261003 | Caught meter panic leaves the counters mutex poisoned (admission `.expect`) | Low | 2026-10-05 |
 | TD-010 | spend-enforcement-20261003 | Stale "injects a credential"/"all-passthrough" doc comments; `restore_from` doc; spend files over 500 lines | Low | 2026-10-05 |
-| TD-011 | codex-spend-caps-20261021 | Routed WebSocket continuations build the full-transcript estimate body eagerly when `[server.spend]` is set, even for turns that report usage | Low | 2026-10-21 |
-| TD-012 | codex-spend-caps-20261021 | Oversized Responses terminal recovery uses a substring marker in the first 1 KiB and the last `"usage"` object in the 8 KiB tail; it misses a `type` key that comes after the first 1 KiB | Low | 2026-10-21 |
-| TD-013 | codex-spend-caps-20261021 | The usage-less input estimate does not go through the `decode_slots` concurrency bound (#291) | Low | 2026-10-21 |
-| TD-014 | codex-spend-caps-20261021 | `response.refusal.delta` is not counted toward the streaming output floor | Low | 2026-10-21 |
+| TD-011 | codex-spend-caps-20261021 | Routed WebSocket continuations build the full-transcript estimate body eagerly when `[server.spend]` is set, even for turns that report usage (#821) | Low | 2026-10-21 |
+| TD-012 | codex-spend-caps-20261021 | Oversized Responses terminal recovery uses a substring marker in the first 1 KiB and the last `"usage"` object in the 16 KiB tail; it misses a `type` key that comes after the first 1 KiB (#820) | Low | 2026-10-21 |
+| TD-013 | codex-spend-caps-20261021 | The usage-less input estimate does not go through the `decode_slots` concurrency bound (#291, #819) | Low | 2026-10-21 |
 | TD-015 | codex-spend-caps-20261021 | `cached_tokens` without `input_tokens` is billed twice (the estimate already includes the cached prefix) | Low | 2026-10-21 |
-| TD-016 | codex-spend-caps-20261021 | The docs' "not buffered" claim ignores the 4 MiB copy kept for non-streamed JSON; the refusal log line uses the field name `upstream_status` | Low | 2026-10-21 |
+| TD-016 | codex-spend-caps-20261021 | The refusal log line uses the field name `upstream_status` | Low | 2026-10-21 |
 | TD-017 | codex-spend-caps-20261021 | `src/codex_endpoint.rs` (710 lines) and `src/stream_metrics.rs` (903 lines) exceed the 500-line guideline | Low | 2026-10-21 |
 
 ## Resolved
@@ -28,3 +27,4 @@
 |----|------------|-------------|-------------|------|
 | TD-001 | per-window-max-utilization-20261004 | Cap verdict re-checked after selection under a second lock (microsecond race, duplicated selectability rules); verdict now returned from the selection pass | #739 | 2026-10-05 |
 | TD-006 | spend-enforcement-20261003 | Inbound Codex endpoint (`/v1/responses`, WebSocket) not spend-enforced or metered (#733) | #814 | 2026-10-21 |
+| TD-014 | codex-spend-caps-20261021 | `response.refusal.delta` is not counted toward the streaming output floor | #814 | 2026-10-21 |
