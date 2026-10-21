@@ -435,30 +435,4 @@ pub(super) async fn run_turn(context: TurnContext) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::upstream_error_parts;
-    use serde_json::json;
-
-    #[test]
-    fn upstream_detail_shape_is_surfaced_not_masked() {
-        // The ChatGPT HTTP backend's actual rejection for a forwarded
-        // `previous_response_id`; masking it hid the cause for a day.
-        let body = json!({"detail": "Unsupported parameter: previous_response_id"});
-        let (_, _, message) = upstream_error_parts(&body);
-        assert_eq!(message, "Unsupported parameter: previous_response_id");
-    }
-
-    #[test]
-    fn openai_error_shape_still_reads_nested_fields() {
-        let body =
-            json!({"error": {"type": "invalid_request_error", "code": "bad", "message": "nope"}});
-        assert_eq!(
-            upstream_error_parts(&body),
-            (
-                "invalid_request_error".to_string(),
-                "bad".to_string(),
-                "nope".to_string()
-            )
-        );
-    }
-}
+mod tests;
