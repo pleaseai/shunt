@@ -54,7 +54,8 @@ A single Rust binary that:
 - Opt-in admin web surface for browser account provisioning + read-only pool dashboard
 - Opt-in per-user/organization spend caps (`[server.spend]`): metered and enforced on
   `/v1/messages` requests the gateway pays for (chains made only of passthrough or
-  `noop` routes are neither enforced nor metered), with an Admin API and `/effective` view — `src/gateway/spend/`
+  `noop` routes are neither enforced nor metered) and on inbound Codex endpoint turns (HTTP and
+  WebSocket, refused with `usage_limit_reached`), with an Admin API and `/effective` view — `src/gateway/spend/`
 - Opt-in durable store (`[store]`: SQLite or PostgreSQL) for pool quota, gateway
   sessions, and spend limits/audit, with a one-time import of the JSON snapshots —
   single instance (`src/store/`, `docs/store.md`)
