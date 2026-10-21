@@ -22,6 +22,7 @@ use crate::{
     gateway::spend::meter::{now_secs, Check},
     proxy::spend_gate::{period_name, principal_for, reached_message, with_blocked_message},
     server::AppState,
+    stream_metrics::SpendTap,
 };
 
 const SHOULD_RETRY: HeaderName = HeaderName::from_static("x-should-retry");
@@ -30,8 +31,11 @@ const PROMO_MESSAGE: HeaderName = HeaderName::from_static("x-codex-promo-message
 const USAGE_LIMIT_REACHED: &str = "usage_limit_reached";
 
 /// The turn may proceed to an upstream.
-#[derive(Debug)]
-pub(super) struct Admitted;
+pub(super) struct Admitted {
+    /// Meters the served turn; `None` when nothing is metered (no
+    /// `[server.spend]`).
+    pub(super) tap: Option<SpendTap>,
+}
 
 /// A turn the gate refused, as the parts every transport renders.
 #[derive(Debug)]
@@ -90,11 +94,14 @@ impl Refusal {
 /// recovers when its period resets.
 pub(super) fn admit(state: &AppState, client: Option<&str>) -> Result<Admitted, Refusal> {
     let Some(spend) = state.config.server.spend.as_ref() else {
-        return Ok(Admitted);
+        return Ok(Admitted { tap: None });
     };
     // Every route on this endpoint reaches a gateway-credentialed upstream.
     let Some(principal) = principal_for(client, true) else {
-        return Ok(Admitted);
+        return Ok(Admitted { tap: None });
+    };
+    let admitted = || Admitted {
+        tap: SpendTap::for_request(state, Some(&principal)),
     };
     let blocked_message = spend.blocked_message.as_deref();
     let promo = blocked_message.and_then(promo_header);
@@ -132,10 +139,16 @@ pub(super) fn admit(state: &AppState, client: Option<&str>) -> Result<Admitted, 
         }
         (Check::Unavailable, _) => {
             tracing::warn!(principal, "spend state unavailable; forwarding the request");
-            Ok(Admitted)
+            Ok(admitted())
         }
-        (Check::Allow, _) => Ok(Admitted),
+        (Check::Allow, _) => Ok(admitted()),
     }
+}
+
+/// The metering tap for one turn by `client`, without the admission check.
+/// A WebSocket turn uses it until it is gated like an HTTP one.
+pub(super) fn tap_for(state: &AppState, client: Option<&str>) -> Option<SpendTap> {
+    SpendTap::for_request(state, principal_for(client, true).as_deref())
 }
 
 /// `blocked_message` as an `x-codex-promo-message` value, or `None` when it is

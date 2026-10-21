@@ -171,6 +171,7 @@ pub(super) async fn run_turn(context: TurnContext) {
         headers.remove(admin_auth.header());
     }
     let started_at = Instant::now();
+    let spend = crate::codex_endpoint::spend::tap_for(&state, inbound_client.as_deref());
     let dispatch_res = forward_turn(
         state,
         model,
@@ -180,6 +181,7 @@ pub(super) async fn run_turn(context: TurnContext) {
         attribution,
         body,
         started_at,
+        spend,
     )
     .await;
 

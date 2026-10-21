@@ -16,7 +16,10 @@
 //! the body `model` rewritten to the route's `upstream_model` when they differ.
 //! See `docs/m11-inbound-codex-endpoint.md`.
 
-use std::time::Instant;
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use axum::{
     body::{Body, Bytes},
@@ -35,8 +38,10 @@ use crate::{
     client_attribution::ClientAttribution,
     config::CodexRouteConfig,
     error::ShuntError,
+    proxy::spend_gate::ServedTarget,
     routing::{AdapterKind, Route},
     server::AppState,
+    stream_metrics::SpendTap,
 };
 
 pub mod frame;
@@ -248,9 +253,12 @@ async fn forward(
             // Spend admission precedes every upstream-capable step. Its refusal
             // is already OpenAI-shaped, so it returns `Ok` and skips the lossy
             // re-shape in `serve`.
-            if let Err(refusal) = spend::admit(&state, inbound_client.as_deref()) {
-                return Ok((StatusCode::TOO_MANY_REQUESTS, refusal.into_response()));
-            }
+            let admitted = match spend::admit(&state, inbound_client.as_deref()) {
+                Ok(admitted) => admitted,
+                Err(refusal) => {
+                    return Ok((StatusCode::TOO_MANY_REQUESTS, refusal.into_response()));
+                }
+            };
             forward_turn(
                 state,
                 None,
@@ -260,6 +268,7 @@ async fn forward(
                 attribution,
                 body,
                 started_at,
+                admitted.tap,
             )
             .await
         }
@@ -338,6 +347,7 @@ pub(crate) async fn forward_turn(
     attribution: ClientAttribution,
     body: Bytes,
     started_at: Instant,
+    spend: Option<SpendTap>,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     let Some(codex_endpoint) = &state.config.server.codex_endpoint else {
         return Err(ForwardError {
@@ -393,7 +403,7 @@ pub(crate) async fn forward_turn(
 
     crate::observability::record_requested_model(&model_name);
 
-    let (provider, result) = match matched {
+    let (provider, upstream_model, result) = match matched {
         Some(route) => {
             dispatch_routed(
                 state,
@@ -427,11 +437,20 @@ pub(crate) async fn forward_turn(
                 CodexOperation::Responses,
             )
             .await;
-            (default_provider, result)
+            (default_provider, model_name.clone(), result)
         }
     };
 
-    record_outcome(provider, model_name, attribution, started_at, result)
+    if let Some(tap) = &spend {
+        // Every route on this endpoint is served with a gateway credential.
+        tap.set_target(&ServedTarget {
+            provider: provider.clone(),
+            model: model_name.clone(),
+            upstream_model,
+            meters: true,
+        });
+    }
+    record_served_outcome(provider, model_name, attribution, started_at, result, spend)
 }
 
 /// The `client_kind`/`managed` attribution of one inbound Codex request,
@@ -451,8 +470,9 @@ pub(crate) fn inbound_attribution(headers: &HeaderMap) -> ClientAttribution {
 
 /// Dispatch a request whose `model` matched a `[[server.codex_endpoint.routes]]`
 /// entry. Returns the provider the observability tail should label the request
-/// with (the *routed* provider, not the endpoint's configured default) alongside
-/// the forwarder's result.
+/// with (the *routed* provider, not the endpoint's configured default) and the
+/// model it was sent (what the spend meter prices) alongside the forwarder's
+/// result.
 ///
 /// A ChatGPT/Codex-backed route keeps the full pool passthrough
 /// (`forward_codex_inbound`: selection, failover, refresh, `x-shunt-account`)
@@ -477,6 +497,7 @@ async fn dispatch_routed(
     max_request_bytes: usize,
 ) -> Result<
     (
+        String,
         String,
         Result<(StatusCode, axum::response::Response), AdapterError>,
     ),
@@ -543,7 +564,7 @@ async fn dispatch_routed(
     } else {
         responses::forward_codex_routed(state, route, headers, body, pool_key, session_id).await
     };
-    Ok((route_config.provider, result))
+    Ok((route_config.provider, upstream_model, result))
 }
 
 /// Turn a routed body failure into the gateway-owned response the client sees.
@@ -589,6 +610,19 @@ fn record_outcome(
     started_at: Instant,
     result: Result<(StatusCode, axum::response::Response), AdapterError>,
 ) -> Result<(StatusCode, axum::response::Response), ForwardError> {
+    record_served_outcome(provider, model, attribution, started_at, result, None)
+}
+
+/// [`record_outcome`] for a metered turn: `spend` bills the served response
+/// once it ends. `None` observes it unmetered.
+fn record_served_outcome(
+    provider: String,
+    model: String,
+    attribution: ClientAttribution,
+    started_at: Instant,
+    result: Result<(StatusCode, axum::response::Response), AdapterError>,
+    spend: Option<SpendTap>,
+) -> Result<(StatusCode, axum::response::Response), ForwardError> {
     let status_code = match &result {
         Ok((status, _)) => *status,
         Err(error) => error.response.status(),
@@ -604,13 +638,14 @@ fn record_outcome(
     );
     result
         .map(|(status, response)| {
-            let response = crate::stream_metrics::observe_response(
+            let response = crate::stream_metrics::observe_served(
                 response,
                 crate::stream_metrics::Protocol::Responses,
-                provider,
-                model,
+                Arc::new(Mutex::new(provider)),
+                Arc::new(Mutex::new(model)),
                 attribution,
                 started_at,
+                spend,
             );
             (status, response)
         })

@@ -525,3 +525,126 @@ fn captured_sse_bytes_bill_like_the_stream_they_were() {
         "a non-2xx capture or reply is not billed"
     );
 }
+
+fn responses_completed(input: u64, cached: u64, output: u64) -> String {
+    event(
+        "response.completed",
+        json!({"type": "response.completed", "response": {"id": "resp_1", "usage": {
+            "input_tokens": input,
+            "input_tokens_details": {"cached_tokens": cached},
+            "output_tokens": output}}}),
+    )
+}
+
+fn responses_text(text: &str) -> String {
+    event(
+        "response.output_text.delta",
+        json!({"type": "response.output_text.delta", "delta": text}),
+    )
+}
+
+fn responses_spend(frames: &[String]) -> StreamSpend {
+    let mut spend = StreamSpend::for_protocol(tap(), Protocol::Responses);
+    for frame in frames {
+        spend.observe_frame(frame.as_bytes());
+    }
+    spend
+}
+
+/// The Responses mode bills the terminal usage with the cached tokens split
+/// out of the input, and never reads Anthropic events.
+#[test]
+fn a_responses_stream_bills_its_terminal_usage_with_the_cached_split() {
+    let spend = responses_spend(&[
+        start(9_999, 9_999),
+        responses_text("0123456789abcdef"),
+        responses_completed(1000, 600, 50),
+    ]);
+    assert_eq!(
+        spend.billable().tokens,
+        Usage {
+            input_tokens: 400,
+            output_tokens: 50,
+            cache_read_input_tokens: 600,
+            cache_creation_input_tokens: 0,
+        }
+    );
+
+    let saturated = responses_spend(&[responses_completed(10, 25, 3)]);
+    assert_eq!(
+        saturated.billable().tokens,
+        Usage {
+            input_tokens: 0,
+            output_tokens: 3,
+            cache_read_input_tokens: 25,
+            cache_creation_input_tokens: 0,
+        }
+    );
+}
+
+/// A Responses stream cut before its terminal bills the delivered-output
+/// floor, as an Anthropic one does; the Anthropic mode ignores Responses text.
+#[test]
+fn a_cut_responses_stream_bills_its_delivered_text_floor() {
+    let cut = responses_spend(&[responses_text("abcdefghijkl")]);
+    assert_eq!(cut.billable().tokens.output_tokens, 3);
+
+    let anthropic = stream_spend(&[responses_text("abcdefghijkl")]);
+    assert_eq!(anthropic.billable().tokens, Usage::default());
+}
+
+/// Through the observer: a Responses SSE body is billed once at its end and
+/// relayed byte-for-byte, while a non-streamed Responses body is relayed
+/// unmetered rather than read with Anthropic usage semantics.
+#[tokio::test]
+async fn a_served_responses_stream_is_billed_and_a_json_body_is_left_alone() {
+    let tap = tap();
+    let frames = format!(
+        "{}\n\n{}\n\n",
+        responses_text("hi"),
+        responses_completed(1000, 600, 50)
+    );
+    let response = observe_served(
+        Response::builder()
+            .header(CONTENT_TYPE, "text/event-stream")
+            .body(Body::from(frames.clone()))
+            .unwrap(),
+        Protocol::Responses,
+        Arc::default(),
+        Arc::default(),
+        crate::client_attribution::ClientAttribution::UNATTRIBUTED,
+        Instant::now(),
+        Some(tap.clone()),
+    );
+    let relayed = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(relayed, frames.as_bytes());
+    let billed = priced(Usage {
+        input_tokens: 400,
+        output_tokens: 50,
+        cache_read_input_tokens: 600,
+        cache_creation_input_tokens: 0,
+    });
+    assert_eq!(spent(&tap), billed);
+
+    let response = observe_served(
+        Response::builder()
+            .header(CONTENT_TYPE, "application/json")
+            .body(json_body(MESSAGE))
+            .unwrap(),
+        Protocol::Responses,
+        Arc::default(),
+        Arc::default(),
+        crate::client_attribution::ClientAttribution::UNATTRIBUTED,
+        Instant::now(),
+        Some(tap.clone()),
+    );
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        MESSAGE
+    );
+    assert_eq!(
+        spent(&tap),
+        billed,
+        "a non-streamed Responses body is unmetered"
+    );
+}

@@ -755,7 +755,10 @@ pub(crate) fn observe_served(
     spend: Option<SpendTap>,
 ) -> Response<Body> {
     if !is_sse(&response) {
-        let Some(tap) = spend else {
+        // A non-streamed Responses body is not metered yet: its `usage`
+        // includes the cached tokens in `input_tokens`, which the Anthropic
+        // tee would bill at the full input rate.
+        let Some(tap) = spend.filter(|_| matches!(protocol, Protocol::Anthropic)) else {
             return response;
         };
         let status = response.status();
@@ -781,7 +784,7 @@ pub(crate) fn observe_served(
         started_at,
         span,
     );
-    state.spend = spend.map(spend_tap::StreamSpend::new);
+    state.spend = spend.map(|tap| spend_tap::StreamSpend::for_protocol(tap, protocol));
     let observed = ObservedStream {
         upstream: body.into_data_stream().boxed(),
         state,

@@ -19,6 +19,11 @@
 //!   `usage` parse, and bills a floor from the byte count when the body was
 //!   larger than that, cut, or carried no readable `usage`.
 //!
+//! A streamed inbound Codex endpoint turn speaks the OpenAI Responses protocol
+//! instead; [`StreamSpend`] reads it in its Responses mode ([`responses`]),
+//! which bills the terminal `response.usage` with the cached tokens split out
+//! of the input.
+//!
 //! Only a `2xx` response is billed; an error the upstream answered with costs
 //! nothing. A response metered elsewhere — the gated capture, for one — is
 //! served with no tap at all, which is how a caller switches this hook off.
@@ -31,7 +36,7 @@ use std::{
 use axum::http::StatusCode;
 use serde::Deserialize;
 
-use super::UPSTREAM_TRUNCATED_MARKER;
+use super::{Protocol, UPSTREAM_TRUNCATED_MARKER};
 use crate::{
     gateway::{
         spend::{
@@ -44,6 +49,7 @@ use crate::{
 };
 
 mod json;
+mod responses;
 
 use json::json_usage;
 pub(in crate::stream_metrics) use json::JsonSpendBody;
@@ -234,15 +240,17 @@ fn floor_tokens(units: u64) -> u64 {
     units.div_ceil(CHARS_PER_TOKEN)
 }
 
-/// Spend accounting over one streamed Anthropic response.
+/// Spend accounting over one streamed response, Anthropic or Responses.
 ///
 /// A frame larger than the observer's parse cap is skipped without being
 /// seen here, so its text does not count toward the floor; its usage, which
 /// rides on small frames, still does.
 pub(super) struct StreamSpend {
     tap: SpendTap,
+    protocol: Protocol,
     usage: RequestUsage,
-    /// Whether a `message_delta` reported `output_tokens`: the upstream's own
+    /// Whether a `message_delta` (or a Responses terminal) reported
+    /// `output_tokens`: the upstream's own
     /// final count, which the floor never overrides unless the stream was
     /// marked truncated.
     output_reported: bool,
@@ -251,9 +259,15 @@ pub(super) struct StreamSpend {
 }
 
 impl StreamSpend {
+    /// The Anthropic Messages accounting.
     pub(super) fn new(tap: SpendTap) -> Self {
+        Self::for_protocol(tap, Protocol::Anthropic)
+    }
+
+    pub(super) fn for_protocol(tap: SpendTap, protocol: Protocol) -> Self {
         Self {
             tap,
+            protocol,
             usage: RequestUsage::default(),
             output_reported: false,
             truncated: false,
@@ -272,6 +286,18 @@ impl StreamSpend {
         let Some(data) = data else {
             return;
         };
+        if matches!(self.protocol, Protocol::Responses) {
+            match responses::observe(event, data) {
+                responses::Observed::Delivered(chars) => {
+                    self.delivered_chars = self.delivered_chars.saturating_add(chars);
+                }
+                responses::Observed::Usage(usage) => {
+                    self.output_reported |= usage.apply_to(&mut self.usage);
+                }
+                responses::Observed::Nothing => {}
+            }
+            return;
+        }
         match event {
             Some(b"content_block_delta") => {
                 if let Ok(frame) = serde_json::from_slice::<BlockDelta<'_>>(data) {
