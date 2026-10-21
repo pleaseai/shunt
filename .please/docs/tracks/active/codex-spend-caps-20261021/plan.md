@@ -70,7 +70,7 @@ Considered and not built:
 - [x] T002 Refuse web search for over-cap principals without metering it (file: src/codex_endpoint/search.rs) (depends on T001) [FR-5, AC-006]
   Validation: An over-cap `/alpha/search` call, and its aliases, gets the T001 error and is not forwarded. An under-cap search leaves every counter unchanged.
   Method: `tests/codex_spend_enforcement.rs` search cases
-- [ ] T003 Refuse over-cap WebSocket turns while keeping the socket open (file: src/codex_endpoint/websocket/turn.rs) (depends on T001) [FR-4, AC-004, AC-014, AC-005, AC-015]
+- [x] T003 Refuse over-cap WebSocket turns while keeping the socket open (file: src/codex_endpoint/websocket/turn.rs) (depends on T001) [FR-4, AC-004, AC-014, AC-005, AC-015]
   Validation: An over-cap `response.create` gets one error frame with `status` 429, `usage_limit_reached` type/code, `error.resets_at`, and the promo header. The upstream sees nothing, and the socket stays open and refuses each later turn. A turn after the cap's period resets (meter clock) is forwarded. A `generate:false` warmup is unchanged.
   Method: new `tests/codex_spend_websocket.rs` on the `tests/inbound_codex_websocket.rs` harness
 - [x] T004 Meter completed streamed Codex turns from Responses usage (file: src/stream_metrics/spend_tap/responses.rs) [FR-6, FR-12, NFR-1, NFR-2, AC-001, AC-007, AC-008, AC-016]
