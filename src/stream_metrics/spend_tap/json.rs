@@ -105,13 +105,18 @@ impl JsonSpend {
     /// A body that parses whole is complete however the server stopped
     /// polling it (a sized body may be dropped after its last frame without a
     /// final `Ready(None)`); a cut one does not parse and bills the floor.
+    ///
+    /// A Responses body whose usage did not report its input bills the
+    /// request's estimated input, as an incomplete stream does.
     fn settle(self) {
-        self.tap.record(&json_usage_for(
+        let (usage, input_reported) = json_usage_parts(
             self.protocol,
             self.kept.as_deref(),
             self.bytes,
             self.truncated,
-        ));
+        );
+        let estimate = matches!(self.protocol, Protocol::Responses) && !input_reported;
+        self.tap.record_estimating_input(usage, estimate);
     }
 }
 
@@ -141,10 +146,21 @@ pub(super) fn json_usage_for(
     bytes: u64,
     truncated: bool,
 ) -> RequestUsage {
+    json_usage_parts(protocol, kept, bytes, truncated).0
+}
+
+/// [`json_usage_for`], plus whether the body's usage block reported the input.
+fn json_usage_parts(
+    protocol: Protocol,
+    kept: Option<&[u8]>,
+    bytes: u64,
+    truncated: bool,
+) -> (RequestUsage, bool) {
     let mut usage = RequestUsage::default();
+    let mut input_reported = false;
     // `Some(reported)` when the body carried a usage block; `reported` is its
     // own output count, if it had one.
-    let parsed = kept.and_then(|kept| usage_block(protocol, kept, &mut usage));
+    let parsed = kept.and_then(|kept| usage_block(protocol, kept, &mut usage, &mut input_reported));
     let reported_zero = parsed == Some(Some(0));
     let missing_output = parsed == Some(None);
     let raise_to_floor = truncated || reported_zero;
@@ -172,16 +188,22 @@ pub(super) fn json_usage_for(
     if let Some(floor) = content_floor.filter(|_| raise_to_floor) {
         usage.tokens.output_tokens = usage.tokens.output_tokens.max(floor);
     }
-    usage
+    (usage, input_reported)
 }
 
 /// Applies the body's `usage` block to `usage`. `None` when the body has no
 /// parsable block; otherwise the block's own output count.
-fn usage_block(protocol: Protocol, kept: &[u8], usage: &mut RequestUsage) -> Option<Option<u64>> {
+fn usage_block(
+    protocol: Protocol,
+    kept: &[u8],
+    usage: &mut RequestUsage,
+    input_reported: &mut bool,
+) -> Option<Option<u64>> {
     if matches!(protocol, Protocol::Responses) {
         let fields = serde_json::from_slice::<responses::ResponseHolder>(kept)
             .ok()?
             .usage?;
+        *input_reported = fields.reports_input();
         let reported = fields.apply_to(usage);
         return Some(reported.then_some(usage.tokens.output_tokens));
     }

@@ -123,7 +123,10 @@ fn push_input_item_text(item: &Value, out: &mut String) {
     match item.get("type").and_then(Value::as_str) {
         Some("message") | None => push_parts_text(item.get("content"), out),
         Some("function_call") => push_str_field(item.get("arguments"), out),
-        Some("function_call_output") => push_parts_text(item.get("output"), out),
+        Some("custom_tool_call") => push_str_field(item.get("input"), out),
+        Some("function_call_output" | "custom_tool_call_output") => {
+            push_parts_text(item.get("output"), out);
+        }
         Some("reasoning") => push_parts_text(item.get("summary"), out),
         Some(_) => {}
     }
@@ -261,6 +264,21 @@ mod tests {
         assert_eq!(
             count_responses_input_tokens(&serde_json::to_vec(&body).unwrap()),
             tokens(&text) + 7 * PER_MESSAGE_OVERHEAD + PER_TOOL_OVERHEAD
+        );
+    }
+
+    #[test]
+    fn custom_tool_calls_and_their_outputs_are_counted() {
+        let body = json!({"input": [
+            {"type": "custom_tool_call", "call_id": "c1", "name": "apply_patch",
+             "input": "*** Begin Patch"},
+            {"type": "custom_tool_call_output", "call_id": "c1", "output": "Done!"},
+            {"type": "custom_tool_call_output", "call_id": "c2",
+             "output": [{"type": "input_text", "text": "parts"}]}
+        ]});
+        assert_eq!(
+            count_responses_input_tokens(&serde_json::to_vec(&body).unwrap()),
+            tokens("*** Begin Patch\nDone!\nparts\n") + 3 * PER_MESSAGE_OVERHEAD
         );
     }
 

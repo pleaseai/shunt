@@ -11,9 +11,10 @@ use std::{
 };
 
 use axum::{body::Bytes, http::StatusCode};
+use futures_util::FutureExt;
 use serde_json::json;
 
-use super::{SpendTap, StreamSpend, ESTIMATES};
+use super::{json::JsonSpendBody, SpendTap, StreamSpend, ESTIMATES};
 use crate::{
     compression::BodyEncoding,
     config::RateLimitsConfig,
@@ -196,4 +197,81 @@ fn an_anthropic_stream_never_estimates_a_responses_body() {
     StreamSpend::new(tap.clone()).settle(StatusCode::OK);
     assert_eq!(ESTIMATES.with(std::cell::Cell::get), before);
     assert_eq!(spent(&tap), 0);
+}
+
+/// Settles a non-streamed Responses reply of `body` on `tap`, returning how
+/// many input estimates that made.
+fn settle_json(tap: &SpendTap, body: &[u8], bound: usize) -> usize {
+    let before = ESTIMATES.with(std::cell::Cell::get);
+    let reply = JsonSpendBody::with_bound(
+        axum::body::Body::from(body.to_vec()),
+        tap.clone(),
+        StatusCode::OK,
+        bound,
+    )
+    .protocol(Protocol::Responses);
+    // An in-memory body is ready at once, so no executor is needed (and no
+    // runtime, which keeps the estimate on this thread).
+    let collected = http_body_util::BodyExt::collect(reply)
+        .now_or_never()
+        .expect("an in-memory body is ready");
+    assert!(collected.is_ok());
+    ESTIMATES.with(std::cell::Cell::get) - before
+}
+
+#[test]
+fn a_json_reply_without_input_usage_bills_the_estimate_and_output_floor() {
+    let estimate = count_responses_input_tokens(&request_json());
+    let message = json!({"output": [{"type": "message", "content": [
+        {"type": "output_text", "text": "0123456789abcdef"}]}]});
+    let output_only_usage = json!({"output": [{"type": "message", "content": [
+        {"type": "output_text", "text": "0123456789abcdef"}]}],
+        "usage": {"output_tokens": 4}});
+    // Output floor: the delivered text when a usage block lacks its output
+    // count, the body's own bytes (quarter-rated) when there is no usage.
+    let no_usage_bytes = serde_json::to_vec(&message).unwrap();
+    let no_usage_output = (no_usage_bytes.len() as u64).div_ceil(4);
+    for (body, output) in [
+        (no_usage_bytes, no_usage_output),
+        (serde_json::to_vec(&output_only_usage).unwrap(), 4),
+    ] {
+        let tap = tap(request_json(), BodyEncoding::Identity);
+        assert_eq!(settle_json(&tap, &body, MAX_BYTES), 1);
+        assert_eq!(
+            spent(&tap),
+            priced(Usage {
+                input_tokens: estimate,
+                output_tokens: output,
+                ..Usage::default()
+            })
+        );
+    }
+}
+
+#[test]
+fn a_json_reply_past_the_tee_bound_still_bills_the_estimated_input() {
+    let tap = tap(request_json(), BodyEncoding::Identity);
+    // 16 bytes uncopied: a 4-token byte floor.
+    assert_eq!(settle_json(&tap, &[b' '; 16], 8), 1);
+    assert_eq!(
+        spent(&tap),
+        floor(count_responses_input_tokens(&request_json()))
+    );
+}
+
+#[test]
+fn a_json_reply_that_reports_its_input_never_runs_the_estimator() {
+    let tap = tap(request_json(), BodyEncoding::Identity);
+    let body = serde_json::to_vec(&json!({
+        "usage": {"input_tokens": 7, "output_tokens": 2}}))
+    .unwrap();
+    assert_eq!(settle_json(&tap, &body, MAX_BYTES), 0);
+    assert_eq!(
+        spent(&tap),
+        priced(Usage {
+            input_tokens: 7,
+            output_tokens: 2,
+            ..Usage::default()
+        })
+    );
 }

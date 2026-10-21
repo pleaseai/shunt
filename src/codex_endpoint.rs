@@ -126,6 +126,14 @@ async fn serve(
 
     async move {
         match forward(state, session_id, headers, body, started_at, operation).await {
+            Ok((status, response)) if response.extensions().get::<SpendRefused>().is_some() => {
+                tracing::info!(
+                    upstream_status = status.as_u16(),
+                    latency_ms = started_at.elapsed().as_millis(),
+                    "inbound codex request refused: spend limit"
+                );
+                response
+            }
             Ok((status, response)) => {
                 tracing::info!(
                     upstream_status = status.as_u16(),
@@ -177,6 +185,23 @@ impl From<AdapterError> for ForwardError {
             response: error.response,
         }
     }
+}
+
+/// Marks a response as a spend refusal, so [`post`] logs it as the gateway's
+/// own answer rather than a proxied upstream one.
+#[derive(Clone)]
+struct SpendRefused;
+
+/// A spend refusal, kept verbatim (it is already OpenAI-shaped) with its 429
+/// recorded on the request span: nothing reached an upstream.
+fn spend_refused(
+    provider: &str,
+    refusal: spend::Refusal,
+) -> (StatusCode, axum::response::Response) {
+    crate::observability::record_span_outcome(provider, StatusCode::TOO_MANY_REQUESTS);
+    let mut response = refusal.into_response();
+    response.extensions_mut().insert(SpendRefused);
+    (StatusCode::TOO_MANY_REQUESTS, response)
 }
 
 async fn forward(
@@ -255,9 +280,7 @@ async fn forward(
             // re-shape in `serve`.
             let admitted = match spend::admit(&state, inbound_client.as_deref()) {
                 Ok(admitted) => admitted,
-                Err(refusal) => {
-                    return Ok((StatusCode::TOO_MANY_REQUESTS, refusal.into_response()));
-                }
+                Err(refusal) => return Ok(spend_refused(&provider, refusal)),
             };
             forward_turn(
                 state,
@@ -276,7 +299,7 @@ async fn forward(
             // An over-cap principal gets the same refusal as a turn. Search is
             // never metered, so the `Admitted` value is dropped: no tap.
             if let Err(refusal) = spend::admit(&state, inbound_client.as_deref()) {
-                return Ok((StatusCode::TOO_MANY_REQUESTS, refusal.into_response()));
+                return Ok(spend_refused(&provider, refusal));
             }
             search::forward(
                 state,

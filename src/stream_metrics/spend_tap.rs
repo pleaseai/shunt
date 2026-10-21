@@ -193,6 +193,27 @@ impl SpendTap {
         spend.settle(status);
     }
 
+    /// Records `usage`; with `estimate`, its input is first replaced by the
+    /// estimate over the retained request body (a turn with none bills as is).
+    /// The one place the input estimate is computed.
+    fn record_estimating_input(self, usage: RequestUsage, estimate: bool) {
+        let Some(request) = self.request.clone().filter(|_| estimate) else {
+            self.record(&usage);
+            return;
+        };
+        let bill = move || {
+            let mut usage = usage;
+            usage.tokens.input_tokens = request.estimate_input_tokens();
+            self.record(&usage);
+        };
+        // Settling runs on the stream's poll or drop, inside the runtime, and
+        // tokenizing a long conversation would stall that worker.
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn_blocking(bill)),
+            Err(_) => bill(),
+        }
+    }
+
     /// Prices `usage` on the target and adds it to the principal's counters.
     /// Never panics into the response: a failure inside the meter is caught,
     /// logged, and the response it was metering carries on.
@@ -427,32 +448,14 @@ impl StreamSpend {
     /// response opened with; a non-`2xx` stream is not billed.
     ///
     /// A Responses turn whose usage never reported its input bills the
-    /// request's estimated input, which is computed here and nowhere else.
+    /// request's estimated input (see `SpendTap::record_estimating_input`).
     pub(super) fn settle(self, status: StatusCode) {
         if !status.is_success() {
             return;
         }
         let usage = self.billable();
-        let estimate_from = match self.protocol {
-            Protocol::Responses if !self.input_reported => self.tap.request.clone(),
-            _ => None,
-        };
-        let Some(request) = estimate_from else {
-            self.tap.record(&usage);
-            return;
-        };
-        let tap = self.tap;
-        let bill = move || {
-            let mut usage = usage;
-            usage.tokens.input_tokens = request.estimate_input_tokens();
-            tap.record(&usage);
-        };
-        // Settling runs on the stream's poll or drop, inside the runtime, and
-        // tokenizing a long conversation would stall that worker.
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn_blocking(bill)),
-            Err(_) => bill(),
-        }
+        let estimate = matches!(self.protocol, Protocol::Responses) && !self.input_reported;
+        self.tap.record_estimating_input(usage, estimate);
     }
 }
 

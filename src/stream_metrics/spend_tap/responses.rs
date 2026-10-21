@@ -42,9 +42,10 @@ const FAILED_EVENT: &[u8] = b"response.failed";
 /// Events whose `delta` is generated output the client was sent: answer text,
 /// tool-call arguments, and reasoning text — the Responses twins of the
 /// Anthropic `text`, `partial_json` and `thinking` deltas.
-const DELTA_EVENTS: [&[u8]; 4] = [
+const DELTA_EVENTS: [&[u8]; 5] = [
     b"response.output_text.delta",
     b"response.function_call_arguments.delta",
+    b"response.custom_tool_call_input.delta",
     b"response.reasoning_summary_text.delta",
     b"response.reasoning_text.delta",
 ];
