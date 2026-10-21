@@ -139,6 +139,8 @@ Considered and not built:
 - [x] (2026-10-21 KST) T008 Document Codex-endpoint spend enforcement across docs, README, and site
   Evidence: 19 files updated (`docs/gateway-spend-limits.md`, `docs/m11-inbound-codex-endpoint.md`, the four READMEs, and `reference/configuration`, `reference/endpoints`, `guides/inbound-codex-endpoint` in en/ko/ja/zh-cn); `bun run build` in `site/` → 209 pages, `lint:docs` → 126 files clean; cross-surface grep for `usage_limit_reached` and `#733`; `SpendEnforcementConfig` doc comment updated.
 
+- [x] (2026-10-21 KST) Review-stage commits (SHA: `6482ab51`, `dc7f5ef8`, `2a9802f4`, `65a8d1be`, `16beec83`)
+
 ## Decision Log
 
 - 2026-10-21: Designed inline from one exploration pass, with no architect agent. The existing tap and gate fixed the seams; rejected alternatives are listed above.
@@ -186,3 +188,31 @@ Considered and not built:
   Evidence: `tests/inbound_codex_websocket.rs` upstream bodies are `data: {"type":"response.completed",...}` with no `event:` line; unit test `a_frame_without_an_event_line_is_named_by_its_type`.
 - Observation: (T006) An HTTP upstream that writes its first frames and the transport error in one burst reaches the client as a 502, not a 2xx stream, so it is unbilled. The break has to trail the deltas for the turn to commit as 2xx.
   Evidence: the first draft of `an_http_stream_broken_mid_turn_bills_estimated_input_plus_delivered_output` failed on `left: 502, right: 200`; delaying the error by 100 ms gave a 200 and the floor bill.
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+
+- Over-cap callers on the inbound Codex endpoint are refused for HTTP turns, WebSocket turns, and web search. The refusal is `429 usage_limit_reached`, which the Codex CLI shows as a usage limit. It carries `resets_at`, `retry-after`, `x-should-retry: false`, and an ASCII-only `x-codex-promo-message`. A WebSocket refusal ends only that turn; the socket stays open.
+- Completed Codex turns, streamed and non-streamed, are metered from Responses `usage` into the same counters `/v1/messages` uses. Cached tokens bill at the cache-read rate.
+- A turn that ends without reported input bills the estimated input from the retained request plus the output already delivered. The estimate is a tiktoken count run lazily on the blocking pool.
+- A routed WebSocket continuation bills its estimate from the full expanded input rather than the delta, and only when `[server.spend]` is set.
+- A `response.completed` frame larger than the 256 KiB parse cap still bills its reported usage, recovered from a bounded 8 KiB tail.
+- Pricing overrides that the Codex endpoint serves no longer warn that they price nothing.
+- Docs are updated in `docs/`, the four READMEs, and the site reference and guides in four locales.
+
+### What Went Well
+
+- Every stage-2 spend primitive (`assess`, `meter`, `SpendTap`) was reusable as-is. The new work was confined to the transport layer and to Responses parsing.
+- The live mock-upstream harness (seven steps: caps, refusals, WebSocket frames, counters) re-verified every fix commit in about a minute. A variant with a 300 KB final frame proved the oversized-frame recovery end to end.
+- Each review round's fixes went through independent validators, and those validators caught a regression from round 1: an unpolled JSON body started billing, contradicting the documented unmetered case. Round 2 fixed it.
+
+### What Could Improve
+
+- Review fixes created new findings. The round-1 fix billed unpolled bodies; the round-2 oversized-frame recovery introduced heuristic edge cases; the round-2 continuation estimate added eager serialization. Each fix needed its own review round, so the loop ran past its cap of 3 rounds.
+- The greptile engine never ran, because node 26.4.0 is missing `libada`. Fix the local toolchain before the next multi-engine review.
+- `src/codex_endpoint.rs` (710 lines) and `src/stream_metrics.rs` (903 lines) are over the 500-line guideline. New logic went into submodules, but neither file was split.
+
+### Tech Debt Created
+
+- TD-011 to TD-017 in `tech-debt-tracker.md`. These are review findings that were reviewed and deferred: all are confirmed but scored below 80, and most are unproven in practice.

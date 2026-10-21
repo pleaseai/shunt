@@ -7,9 +7,10 @@
   "conflicts": [],
   "traces": [],
   "created_at": "2026-10-04T19:02:50.042Z",
-  "updated_at": "2026-10-04T19:02:50.042Z",
+  "updated_at": "2026-10-21T05:48:24.604Z",
   "source_tracks": [
-    "spend-enforcement-20261003"
+    "spend-enforcement-20261003",
+    "codex-spend-caps-20261021"
   ],
   "requirements": [
     {
@@ -178,6 +179,306 @@
       "statement": "keep concurrent updates to one principal's counters lossless",
       "source_tracks": [
         "spend-enforcement-20261003"
+      ]
+    },
+    {
+      "id": "REQ-022",
+      "kind": "functional",
+      "statement": "resolve each Codex-endpoint request's principal exactly as `/v1/messages` does — the authenticated `[server.auth]` identity (static token name or verified JWT email), or the single anonymous principal when the endpoint runs without `[server.auth]`",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ],
+      "scenarios": [
+        {
+          "name": "When an authenticated client spends through `/v1/messages` and then through the Codex endpoint in the same period, the system shall add both costs to that client's one period-to-date counter.",
+          "given": [],
+          "when": [
+            "an authenticated client spends through `/v1/messages` and then through the Codex endpoint in the same period"
+          ],
+          "then": [
+            "add both costs to that client's one period-to-date counter"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-023",
+      "kind": "functional",
+      "statement": "check the principal's effective daily, weekly, and monthly caps before a Codex-endpoint turn reaches any upstream, over the HTTP routes and over the inbound Responses WebSocket, and refuse the turn when period-to-date spend has reached any of them",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ],
+      "scenarios": [
+        {
+          "name": "If a principal whose monthly spend has reached its cap posts a turn to `/v1/responses`, then the system shall send nothing upstream.",
+          "given": [],
+          "when": [
+            "a principal whose monthly spend has reached its cap posts a turn to `/v1/responses`"
+          ],
+          "then": [
+            "send nothing upstream"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-024",
+      "kind": "functional",
+      "statement": "refuse an over-cap turn with HTTP `429` and an OpenAI Responses error envelope whose `type` and `code` are `usage_limit_reached`, whose `resets_at` is the Unix time the cap that resets last resets, whose message names that cap's period and UTC reset time (appended with `blocked_message` when configured), and which carries `retry-after` with the seconds until that reset",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ],
+      "scenarios": [
+        {
+          "name": "If a principal whose monthly spend has reached its cap posts a turn to `/v1/responses`, then the system shall return `429` with `error.type` and `error.code` `usage_limit_reached`.",
+          "given": [],
+          "when": [
+            "a principal whose monthly spend has reached its cap posts a turn to `/v1/responses`"
+          ],
+          "then": [
+            "return `429` with `error.type` and `error.code` `usage_limit_reached`"
+          ]
+        },
+        {
+          "name": "When several of a principal's caps are reached, the system shall name the cap that resets last in the refusal message, in `resets_at`, and in `retry-after`.",
+          "given": [],
+          "when": [
+            "several of a principal's caps are reached"
+          ],
+          "then": [
+            "name the cap that resets last in the refusal message, in `resets_at`, and in `retry-after`"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-025",
+      "kind": "functional",
+      "statement": "carry a configured `blocked_message` on the refusal in the `x-codex-promo-message` header as well, because the Codex CLI renders its own usage-limit text from `resets_at` and that header rather than from the error message",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ],
+      "scenarios": [
+        {
+          "name": "Where `blocked_message` is configured, the system shall send its text in the refusal's `x-codex-promo-message` header.",
+          "given": [
+            "`blocked_message` is configured"
+          ],
+          "when": [],
+          "then": [
+            "send its text in the refusal's `x-codex-promo-message` header"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-026",
+      "kind": "functional",
+      "statement": "refuse an over-cap turn on an open inbound WebSocket by sending that turn a terminal error event carrying the same error as FR-3, and keep the socket open for later turns",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ],
+      "scenarios": [
+        {
+          "name": "When an over-cap principal sends `response.create` on an open inbound WebSocket, the system shall answer that turn with a terminal error event.",
+          "given": [],
+          "when": [
+            "an over-cap principal sends `response.create` on an open inbound WebSocket"
+          ],
+          "then": [
+            "answer that turn with a terminal error event"
+          ]
+        },
+        {
+          "name": "When the system refuses a turn on an open inbound WebSocket for spend, the system shall keep the socket open.",
+          "given": [],
+          "when": [
+            "the system refuses a turn on an open inbound WebSocket for spend"
+          ],
+          "then": [
+            "keep the socket open"
+          ]
+        },
+        {
+          "name": "While a principal's cap is reached, the system shall refuse each further turn on the same WebSocket.",
+          "given": [
+            "a principal's cap is reached"
+          ],
+          "when": [],
+          "then": [
+            "refuse each further turn on the same WebSocket"
+          ]
+        },
+        {
+          "name": "When the period of every cap that refused the principal has reset, the system shall accept turns again on a WebSocket that stayed open across the reset.",
+          "given": [],
+          "when": [
+            "the period of every cap that refused the principal has reset"
+          ],
+          "then": [
+            "accept turns again on a WebSocket that stayed open across the reset"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-027",
+      "kind": "functional",
+      "statement": "refuse the Codex CLI's web-search calls (`/alpha/search` and its aliases) for an over-cap principal with the same error as FR-3, without metering them",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ],
+      "scenarios": [
+        {
+          "name": "If an over-cap principal calls `/alpha/search`, then the system shall refuse the call with the FR-3 error.",
+          "given": [],
+          "when": [
+            "an over-cap principal calls `/alpha/search`"
+          ],
+          "then": [
+            "refuse the call with the FR-3 error"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-028",
+      "kind": "functional",
+      "statement": "meter each Codex-endpoint turn that completes from the upstream-reported Responses `usage` (input tokens, cached input tokens, output tokens), priced through the existing pricing table by the serving provider, the client-requested model, and the upstream model, into the same counters `/v1/messages` writes",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ],
+      "scenarios": [
+        {
+          "name": "When an authenticated client spends through `/v1/messages` and then through the Codex endpoint in the same period, the system shall add both costs to that client's one period-to-date counter.",
+          "given": [],
+          "when": [
+            "an authenticated client spends through `/v1/messages` and then through the Codex endpoint in the same period"
+          ],
+          "then": [
+            "add both costs to that client's one period-to-date counter"
+          ]
+        },
+        {
+          "name": "When a streamed Codex turn completes with `usage` reporting cached input tokens, the system shall price the cached portion at the cache-read rate and the rest of the input at the input rate.",
+          "given": [],
+          "when": [
+            "a streamed Codex turn completes with `usage` reporting cached input tokens"
+          ],
+          "then": [
+            "price the cached portion at the cache-read rate and the rest of the input at the input rate"
+          ]
+        },
+        {
+          "name": "When a turn routed through `[[server.codex_endpoint.routes]]` to a third-party Responses upstream completes, the system shall price it by that route's provider and upstream model.",
+          "given": [],
+          "when": [
+            "a turn routed through `[[server.codex_endpoint.routes]]` to a third-party Responses upstream completes"
+          ],
+          "then": [
+            "price it by that route's provider and upstream model"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-029",
+      "kind": "functional",
+      "statement": "price a Codex-endpoint model the pricing table cannot place — every GPT/Codex model unless the operator adds a `[[server.spend.pricing.overrides]]` row for it — at the existing unknown-model rate with the existing once-per-model warning, and add no built-in GPT/Codex prices",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ],
+      "scenarios": [
+        {
+          "name": "If a Codex turn's model has no pricing override, then the system shall meter it at the unknown-model rate.",
+          "given": [],
+          "when": [
+            "a Codex turn's model has no pricing override"
+          ],
+          "then": [
+            "meter it at the unknown-model rate"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-030",
+      "kind": "functional",
+      "statement": "bill a turn that ends without the upstream's completion report — a dropped or closed WebSocket, a broken or cancelled stream — at a floor estimate made of the request's estimated input tokens plus the output text already delivered to the client",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ],
+      "scenarios": [
+        {
+          "name": "If the client closes the WebSocket after output text has been delivered but before `response.completed`, then the system shall record a cost no lower than the estimated input plus the delivered output.",
+          "given": [],
+          "when": [
+            "the client closes the WebSocket after output text has been delivered but before `response.completed`"
+          ],
+          "then": [
+            "record a cost no lower than the estimated input plus the delivered output"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-031",
+      "kind": "functional",
+      "statement": "honor `[server.spend.enforcement] fail_closed_on_error` on this endpoint the same way `/v1/messages` does when a principal's spend state cannot be consulted",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ],
+      "scenarios": [
+        {
+          "name": "While `fail_closed_on_error` is on and a capped principal's spend state is unavailable, the system shall refuse that principal's Codex-endpoint turns.",
+          "given": [
+            "`fail_closed_on_error` is on and a capped principal's spend state is unavailable"
+          ],
+          "when": [],
+          "then": [
+            "refuse that principal's Codex-endpoint turns"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-032",
+      "kind": "functional",
+      "statement": "leave the endpoint unchanged — no cap check, no metering — when `[server.spend]` is not configured",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ]
+    },
+    {
+      "id": "REQ-033",
+      "kind": "functional",
+      "statement": "document the Codex-endpoint enforcement, its refusal shape and what the Codex CLI shows for it, the WebSocket and web-search behavior, the floor-estimate rule, and the need for pricing overrides on GPT/Codex models in `docs/gateway-spend-limits.md`, `docs/m11-inbound-codex-endpoint.md`, the README locales, and the site reference pages with their `ko`/`ja`/`zh-cn` copies",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ]
+    },
+    {
+      "id": "REQ-034",
+      "kind": "non-functional",
+      "statement": "preserve streaming semantics on the Codex endpoint — metering observes usage as the relayed stream or WebSocket frames pass and never buffers or alters the bytes sent to the client",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ]
+    },
+    {
+      "id": "REQ-035",
+      "kind": "non-functional",
+      "statement": "keep a metering or persistence failure from failing the turn it meters",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
+      ]
+    },
+    {
+      "id": "REQ-036",
+      "kind": "non-functional",
+      "statement": "add no perceptible latency to Codex-endpoint turns, including for principals without caps",
+      "source_tracks": [
+        "codex-spend-caps-20261021"
       ]
     }
   ]

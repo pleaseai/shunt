@@ -4,4 +4,4 @@
 
 | Spec | Domain | Feature | Created | Requirements | Related Tracks |
 |------|--------|---------|---------|--------------|----------------|
-| SPEC-001 | gateway | spend-limits | 2026-10-04 | 21 | ["spend-enforcement-20261003"] |
+| SPEC-001 | gateway | spend-limits | 2026-10-04 | 36 | ["spend-enforcement-20261003", "codex-spend-caps-20261021"] |
