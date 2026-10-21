@@ -22,7 +22,12 @@
 //! A streamed inbound Codex endpoint turn speaks the OpenAI Responses protocol
 //! instead; [`StreamSpend`] reads it in its Responses mode ([`responses`]),
 //! which bills the terminal `response.usage` with the cached tokens split out
-//! of the input.
+//! of the input. Responses reports input only at completion, so a turn that
+//! ends without it — the client closed the socket, a `response.create`
+//! replaced it, or the upstream stream broke — bills an input estimate over the
+//! retained request body ([`RequestBody`]) plus the delivered-output floor. The
+//! estimate is made lazily, at settle time, on the blocking pool, and only for
+//! such a turn: a turn that reports its input never tokenizes its request.
 //!
 //! Only a `2xx` response is billed; an error the upstream answered with costs
 //! nothing. A response metered elsewhere — the gated capture, for one — is
@@ -33,11 +38,12 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-use axum::http::StatusCode;
+use axum::{body::Bytes, http::StatusCode};
 use serde::Deserialize;
 
 use super::{Protocol, UPSTREAM_TRUNCATED_MARKER};
 use crate::{
+    compression::BodyEncoding,
     gateway::{
         spend::{
             meter::{now_secs, RequestUsage},
@@ -60,14 +66,60 @@ const CHARS_PER_TOKEN: u64 = 4;
 
 /// The served-response spend hook for one request.
 ///
-/// Cheap to clone (three `Arc`s); the clones share one [`ServedTarget`] slot, so a
-/// committed stream can name its winner after the observer was built.
+/// Cheap to clone (`Arc`s and a refcounted body); the clones share one
+/// [`ServedTarget`] slot, so a committed stream can name its winner after the
+/// observer was built.
 #[derive(Clone)]
 pub(crate) struct SpendTap {
     stores: Arc<GatewayStores>,
     prices: Arc<PriceTable>,
     principal: Arc<str>,
     target: Arc<Mutex<Option<ServedTarget>>>,
+    /// The Responses request a usage-less turn estimates its input from;
+    /// `None` on `/v1/messages`, whose `message_start` reports the input.
+    request: Option<RequestBody>,
+}
+
+/// A Codex endpoint turn's request body, kept (a refcount, not a copy) for the
+/// input estimate of a turn that ends without reported usage.
+#[derive(Clone)]
+pub(crate) struct RequestBody {
+    bytes: Bytes,
+    encoding: BodyEncoding,
+    /// The request size limit, which also caps a zstd body's decode.
+    max_bytes: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Input estimates made on this thread: the seam that shows a turn which
+    /// reports its usage never runs the estimator.
+    static ESTIMATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl RequestBody {
+    /// The estimated input tokens. Blocking work — a zstd decode and a
+    /// tokenizer pass — so it runs off the async executor. A body that does
+    /// not decode or parse estimates zero.
+    fn estimate_input_tokens(&self) -> u64 {
+        #[cfg(test)]
+        ESTIMATES.with(|estimates| estimates.set(estimates.get() + 1));
+        let decoded;
+        let json = match self.encoding {
+            BodyEncoding::Zstd => {
+                match crate::compression::decode_zstd_blocking(&self.bytes, self.max_bytes) {
+                    Ok(Some(body)) => {
+                        decoded = body;
+                        &decoded
+                    }
+                    Ok(None) | Err(_) => return 0,
+                }
+            }
+            // An undecodable coding is tried as plain JSON, as the model label is.
+            BodyEncoding::Identity | BodyEncoding::Other => &self.bytes,
+        };
+        crate::count_tokens::count_responses_input_tokens(json)
+    }
 }
 
 impl SpendTap {
@@ -84,7 +136,25 @@ impl SpendTap {
             prices: state.spend_prices.clone(),
             principal: Arc::from(principal?),
             target: Arc::default(),
+            request: None,
         })
+    }
+
+    /// Keeps a Responses turn's request body for the floor's input estimate.
+    /// `encoding` is the request's `content-encoding`; `max_bytes` caps a zstd
+    /// body's decode.
+    pub(crate) fn with_request_body(
+        mut self,
+        bytes: Bytes,
+        encoding: BodyEncoding,
+        max_bytes: usize,
+    ) -> Self {
+        self.request = Some(RequestBody {
+            bytes,
+            encoding,
+            max_bytes,
+        });
+        self
     }
 
     /// Names the upstream that served the turn. Until this is called nothing
@@ -254,6 +324,9 @@ pub(super) struct StreamSpend {
     /// final count, which the floor never overrides unless the stream was
     /// marked truncated.
     output_reported: bool,
+    /// Whether a Responses usage block reported `input_tokens`. Without one a
+    /// Responses turn bills the request's estimated input.
+    input_reported: bool,
     truncated: bool,
     delivered_chars: u64,
 }
@@ -270,6 +343,7 @@ impl StreamSpend {
             protocol,
             usage: RequestUsage::default(),
             output_reported: false,
+            input_reported: false,
             truncated: false,
             delivered_chars: 0,
         }
@@ -292,6 +366,7 @@ impl StreamSpend {
                     self.delivered_chars = self.delivered_chars.saturating_add(chars);
                 }
                 responses::Observed::Usage(usage) => {
+                    self.input_reported |= usage.reports_input();
                     self.output_reported |= usage.apply_to(&mut self.usage);
                 }
                 responses::Observed::Nothing => {}
@@ -350,12 +425,38 @@ impl StreamSpend {
 
     /// Bills the stream once, however it ended. `status` is the status the
     /// response opened with; a non-`2xx` stream is not billed.
+    ///
+    /// A Responses turn whose usage never reported its input bills the
+    /// request's estimated input, which is computed here and nowhere else.
     pub(super) fn settle(self, status: StatusCode) {
-        if status.is_success() {
-            self.tap.record(&self.billable());
+        if !status.is_success() {
+            return;
+        }
+        let usage = self.billable();
+        let estimate_from = match self.protocol {
+            Protocol::Responses if !self.input_reported => self.tap.request.clone(),
+            _ => None,
+        };
+        let Some(request) = estimate_from else {
+            self.tap.record(&usage);
+            return;
+        };
+        let tap = self.tap;
+        let bill = move || {
+            let mut usage = usage;
+            usage.tokens.input_tokens = request.estimate_input_tokens();
+            tap.record(&usage);
+        };
+        // Settling runs on the stream's poll or drop, inside the runtime, and
+        // tokenizing a long conversation would stall that worker.
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn_blocking(bill)),
+            Err(_) => bill(),
         }
     }
 }
 
+#[cfg(test)]
+mod estimate_tests;
 #[cfg(test)]
 mod tests;

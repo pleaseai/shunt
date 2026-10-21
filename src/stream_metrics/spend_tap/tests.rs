@@ -35,6 +35,7 @@ fn tap() -> SpendTap {
         prices: Arc::new(PriceTable::from_config(None)),
         principal: Arc::from(PRINCIPAL),
         target: Arc::default(),
+        request: None,
     };
     tap.set_target(&ServedTarget {
         provider: "anthropic".to_string(),

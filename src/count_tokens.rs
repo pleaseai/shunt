@@ -6,6 +6,10 @@
 //! closer than Claude Code's char/4 fallback, but is still an approximation: the
 //! backend's billed count also includes reasoning tokens, image/tool-schema
 //! encoding, and cache accounting that a text-only local count can't see.
+//!
+//! [`count_responses_input_tokens`] applies the same count to an OpenAI
+//! Responses request body, for the spend floor of a Codex endpoint turn that
+//! ended without reported usage.
 
 use std::sync::OnceLock;
 
@@ -61,6 +65,85 @@ pub fn count_input_tokens_value(request: &Value) -> u64 {
     }
 
     encoder().encode_ordinary(&text).len() as u64 + overhead
+}
+
+/// Approximate the prompt token count of an OpenAI Responses request body —
+/// the inbound Codex endpoint's turn. Returns `0` for an unparseable body.
+///
+/// The spend floor bills this as a turn's input when the upstream never
+/// reported its usage (a turn cut before `response.completed`): Responses
+/// reports input only at completion, so there is no earlier count to fall
+/// back on.
+pub fn count_responses_input_tokens(body: &[u8]) -> u64 {
+    serde_json::from_slice::<Value>(body)
+        .map(|request| count_responses_input_tokens_value(&request))
+        .unwrap_or(0)
+}
+
+/// Same as [`count_responses_input_tokens`] but over an already-parsed request.
+///
+/// Counts `instructions`, every `input` item (or a bare string `input`), and
+/// each tool's serialized JSON.
+pub fn count_responses_input_tokens_value(request: &Value) -> u64 {
+    let mut text = String::new();
+    let mut overhead: u64 = 0;
+
+    push_str_field(request.get("instructions"), &mut text);
+
+    match request.get("input") {
+        Some(Value::String(input)) => {
+            overhead += PER_MESSAGE_OVERHEAD;
+            text.push_str(input);
+            text.push('\n');
+        }
+        Some(Value::Array(items)) => {
+            for item in items {
+                overhead += PER_MESSAGE_OVERHEAD;
+                push_input_item_text(item, &mut text);
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(tools) = request.get("tools").and_then(Value::as_array) {
+        for tool in tools {
+            overhead += PER_TOOL_OVERHEAD;
+            text.push_str(&tool.to_string());
+            text.push('\n');
+        }
+    }
+
+    encoder().encode_ordinary(&text).len() as u64 + overhead
+}
+
+/// One Responses `input` item's text: a message's content, a function call's
+/// `arguments`, a function call output's `output`, or a reasoning item's
+/// `summary` text. An item with no `type` is an easy-input message.
+fn push_input_item_text(item: &Value, out: &mut String) {
+    match item.get("type").and_then(Value::as_str) {
+        Some("message") | None => push_parts_text(item.get("content"), out),
+        Some("function_call") => push_str_field(item.get("arguments"), out),
+        Some("function_call_output") => push_parts_text(item.get("output"), out),
+        Some("reasoning") => push_parts_text(item.get("summary"), out),
+        Some(_) => {}
+    }
+}
+
+/// A string, or an array of parts whose `text` is collected (`input_text`,
+/// `output_text`, `summary_text`, ...).
+fn push_parts_text(value: Option<&Value>, out: &mut String) {
+    match value {
+        Some(Value::String(text)) => {
+            out.push_str(text);
+            out.push('\n');
+        }
+        Some(Value::Array(parts)) => {
+            for part in parts {
+                push_str_field(part.get("text"), out);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn push_str_field(value: Option<&Value>, out: &mut String) {
@@ -145,6 +228,51 @@ mod tests {
         assert_eq!(count_input_tokens(b"not json"), 0);
         let empty = json!({"model": "gpt-5.6-sol", "messages": []});
         assert_eq!(count_input_tokens(&serde_json::to_vec(&empty).unwrap()), 0);
+    }
+
+    fn tokens(text: &str) -> u64 {
+        encoder().encode_ordinary(text).len() as u64
+    }
+
+    #[test]
+    fn a_responses_body_counts_instructions_every_item_kind_and_tools() {
+        let tool = json!({"type": "function", "name": "shell",
+                          "parameters": {"type": "object"}});
+        let body = json!({
+            "model": "gpt-5.6-sol",
+            "instructions": "be brief",
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "list files"}]},
+                {"type": "message", "role": "assistant", "content": "sure"},
+                {"role": "user", "content": [{"type": "output_text", "text": "untyped"}]},
+                {"type": "function_call", "name": "shell", "call_id": "c1",
+                 "arguments": "{\"cmd\":\"ls\"}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "a.txt"},
+                {"type": "reasoning",
+                 "summary": [{"type": "summary_text", "text": "thinking"}]},
+                {"type": "web_search_call", "id": "ws_1"}
+            ],
+            "tools": [tool]
+        });
+        let text = format!(
+            "be brief\nlist files\nsure\nuntyped\n{{\"cmd\":\"ls\"}}\na.txt\nthinking\n{tool}\n"
+        );
+        assert_eq!(
+            count_responses_input_tokens(&serde_json::to_vec(&body).unwrap()),
+            tokens(&text) + 7 * PER_MESSAGE_OVERHEAD + PER_TOOL_OVERHEAD
+        );
+    }
+
+    #[test]
+    fn a_string_input_and_unparseable_responses_bodies() {
+        let body = json!({"input": "hello there"});
+        assert_eq!(
+            count_responses_input_tokens(&serde_json::to_vec(&body).unwrap()),
+            tokens("hello there\n") + PER_MESSAGE_OVERHEAD
+        );
+        assert_eq!(count_responses_input_tokens(b"not json"), 0);
+        assert_eq!(count_responses_input_tokens(b"{}"), 0);
     }
 
     #[test]

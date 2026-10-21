@@ -532,3 +532,126 @@ async fn a_completed_websocket_turn_is_metered() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+
+/// The floor's delivered text: 13 characters, so a 4-token output floor.
+const CUT_TEXT: [&str; 2] = ["Hello, ", "world!"];
+
+/// An upstream that sends a Responses stream's opening and [`CUT_TEXT`] as
+/// output deltas, then breaks the connection mid-turn: no terminal frame,
+/// so no usage.
+async fn broken_upstream() -> (SocketAddr, JoinHandle<()>) {
+    async fn reply() -> axum::response::Response {
+        let mut frames = vec![format!(
+            "event: response.created\ndata: {}\n\n",
+            json!({"type": "response.created", "response": {"id": "resp_cut"}})
+        )];
+        frames.extend(CUT_TEXT.map(|text| {
+            format!(
+                "event: response.output_text.delta\ndata: {}\n\n",
+                json!({"type": "response.output_text.delta", "delta": text})
+            )
+        }));
+        let frames = futures_util::stream::iter(
+            frames
+                .into_iter()
+                .map(|frame| Ok(axum::body::Bytes::from(frame))),
+        );
+        // The break trails the deltas, so they are relayed before it lands.
+        let cut = futures_util::stream::once(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Err(std::io::Error::other("upstream broke mid-turn"))
+        });
+        axum::response::Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(axum::body::Body::from_stream(frames.chain(cut)))
+            .unwrap()
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = axum::Router::new().route("/codex/responses", axum::routing::post(reply));
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    (addr, task)
+}
+
+/// Waits, bounded, for the principal's counters to read `expected`: the
+/// floor's input estimate settles on the blocking pool after the stream ends.
+async fn await_spent(gateway: &Gateway, expected: u64, what: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while spent(gateway, PRINCIPAL) != [expected; 3] {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what}: expected {expected} femto-USD in every period, got {:?}",
+            spent(gateway, PRINCIPAL)
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// A 2xx Responses stream broken before `response.completed` reported no
+/// usage, so it bills the request's estimated input plus the delivered-text
+/// floor: Responses reports input only at completion, so there is no earlier
+/// count to bill.
+///
+/// Non-vacuity: bill zero input in `StreamSpend::settle` and this goes red on
+/// the output-only cost.
+#[tokio::test]
+async fn an_http_stream_broken_mid_turn_bills_estimated_input_plus_delivered_output() {
+    let _env = env().await;
+    let (upstream, _upstream_task) = broken_upstream().await;
+    let gateway = start(config(&format!("http://{upstream}"), true)).await;
+    let body = json!({
+        "model": POOL_MODEL,
+        "instructions": "You are a coding agent. Keep answers short and cite files.",
+        "stream": true,
+        "store": false,
+        "input": [
+            {"type": "message", "role": "user",
+             "content": [{"type": "input_text", "text": "Explain the spend floor."}]},
+            {"type": "function_call", "name": "shell", "call_id": "c1",
+             "arguments": "{\"cmd\":[\"cat\",\"README.md\"]}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "# shunt"}
+        ],
+        "tools": [{"type": "function", "name": "shell",
+                   "parameters": {"type": "object", "properties": {"cmd": {"type": "array"}}}}]
+    })
+    .to_string();
+
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!("{}/backend-api/codex/responses", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("session-id", "sess-meter")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // The relay ends with the upstream's break; how the client sees the cut
+    // is not what this test pins.
+    let _ = response.bytes().await;
+
+    let estimate = shunt::count_tokens::count_responses_input_tokens(body.as_bytes());
+    let delivered: usize = CUT_TEXT.iter().map(|text| text.chars().count()).sum();
+    let output = (delivered as u64).div_ceil(4);
+    assert_eq!(output, 4);
+    let expected = rates(POOL).cost_femto_usd(&Usage {
+        input_tokens: estimate,
+        output_tokens: output,
+        ..Usage::default()
+    });
+    let output_only = rates(POOL).cost_femto_usd(&Usage {
+        output_tokens: output,
+        ..Usage::default()
+    });
+    assert!(
+        estimate > 40,
+        "the request must estimate a real input: {estimate}"
+    );
+    assert!(expected > output_only);
+    await_spent(&gateway, expected, "the broken stream's floor").await;
+}

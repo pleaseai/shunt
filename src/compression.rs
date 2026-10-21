@@ -290,6 +290,14 @@ where
     .await?
 }
 
+/// [`decode_zstd_and_parse`]'s decode, with the same `cap` and
+/// [`MAX_DECODE_RATIO`] budget, run on the calling thread. For a caller that
+/// is already off the async executor (the spend floor's input estimate runs
+/// on the blocking pool), so there is nothing to admit or offload.
+pub(crate) fn decode_zstd_blocking(body: &[u8], cap: usize) -> std::io::Result<Option<Bytes>> {
+    decode_within(body, cap.min(body.len().saturating_mul(MAX_DECODE_RATIO)))
+}
+
 fn compress(body: &[u8]) -> std::io::Result<Bytes> {
     zstd::stream::encode_all(body, ZSTD_LEVEL).map(Bytes::from)
 }

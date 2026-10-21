@@ -13,6 +13,9 @@
 //! the same open socket: both prove a refused turn leaves no state behind and
 //! the next turn is assessed afresh.
 //!
+//! A turn the client closes or replaces before `response.completed` bills
+//! the estimated-input floor (T006; see the section at the end).
+//!
 //! Non-vacuity: delete the `spend::admit` call in
 //! `codex_endpoint::websocket::turn::run_turn` and the refusal tests go red on
 //! a forwarded turn.
@@ -20,25 +23,41 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{
+    collections::VecDeque,
     net::SocketAddr,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use axum::{
+    body::{Body, Bytes},
+    extract::State,
+    http::header,
+    response::{IntoResponse, Response},
+    routing::post,
+    Router,
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
     config::{
-        AccountConfig, AdminConfig, CodexEndpointConfig, Config, InboundAuthConfig, SpendConfig,
+        AccountConfig, AdminConfig, CodexEndpointConfig, Config, InboundAuthConfig, PricingConfig,
+        PricingOverride, SpendConfig,
     },
     gateway::spend::{
         meter::{reset_label, window, FEMTO_USD_PER_CENT},
+        pricing::{Rates, Usage},
         store::Period,
     },
     server::{self, AppState},
 };
-use tokio::{net::TcpStream, task::JoinHandle};
+use tokio::{
+    net::TcpStream,
+    sync::{mpsc, Notify},
+    task::JoinHandle,
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tungstenite::client::IntoClientRequest;
 use wiremock::{
@@ -369,4 +388,237 @@ async fn an_over_cap_warmup_is_still_answered_locally() {
     // The warmup left the gate armed for the next real turn.
     send_create(&mut socket, true).await;
     assert_refusal(&next_json(&mut socket).await);
+}
+
+// ---- The estimated-input floor of an incomplete turn (T006) ----
+//
+// A WebSocket turn the client abandons before `response.completed` never
+// learns its usage, so it bills the request's estimated input plus the
+// delivered-text floor. The upstream holds the turn open after its deltas,
+// as in `inbound_codex_websocket.rs`'s
+// `replacement_and_disconnect_drop_active_upstream_bodies`.
+//
+// Non-vacuity: bill zero input in `StreamSpend::settle` and both floor tests
+// go red on the output-only cost.
+
+/// `(input, output, cache_read, cache_write)` USD per million for [`MODEL`].
+const RATES: (f64, f64, f64, f64) = (2.0, 8.0, 0.2, 2.5);
+/// The held turn's delivered text: 13 characters, a 4-token output floor.
+const CUT_TEXT: [&str; 2] = ["Hello, ", "world!"];
+
+enum UpstreamReply {
+    /// The turn's opening and [`CUT_TEXT`] deltas, then held open until the
+    /// gateway drops the body.
+    Held,
+    /// A completed turn reporting 10 input and 5 output tokens.
+    Completed,
+}
+
+#[derive(Clone)]
+struct HeldUpstream {
+    replies: Arc<Mutex<VecDeque<UpstreamReply>>>,
+    requests: Arc<Mutex<Vec<Bytes>>>,
+    dropped: Arc<Notify>,
+}
+
+async fn held_reply(State(upstream): State<HeldUpstream>, body: Bytes) -> Response {
+    upstream.requests.lock().unwrap().push(body);
+    let reply = upstream.replies.lock().unwrap().pop_front().unwrap();
+    let sse = |frames: Vec<Value>| -> String {
+        frames
+            .iter()
+            .map(|frame| format!("data: {frame}\n\n"))
+            .collect()
+    };
+    let body = match reply {
+        UpstreamReply::Completed => Body::from(sse(vec![json!({
+            "type": "response.completed",
+            "response": {"id": "resp_2", "usage": {
+                "input_tokens": 10, "output_tokens": 5, "total_tokens": 15}}})])),
+        UpstreamReply::Held => {
+            let mut frames = vec![json!({"type": "response.created",
+                                         "response": {"id": "resp_held"}})];
+            frames.extend(
+                CUT_TEXT.map(|text| json!({"type": "response.output_text.delta", "delta": text})),
+            );
+            let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(1);
+            tx.send(Ok(Bytes::from(sse(frames)))).await.unwrap();
+            let dropped = upstream.dropped.clone();
+            tokio::spawn(async move {
+                tx.closed().await;
+                dropped.notify_one();
+            });
+            Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.map(|item| (item, rx))
+            }))
+        }
+    };
+    ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+}
+
+async fn held_upstream(replies: Vec<UpstreamReply>) -> (String, HeldUpstream, JoinHandle<()>) {
+    let upstream = HeldUpstream {
+        replies: Arc::new(Mutex::new(replies.into())),
+        requests: Arc::default(),
+        dropped: Arc::new(Notify::new()),
+    };
+    let router = Router::new()
+        .route("/codex/responses", post(held_reply))
+        .with_state(upstream.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    (format!("http://{addr}"), upstream, task)
+}
+
+/// [`config`] with an override pricing [`MODEL`] at [`RATES`].
+fn priced_config(upstream: &str) -> Config {
+    let mut config = config(upstream);
+    config.server.spend.as_mut().unwrap().pricing = Some(PricingConfig {
+        multiplier: 1.0,
+        overrides: vec![PricingOverride {
+            upstream: "codex".to_string(),
+            model: MODEL.to_string(),
+            input: RATES.0,
+            output: RATES.1,
+            cache_read: RATES.2,
+            cache_write: RATES.3,
+        }],
+    });
+    config
+}
+
+fn cost(usage: Usage) -> u64 {
+    Rates::from_usd_per_million(RATES.0, RATES.1, RATES.2, RATES.3).cost_femto_usd(&usage)
+}
+
+/// A turn with a real prompt to estimate.
+async fn send_prompted_create(socket: &mut Socket, prompt: &str) {
+    socket
+        .send(Message::Text(
+            json!({"type": "response.create", "generate": true, "model": MODEL,
+                   "instructions": "You are a coding agent. Keep answers short and cite files.",
+                   "input": [{"type": "message", "role": "user",
+                              "content": [{"type": "input_text", "text": prompt}]}],
+                   "tools": [{"type": "function", "name": "shell",
+                              "parameters": {"type": "object"}}]})
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+}
+
+/// Reads the held turn's frames through its last delta, so the client has
+/// been sent all of [`CUT_TEXT`].
+async fn read_held_deltas(socket: &mut Socket) {
+    let mut deltas = 0;
+    while deltas < CUT_TEXT.len() {
+        let frame = next_json(socket).await;
+        assert_ne!(frame["type"], "error", "the turn failed: {frame}");
+        if frame["type"] == "response.output_text.delta" {
+            deltas += 1;
+        }
+    }
+}
+
+/// What the held turn's floor bills: the estimate of the request body the
+/// gateway forwarded (and so retained), plus the delivered-text floor.
+fn held_floor(request: &[u8]) -> u64 {
+    let estimate = shunt::count_tokens::count_responses_input_tokens(request);
+    let delivered: usize = CUT_TEXT.iter().map(|text| text.chars().count()).sum();
+    let output = (delivered as u64).div_ceil(4);
+    assert_eq!(output, 4);
+    assert!(
+        estimate > 30,
+        "the request must estimate a real input: {estimate}"
+    );
+    let floor = cost(Usage {
+        input_tokens: estimate,
+        output_tokens: output,
+        ..Usage::default()
+    });
+    assert!(
+        floor
+            > cost(Usage {
+                output_tokens: output,
+                ..Usage::default()
+            })
+    );
+    floor
+}
+
+fn alice_spent(gateway: &Gateway) -> u64 {
+    let now = now();
+    let meter = gateway.state.gateway_stores.spend.meter();
+    let current = meter.spent("alice", Period::Daily, now);
+    if window(Period::Daily, now).start == window(Period::Daily, now - 120).start {
+        current
+    } else {
+        current + meter.spent("alice", Period::Daily, now - 120)
+    }
+}
+
+/// Waits, bounded, for alice's daily spend to read `expected`: the estimate
+/// settles on the blocking pool after the gateway drops the upstream body.
+async fn await_alice_spent(gateway: &Gateway, expected: u64, what: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while alice_spent(gateway) != expected {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what}: expected {expected} femto-USD, got {}",
+            alice_spent(gateway)
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_turn_the_client_closes_before_completion_bills_estimated_input_and_delivered_output() {
+    let _env = env().await;
+    let (uri, upstream, _task) = held_upstream(vec![UpstreamReply::Held]).await;
+    let gateway = start(priced_config(&uri)).await;
+    let mut socket = connect(&gateway).await;
+
+    send_prompted_create(&mut socket, "Explain the spend floor.").await;
+    read_held_deltas(&mut socket).await;
+    drop(socket);
+    tokio::time::timeout(Duration::from_secs(5), upstream.dropped.notified())
+        .await
+        .expect("the client's close did not drop the upstream body");
+
+    let request = upstream.requests.lock().unwrap()[0].clone();
+    await_alice_spent(&gateway, held_floor(&request), "the closed turn's floor").await;
+}
+
+#[tokio::test]
+async fn a_turn_replaced_by_a_new_response_create_bills_its_floor() {
+    let _env = env().await;
+    let (uri, upstream, _task) =
+        held_upstream(vec![UpstreamReply::Held, UpstreamReply::Completed]).await;
+    let gateway = start(priced_config(&uri)).await;
+    let mut socket = connect(&gateway).await;
+
+    send_prompted_create(&mut socket, "Explain the spend floor.").await;
+    read_held_deltas(&mut socket).await;
+    send_prompted_create(&mut socket, "Now be briefer.").await;
+    tokio::time::timeout(Duration::from_secs(5), upstream.dropped.notified())
+        .await
+        .expect("the replacement did not drop the first upstream body");
+    expect_completed(&mut socket).await;
+
+    let first = upstream.requests.lock().unwrap()[0].clone();
+    let completed = cost(Usage {
+        input_tokens: 10,
+        output_tokens: 5,
+        ..Usage::default()
+    });
+    await_alice_spent(
+        &gateway,
+        held_floor(&first) + completed,
+        "the replaced turn's floor plus the completed turn",
+    )
+    .await;
 }

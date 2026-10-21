@@ -408,6 +408,15 @@ pub(crate) async fn forward_turn(
 
     crate::observability::record_requested_model(&model_name);
 
+    // A turn that ends without reported usage bills an estimate of this body.
+    let spend = spend.map(|tap| {
+        tap.with_request_body(
+            body.clone(),
+            crate::compression::body_encoding(&headers),
+            max_request_bytes,
+        )
+    });
+
     let (provider, upstream_model, result) = match matched {
         Some(route) => {
             dispatch_routed(

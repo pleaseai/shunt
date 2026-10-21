@@ -4,7 +4,11 @@
 //!
 //! - A terminal frame (`response.completed`, `response.done`,
 //!   `response.incomplete` — the set [`super::super::observe_responses`] treats
-//!   as a concluded stream) carries the turn's `response.usage`.
+//!   as a concluded stream) carries the turn's `response.usage`, and so may a
+//!   `response.failed`. An `error` frame carries none.
+//! - A turn whose usage never reported its input — cut before its terminal,
+//!   or failed with `null` usage — bills an input estimate instead
+//!   ([`RequestBody`](super::RequestBody)).
 //! - A generated-text delta carries `delta` text, counted toward the
 //!   delivered-output floor exactly like an Anthropic `content_block_delta`.
 //!
@@ -28,6 +32,12 @@ const TERMINAL_EVENTS: [&[u8]; 3] = [
     b"response.done",
     b"response.incomplete",
 ];
+
+/// A failed turn: not terminal for the stream metrics (they count it as an
+/// error), but its `response.usage`, when the backend fills it, is what the
+/// turn cost. `null` usage leaves the bill to the floor, as an `error` frame
+/// (which carries no usage) does.
+const FAILED_EVENT: &[u8] = b"response.failed";
 
 /// Events whose `delta` is generated output the client was sent: answer text,
 /// tool-call arguments, and reasoning text — the Responses twins of the
@@ -70,7 +80,7 @@ pub(super) fn observe(event: Option<&[u8]>, data: &[u8]) -> Observed {
             Observed::Delivered(frame.delta.chars().count() as u64)
         });
     }
-    if TERMINAL_EVENTS.contains(&event) {
+    if TERMINAL_EVENTS.contains(&event) || event == FAILED_EVENT {
         if let Ok(Terminal {
             response: ResponseHolder { usage: Some(usage) },
         }) = serde_json::from_slice(data)
@@ -121,6 +131,12 @@ struct InputDetails {
 }
 
 impl UsageFields {
+    /// Whether this block counts the turn's input. Without one the floor
+    /// estimates the input from the request body.
+    pub(super) fn reports_input(&self) -> bool {
+        self.input_tokens.is_some()
+    }
+
     /// Overwrites `usage` with this block, splitting the cached tokens out of
     /// the input. Returns whether the block reported `output_tokens` — the
     /// upstream's own final count, which the floor does not override.
@@ -223,6 +239,39 @@ mod tests {
                 "{event}"
             );
         }
+    }
+
+    #[test]
+    fn a_failed_turn_carries_its_usage_and_an_error_frame_carries_none() {
+        let failed = serde_json::to_vec(&json!({
+            "type": "response.failed",
+            "response": {"id": "resp_1", "status": "failed",
+                         "usage": {"input_tokens": 40, "output_tokens": 6}},
+        }))
+        .unwrap();
+        let (usage, reported) = applied("response.failed", &failed);
+        assert_eq!(
+            (usage.input_tokens, usage.output_tokens, reported),
+            (40, 6, true)
+        );
+        let Observed::Usage(fields) = observe(None, &failed) else {
+            panic!("an untyped response.failed carried no usage");
+        };
+        assert!(fields.reports_input());
+
+        let null_usage = br#"{"type":"response.failed","response":{"id":"resp_1","usage":null}}"#;
+        assert_eq!(observe(None, null_usage), Observed::Nothing);
+        let error = br#"{"type":"error","code":"server_error","message":"boom"}"#;
+        assert_eq!(observe(Some(b"error"), error), Observed::Nothing);
+    }
+
+    #[test]
+    fn a_block_without_input_tokens_does_not_report_input() {
+        let data = completed(json!({"output_tokens": 4}));
+        let Observed::Usage(fields) = observe(None, &data) else {
+            panic!("no usage");
+        };
+        assert!(!fields.reports_input());
     }
 
     /// The Codex backend may send `data:`-only frames; their `type` names them.

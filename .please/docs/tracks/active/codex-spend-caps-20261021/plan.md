@@ -130,6 +130,9 @@ Considered and not built:
 - [x] (2026-10-21 KST) T003 Refuse over-cap WebSocket turns while keeping the socket open
   Evidence: `cargo test --all-features --test codex_spend_websocket` -> 4 passed (all 4 go red with the refusal arm of `spend::admit` in `run_turn` bypassed); with `codex_spend_enforcement` 9, `codex_spend_metering` 7, `inbound_codex_websocket` 16 passed; `--lib` 3553 passed; fmt and clippy clean
 
+- [x] (2026-10-21 KST) T006 Bill incomplete Codex turns at the estimated-input floor
+  Evidence: `cargo test --all-features --test codex_spend_metering --test codex_spend_websocket` → 8 + 6 passed (HTTP broken mid-turn, WS client close, WS replacement each billed exactly estimate + 4-token floor; all 3 go red with the estimate billed as zero, e.g. "expected 124000000000, got 32000000000"); `--lib` 3563 passed (6 `spend_tap::estimate_tests`: with the estimator forced to run on every settle, the reported-usage, failed-with-usage and Anthropic cases go red on the thread-local estimate counter); `codex_spend_enforcement` 9, `inbound_codex_websocket` 16, `inbound_codex_endpoint` 33, `spend_metering` 10 passed; fmt and clippy clean. Also touched: `src/compression.rs` (`decode_zstd_blocking` for a zstd body's estimate), `src/stream_metrics/spend_tap/tests.rs` (the `SpendTap` literal gains `request: None`), new `src/stream_metrics/spend_tap/estimate_tests.rs`.
+
 ## Decision Log
 
 - 2026-10-21: Designed inline from one exploration pass, with no architect agent. The existing tap and gate fixed the seams; rejected alternatives are listed above.
@@ -151,6 +154,15 @@ Considered and not built:
 - Decision: (T003) The "turn after the period resets" check lifts the cap through the admin API on the same open socket instead of rolling the meter clock.
   Rationale: `admit` reads `now_secs()` and neither the meter nor the store takes an injected clock; a production seam just for this test was ruled out. The test proves the same property: a refused turn leaves no state and the next turn on the socket is assessed afresh (it is forwarded, and a re-imposed cap refuses again).
   Date/Author: 2026-10-21 / implement-executor
+- Decision: (T006) The floor estimates input when no usage block reported `input_tokens`, not only when no terminal arrived. So `response.failed` with `null` usage, an `error` frame, and a terminal reporting only `output_tokens` all bill the estimate. `response.failed` usage is now read like a terminal's.
+  Rationale: Review Focus asks for a failed turn's usage when reported, otherwise the floor; a usage block without input still leaves the input unknown.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T006) `settle` runs the estimate (zstd decode plus tokenizer) through `Handle::spawn_blocking` when a runtime is present, inline otherwise. The bill therefore lands shortly after the stream ends, not synchronously.
+  Rationale: settle runs on a Tokio worker during the stream's poll or drop, and tokenizing a long conversation is milliseconds (the #291 rule). The inline fallback serves runtime-less unit tests, whose thread-local `ESTIMATES` counter is the "never runs" seam.
+  Date/Author: 2026-10-21 / implement-executor
+- Decision: (T006) A zstd request body (the Codex CLI's default against a ChatGPT base URL, #285) is decoded for the estimate with the same `max_request_bytes` and ratio budget as `resolve_model`; an undecodable body estimates zero.
+  Rationale: the tap retains the wire bytes, so a zstd body would otherwise always estimate zero.
+  Date/Author: 2026-10-21 / implement-executor
 
 ## Surprises & Discoveries
 
@@ -159,3 +171,5 @@ Considered and not built:
   Evidence: the non-ASCII case in `tests/codex_spend_enforcement.rs` failed on the header until the ASCII check was added; unit test `only_visible_ascii_becomes_a_promo_header`.
 - Observation: (T004) `stream_metrics::observe_responses` recognises terminals by the `event:` name only, so a `data:`-only Responses stream records no token metrics. The spend tap falls back to the payload `type` and is not affected; the metrics gap is pre-existing and out of scope.
   Evidence: `tests/inbound_codex_websocket.rs` upstream bodies are `data: {"type":"response.completed",...}` with no `event:` line; unit test `a_frame_without_an_event_line_is_named_by_its_type`.
+- Observation: (T006) An HTTP upstream that writes its first frames and the transport error in one burst reaches the client as a 502, not a 2xx stream, so it is unbilled. The break has to trail the deltas for the turn to commit as 2xx.
+  Evidence: the first draft of `an_http_stream_broken_mid_turn_bills_estimated_input_plus_delivered_output` failed on `left: 502, right: 200`; delaying the error by 100 ms gave a 200 and the floor bill.
