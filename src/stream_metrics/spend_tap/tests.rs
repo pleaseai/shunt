@@ -595,10 +595,10 @@ fn a_cut_responses_stream_bills_its_delivered_text_floor() {
 }
 
 /// Through the observer: a Responses SSE body is billed once at its end and
-/// relayed byte-for-byte, while a non-streamed Responses body is relayed
-/// unmetered rather than read with Anthropic usage semantics.
+/// relayed byte-for-byte, and a non-streamed Responses body is read with
+/// Responses usage semantics rather than Anthropic ones.
 #[tokio::test]
-async fn a_served_responses_stream_is_billed_and_a_json_body_is_left_alone() {
+async fn a_served_responses_stream_and_json_body_are_billed_with_the_cached_split() {
     let tap = tap();
     let frames = format!(
         "{}\n\n{}\n\n",
@@ -630,7 +630,7 @@ async fn a_served_responses_stream_is_billed_and_a_json_body_is_left_alone() {
     let response = observe_served(
         Response::builder()
             .header(CONTENT_TYPE, "application/json")
-            .body(json_body(MESSAGE))
+            .body(json_body(RESPONSES_MESSAGE))
             .unwrap(),
         Protocol::Responses,
         Arc::default(),
@@ -641,11 +641,56 @@ async fn a_served_responses_stream_is_billed_and_a_json_body_is_left_alone() {
     );
     assert_eq!(
         to_bytes(response.into_body(), usize::MAX).await.unwrap(),
-        MESSAGE
+        RESPONSES_MESSAGE
     );
     assert_eq!(
         spent(&tap),
-        billed,
-        "a non-streamed Responses body is unmetered"
+        billed * 2,
+        "a non-streamed Responses body bills the same cached split"
     );
+}
+
+const RESPONSES_MESSAGE: &[u8] = br#"{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1000,"input_tokens_details":{"cached_tokens":600},"output_tokens":50,"total_tokens":1050}}"#;
+
+fn responses_json_usage(body: &[u8], truncated: bool) -> Usage {
+    super::json::json_usage_for(
+        Protocol::Responses,
+        Some(body),
+        body.len() as u64,
+        truncated,
+    )
+    .tokens
+}
+
+/// A Responses body without `usage.output_tokens`, or reporting zero beside
+/// delivered `output_text`, bills the text floor from `output[]`; non-message
+/// items and non-text parts add nothing, and an unreadable body bills bytes.
+#[test]
+fn a_responses_json_body_without_an_output_count_bills_its_output_text_floor() {
+    let text = "0123456789abcdefg";
+    let body = |usage: serde_json::Value| {
+        json!({"output": [
+            {"type": "reasoning", "content": [{"type": "output_text", "text": "ignored ignored"}]},
+            {"type": "message", "content": [
+                {"type": "refusal", "text": "ignored ignored"},
+                {"type": "output_text", "text": text}]}],
+            "usage": usage})
+        .to_string()
+        .into_bytes()
+    };
+    let missing = body(json!({"input_tokens": 10}));
+    assert_eq!(
+        responses_json_usage(&missing, false),
+        Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Usage::default()
+        }
+    );
+    let zero = body(json!({"input_tokens": 10, "output_tokens": 0}));
+    assert_eq!(responses_json_usage(&zero, false).output_tokens, 5);
+    let low = body(json!({"input_tokens": 10, "output_tokens": 2}));
+    assert_eq!(responses_json_usage(&low, false).output_tokens, 2);
+    assert_eq!(responses_json_usage(&low, true).output_tokens, 5);
+    assert_eq!(responses_json_usage(b"not json", false).output_tokens, 2);
 }

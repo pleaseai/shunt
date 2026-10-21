@@ -655,3 +655,79 @@ async fn an_http_stream_broken_mid_turn_bills_estimated_input_plus_delivered_out
     assert!(expected > output_only);
     await_spent(&gateway, expected, "the broken stream's floor").await;
 }
+
+/// A non-streamed Responses reply: the same usage as [`standard_stream`], in
+/// the `application/json` body a `stream:false` turn gets from a stock
+/// Responses upstream.
+fn json_response() -> String {
+    json!({
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "output": [{"type": "message", "role": "assistant", "content": [
+            {"type": "output_text", "text": "Hello, world"}]}],
+        "usage": {
+            "input_tokens": 1000,
+            "input_tokens_details": {"cached_tokens": 600},
+            "output_tokens": 50,
+            "output_tokens_details": {"reasoning_tokens": 20},
+            "total_tokens": 1050},
+    })
+    .to_string()
+}
+
+async fn mount_json(server: &MockServer, route: &str, body: String) {
+    Mock::given(method("POST"))
+        .and(path(route))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn a_non_streamed_routed_turn_is_billed_from_its_usage_with_the_cached_split() {
+    let _env = env().await;
+    let upstream = MockServer::start().await;
+    let body = json_response();
+    mount_json(&upstream, "/responses", body.clone()).await;
+    let gateway = start(config(&upstream.uri(), true)).await;
+
+    let response = post_turn(&gateway, ROUTED_MODEL).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["content-type"],
+        "application/json",
+        "the reply is not SSE"
+    );
+    assert_eq!(
+        response.bytes().await.unwrap(),
+        body.as_bytes(),
+        "the relayed bytes are unchanged"
+    );
+
+    let expected = rates(ROUTED).cost_femto_usd(&completed_usage());
+    let uncached = rates(ROUTED).cost_femto_usd(&Usage {
+        input_tokens: 1000,
+        output_tokens: 50,
+        ..Usage::default()
+    });
+    assert_ne!(expected, uncached, "the cached split must change the price");
+    assert_eq!(spent(&gateway, PRINCIPAL), [expected; 3]);
+}
+
+#[tokio::test]
+async fn a_non_streamed_pool_turn_is_billed_from_its_usage_with_the_cached_split() {
+    let _env = env().await;
+    let upstream = MockServer::start().await;
+    let body = json_response();
+    mount_json(&upstream, "/codex/responses", body.clone()).await;
+    let gateway = start(config(&upstream.uri(), true)).await;
+
+    let response = post_turn(&gateway, POOL_MODEL).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap(), body.as_bytes());
+
+    let expected = rates(POOL).cost_femto_usd(&completed_usage());
+    assert_eq!(spent(&gateway, PRINCIPAL), [expected; 3]);
+}

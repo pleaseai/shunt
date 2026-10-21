@@ -12,8 +12,8 @@ use axum::{
 };
 use http_body::{Frame, SizeHint};
 
-use super::{floor_tokens, SpendTap, UsageHolder};
-use crate::gateway::spend::meter::RequestUsage;
+use super::{floor_tokens, responses, SpendTap, UsageHolder};
+use crate::{gateway::spend::meter::RequestUsage, stream_metrics::Protocol};
 
 /// Bytes of a non-streamed body kept for the end-of-body `usage` parse. A
 /// Messages reply is bounded by `max_tokens`, so a real one is far below this;
@@ -32,6 +32,7 @@ pub(in crate::stream_metrics) struct JsonSpendBody {
 
 struct JsonSpend {
     tap: SpendTap,
+    protocol: Protocol,
     /// The body so far; `None` once it outgrew `bound`.
     kept: Option<Vec<u8>>,
     bytes: u64,
@@ -53,6 +54,7 @@ impl JsonSpendBody {
             inner,
             spend: status.is_success().then(|| JsonSpend {
                 tap,
+                protocol: Protocol::Anthropic,
                 kept: Some(Vec::new()),
                 bytes: 0,
                 bound,
@@ -66,6 +68,16 @@ impl JsonSpendBody {
     pub(in crate::stream_metrics) fn truncated(mut self, truncated: bool) -> Self {
         if let Some(spend) = self.spend.as_mut() {
             spend.truncated = truncated;
+        }
+        self
+    }
+
+    /// Reads the body as a Responses message instead: the top-level `usage`
+    /// with its cached tokens split out of the input, and `output[]` text as
+    /// the delivered content.
+    pub(in crate::stream_metrics) fn protocol(mut self, protocol: Protocol) -> Self {
+        if let Some(spend) = self.spend.as_mut() {
+            spend.protocol = protocol;
         }
         self
     }
@@ -94,7 +106,8 @@ impl JsonSpend {
     /// polling it (a sized body may be dropped after its last frame without a
     /// final `Ready(None)`); a cut one does not parse and bills the floor.
     fn settle(self) {
-        self.tap.record(&json_usage(
+        self.tap.record(&json_usage_for(
+            self.protocol,
             self.kept.as_deref(),
             self.bytes,
             self.truncated,
@@ -116,15 +129,24 @@ impl JsonSpend {
 /// for a clean message reporting zero — with no content to count, a reported
 /// zero stays zero rather than billing the whole body.
 pub(super) fn json_usage(kept: Option<&[u8]>, bytes: u64, truncated: bool) -> RequestUsage {
-    let parsed = kept
-        .and_then(|kept| serde_json::from_slice::<UsageHolder>(kept).ok())
-        .and_then(|holder| holder.usage);
-    let reported_zero = parsed
-        .as_ref()
-        .is_some_and(|fields| fields.output_tokens == Some(0));
-    let missing_output = parsed
-        .as_ref()
-        .is_some_and(|fields| fields.output_tokens.is_none());
+    json_usage_for(Protocol::Anthropic, kept, bytes, truncated)
+}
+
+/// [`json_usage`] for a body of either protocol. A Responses body differs in
+/// where the `usage` and the content live and in how the cached tokens are
+/// billed (see [`responses`]); the floor rules are the same.
+pub(super) fn json_usage_for(
+    protocol: Protocol,
+    kept: Option<&[u8]>,
+    bytes: u64,
+    truncated: bool,
+) -> RequestUsage {
+    let mut usage = RequestUsage::default();
+    // `Some(reported)` when the body carried a usage block; `reported` is its
+    // own output count, if it had one.
+    let parsed = kept.and_then(|kept| usage_block(protocol, kept, &mut usage));
+    let reported_zero = parsed == Some(Some(0));
+    let missing_output = parsed == Some(None);
     let raise_to_floor = truncated || reported_zero;
     // The delivered-content floor, parsed at most once: a usage block without
     // an output count, a reported zero, and a truncated message all want it.
@@ -134,18 +156,17 @@ pub(super) fn json_usage(kept: Option<&[u8]>, bytes: u64, truncated: bool) -> Re
     } else {
         0
     };
-    let content_floor = wants_content_floor
-        .then(|| floor_tokens(kept.and_then(content_chars).unwrap_or(unreadable_content)));
-    let mut usage = RequestUsage::default();
+    let content_floor = wants_content_floor.then(|| {
+        floor_tokens(
+            kept.and_then(|kept| content_chars(protocol, kept))
+                .unwrap_or(unreadable_content),
+        )
+    });
     match parsed {
-        Some(fields) => {
-            fields.apply_to(&mut usage);
-            // A usage block without an output count gets the same floor a
-            // stream with no final count does.
-            if fields.output_tokens.is_none() {
-                usage.tokens.output_tokens = content_floor.unwrap_or_default();
-            }
-        }
+        // A usage block without an output count gets the same floor a
+        // stream with no final count does.
+        Some(None) => usage.tokens.output_tokens = content_floor.unwrap_or_default(),
+        Some(Some(_)) => {}
         None => usage.tokens.output_tokens = floor_tokens(bytes),
     }
     if let Some(floor) = content_floor.filter(|_| raise_to_floor) {
@@ -154,10 +175,29 @@ pub(super) fn json_usage(kept: Option<&[u8]>, bytes: u64, truncated: bool) -> Re
     usage
 }
 
-/// Characters of generated content (text, thinking, tool input) in a whole
-/// Anthropic message, or `None` when the body has no readable `content`.
-fn content_chars(kept: &[u8]) -> Option<u64> {
+/// Applies the body's `usage` block to `usage`. `None` when the body has no
+/// parsable block; otherwise the block's own output count.
+fn usage_block(protocol: Protocol, kept: &[u8], usage: &mut RequestUsage) -> Option<Option<u64>> {
+    if matches!(protocol, Protocol::Responses) {
+        let fields = serde_json::from_slice::<responses::ResponseHolder>(kept)
+            .ok()?
+            .usage?;
+        let reported = fields.apply_to(usage);
+        return Some(reported.then_some(usage.tokens.output_tokens));
+    }
+    let fields = serde_json::from_slice::<UsageHolder>(kept).ok()?.usage?;
+    fields.apply_to(usage);
+    Some(fields.output_tokens)
+}
+
+/// Characters of generated content in a whole message, or `None` when the body
+/// has none readable. Anthropic: text, thinking and tool input in `content`.
+/// Responses: the `output_text` parts of the `message` items in `output[]`.
+fn content_chars(protocol: Protocol, kept: &[u8]) -> Option<u64> {
     let value = serde_json::from_slice::<serde_json::Value>(kept).ok()?;
+    if matches!(protocol, Protocol::Responses) {
+        return responses_content_chars(&value);
+    }
     let blocks = value.get("content")?.as_array()?;
     Some(
         blocks
@@ -174,6 +214,24 @@ fn content_chars(kept: &[u8]) -> Option<u64> {
                     .map_or(0, |input| input.to_string().chars().count() as u64);
                 text("text") + text("thinking") + input
             })
+            .sum(),
+    )
+}
+
+fn responses_content_chars(value: &serde_json::Value) -> Option<u64> {
+    fn kind(value: &serde_json::Value) -> Option<&str> {
+        value.get("type").and_then(serde_json::Value::as_str)
+    }
+    let items = value.get("output")?.as_array()?;
+    Some(
+        items
+            .iter()
+            .filter(|item| kind(item) == Some("message"))
+            .filter_map(|item| item.get("content")?.as_array())
+            .flatten()
+            .filter(|part| kind(part) == Some("output_text"))
+            .filter_map(|part| part.get("text")?.as_str())
+            .map(|text| text.chars().count() as u64)
             .sum(),
     )
 }
