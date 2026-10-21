@@ -416,7 +416,8 @@ here applies.
 - **Floor.** A turn that ends without reported usage (client close, replaced turn, broken stream)
   is billed the input estimated from the request body plus the output text already delivered.
 - **Non-streamed bodies.** A non-streamed 2xx JSON Responses body is billed from its `usage` with the
-  same cached split.
+  same cached split. One that reports no input (no readable `usage`, a cut body, or a body over 4 MiB)
+  bills the input estimated from the request body instead, alongside the output floor.
 
 ## Reload behavior
 

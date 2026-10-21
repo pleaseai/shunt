@@ -173,7 +173,7 @@ The Codex endpoint writes the same daily, weekly and monthly counters as `/v1/me
 
   A row whose `upstream` is the endpoint's provider is never reported as unreachable, and neither is a row on a `[[server.codex_endpoint.routes]]` entry's provider that names the route's model or upstream model.
 - **Turns without reported usage.** A turn that ends without a usage report (the client closes the socket, a turn is replaced, or the stream breaks) is billed at a floor: the input estimated from the request body plus the output text already delivered to the client. A turn that reports usage never runs the estimator.
-- **Non-streamed bodies.** A non-streamed 2xx JSON Responses body is billed from its `usage` with the same cached split.
+- **Non-streamed bodies.** A non-streamed 2xx JSON Responses body is billed from its `usage` with the same cached split. One that reports no input (no readable `usage`, a cut body, or a body over 4 MiB) bills the input estimated from the request body instead, alongside the output floor.
 - **Web search** is never metered.
 
 Limit: counters are u64 femto-USD and saturate at about $18,446.74 per principal per window, so a cap of 1,844,675 cents or more can never be reached (a follow-up issue tracks widening).
