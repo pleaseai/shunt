@@ -272,9 +272,12 @@ The pool survives as the **intra-upstream** mechanism; the chain is the
   - *Claude OAuth pool.* A pool account that refuses is cooled for the same
     window and the request rotates to the next account, on the first attempt and
     on the retry after a token refresh. A refusal also clears a stale needs-re-login
-    mark for that account. When every account refuses, the pool relays the last
-    refusal and the chain advances past the pool upstream, which is skipped until
-    its earliest account can serve again (1 hour when none is known).
+    mark for that account. When the pool's last answer is a refusal, the pool
+    relays it and the chain advances past the pool upstream. The upstream is then
+    skipped only if no account can be picked right now, until the soonest
+    account-wide cooldown ends. Capped, paused, and disabled accounts, and model-
+    and Fable-scoped cooldowns, are ignored; with no account to time, the skip is
+    1 hour. A later, shorter refusal does not shorten an account's cooldown.
   - *Exhaustion.* A chain that ends with a refusal as its remembered failure
     returns the upstream's own status and body unless a failure of higher
     priority (`429`, then `401`/`403`, `404`, `5xx`) was remembered. A refusal
@@ -283,8 +286,8 @@ The pool survives as the **intra-upstream** mechanism; the chain is the
     `provider`, `model`, `status`, `refusal` (`spend_limit`, `credit_balance`,
     or `billing`), and `skip_until_epoch_secs` (absent for passthrough). On the
     Claude OAuth pool, each account refusal logs one `warn` with `provider`,
-    `account`, `status`, `refusal`, and `cooldown_until_epoch_secs`. When every
-    account has refused, a separate `warn` logs `provider`, `model`, and
+    `account`, `status`, `refusal`, and `cooldown_until_epoch_secs`. When the pool
+    is skipped, a separate `warn` logs `provider`, `model`, and
     `skip_until_epoch_secs`. The pool rotation metric records the reason
     `account_refusal`.
 - **Physical-account state sharing**: per-account state (quota windows,

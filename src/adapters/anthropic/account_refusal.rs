@@ -15,7 +15,6 @@ use serde_json::Value;
 use axum::http::StatusCode;
 
 use crate::{
-    accounts::CooldownScope,
     adapters::{AdapterError, ResponseBounds},
     auth::claude::usage::parse_rfc3339_to_epoch_secs,
     config::AccountConfig,
@@ -146,13 +145,9 @@ pub(super) async fn judge_pool_answer(
         return Ok(PoolAnswer::Relay(upstream));
     };
     let window = refusal.skip_window(SystemTime::now());
-    state.accounts.cooldown_scoped(
-        &route.provider,
-        account,
-        window,
-        POOL_REFUSAL_REASON,
-        CooldownScope::Account,
-    );
+    state
+        .accounts
+        .cooldown_refusal(&route.provider, account, window, POOL_REFUSAL_REASON);
     state.accounts.clear_needs_relogin(&route.provider, account);
     let cooldown_until = (SystemTime::now() + window)
         .duration_since(UNIX_EPOCH)

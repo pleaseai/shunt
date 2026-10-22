@@ -1687,14 +1687,51 @@ impl AccountPool {
         reason: &'static str,
         scope: CooldownScope,
     ) {
+        self.set_cooldown(provider, account, duration, reason, scope, false);
+    }
+
+    /// [`Self::cooldown_scoped`] for an account-wide refusal that states its own
+    /// resume time: a window already running is never shortened, so a later,
+    /// shorter refusal on the same account leaves the longer deadline standing.
+    pub fn cooldown_refusal(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        duration: Duration,
+        reason: &'static str,
+    ) {
+        self.set_cooldown(
+            provider,
+            account,
+            duration,
+            reason,
+            CooldownScope::Account,
+            true,
+        );
+    }
+
+    fn set_cooldown(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        duration: Duration,
+        reason: &'static str,
+        scope: CooldownScope,
+        keep_longer: bool,
+    ) {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = self.health_entry(&mut entries, account_key(provider, account));
         health.observed = true;
         health.enabled = !account.disabled;
-        match scope {
-            CooldownScope::Account => health.cooldown_until = Some(Instant::now() + duration),
-            CooldownScope::Fable => health.cooldown_until_fable = Some(Instant::now() + duration),
-        }
+        let until = Instant::now() + duration;
+        let slot = match scope {
+            CooldownScope::Account => &mut health.cooldown_until,
+            CooldownScope::Fable => &mut health.cooldown_until_fable,
+        };
+        *slot = Some(match (keep_longer, *slot) {
+            (true, Some(running)) => running.max(until),
+            _ => until,
+        });
         // Any failover-worthy failure restarts the storm-control ramp: when the
         // account comes back it re-enters slow start instead of inheriting the
         // allowance it had grown before failing.
@@ -6915,6 +6952,25 @@ mod tests {
                 "account-wide cooldown must defer {model}"
             );
         }
+    }
+
+    #[test]
+    fn refusal_cooldown_keeps_the_longer_window() {
+        let pool = AccountPool::new();
+        let account = account("a");
+        let remaining = || {
+            pool.snapshot("anthropic", std::slice::from_ref(&account), None, None)[0]
+                .cooldown_secs_remaining
+                .expect("cooling")
+        };
+        pool.cooldown_refusal("anthropic", &account, Duration::from_secs(1000), "refusal");
+        pool.cooldown_refusal("anthropic", &account, Duration::from_secs(100), "refusal");
+        assert!(
+            remaining() > 900,
+            "a shorter refusal must not shorten the window"
+        );
+        pool.cooldown_refusal("anthropic", &account, Duration::from_secs(5000), "refusal");
+        assert!(remaining() > 4900, "a longer refusal extends the window");
     }
 
     #[test]
