@@ -97,9 +97,12 @@ fn a_classifier_that_already_carries_a_billing_block_is_untouched() {
     // Either accepted marker is sufficient upstream, so a classifier
     // request carrying the billing block needs no identity block.
     let body = format!(
-        r#"{{"system":[{{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.226.000; cc_entrypoint=cli;"}},{{"type":"text","text":"{CLASSIFIER_PROMPT_PREFIX} …"}}]}}"#
+        r#"{{"system":[{{"type":"text","text":"{CLASSIFIER_PROMPT_PREFIX} …"}},{{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.226.000; cc_entrypoint=cli;"}}]}}"#
     );
 
+    assert!(is_classifier_request(
+        &serde_json::from_str::<Value>(&body).unwrap()
+    ));
     assert_verbatim(&body, &HeaderMap::new());
 }
 

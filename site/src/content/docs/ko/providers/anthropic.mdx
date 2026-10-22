@@ -142,7 +142,9 @@ Claude Code를 자동 모드로 실행하면, 워크스페이스를 벗어나거
 확인하는 Claude Code identity 블록을 빠뜨리며, `CLAUDE_CODE_ATTRIBUTION_HEADER=0`일 때 mod의
 `$.model.complete` 같은 사이드 쿼리도 마찬가지입니다. shunt는 auto-mode 분류기와, 허용된 마커가
 없는 모든 Claude Code 요청(`x-claude-code-session-id`, `claude-cli/` user agent 또는 `x-app: cli`로 식별)에
-identity를 복원하고, 다른 클라이언트는 바이트 단위 그대로 둡니다. 이 복원이 막아주는 실패는
+identity를 복원합니다. 이 복원은 나가는 bearer가 구독 OAuth 토큰일 때만 적용되고, 업스트림이 확인하지
+않는 `count_tokens`에는 적용되지 않으며, 빈 `x-claude-code-session-id`는 Claude Code로 보지 않습니다.
+다른 클라이언트와 API 키 요청은 바이트 단위 그대로 둡니다. 이 복원이 막아주는 실패는
 [429 문제 해결 항목](/ko/reference/troubleshooting/)에 설명되어 있습니다.
 
 분류기는 기본적으로 세션의 모델을 쓰지 않습니다. Claude Code 2.1.226에서 측정한 바로는, 서버가
