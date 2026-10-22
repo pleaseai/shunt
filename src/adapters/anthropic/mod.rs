@@ -1738,20 +1738,20 @@ pub(crate) async fn mapped_error_envelope(
 ) -> serde_json::Value {
     // Budgeted: the terminal error event must not stall on a body the
     // upstream keeps open, and a huge body must not be buffered whole.
-    let Some(bytes) = crate::error::bounded_upstream_text(
+    let bytes = crate::error::bounded_upstream_text(
         upstream,
         crate::error::ERROR_ENVELOPE_BUDGET,
         crate::error::ERROR_ENVELOPE_BYTES,
     )
-    .await
-    else {
-        return serde_json::json!({
-            "type": "error",
-            "error": {"type": "api_error", "message": format!("upstream returned {status}")}
-        });
-    };
-    serde_json::from_slice::<serde_json::Value>(bytes.as_bytes())
-        .ok()
+    .await;
+    error_envelope_from_body(status, bytes.as_deref().map(str::as_bytes))
+}
+
+/// [`mapped_error_envelope`]'s shape rule on a body already read: `body` when
+/// it parses to the Anthropic error envelope, else the generic `api_error`
+/// naming `status` (also for `None`, a body that could not be read).
+fn error_envelope_from_body(status: StatusCode, body: Option<&[u8]>) -> serde_json::Value {
+    body.and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
         .filter(|value| {
             value.get("type").and_then(serde_json::Value::as_str) == Some("error")
                 && value.get("error").is_some_and(serde_json::Value::is_object)

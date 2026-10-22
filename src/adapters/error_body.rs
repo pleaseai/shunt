@@ -36,6 +36,25 @@ pub(crate) async fn buffer_error_body(
     clock: Option<(Duration, tokio::time::Instant)>,
     verbatim: bool,
 ) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
+    buffer_error_body_within(
+        upstream,
+        clock,
+        verbatim,
+        crate::error::ERROR_ENVELOPE_BUDGET,
+    )
+    .await
+}
+
+/// [`buffer_error_body`] under a caller-chosen `budget` in place of
+/// [`crate::error::ERROR_ENVELOPE_BUDGET`], for a caller that must decide
+/// sooner than the envelope read allows. Every other bound and rule is the
+/// same.
+pub(crate) async fn buffer_error_body_within(
+    upstream: reqwest::Response,
+    clock: Option<(Duration, tokio::time::Instant)>,
+    verbatim: bool,
+    budget: Duration,
+) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
     let declared_oversized = upstream
         .content_length()
         .is_some_and(|length| length > crate::error::ERROR_ENVELOPE_BYTES as u64);
@@ -46,13 +65,13 @@ pub(crate) async fn buffer_error_body(
     let version = upstream.version();
     let mut headers = upstream.headers().clone();
     let mut rest = upstream.bytes_stream();
-    let budget = tokio::time::Instant::now() + crate::error::ERROR_ENVELOPE_BUDGET;
+    let budget_ends = tokio::time::Instant::now() + budget;
     let mut read = Vec::new();
     let mut total = 0usize;
     let mut idle_deadline = clock.map(|(idle, since)| since + idle);
     let complete = !declared_oversized
         && loop {
-            let wait = idle_deadline.map_or(budget, |deadline| deadline.min(budget));
+            let wait = idle_deadline.map_or(budget_ends, |deadline| deadline.min(budget_ends));
             match tokio::time::timeout_at(wait, rest.next()).await {
                 Ok(None) => break true,
                 Ok(Some(Ok(chunk))) => {
@@ -68,16 +87,14 @@ pub(crate) async fn buffer_error_body(
                     break false;
                 }
                 Err(_) => match (clock, idle_deadline) {
-                    (Some((idle, _)), Some(deadline)) if deadline < budget => {
+                    (Some((idle, _)), Some(deadline)) if deadline < budget_ends => {
                         return Err(super::idle_error(super::UpstreamBodyIdle { idle }));
                     }
                     // The budget ended a body that never sent a byte: on a
                     // gated call that is a stall too, as
                     // `bounded_upstream_text_within` cuts it (#710).
                     (Some(_), _) if total == 0 => {
-                        return Err(super::idle_error(super::UpstreamBodyIdle {
-                            idle: crate::error::ERROR_ENVELOPE_BUDGET,
-                        }));
+                        return Err(super::idle_error(super::UpstreamBodyIdle { idle: budget }));
                     }
                     _ => break false,
                 },
