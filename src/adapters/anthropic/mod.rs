@@ -106,7 +106,7 @@ async fn forward(
     // signature is no more valid to an Anthropic-compatible host than to
     // Anthropic itself.
     if oauth_client {
-        auto_mode_classifier::restore_claude_code_identity(&mut body);
+        auto_mode_classifier::restore_claude_code_identity(&mut body, headers);
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
@@ -303,7 +303,7 @@ async fn forward_claude_oauth(
         // account pointed at an `sk-ant-api…` key would otherwise have its body
         // rewritten despite facing no client-shape gate.
         if bearer_is_subscription_oauth(&request_headers) {
-            auto_mode_classifier::restore_claude_code_identity(&mut request_body);
+            auto_mode_classifier::restore_claude_code_identity(&mut request_body, headers);
         }
         let request_body = request_body.into_raw();
 
@@ -1566,7 +1566,7 @@ pub(crate) async fn chain_attempt(
     thinking_wrap::request_identity_encoding(&mut request_headers, provider);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
     if oauth_client {
-        auto_mode_classifier::restore_claude_code_identity(&mut body);
+        auto_mode_classifier::restore_claude_code_identity(&mut body, headers);
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);

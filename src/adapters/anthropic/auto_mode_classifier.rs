@@ -1,25 +1,31 @@
-//! Restore the Claude Code identity block on Claude Code's auto-mode
-//! permission classifier request.
+//! Restore the Claude Code identity block on Claude Code requests that reach
+//! a subscription-OAuth Anthropic bearer without a first-party marker — the
+//! auto-mode permission classifier first among them.
 //!
 //! `api.anthropic.com` accepts a subscription-OAuth request only when its
 //! system prompt carries a recognized first-party marker. Two were observed on
 //! the wire, and either is sufficient: the billing attribution block Claude
-//! Desktop leads with (`x-anthropic-billing-header: cc_version=…;
-//! cc_entrypoint=…`), or one of a set of recognized identity prompts, which is
-//! what Claude Code sends. Claude Code carries one on every request but one:
-//! the auto-mode permission classifier builds its request with the identity
-//! prefix suppressed, and carries no billing block either. Relayed verbatim,
-//! that single request comes back as a bare `rate_limit_error` whose message is
-//! the literal `"Error"`, carrying neither `retry-after` nor any
-//! `anthropic-ratelimit-*` header — the shape [`rate_limit_kind`] labels
-//! `client-shape-rejection`. Claude Code reads it as "classifier unavailable"
-//! and fails closed on every action needing a safety verdict, while reads and
-//! in-workspace edits keep working, so the session looks half-broken rather
-//! than disconnected. Nor does it recover on its own: in the shipped 2.1.226
-//! client the classifier demotes to a second model once and offers no further
-//! candidate after that demotion lands on the session's own model. That last
-//! detail was read out of the distributed binary, so it describes the version
-//! measured rather than a contract.
+//! Code and Claude Desktop lead with (`x-anthropic-billing-header:
+//! cc_version=…; cc_entrypoint=…`), or one of a set of recognized identity
+//! prompts. Claude Code's main loop always carries the identity, but its side
+//! requests do not. The auto-mode permission classifier builds its
+//! request with the identity prefix suppressed and carries no billing block
+//! either. A mod's `$.model.complete` side query sends only the attribution
+//! block and the mod's own `system` — and with
+//! `CLAUDE_CODE_ATTRIBUTION_HEADER=0`, which the running guide recommends, the
+//! attribution block goes too. Relayed verbatim, such a request comes back as a
+//! bare `rate_limit_error` whose message is the literal `"Error"`, carrying
+//! neither `retry-after` nor any `anthropic-ratelimit-*` header — the shape
+//! [`rate_limit_kind`] labels `client-shape-rejection`.
+//!
+//! For the classifier that is especially costly. Claude Code reads the 429 as
+//! "classifier unavailable" and fails closed on every action needing a safety
+//! verdict, while reads and in-workspace edits keep working, so the session
+//! looks half-broken rather than disconnected. Nor does it recover on its own:
+//! in the shipped 2.1.226 client the classifier demotes to a second model once
+//! and offers no further candidate after that demotion lands on the session's
+//! own model. That last detail was read out of the distributed binary, so it
+//! describes the version measured rather than a contract.
 //!
 //! Measured against a live deployment (Claude Code 2.1.226, Anthropic OAuth
 //! pool), same session and account, varying only the `system` field and leaving
@@ -35,24 +41,41 @@
 //! to characterize its reliability. The two 429 rows carry the weight: a
 //! neutral string does not pass, so the injected sentence has to be a specific
 //! one, and a gateway that wants the classifier to work has no neutral option.
+//! A live probe of a side query on the same kind of bearer agreed:
 //!
-//! That makes the repair narrow by construction. It fires only on the request
-//! shape that is known to be rejected — identified by the opening sentence of
-//! the classifier prompt — and never on ordinary traffic. Claude Desktop's chat
-//! surface and Cowork were both measured through the same relay: each leads
-//! with the billing block across three system blocks, neither matches this
-//! predicate, and every request was accepted upstream. Both keep byte-for-byte
-//! passthrough, as do `claude --system-prompt`, the Agent SDK and third-party
-//! clients, so the gateway never claims to be Claude Code on behalf of a client
-//! that isn't.
+//! | side query `system` | result |
+//! | --- | --- |
+//! | a string, or a single text block, with no marker | 429 |
+//! | Claude Code identity block prepended | 200 |
+//! | billing block prepended | 200 |
 //!
+//! Two predicates decide the repair, and neither reaches past what was
+//! measured. The classifier is recognized by the opening sentence of its
+//! prompt at `system[0]`, whatever headers it arrives with, so that repair
+//! never depends on the client identifying itself. Any other request is
+//! repaired only when the client is Claude Code — an `x-claude-code-session-id`
+//! header, or what [`classify_client`] reads as Claude Code (a `claude-cli/`
+//! user agent or `x-app: cli`) — and its system prompt carries no accepted
+//! marker. Claude Desktop's chat surface and Cowork were both measured through
+//! the same relay: each leads with the billing block across three system
+//! blocks, so neither is repaired, and every request was accepted upstream.
+//! Requests from the Agent SDK and third-party clients keep byte-for-byte
+//! passthrough, so the gateway never claims to be Claude Code on behalf of a
+//! client that isn't.
+//!
+//! [`classify_client`]: crate::client_attribution::classify_client
 //! [`rate_limit_kind`]: super::rate_limit_kind
 
+use axum::http::HeaderMap;
 use serde_json::{json, Value};
 
-use crate::{config::ProviderConfig, request::RequestBody};
+use crate::{
+    client_attribution::{classify_client, ClientKind},
+    config::ProviderConfig,
+    request::RequestBody,
+};
 
-/// The block inserted when the classifier omits it — the string Claude Code's
+/// The block inserted when a request omits it — the string Claude Code's
 /// own main loop sends, and the one measured to flip the rejection above.
 const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
@@ -78,8 +101,9 @@ const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CL
 const CLASSIFIER_PROMPT_PREFIX: &str =
     "You are a security monitor for autonomous AI coding agents.";
 
-/// Markers upstream is known to accept, so a classifier request that has
-/// somehow already grown one is left alone rather than gaining a second.
+/// Markers upstream is known to accept, so a request that already carries one
+/// — Claude Code's main loop, or a classifier request that has somehow grown
+/// one — is left alone rather than gaining a second.
 ///
 /// Each was seen accepted on the wire: the identity string as the injected
 /// block that flipped a rejection to `200`, the Agent SDK opening at the head
@@ -87,51 +111,102 @@ const CLASSIFIER_PROMPT_PREFIX: &str =
 /// accepted Claude Desktop chat and Cowork request. Those are observations of a
 /// live endpoint rather than a published contract, and the list is certainly
 /// not exhaustive — it is deliberately not extended by guesswork, since it only
-/// ever suppresses an injection that a classifier match already gated.
+/// ever suppresses an injection.
 const ACCEPTED_MARKER_PREFIXES: &[&str] = &[
     "You are Claude Code, Anthropic's official CLI for Claude",
     "You are a Claude agent, built on Anthropic's Claude Agent SDK",
     "x-anthropic-billing-header:",
 ];
 
-/// Prepend the Claude Code identity block to an auto-mode classifier request.
+/// Why a request is about to gain the identity block, for the debug line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Repair {
+    /// The auto-mode classifier, recognized by its prompt alone.
+    Classifier,
+    /// Any other request from a Claude Code client, such as a mod's
+    /// `$.model.complete` side query.
+    ClaudeCodeRequest,
+}
+
+/// Prepend the Claude Code identity block to a request that needs it: an
+/// auto-mode classifier request, or a request from a Claude Code client whose
+/// system prompt carries no accepted marker. `headers` are the inbound client
+/// request's, since they are what identifies the client.
 ///
 /// A no-op for every other request, and the cheap read-only check runs first so
 /// those never enter [`RequestBody::mutate`], whose `Arc::make_mut` would clone
 /// the whole request tree before the closure could report "no change".
-pub(super) fn restore_claude_code_identity(body: &mut RequestBody) {
-    if !needs_identity(body.json()) {
+pub(super) fn restore_claude_code_identity(body: &mut RequestBody, headers: &HeaderMap) {
+    let Some(repair) = needs_identity(body.json(), headers) else {
         return;
-    }
+    };
     body.mutate(insert_identity);
     // The gateway does not otherwise rewrite an Anthropic request body, so
-    // record the one case where it does — without it a misfire leaves no trace,
+    // record the cases where it does — without it a misfire leaves no trace,
     // and an operator has no way to confirm the repair is landing. `debug`
     // rather than `warn` because it marks routine repair rather than a fault;
     // how often it fires follows the client's calling pattern, which is not
     // observable from here.
-    tracing::debug!("restored the Claude Code identity block on an auto-mode classifier request");
+    match repair {
+        Repair::Classifier => tracing::debug!(
+            "restored the Claude Code identity block on an auto-mode classifier request"
+        ),
+        Repair::ClaudeCodeRequest => tracing::debug!(
+            "restored the Claude Code identity block on a Claude Code request without a first-party marker"
+        ),
+    }
 }
 
-/// Whether `request` is a classifier request that is missing an accepted
-/// marker.
+/// Which repair `request` needs, or `None` when it needs none.
 ///
-/// Only the block form is considered: Claude Code sends the classifier's system
-/// prompt as an array, so a string `system` — what `claude --system-prompt`
-/// produces — can never match, and neither can a client that omits `system`.
-fn needs_identity(request: &Value) -> bool {
-    let Some(blocks) = classifier_blocks(request) else {
-        return false;
+/// The classifier rule comes first and reads the body alone: a classifier
+/// request missing an accepted marker is repaired whatever headers it carries,
+/// and one that already has a marker is left alone. Otherwise the request is
+/// repaired only when [`is_claude_code_client`] holds and its `system` carries
+/// no accepted marker — a string `system` is checked as a whole, an array
+/// block by block, and an absent or `null` `system` has none. A `system` of
+/// any other type, or a body that is not an object, is left for upstream to
+/// reject on its own terms.
+fn needs_identity(request: &Value, headers: &HeaderMap) -> Option<Repair> {
+    if let Some(blocks) = classifier_blocks(request) {
+        return (!blocks_carry_marker(blocks)).then_some(Repair::Classifier);
+    }
+    if !is_claude_code_client(headers) {
+        return None;
+    }
+    let marked = match request.as_object()?.get("system") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(text)) => is_accepted_marker(text.trim_start()),
+        Some(Value::Array(blocks)) => blocks_carry_marker(blocks),
+        Some(_) => return None,
     };
-    // Suppression scans every block: an accepted marker anywhere in the array is
-    // enough for upstream, so its position is not ours to assume.
-    !blocks.iter().any(|block| {
-        block_text(block).is_some_and(|text| {
-            ACCEPTED_MARKER_PREFIXES
-                .iter()
-                .any(|prefix| text.starts_with(prefix))
-        })
-    })
+    (!marked).then_some(Repair::ClaudeCodeRequest)
+}
+
+/// Whether the inbound request comes from Claude Code: it names a Claude Code
+/// session, or [`classify_client`] reads its headers as Claude Code's.
+///
+/// [`classify_client`]: crate::client_attribution::classify_client
+fn is_claude_code_client(headers: &HeaderMap) -> bool {
+    headers.contains_key("x-claude-code-session-id")
+        || classify_client(headers) == ClientKind::ClaudeCode
+}
+
+/// Whether any block of `blocks` opens with an accepted marker.
+///
+/// Every block is scanned: an accepted marker anywhere in the array is enough
+/// for upstream, so its position is not ours to assume.
+fn blocks_carry_marker(blocks: &[Value]) -> bool {
+    blocks
+        .iter()
+        .any(|block| block_text(block).is_some_and(is_accepted_marker))
+}
+
+/// Whether `text`, already trimmed at the start, opens with an accepted marker.
+fn is_accepted_marker(text: &str) -> bool {
+    ACCEPTED_MARKER_PREFIXES
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
 }
 
 /// The `system` blocks of `request` when it carries the auto-mode classifier's
@@ -205,304 +280,35 @@ fn block_text(block: &Value) -> Option<&str> {
 
 /// Insert the identity block, returning whether the request changed.
 ///
-/// Upholds [`RequestBody::mutate`]'s contract: the one path that returns `true`
-/// mutated the tree, and the fallback leaves it untouched.
+/// An array `system` gains it at index 0, a string `system` becomes the
+/// identity block followed by a text block carrying the original string, and
+/// an absent or `null` `system` becomes the identity block alone. Upholds
+/// [`RequestBody::mutate`]'s contract: every path that returns `true` mutated
+/// the tree, and the fallbacks — a non-object body, a `system` of any other
+/// type — leave it untouched.
 fn insert_identity(request: &mut Value) -> bool {
-    let Some(blocks) = request.get_mut("system").and_then(Value::as_array_mut) else {
+    let Some(object) = request.as_object_mut() else {
         return false;
     };
-    // Ahead of the client's first block, and ahead of any `cache_control` it
-    // carries. No classifier request captured on the wire carried one, so this
-    // has not been seen to shift an established cache prefix — an observation,
-    // not a guarantee.
-    blocks.insert(0, json!({"type": "text", "text": CLAUDE_CODE_IDENTITY}));
+    let identity = json!({"type": "text", "text": CLAUDE_CODE_IDENTITY});
+    match object.get_mut("system") {
+        // Ahead of the client's first block, and ahead of any `cache_control`
+        // it carries. No classifier request captured on the wire carried one,
+        // so this has not been seen to shift an established cache prefix — an
+        // observation, not a guarantee.
+        Some(Value::Array(blocks)) => blocks.insert(0, identity),
+        Some(system @ Value::String(_)) => {
+            let text = system.take();
+            *system = json!([identity, {"type": "text", "text": text}]);
+        }
+        Some(system @ Value::Null) => *system = json!([identity]),
+        Some(Value::Bool(_) | Value::Number(_) | Value::Object(_)) => return false,
+        None => {
+            object.insert("system".to_owned(), json!([identity]));
+        }
+    }
     true
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::{json, Value};
-
-    use super::{classifier_upstream_model, is_classifier_request};
-    use super::{restore_claude_code_identity, CLASSIFIER_PROMPT_PREFIX, CLAUDE_CODE_IDENTITY};
-    use crate::config::{Config, ProviderConfig};
-    use crate::request::RequestBody;
-
-    /// The seeded `anthropic` provider, which is `kind = "anthropic"` and
-    /// carries no `classifier_model` — the state every assertion below starts
-    /// from.
-    fn anthropic_provider() -> ProviderConfig {
-        Config::default()
-            .providers
-            .get("anthropic")
-            .expect("the default config seeds an anthropic provider")
-            .clone()
-    }
-
-    fn classifier_prompt() -> String {
-        format!("{CLASSIFIER_PROMPT_PREFIX}\n\n## Context\n\nThe agent you are monitoring is …")
-    }
-
-    fn run(body: Value) -> Value {
-        let raw = serde_json::to_vec(&body).unwrap();
-        let mut request = RequestBody::parse(raw).unwrap();
-        restore_claude_code_identity(&mut request);
-        serde_json::from_slice(&request.into_raw()).unwrap()
-    }
-
-    /// Assert the body is forwarded exactly as the client sent it — key order
-    /// and whitespace included, which is what proves no re-serialization ran.
-    fn assert_verbatim(body: &str) {
-        let mut request = RequestBody::parse(body.as_bytes().to_vec()).unwrap();
-        restore_claude_code_identity(&mut request);
-        assert_eq!(request.into_raw(), body.as_bytes());
-    }
-
-    #[test]
-    fn classifier_request_gains_the_identity_block() {
-        let prompt = classifier_prompt();
-        let out = run(json!({
-            "model": "claude-opus-5",
-            "max_tokens": 64,
-            "stop_sequences": ["</block>"],
-            "system": [
-                {"type": "text", "text": prompt},
-                {"type": "text", "text": "Session context."},
-            ],
-        }));
-
-        let system = out["system"].as_array().unwrap();
-        assert_eq!(system.len(), 3);
-        assert_eq!(system[0]["type"], "text");
-        assert_eq!(system[0]["text"], CLAUDE_CODE_IDENTITY);
-        assert_eq!(system[1]["text"], prompt);
-        assert_eq!(system[2]["text"], "Session context.");
-        // Nothing else about the request is disturbed.
-        assert_eq!(out["model"], "claude-opus-5");
-        assert_eq!(out["max_tokens"], 64);
-        assert_eq!(out["stop_sequences"], json!(["</block>"]));
-    }
-
-    #[test]
-    fn claude_code_main_loop_is_untouched() {
-        let body = r#"{"model":"claude-opus-5","system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."},{"type":"text","text":"more"}]}"#;
-
-        assert_verbatim(body);
-    }
-
-    #[test]
-    fn claude_desktop_chat_and_cowork_are_untouched() {
-        // The shape measured through the relay: both Claude Desktop surfaces
-        // lead with the billing attribution block, three system blocks in all,
-        // and every one of their turns was accepted upstream. The gateway must
-        // not rewrite them to claim they are Claude Code. (The `cc_entrypoint`
-        // value sat beyond the capture window, so the one here stands in.)
-        let body = r#"{"model":"claude-opus-5","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.219.f52; cc_entrypoint=desktop;"},{"type":"text","text":"You are Claude, a helpful assistant."},{"type":"text","text":"Workspace context."}]}"#;
-
-        assert_verbatim(body);
-    }
-
-    #[test]
-    fn a_third_party_client_with_its_own_system_prompt_is_untouched() {
-        let body = r#"{"model":"claude-opus-5","system":[{"type":"text","text":"You are a triage bot."}]}"#;
-
-        assert_verbatim(body);
-    }
-
-    #[test]
-    fn a_classifier_that_already_carries_a_billing_block_is_untouched() {
-        // Either accepted marker is sufficient upstream, so a classifier
-        // request carrying the billing block needs no identity block.
-        let body = format!(
-            r#"{{"system":[{{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.226.000; cc_entrypoint=cli;"}},{{"type":"text","text":"{CLASSIFIER_PROMPT_PREFIX} …"}}]}}"#
-        );
-
-        assert_verbatim(&body);
-    }
-
-    #[test]
-    fn custom_string_system_prompt_is_untouched() {
-        // `claude --system-prompt "…"` replaces the entire system prompt, which
-        // is a documented first-party flag. Honour it.
-        let body = r#"{"model":"claude-opus-5","system":"You are a Python expert"}"#;
-
-        assert_verbatim(body);
-    }
-
-    #[test]
-    fn request_without_a_system_prompt_is_untouched() {
-        // Claude Desktop's gateway connection test reaches the relay this way —
-        // a `max_tokens: 1` availability probe with no system prompt at all,
-        // which upstream accepted.
-        let body = r#"{"model":"claude-haiku-4-5-20251001","max_tokens":1}"#;
-
-        assert_verbatim(body);
-    }
-
-    #[test]
-    fn classifier_that_already_carries_the_identity_is_untouched() {
-        let body = format!(
-            r#"{{"system":[{{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}},{{"type":"text","text":"{CLASSIFIER_PROMPT_PREFIX} …"}}]}}"#
-        );
-
-        assert_verbatim(&body);
-    }
-
-    #[test]
-    fn agent_sdk_identity_also_suppresses_injection() {
-        let body = format!(
-            r#"{{"system":[{{"type":"text","text":"You are a Claude agent, built on Anthropic's Claude Agent SDK."}},{{"type":"text","text":"{CLASSIFIER_PROMPT_PREFIX} …"}}]}}"#
-        );
-
-        assert_verbatim(&body);
-    }
-
-    #[test]
-    fn a_classifier_prompt_behind_another_block_is_untouched() {
-        // Deliberately narrower than "the sentence appears somewhere": every
-        // classifier request captured on the wire carried the prompt at
-        // `system[0]`, and the trigger is client-supplied text, so matching
-        // deeper would let an arbitrary prompt pull the rewrite in behind a
-        // block of its own choosing. If a future Claude Code release moves the
-        // prompt, this stops matching — the `debug` line in
-        // `restore_claude_code_identity` is what makes that visible.
-        let body = format!(
-            r#"{{"system":[{{"type":"image","source":{{}}}},{{"type":"text","text":"{CLASSIFIER_PROMPT_PREFIX} …"}}]}}"#
-        );
-
-        assert_verbatim(&body);
-    }
-
-    #[test]
-    fn a_leading_block_without_text_is_not_a_classifier_request() {
-        let body = r#"{"system":[{"type":"image","source":{}}]}"#;
-
-        assert_verbatim(body);
-    }
-
-    #[test]
-    fn leading_whitespace_still_identifies_the_classifier() {
-        let out = run(json!({
-            "system": [{"type": "text", "text": format!("\n  {}", classifier_prompt())}],
-        }));
-
-        assert_eq!(out["system"].as_array().unwrap().len(), 2);
-        assert_eq!(out["system"][0]["text"], CLAUDE_CODE_IDENTITY);
-    }
-
-    #[test]
-    fn identity_is_inserted_ahead_of_a_cache_control_block() {
-        let out = run(json!({
-            "system": [{
-                "type": "text",
-                "text": classifier_prompt(),
-                "cache_control": {"type": "ephemeral"},
-            }],
-        }));
-
-        let system = out["system"].as_array().unwrap();
-        assert_eq!(system[0]["text"], CLAUDE_CODE_IDENTITY);
-        assert!(system[0].get("cache_control").is_none());
-        assert_eq!(system[1]["cache_control"]["type"], "ephemeral");
-    }
-
-    #[test]
-    fn a_string_system_carrying_the_classifier_prompt_is_untouched() {
-        // Claude Code always sends the classifier prompt as a block. A string
-        // in this shape is some other client, so it keeps passthrough.
-        let body = format!(r#"{{"system":"{CLASSIFIER_PROMPT_PREFIX} …"}}"#);
-
-        assert_verbatim(&body);
-    }
-
-    #[test]
-    fn unexpected_system_type_is_left_alone() {
-        // Upstream will reject this on its own terms; reshaping it here would
-        // turn a clear client error into a confusing gateway-authored request.
-        assert_verbatim(r#"{"system":42}"#);
-    }
-
-    #[test]
-    fn non_object_request_is_left_alone() {
-        assert_verbatim(r#"["not","an","object"]"#);
-    }
-
-    #[test]
-    fn empty_block_array_is_untouched() {
-        assert_verbatim(r#"{"system":[]}"#);
-    }
-
-    #[test]
-    fn a_classifier_request_is_detected() {
-        assert!(is_classifier_request(&json!({
-            "system": [{"type": "text", "text": classifier_prompt()}],
-        })));
-    }
-
-    #[test]
-    fn a_classifier_request_carrying_an_accepted_marker_is_still_detected() {
-        // The accepted-marker list suppresses the identity *repair*, which is
-        // redundant once a marker sits anywhere in the array. It must not
-        // suppress detection: the request is still the classifier's, and still
-        // the one an operator pinned a model to.
-        let request = json!({
-            "system": [
-                {"type": "text", "text": classifier_prompt()},
-                {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.226.000;"},
-            ],
-        });
-
-        assert!(!super::needs_identity(&request));
-        assert!(is_classifier_request(&request));
-    }
-
-    #[test]
-    fn an_ordinary_request_is_not_a_classifier_request() {
-        assert!(!is_classifier_request(&json!({
-            "system": [{"type": "text", "text": "You are a triage bot."}],
-        })));
-    }
-
-    #[test]
-    fn a_string_system_is_not_a_classifier_request() {
-        assert!(!is_classifier_request(&json!({
-            "system": format!("{CLASSIFIER_PROMPT_PREFIX} …"),
-        })));
-    }
-
-    #[test]
-    fn a_request_without_a_system_prompt_is_not_a_classifier_request() {
-        assert!(!is_classifier_request(&json!({"model": "claude-opus-5"})));
-    }
-
-    #[test]
-    fn the_override_is_none_when_the_key_is_unset() {
-        let request = json!({"system": [{"type": "text", "text": classifier_prompt()}]});
-
-        assert_eq!(
-            classifier_upstream_model(&anthropic_provider(), &request),
-            None
-        );
-    }
-
-    #[test]
-    fn the_override_applies_only_to_a_classifier_request() {
-        let mut provider = anthropic_provider();
-        provider.classifier_model = Some("claude-sonnet-5".to_string());
-
-        assert_eq!(
-            classifier_upstream_model(
-                &provider,
-                &json!({"system": [{"type": "text", "text": classifier_prompt()}]}),
-            ),
-            Some("claude-sonnet-5"),
-        );
-        assert_eq!(
-            classifier_upstream_model(
-                &provider,
-                &json!({"system": [{"type": "text", "text": "You are a triage bot."}]}),
-            ),
-            None,
-        );
-    }
-}
+mod tests;
