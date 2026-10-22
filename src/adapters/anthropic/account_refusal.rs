@@ -74,7 +74,7 @@ impl AccountRefusal {
 /// reaches the client. Only a 400 or 402 has its body read, under the shared
 /// error-body bounds; every other status returns untouched and unread. The
 /// returned response carries the upstream's bytes intact either way, and a
-/// body that stalls past the budget, passes the cap, or is not the Anthropic
+/// body that stalls past the budget, passes the smaller of the caller's cap (`bounds.max_bytes`) and the envelope ceiling, or is not the Anthropic
 /// envelope is simply not a refusal. `bounds.idle` starts at header arrival,
 /// as the relay's own body read starts it.
 pub(super) async fn judge(
@@ -86,7 +86,14 @@ pub(super) async fn judge(
         return Ok((upstream, None));
     }
     let clock = bounds.idle.map(|idle| (idle, tokio::time::Instant::now()));
-    let (upstream, body) = crate::adapters::buffer_error_body(upstream, clock, true).await?;
+    let (upstream, body) = crate::adapters::buffer_error_body_capped(
+        upstream,
+        clock,
+        true,
+        crate::error::ERROR_ENVELOPE_BUDGET,
+        bounds.max_bytes,
+    )
+    .await?;
     Ok((upstream, body.and_then(|body| classify(status, &body))))
 }
 
@@ -403,5 +410,119 @@ mod tests {
             assert_eq!(refusal.resume_at_epoch_secs, None, "{tail}");
             assert_eq!(refusal.skip_window(UNIX_EPOCH), REFUSAL_DEFAULT_SKIP);
         }
+    }
+    /// A refusal-shaped 400 whose body is longer than `len` bytes.
+    fn padded_refusal(len: usize) -> String {
+        let message = format!("{}. {}", SPEND_LIMIT_PREFIXES[0], "x".repeat(len));
+        String::from_utf8(envelope("invalid_request_error", &message)).unwrap()
+    }
+
+    async fn upstream_response(body: String) -> reqwest::Response {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(body, "application/json"))
+            .mount(&server)
+            .await;
+        reqwest::Client::new()
+            .post(server.uri())
+            .send()
+            .await
+            .unwrap()
+    }
+
+    fn capped(max_bytes: usize) -> ResponseBounds {
+        ResponseBounds {
+            max_bytes: Some(max_bytes),
+            idle: None,
+        }
+    }
+
+    /// A body longer than the caller's cap is not judged, whatever it says:
+    /// the relay that follows still owes the caller its too-large error. The
+    /// body stays whole for that relay to count.
+    #[tokio::test]
+    async fn a_refusal_body_over_the_caller_cap_is_not_judged() {
+        let body = padded_refusal(500);
+        let (relayed, refusal) = judge(upstream_response(body.clone()).await, capped(100))
+            .await
+            .unwrap();
+        assert_eq!(refusal, None);
+        assert_eq!(relayed.text().await.unwrap(), body);
+
+        let under = padded_refusal(0);
+        let (_, refusal) = judge(upstream_response(under).await, capped(4096))
+            .await
+            .unwrap();
+        assert!(refusal.is_some(), "the same body under the cap is judged");
+    }
+
+    /// A 400 that declares more than the cap and then stalls is passed on at
+    /// once, not held for the envelope read's budget.
+    #[tokio::test]
+    async fn a_declared_oversized_stalled_body_is_not_waited_for() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 400 Bad\r\ncontent-type: application/json\r\ncontent-length: 4096\r\n\r\n{\"type\":",
+                )
+                .await
+                .unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let upstream = reqwest::Client::new()
+            .post(format!("http://{addr}"))
+            .send()
+            .await
+            .unwrap();
+
+        let judged = tokio::time::timeout(Duration::from_secs(1), judge(upstream, capped(100)))
+            .await
+            .expect("a declared-oversized body is not read");
+
+        assert_eq!(judged.unwrap().1, None);
+    }
+
+    /// On a pool path the same rule keeps an oversized refusal-prefixed body
+    /// from rotating the pool: it is relayed (to meet the too-large error),
+    /// and the account is not cooled.
+    #[tokio::test]
+    async fn an_oversized_refusal_does_not_rotate_the_pool() {
+        let config = crate::config::Config::default();
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let route = Route {
+            provider: "anthropic".to_string(),
+            adapter: crate::routing::AdapterKind::Anthropic,
+            model: "claude-test".to_string(),
+            upstream_model: "claude-test".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+        let account = AccountConfig {
+            name: "a".to_string(),
+            token_env: Some("SHUNT_TEST_REFUSAL_CAP_A".to_string()),
+            ..Default::default()
+        };
+        let upstream = upstream_response(padded_refusal(500)).await;
+
+        let answer = judge_pool_answer(&state, &route, &account, upstream, capped(100))
+            .await
+            .unwrap();
+
+        assert!(matches!(answer, PoolAnswer::Relay(_)));
+        assert_eq!(
+            state
+                .accounts
+                .earliest_reselect("anthropic", std::slice::from_ref(&account), None),
+            Some(Duration::ZERO),
+            "an unjudged body leaves the account selectable"
+        );
     }
 }

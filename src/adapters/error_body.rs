@@ -55,9 +55,27 @@ pub(crate) async fn buffer_error_body_within(
     verbatim: bool,
     budget: Duration,
 ) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
+    buffer_error_body_capped(upstream, clock, verbatim, budget, None).await
+}
+
+/// [`buffer_error_body_within`] that also honours the caller's own byte cap:
+/// the read stops at the smaller of `cap` and
+/// [`crate::error::ERROR_ENVELOPE_BYTES`], and a body that declares or passes
+/// that limit is passed on unjudged, so the relay that follows still applies
+/// the caller's cap to it exactly as it would have without this read.
+pub(crate) async fn buffer_error_body_capped(
+    upstream: reqwest::Response,
+    clock: Option<(Duration, tokio::time::Instant)>,
+    verbatim: bool,
+    budget: Duration,
+    cap: Option<usize>,
+) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
+    let limit = cap.map_or(crate::error::ERROR_ENVELOPE_BYTES, |cap| {
+        cap.min(crate::error::ERROR_ENVELOPE_BYTES)
+    });
     let declared_oversized = upstream
         .content_length()
-        .is_some_and(|length| length > crate::error::ERROR_ENVELOPE_BYTES as u64);
+        .is_some_and(|length| length > limit as u64);
     if declared_oversized && verbatim {
         return Ok((upstream, None));
     }
@@ -78,7 +96,7 @@ pub(crate) async fn buffer_error_body_within(
                     idle_deadline = clock.map(|(idle, _)| tokio::time::Instant::now() + idle);
                     total = total.saturating_add(chunk.len());
                     read.push(Ok(chunk));
-                    if total > crate::error::ERROR_ENVELOPE_BYTES {
+                    if total > limit {
                         break false;
                     }
                 }
