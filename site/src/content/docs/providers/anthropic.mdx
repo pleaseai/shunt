@@ -141,10 +141,13 @@ builtin Claude catalog snapshot — see [Model Discovery](/guides/model-discover
 
 When Claude Code runs in auto mode, every action that leaves the workspace or touches the network
 goes through a **permission classifier** — a separate Messages request whose system prompt asks the
-model for a safety verdict on the pending action. It is the one first-party request that omits the
-Claude Code identity block `api.anthropic.com` looks for on a subscription-OAuth credential, so
-shunt restores that block on this request alone and leaves everything else byte-for-byte; the
-[429 troubleshooting row](/reference/troubleshooting/) describes the failure that repairs.
+model for a safety verdict on the pending action. It omits the Claude Code identity block
+`api.anthropic.com` looks for on a subscription-OAuth credential, as do side queries such as mods'
+`$.model.complete` with `CLAUDE_CODE_ATTRIBUTION_HEADER=0`. shunt restores the identity on the
+auto-mode classifier and on any Claude Code request (identified by `x-claude-code-session-id` or a
+`claude-cli/` user agent) that carries no accepted marker; other clients keep byte-for-byte
+passthrough. The [429 troubleshooting row](/reference/troubleshooting/) describes the failure that
+repairs.
 
 The classifier does not use the session's model by default. Measured on Claude Code 2.1.226, it
 takes a server-supplied model if the client was given one, otherwise the **Sonnet tier alias**, and

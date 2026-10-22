@@ -1001,6 +1001,14 @@ export CLAUDE_CODE_ATTRIBUTION_HEADER=0
 This is global, so it also removes attribution from any Anthropic-passthrough traffic (used for
 cost tracking) — which is fine when you're routing to another provider.
 
+With `=0`, some Claude Code side requests carry no first-party marker at all: mods'
+`$.model.complete` queries lose the attribution block that was their only one, and the auto-mode
+classifier never carries the identity prompt. On a subscription-OAuth Anthropic route those would
+otherwise reach `api.anthropic.com` unmarked and come back as a bare 429 (`client-shape-rejection`). shunt
+re-adds the Claude Code identity block on Claude Code requests (identified by
+`x-claude-code-session-id` or a `claude-cli/` user agent) that carry no accepted marker, so `=0`
+stays safe.
+
 ### 5.8 Context / usage display for mapped models
 
 Claude Code's statusline and prompt footer compute the **context indicator locally** from the
