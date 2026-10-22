@@ -1200,3 +1200,44 @@ async fn a_requests_sample_carries_the_turns_attribution_through_the_adapter() {
         "no sample fell back to the default attribution"
     );
 }
+
+/// A mapped primary inside a refusal skip window must not promote the
+/// passthrough fallback behind it into the primary credential role: the
+/// caller's slots stay stripped, as in the configured chain (#817).
+#[test]
+fn skipping_a_mapped_primary_does_not_promote_a_passthrough_fallback_credential() {
+    let state = state();
+    state
+        .accounts
+        .upstream_skips()
+        .record("openai", Duration::from_secs(60));
+    let configured = vec![injecting_fallback_route(), passthrough_route()];
+    let configured_primary = configured[0].clone();
+
+    let routes = super::skip_refused_routes(&state, configured);
+    assert_eq!(routes, vec![passthrough_route()]);
+    let mut base = caller_headers();
+    super::strip_credentials_if_primary_skipped(&configured_primary, &routes, &mut base);
+    let inbound = context_for(&state, &base);
+    let sent = headers_for_route(&state, &routes[0], &base, &inbound, true, None);
+
+    assert!(sent.get("authorization").is_none());
+    assert!(sent.get("x-api-key").is_none());
+}
+
+/// A window recorded under a name that is passthrough now (an auth switch
+/// across a hot reload) never drops the route (#817 FR-8).
+#[test]
+fn a_skip_window_never_drops_a_route_that_is_passthrough_now() {
+    let state = state();
+    state
+        .accounts
+        .upstream_skips()
+        .record("anthropic", Duration::from_secs(60));
+    let configured = vec![passthrough_route(), injecting_fallback_route()];
+
+    assert_eq!(
+        super::skip_refused_routes(&state, configured.clone()),
+        configured
+    );
+}

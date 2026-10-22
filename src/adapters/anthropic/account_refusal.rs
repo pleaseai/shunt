@@ -174,7 +174,7 @@ pub(super) fn skip_refused_pool(state: &AppState, route: &Route, accounts: &[Acc
     let window = match state.accounts.earliest_reselect(
         &route.provider,
         accounts,
-        Some(route.upstream_model.as_str()),
+        state.config.server.pool.as_ref(),
     ) {
         Some(window) if window.is_zero() => return,
         Some(window) => window,

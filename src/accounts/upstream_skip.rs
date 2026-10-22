@@ -12,12 +12,16 @@
 //! unless a test pauses the runtime, so the window boundaries are testable
 //! with paused time.
 
-use std::{collections::HashMap, sync::Mutex, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use tokio::time::Instant;
 
-use super::{account_key, governing_cooldown, is_fable_model, AccountPool};
-use crate::config::AccountConfig;
+use super::{account_key, cap_exclusion, expire_stale_quota, governing_cooldown, AccountPool};
+use crate::config::{AccountConfig, PoolConfig};
 
 /// Upstream name → the instant its skip window ends.
 #[derive(Debug, Default)]
@@ -58,15 +62,17 @@ impl UpstreamSkips {
     /// Drop the items whose upstream is being skipped, keeping the order of
     /// the rest. When every item would be dropped the list comes back
     /// unchanged: a request is still worth trying in configured order rather
-    /// than refused by the gateway without contacting anyone.
+    /// than refused by the gateway without contacting anyone. `upstream`
+    /// returns `None` for an item that is never skipped, whatever window its
+    /// name carries.
     pub(crate) fn retain_unskipped<T>(
         &self,
         items: Vec<T>,
-        upstream: impl Fn(&T) -> &str,
+        upstream: impl Fn(&T) -> Option<&str>,
     ) -> Vec<T> {
         let skipped: Vec<bool> = items
             .iter()
-            .map(|item| self.is_skipped(upstream(item)))
+            .map(|item| upstream(item).is_some_and(|name| self.is_skipped(name)))
             .collect();
         if !skipped.contains(&true) || !skipped.contains(&false) {
             return items;
@@ -80,21 +86,26 @@ impl UpstreamSkips {
 }
 
 impl AccountPool {
-    /// How long until the first of `accounts` can serve `model` again: the
-    /// shortest remaining cooldown (the one selection obeys for `model`)
-    /// among the accounts selection may pick, i.e. neither disabled nor
-    /// paused for `provider`. An account that is not cooling counts as zero.
-    /// `None` when no account is selectable at all. The window a pool that
-    /// every account refused is skipped for in multi-element chains (#817).
+    /// How long until the first of `accounts` can serve a request again: the
+    /// shortest remaining account-wide cooldown among the accounts selection
+    /// may pick, i.e. neither disabled, paused for `provider`, nor held out by
+    /// a hard cap (the same exclusions `select_order` applies). Model-scoped
+    /// and Fable-scoped cooldowns are ignored: they leave the account
+    /// selectable for other requests, so they must not open an upstream-wide
+    /// window. An account that is not cooling counts as zero. `None` when no
+    /// account is selectable at all. The window a pool that every account
+    /// refused is skipped for in multi-element chains (#817).
     pub(crate) fn earliest_reselect(
         &self,
         provider: &str,
         accounts: &[AccountConfig],
-        model: Option<&str>,
+        pool: Option<&PoolConfig>,
     ) -> Option<Duration> {
         let now = std::time::Instant::now();
-        let is_fable = is_fable_model(model);
-        let model_key = model.map(str::to_ascii_lowercase);
+        let unix_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let entries = self.entries.lock().expect("account health lock poisoned");
         accounts
             .iter()
@@ -103,10 +114,22 @@ impl AccountPool {
                 |account| match entries.get(&account_key(provider, account)) {
                     None => Some(Duration::ZERO),
                     Some(health) if health.paused_providers.contains(provider) => None,
-                    Some(health) => Some(
-                        governing_cooldown(health, is_fable, model_key.as_deref())
-                            .map_or(Duration::ZERO, |until| until.saturating_duration_since(now)),
-                    ),
+                    Some(health) => {
+                        // Selection expires a stale observation before it
+                        // reads the cap, so a lapsed cap does not hold the
+                        // account out here either.
+                        let mut quota = health.quota.clone();
+                        expire_stale_quota(&mut quota, unix_now);
+                        if cap_exclusion(&quota, account, false, pool).is_some() {
+                            return None;
+                        }
+                        Some(
+                            governing_cooldown(health, false, None)
+                                .map_or(Duration::ZERO, |until| {
+                                    until.saturating_duration_since(now)
+                                }),
+                        )
+                    }
                 },
             )
             .min()
@@ -115,10 +138,13 @@ impl AccountPool {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::UpstreamSkips;
-    use crate::{accounts::AccountPool, config::AccountConfig};
+    use crate::{
+        accounts::{account_key, AccountPool, QuotaState},
+        config::AccountConfig,
+    };
 
     fn pool_account(name: &str) -> AccountConfig {
         AccountConfig {
@@ -159,13 +185,65 @@ mod tests {
         assert_eq!(pool.earliest_reselect("p", &[disabled], None), None);
     }
 
+    /// A hard-capped account is not selectable, so it must not make the pool
+    /// look immediately usable and keep the skip window from opening (#817).
+    #[test]
+    fn earliest_reselect_ignores_a_hard_capped_account() {
+        let pool = AccountPool::default();
+        let a = pool_account("a");
+        let capped = AccountConfig {
+            max_utilization: Some(0.5),
+            ..pool_account("capped")
+        };
+        pool.cooldown("p", &a, Duration::from_secs(100), "test");
+        let far = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        pool.import_quotas([(
+            account_key("p", &capped),
+            QuotaState {
+                utilization_5h: Some(0.9),
+                reset_5h: Some(far),
+                ..Default::default()
+            },
+        )]);
+
+        let window = pool.earliest_reselect("p", &[a.clone(), capped.clone()], None);
+
+        assert!(window.unwrap() > Duration::from_secs(90), "{window:?}");
+        assert_eq!(pool.earliest_reselect("p", &[capped], None), None);
+    }
+
+    /// A Fable-scoped cooldown leaves the account usable for other requests,
+    /// so it does not open an upstream-wide window (#817).
+    #[test]
+    fn earliest_reselect_ignores_a_model_scoped_cooldown() {
+        let pool = AccountPool::default();
+        let (a, b) = (pool_account("a"), pool_account("b"));
+        pool.cooldown_scoped(
+            "p",
+            &a,
+            Duration::from_secs(600),
+            "test",
+            crate::accounts::CooldownScope::Fable,
+        );
+        pool.cooldown("p", &b, Duration::from_secs(300), "test");
+
+        assert_eq!(
+            pool.earliest_reselect("p", &[a, b], None),
+            Some(Duration::ZERO)
+        );
+    }
+
     #[test]
     fn a_fresh_state_skips_nothing() {
         let skips = UpstreamSkips::default();
 
         assert!(!skips.is_skipped("primary"));
         assert_eq!(
-            skips.retain_unskipped(vec!["primary", "secondary"], |name| name),
+            skips.retain_unskipped(vec!["primary", "secondary"], |name| Some(*name)),
             vec!["primary", "secondary"]
         );
     }
@@ -214,7 +292,7 @@ mod tests {
         skips.record("b", Duration::from_secs(60));
 
         assert_eq!(
-            skips.retain_unskipped(vec!["a", "b", "c"], |name| name),
+            skips.retain_unskipped(vec!["a", "b", "c"], |name| Some(*name)),
             vec!["a", "c"]
         );
     }
@@ -226,7 +304,7 @@ mod tests {
         skips.record("b", Duration::from_secs(60));
 
         assert_eq!(
-            skips.retain_unskipped(vec!["a", "b"], |name| name),
+            skips.retain_unskipped(vec!["a", "b"], |name| Some(*name)),
             vec!["a", "b"]
         );
     }
