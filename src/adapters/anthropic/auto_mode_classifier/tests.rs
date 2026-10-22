@@ -355,6 +355,34 @@ fn a_claude_code_string_system_becomes_identity_then_the_original_text() {
 }
 
 #[test]
+fn an_agent_sdk_request_is_judged_like_claude_code() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "user-agent",
+        HeaderValue::from_static("claude-cli/2.1.300 (external, sdk-ts)"),
+    );
+
+    assert_verbatim(
+        r#"{"system":"You are a Claude agent, built on Anthropic's Claude Agent SDK."}"#,
+        &headers,
+    );
+    let out = run(json!({"system": "You are a triage bot."}), &headers);
+    assert_eq!(out["system"][0]["text"], CLAUDE_CODE_IDENTITY);
+}
+
+#[test]
+fn a_claude_code_blank_string_system_becomes_the_identity_alone() {
+    for blank in ["", "  \n"] {
+        let out = run(json!({"system": blank}), &claude_code_session());
+
+        assert_eq!(
+            out["system"],
+            json!([{"type": "text", "text": CLAUDE_CODE_IDENTITY}])
+        );
+    }
+}
+
+#[test]
 fn a_claude_code_request_without_a_system_gains_one() {
     let out = run(
         json!({"model": "claude-haiku-4-5", "max_tokens": 1}),

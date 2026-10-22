@@ -59,9 +59,11 @@
 //! marker. Claude Desktop's chat surface and Cowork were both measured through
 //! the same relay: each leads with the billing block across three system
 //! blocks, so neither is repaired, and every request was accepted upstream.
-//! Requests from the Agent SDK and third-party clients keep byte-for-byte
-//! passthrough, so the gateway never claims to be Claude Code on behalf of a
-//! client that isn't.
+//! Third-party clients keep byte-for-byte passthrough, so the gateway never
+//! claims to be Claude Code on behalf of a client that isn't. Agent SDK
+//! traffic drives the Claude Code CLI and identifies as it, so it is judged
+//! like any Claude Code request: one carrying the Agent SDK identity is left
+//! alone, and one whose custom system prompt carries no marker is repaired.
 //!
 //! [`classify_client`]: crate::client_attribution::classify_client
 //! [`rate_limit_kind`]: super::rate_limit_kind
@@ -110,8 +112,11 @@ const CLASSIFIER_PROMPT_PREFIX: &str =
 /// of accepted main-loop requests, and the billing block at the head of every
 /// accepted Claude Desktop chat and Cowork request. Those are observations of a
 /// live endpoint rather than a published contract, and the list is certainly
-/// not exhaustive — it is deliberately not extended by guesswork, since it only
-/// ever suppresses an injection.
+/// not exhaustive. It decides whether every marker-less Claude Code request is
+/// rewritten, not only the classifier, so a first-party marker missing from it
+/// gains a redundant identity block ahead of that request's system prompt —
+/// shifting any cache prefix the prompt had. That costs a cache miss, never a
+/// rejection, which is why the list is still not extended by guesswork.
 const ACCEPTED_MARKER_PREFIXES: &[&str] = &[
     "You are Claude Code, Anthropic's official CLI for Claude",
     "You are a Claude agent, built on Anthropic's Claude Agent SDK",
@@ -297,9 +302,15 @@ fn insert_identity(request: &mut Value) -> bool {
         // so this has not been seen to shift an established cache prefix — an
         // observation, not a guarantee.
         Some(Value::Array(blocks)) => blocks.insert(0, identity),
+        // A blank string carries no instructions, and upstream rejects a text
+        // block with no non-whitespace text, so it is not kept as a block.
         Some(system @ Value::String(_)) => {
             let text = system.take();
-            *system = json!([identity, {"type": "text", "text": text}]);
+            *system = if text.as_str().is_some_and(|text| text.trim().is_empty()) {
+                json!([identity])
+            } else {
+                json!([identity, {"type": "text", "text": text}])
+            };
         }
         Some(system @ Value::Null) => *system = json!([identity]),
         Some(Value::Bool(_) | Value::Number(_) | Value::Object(_)) => return false,
