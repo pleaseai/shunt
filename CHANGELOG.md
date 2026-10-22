@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.58.0](https://github.com/pleaseai/shunt/compare/v0.57.1...v0.58.0) (2026-10-22)
+
+
+### Features
+
+* **otel:** tag per-request metrics with client_kind and managed attribution ([#811](https://github.com/pleaseai/shunt/issues/811)) ([0387f9d](https://github.com/pleaseai/shunt/commit/0387f9d56c919003399d4a6e1a5c79c942bb89aa))
+* **spend:** enforce and meter spend caps on the inbound Codex endpoint ([#814](https://github.com/pleaseai/shunt/issues/814)) ([9c706c8](https://github.com/pleaseai/shunt/commit/9c706c8fda54d64eba35cdd55ab887dac45fdbde))
+* **spend:** enforce per-user spend caps on /v1/messages (stage 2) ([#732](https://github.com/pleaseai/shunt/issues/732)) ([c4a42b8](https://github.com/pleaseai/shunt/commit/c4a42b83a95929ce6d533cc80140143c227c27c3))
+
+
+### Bug Fixes
+
+* **anthropic:** bound withheld thinking signatures and parse multi-line SSE data ([#803](https://github.com/pleaseai/shunt/issues/803)) ([82122fe](https://github.com/pleaseai/shunt/commit/82122fe57e9c874c83cb4d147f9e2e317914994e))
+* **anthropic:** restore the Claude Code identity on side queries without a first-party marker ([#824](https://github.com/pleaseai/shunt/issues/824)) ([87cee41](https://github.com/pleaseai/shunt/commit/87cee41a398f3de6487e50129bd5ef5133b60eb5))
+* **count-tokens:** load the tiktoken vocab at startup, not on the first turn ([#818](https://github.com/pleaseai/shunt/issues/818)) ([f179e78](https://github.com/pleaseai/shunt/commit/f179e78556e53a1bdec953b58ee496a5794b75eb))
+* **routing:** gate the child-pin cap re-export on the bench feature ([#812](https://github.com/pleaseai/shunt/issues/812)) ([5ebd404](https://github.com/pleaseai/shunt/commit/5ebd4042f3549901684ecb3238e37e7b3771903d))
+* **store:** bound every PostgreSQL round trip at 15 s ([#781](https://github.com/pleaseai/shunt/issues/781)) ([de14013](https://github.com/pleaseai/shunt/commit/de140138424ef3eb6a0c8767116c5de576c1b238))
+
 ## [0.57.1](https://github.com/pleaseai/shunt/compare/v0.57.0...v0.57.1) (2026-10-19)
 
 
