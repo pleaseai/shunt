@@ -1687,19 +1687,21 @@ impl AccountPool {
         reason: &'static str,
         scope: CooldownScope,
     ) {
-        self.set_cooldown(provider, account, duration, reason, scope, false);
+        let _ = self.set_cooldown(provider, account, duration, reason, scope, false);
     }
 
     /// [`Self::cooldown_scoped`] for an account-wide refusal that states its own
     /// resume time: a window already running is never shortened, so a later,
     /// shorter refusal on the same account leaves the longer deadline standing.
+    /// Returns the time left on the deadline that stands, which may exceed
+    /// `duration`.
     pub fn cooldown_refusal(
         &self,
         provider: &str,
         account: &AccountConfig,
         duration: Duration,
         reason: &'static str,
-    ) {
+    ) -> Duration {
         self.set_cooldown(
             provider,
             account,
@@ -1707,7 +1709,7 @@ impl AccountPool {
             reason,
             CooldownScope::Account,
             true,
-        );
+        )
     }
 
     fn set_cooldown(
@@ -1718,26 +1720,29 @@ impl AccountPool {
         reason: &'static str,
         scope: CooldownScope,
         keep_longer: bool,
-    ) {
+    ) -> Duration {
         let mut entries = self.entries.lock().expect("account health lock poisoned");
         let health = self.health_entry(&mut entries, account_key(provider, account));
         health.observed = true;
         health.enabled = !account.disabled;
-        let until = Instant::now() + duration;
+        let now = Instant::now();
+        let until = now + duration;
         let slot = match scope {
             CooldownScope::Account => &mut health.cooldown_until,
             CooldownScope::Fable => &mut health.cooldown_until_fable,
         };
-        *slot = Some(match (keep_longer, *slot) {
+        let standing = match (keep_longer, *slot) {
             (true, Some(running)) => running.max(until),
             _ => until,
-        });
+        };
+        *slot = Some(standing);
         // Any failover-worthy failure restarts the storm-control ramp: when the
         // account comes back it re-enters slow start instead of inheriting the
         // allowance it had grown before failing.
         health.ramp_allowance = 0;
         drop(entries);
         crate::metrics::record_pool_rotation(provider, reason);
+        standing.saturating_duration_since(now)
     }
 
     /// Cool down one `(account, model)` pair: selection for `model` treats the
@@ -6964,7 +6969,12 @@ mod tests {
                 .expect("cooling")
         };
         pool.cooldown_refusal("anthropic", &account, Duration::from_secs(1000), "refusal");
-        pool.cooldown_refusal("anthropic", &account, Duration::from_secs(100), "refusal");
+        let standing =
+            pool.cooldown_refusal("anthropic", &account, Duration::from_secs(100), "refusal");
+        assert!(
+            standing > Duration::from_secs(900),
+            "the returned window is the one that stands"
+        );
         assert!(
             remaining() > 900,
             "a shorter refusal must not shorten the window"

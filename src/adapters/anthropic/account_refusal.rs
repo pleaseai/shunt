@@ -145,11 +145,12 @@ pub(super) async fn judge_pool_answer(
         return Ok(PoolAnswer::Relay(upstream));
     };
     let window = refusal.skip_window(SystemTime::now());
-    state
-        .accounts
-        .cooldown_refusal(&route.provider, account, window, POOL_REFUSAL_REASON);
+    let standing =
+        state
+            .accounts
+            .cooldown_refusal(&route.provider, account, window, POOL_REFUSAL_REASON);
     state.accounts.clear_needs_relogin(&route.provider, account);
-    let cooldown_until = (SystemTime::now() + window)
+    let cooldown_until = (SystemTime::now() + standing)
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     tracing::warn!(
