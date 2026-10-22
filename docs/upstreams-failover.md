@@ -141,7 +141,27 @@ Wraps adapter dispatch in `forward()`. Per attempt, in chain order:
    `client_facing_status`; both must be extended to carry the raw class. Remember the best failure so far with preference
    `429 → 401/403 → 404 → other 5xx`; drop superseded remembered responses
    unread.
-3. **Return immediately** on any other status (2xx, 400, …).
+
+   An Anthropic-protocol upstream (every upstream the Anthropic adapter
+   serves) also advances on an **account-level refusal**: the upstream refused
+   the account, not the request, so the next element may serve the same
+   request. The adapter reads the body of a `400` or `402` and judges the start
+   of `error.message` (never a substring):
+   - `400` whose message starts with `You have reached your specified API usage
+     limits` or `You have reached your specified workspace API usage limits`;
+   - `400` or `402` whose message starts with `Your credit balance is too low
+     to access the Anthropic API`;
+   - any `402` whose `error.type` is `billing_error`.
+
+   The body read is bounded (5 s and 256 KiB; the committed streaming chain in
+   §6 peeks for 250 ms instead). A body that stalls, exceeds the cap, or is not
+   the Anthropic error envelope is not a refusal. The refusal keeps the
+   upstream's status and body, ranks below every status in the preference
+   above, and so is the remembered failure only when nothing better was
+   remembered. Every other `400` and `402` is not a refusal and stays terminal
+   (step 3).
+3. **Return immediately** on any other status (2xx, 400, …), including a `400`
+   or `402` that is not an account-level refusal.
 4. Once a 2xx response's headers have been returned to the client there is no
    failover; any subsequent body/transport failure surfaces to the client as
    today.
@@ -234,6 +254,35 @@ The pool survives as the **intra-upstream** mechanism; the chain is the
   first account without rotating. The rule applies to the HTTP responses of the
   translating pool (`/v1/messages`) and the `[server.codex_endpoint]`
   passthrough, first attempt and post-refresh retry alike.
+- **Anthropic account-level refusal** (the three refusals in §3 step 2): the
+  chain advances past the refusing upstream, and later requests skip it for a
+  window, in memory only (a restart clears it; nothing is written to
+  `state_path`).
+  - *Skip window.* A non-pooled upstream that refused is dropped from new
+    chains until the time stated in `You will regain access on YYYY-MM-DD at
+    HH:MM UTC` when the message carries one that is still ahead, otherwise for
+    1 hour. Only the spend-limit message states a time; the credit-balance and
+    `billing_error` refusals always use 1 hour. A later, shorter refusal does
+    not shorten a window already running.
+  - *Passthrough is never skipped.* A passthrough upstream lends the caller's
+    own credential, so a refusal advances that request but starts no window.
+  - *Everything skipped.* When every element of a chain is inside a window, the
+    chain is tried as configured. The gateway does not refuse a request without
+    contacting anyone.
+  - *Claude OAuth pool.* A pool account that refuses is cooled for the same
+    window and the request rotates to the next account, on the first attempt and
+    on the retry after a token refresh. A refusal also clears a stale needs-re-login
+    mark for that account. When every account refuses, the pool relays the last
+    refusal and the chain advances past the pool upstream, which is skipped until
+    its earliest account can serve again (1 hour when none is known).
+  - *Exhaustion.* A chain that ends with a refusal as its remembered failure
+    returns the upstream's own status and body unless a failure of higher
+    priority (`429`, then `401`/`403`, `404`, `5xx`) was remembered. A refusal
+    ranks below a `5xx`, and between two refusals the first one stays.
+  - *Observability.* Each refusal logs one `warn` with `provider`, `model`,
+    `status`, `refusal` (`spend_limit`, `credit_balance`, or `billing`), and
+    `skip_until_epoch_secs` (absent for passthrough). The pool rotation metric
+    records the reason `account_refusal`.
 - **Physical-account state sharing**: per-account state (quota windows,
   health, cooldowns, in-flight admission counts, refresh locks) is re-keyed
   from provider name to *(store family, stable account identity)*. Identity
@@ -316,6 +365,7 @@ Documented user-facing in the site guide; summarized here.
   errors visible instead of masking them behind another upstream.
 - **Early-committed streaming chains fail over inside the committed stream.** A multi-upstream streaming chain whose elements are all `Anthropic`/`Responses` kinds, with at least one `Responses` route (the only kind that early-commits), without the websocket transport, and without a pooled `claude_oauth`/`kimi_oauth` Anthropic route, runs its chain inside the committed SSE response (`proxy/chain_stream`): the response commits `200` immediately (keepalive pings cover the wait), the synthetic `message_start` is deferred until an upstream wins, and pre-header failures — transport errors and advance-status non-2xx — advance to the next upstream, while the configured TTFB timeout stays terminal (`504 timeout_error` event, exactly like the pre-commit loop). An Anthropic-kind winner relays its own SSE (`message_start` included), so the client sees exactly one start either way. A pooled (`chatgpt_oauth` or `xai_oauth`) route's pre-frame account-pool exhaustion is classified like the pre-commit loop (§4): a relayed advance status advances the chain and is eligible as the remembered best failure, transport exhaustion advances without remembering, and the TTFB timeout stays terminal; the synthetic start is deferred until an account actually responds. The remaining streaming deviations, each terminal on the committed stream instead of advancing:
   - a chain containing the websocket transport, a kind other than `Anthropic`/`Responses`, or an Anthropic-kind route on a pooled `claude_oauth`/`kimi_oauth` auth, keeps the pre-commit loop (a Responses element before the chain's end still commits early and pre-empts failover);
+  - an Anthropic-kind element's `400` or `402` body is peeked for 250 ms so an account-level refusal (§3 step 2) advances the committed chain like a pre-commit one; a body that does not arrive inside the peek falls back to the terminal answer below, and a pooled Claude route (excluded above) uses the pre-commit judge instead;
   - a terminal non-2xx (e.g. `400`) from an Anthropic-kind fallback surfaces as the terminal `error` event carrying the upstream's error body, rather than a relayed `400` response (headers are already committed as `200`);
   - a `2xx` whose body is not `text/event-stream` from an Anthropic-kind winner becomes one terminal `error` event (the committed stream cannot relay a non-SSE body), where the pre-commit loop relays it verbatim;
   - the winner's relay ends at the terminal frame — a relayed `message_stop`, or a relayed `error` frame (an Anthropic-kind upstream's own mid-stream error, or a translated backend `error`/`response.failed` event): a mid-relay body failure before it becomes one terminal `error` event (the observer classifies the stream as failed), one after it surfaces nowhere, and the still-open upstream drains detached under a bounded budget so the client's stream completes at the turn and a keepalive ping can never follow the terminal frame — an appended `error` event to a completed response would corrupt it and record the completed request as failed;
