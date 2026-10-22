@@ -10,9 +10,12 @@ use crate::{request::RequestBody, routing::Route, server::AppState};
 pub mod anthropic;
 pub mod antigravity;
 pub mod cursor;
+mod error_body;
 pub mod gemini;
 pub mod noop;
 pub mod responses;
+
+pub(crate) use error_body::buffer_error_body;
 
 /// Tie a storm-control [`AdmissionGuard`](crate::accounts::AdmissionGuard) to a
 /// relayed response (issue #195). The response body is lazy — for a streaming

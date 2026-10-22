@@ -36,6 +36,7 @@ use super::error::{
 };
 use super::http::{http_send, json_response, stream_response};
 use super::websocket::forward_websocket;
+use crate::adapters::buffer_error_body;
 use crate::proxy::chain_stream::LazyEnvelope;
 
 #[cfg(test)]
@@ -1780,110 +1781,6 @@ pub(super) async fn force_refresh_or_cooldown(
 
 /// The pool-rotation metric reason [`rotate_on_model_refusal`] records.
 const MODEL_NOT_SUPPORTED: &str = "model_not_supported";
-
-/// Read the head of an upstream error body so it can be checked for a model
-/// refusal. The read is bounded like the Responses adapter's error envelope
-/// read ([`crate::error::ERROR_ENVELOPE_BUDGET`] and
-/// [`crate::error::ERROR_ENVELOPE_BYTES`]), plus the gated idle gap when the
-/// caller has one (`ResponseBounds::idle`, as `json_response` honours it):
-/// `clock` is that gap and the attempt's send, so the first wait is the rest
-/// of the gap the header wait began rather than a fresh one, and each chunk
-/// refreshes it (#704). The
-/// bytes are returned only when the whole body arrived within those bounds: a
-/// body that declares or passes the cap, trips the budget, or breaks is not a
-/// refusal, and is passed on unjudged. Only an idle cut is an error: it is the
-/// caller's bound, carried back to `routing::serve` as its marker. With a
-/// clock, a budget trip before the body sent a byte is that cut too (#710).
-///
-/// What an unjudged body becomes depends on who relays it. `verbatim` (the
-/// inbound passthrough) replays every byte read followed by whatever the
-/// upstream has not sent yet — a declared-oversized body is not read at all —
-/// so the client gets the upstream's 400 exactly as it was sent. Otherwise the
-/// body is the text the envelope read falls back to (`upstream returned
-/// {status}`): the translating path would render that anyway, and handing it
-/// the unread remainder would restart the envelope read's budget, outside the
-/// idle gap, on a body that has already spent both.
-async fn buffer_error_body(
-    upstream: reqwest::Response,
-    clock: Option<(Duration, tokio::time::Instant)>,
-    verbatim: bool,
-) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
-    let declared_oversized = upstream
-        .content_length()
-        .is_some_and(|length| length > crate::error::ERROR_ENVELOPE_BYTES as u64);
-    if declared_oversized && verbatim {
-        return Ok((upstream, None));
-    }
-    let status = upstream.status();
-    let version = upstream.version();
-    let mut headers = upstream.headers().clone();
-    let mut rest = upstream.bytes_stream();
-    let budget = tokio::time::Instant::now() + crate::error::ERROR_ENVELOPE_BUDGET;
-    let mut read = Vec::new();
-    let mut total = 0usize;
-    let mut idle_deadline = clock.map(|(idle, since)| since + idle);
-    let complete = !declared_oversized
-        && loop {
-            let wait = idle_deadline.map_or(budget, |deadline| deadline.min(budget));
-            match tokio::time::timeout_at(wait, rest.next()).await {
-                Ok(None) => break true,
-                Ok(Some(Ok(chunk))) => {
-                    idle_deadline = clock.map(|(idle, _)| tokio::time::Instant::now() + idle);
-                    total = total.saturating_add(chunk.len());
-                    read.push(Ok(chunk));
-                    if total > crate::error::ERROR_ENVELOPE_BYTES {
-                        break false;
-                    }
-                }
-                Ok(Some(Err(error))) => {
-                    read.push(Err(error));
-                    break false;
-                }
-                Err(_) => match (clock, idle_deadline) {
-                    (Some((idle, _)), Some(deadline)) if deadline < budget => {
-                        return Err(crate::adapters::idle_error(
-                            crate::adapters::UpstreamBodyIdle { idle },
-                        ));
-                    }
-                    // The budget ended a body that never sent a byte: on a
-                    // gated call that is a stall too, as
-                    // `bounded_upstream_text_within` cuts it (#710).
-                    (Some(_), _) if total == 0 => {
-                        return Err(crate::adapters::idle_error(
-                            crate::adapters::UpstreamBodyIdle {
-                                idle: crate::error::ERROR_ENVELOPE_BUDGET,
-                            },
-                        ));
-                    }
-                    _ => break false,
-                },
-            }
-        };
-    let (body, judged) = if complete {
-        let mut bytes = bytes::BytesMut::with_capacity(total);
-        for chunk in read.iter().flatten() {
-            bytes.extend_from_slice(chunk);
-        }
-        let bytes = bytes.freeze();
-        (reqwest::Body::from(bytes.clone()), Some(bytes))
-    } else if verbatim {
-        (
-            reqwest::Body::wrap_stream(stream::iter(read).chain(rest)),
-            None,
-        )
-    } else {
-        headers.remove(reqwest::header::CONTENT_LENGTH);
-        (
-            reqwest::Body::from(format!("upstream returned {status}")),
-            None,
-        )
-    };
-    let mut rebuilt = axum::http::Response::new(body);
-    *rebuilt.status_mut() = status;
-    *rebuilt.version_mut() = version;
-    *rebuilt.headers_mut() = headers;
-    Ok((reqwest::Response::from(rebuilt), judged))
-}
 
 /// Check a relay-classified response for the per-account model refusal
 /// ([`accounts::is_codex_model_unsupported`]). Only a 400 has its body read —
