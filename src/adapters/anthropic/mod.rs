@@ -104,8 +104,10 @@ async fn forward(
     // stealth slugs, Kimi, …) and thinking blocks carrying a signature shunt
     // minted rather than Anthropic — that one is unconditional, since such a
     // signature is no more valid to an Anthropic-compatible host than to
-    // Anthropic itself.
-    if oauth_client {
+    // Anthropic itself. `count_tokens` faces no such gate — measured: a
+    // marker-less count is answered 200 — so a repair there would only inflate
+    // the count the client reads back.
+    if oauth_client && !crate::proxy::is_count_tokens(uri) {
         auto_mode_classifier::restore_claude_code_identity(&mut body, headers);
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);
@@ -302,7 +304,7 @@ async fn forward_claude_oauth(
         // variable holds without checking it is a subscription token — so an
         // account pointed at an `sk-ant-api…` key would otherwise have its body
         // rewritten despite facing no client-shape gate.
-        if bearer_is_subscription_oauth(&request_headers) {
+        if bearer_is_subscription_oauth(&request_headers) && !crate::proxy::is_count_tokens(uri) {
             auto_mode_classifier::restore_claude_code_identity(&mut request_body, headers);
         }
         let request_body = request_body.into_raw();
@@ -1565,7 +1567,7 @@ pub(crate) async fn chain_attempt(
     safeguards::strip_safeguard_betas(&mut request_headers, &provider.base_url);
     thinking_wrap::request_identity_encoding(&mut request_headers, provider);
     let oauth_client = bearer_is_subscription_oauth(&request_headers);
-    if oauth_client {
+    if oauth_client && !crate::proxy::is_count_tokens(uri) {
         auto_mode_classifier::restore_claude_code_identity(&mut body, headers);
     }
     normalize_upstream_model_request(&mut body, &route.upstream_model);

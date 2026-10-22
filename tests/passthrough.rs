@@ -338,6 +338,35 @@ async fn claude_code_side_query_on_a_subscription_oauth_bearer_gains_the_identit
 }
 
 #[tokio::test]
+async fn claude_code_count_tokens_on_a_subscription_oauth_bearer_is_forwarded_byte_for_byte() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let body = r#"{"model":"claude-opus-5","messages":[],"system":"Summarize the diff."}"#;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages/count_tokens"))
+        .and(|request: &wiremock::Request| request.body == body.as_bytes())
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"input_tokens":7}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway(upstream.uri()).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/messages/count_tokens", gateway.base_url))
+        .header("authorization", "Bearer sk-ant-oat01-test")
+        .header("x-claude-code-session-id", "side-query-session")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+#[tokio::test]
 async fn classifier_request_on_an_api_key_credential_is_forwarded_byte_for_byte() {
     if !can_bind_loopback() {
         return;
