@@ -1652,6 +1652,43 @@ pub(crate) async fn chain_attempt(
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .cloned();
+        // The one exception to the deferred read: a 400 or 402 body is peeked
+        // briefly, because an account-level refusal advances although its
+        // status is terminal (#817). An exhausted chain relays the refusal's
+        // own envelope. A body that is no refusal, or that the peek could not
+        // finish, keeps the deferred terminal answer below.
+        let upstream = match account_refusal::peek(upstream).await {
+            Ok((_, Some((kind, body)))) => {
+                crate::proxy::failover::log_refusal_advance(
+                    &route.provider,
+                    &route.model,
+                    status,
+                    kind.label(),
+                );
+                return crate::proxy::chain_stream::Attempt::Failed {
+                    advance: true,
+                    remember: true,
+                    envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(
+                        error_envelope_from_body(status, Some(&body)),
+                    ),
+                    status,
+                    retry_after,
+                };
+            }
+            Ok((upstream, None)) => upstream,
+            // Unreachable without an idle clock; terminal if it ever happens.
+            Err(error) => {
+                return crate::proxy::chain_stream::Attempt::Failed {
+                    advance: false,
+                    remember: true,
+                    envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(
+                        crate::error::error_body_value(*error.response).await,
+                    ),
+                    status,
+                    retry_after,
+                };
+            }
+        };
         let envelope = crate::proxy::chain_stream::LazyEnvelope::Deferred(Box::pin(
             mapped_error_envelope(status, upstream),
         ));
@@ -2543,6 +2580,101 @@ mod tests {
             "the envelope maps the 400, got {resolved:?}"
         );
         std::env::remove_var("SHUNT_CHAIN_STALLED_400_KEY");
+    }
+
+    /// Run one committed-chain attempt against a mock answering `status` with
+    /// `body`, on an `api_key` provider so no client credential is needed.
+    async fn chain_attempt_answered(
+        status: u16,
+        body: &'static str,
+    ) -> crate::proxy::chain_stream::Attempt {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _env_lock = crate::config::test_env_lock();
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(status).set_body_raw(body, "application/json"))
+            .mount(&upstream)
+            .await;
+        let mut config = crate::config::Config::default();
+        let anthropic = config
+            .providers
+            .get_mut("anthropic")
+            .expect("built-in anthropic provider");
+        anthropic.auth = crate::config::AuthMode::ApiKey;
+        anthropic.api_key_env = Some("SHUNT_CHAIN_REFUSAL_KEY".to_string());
+        anthropic.base_url = upstream.uri();
+        std::env::set_var("SHUNT_CHAIN_REFUSAL_KEY", "refusal-probe");
+        let state = super::AppState::new(config, reqwest::Client::new()).unwrap();
+        let route = super::Route {
+            provider: "anthropic".to_string(),
+            adapter: crate::routing::AdapterKind::Anthropic,
+            model: "claude-test".to_string(),
+            upstream_model: "claude-test".to_string(),
+            effort: None,
+            service_tier: None,
+        };
+        let uri: axum::http::Uri = "/v1/messages".parse().unwrap();
+        let request = crate::request::RequestBody::parse(
+            b"{\"model\":\"claude-test\",\"max_tokens\":16,\"messages\":[]}".to_vec(),
+        )
+        .unwrap();
+        let attempt = super::chain_attempt(&state, &route, &uri, &client_headers(), request).await;
+        std::env::remove_var("SHUNT_CHAIN_REFUSAL_KEY");
+        attempt
+    }
+
+    const SPEND_LIMIT_400: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."}}"#;
+    const BILLING_402: &str =
+        r#"{"type":"error","error":{"type":"billing_error","message":"Payment required."}}"#;
+
+    /// A refusal on the committed streaming chain advances although its status
+    /// is terminal, and carries the upstream's own envelope for an exhausted
+    /// chain to relay (#817).
+    #[tokio::test]
+    async fn chain_attempt_advances_on_an_account_refusal() {
+        for (status, body) in [(400, SPEND_LIMIT_400), (402, BILLING_402)] {
+            match chain_attempt_answered(status, body).await {
+                crate::proxy::chain_stream::Attempt::Failed {
+                    advance,
+                    remember,
+                    envelope,
+                    status: failed,
+                    ..
+                } => {
+                    assert!(advance, "a {status} refusal advances");
+                    assert!(remember, "a relayed refusal is remembered");
+                    assert_eq!(failed.as_u16(), status);
+                    let expected: serde_json::Value = serde_json::from_str(body).unwrap();
+                    assert_eq!(envelope.resolve().await, expected, "status {status}");
+                }
+                _ => panic!("expected a failed attempt, got a winner"),
+            }
+        }
+    }
+
+    /// The positive twin: a validation 400 is read but stays terminal, with
+    /// the upstream's envelope still deferred to the terminal event.
+    #[tokio::test]
+    async fn chain_attempt_keeps_a_validation_400_terminal() {
+        let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages: field required"}}"#;
+        match chain_attempt_answered(400, body).await {
+            crate::proxy::chain_stream::Attempt::Failed {
+                advance,
+                remember,
+                envelope,
+                status,
+                ..
+            } => {
+                assert!(!advance, "a validation 400 is terminal");
+                assert!(remember);
+                assert_eq!(status, StatusCode::BAD_REQUEST);
+                let expected: serde_json::Value = serde_json::from_str(body).unwrap();
+                assert_eq!(envelope.resolve().await, expected);
+            }
+            _ => panic!("expected a failed attempt, got a winner"),
+        }
     }
 
     /// An alias route's non-streaming `200` whose body breaks after its headers

@@ -33,7 +33,7 @@ pub(crate) mod refusal;
 // classify statuses with these, and the split that moved the loop into `chain`
 // is not a change to where that rule is spelled.
 pub(crate) use chain::{failure_priority, is_advance_status};
-pub(crate) use refusal::AccountRefused;
+pub(crate) use refusal::{log_refusal_advance, AccountRefused};
 
 pub(super) async fn forward(
     state: AppState,

@@ -91,6 +91,32 @@ pub(super) async fn judge(
     Ok((upstream, refused))
 }
 
+/// How long the committed streaming chain (`chain_attempt`) reads a 400 or 402
+/// body before it decides without it. That chain decides at header arrival,
+/// so the peek must stay short: a body that stalls past it falls back to the
+/// status-only terminal answer, and must do so well inside the one-second
+/// bound the stalled-400 test holds `chain_attempt` to. An Anthropic refusal
+/// is a small JSON body sent with its headers, so it arrives within the peek.
+pub(super) const CHAIN_PEEK_BUDGET: Duration = Duration::from_millis(250);
+
+/// The committed streaming chain's form of [`judge`]: read a 400 or 402 body
+/// under [`CHAIN_PEEK_BUDGET`] and no idle clock (that path has none). The
+/// response comes back rebuilt with the upstream's bytes intact, read or not,
+/// and with the refusal kind plus the body it was judged on when it is one.
+/// Every other status returns untouched and unread.
+pub(super) async fn peek(
+    upstream: reqwest::Response,
+) -> Result<(reqwest::Response, Option<(RefusalKind, bytes::Bytes)>), AdapterError> {
+    let status = upstream.status().as_u16();
+    if status != 400 && status != 402 {
+        return Ok((upstream, None));
+    }
+    let (upstream, body) =
+        crate::adapters::buffer_error_body_within(upstream, None, true, CHAIN_PEEK_BUDGET).await?;
+    let refused = body.and_then(|body| classify(status, &body).map(|refusal| (refusal.kind, body)));
+    Ok((upstream, refused))
+}
+
 /// Classify an upstream error response; `None` means it is not an account-level refusal.
 pub(crate) fn classify(status: u16, body: &[u8]) -> Option<AccountRefusal> {
     if status != 400 && status != 402 {

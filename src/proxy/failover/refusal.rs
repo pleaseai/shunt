@@ -32,7 +32,7 @@ pub(crate) struct AccountRefused {
 /// Record a chain advance caused by an account-level refusal. A named function
 /// for the same reason as `log_error_advance`: the chain runs inside spawned
 /// tasks a test subscriber never reaches.
-pub(super) fn log_refusal_advance(provider: &str, model: &str, status: StatusCode, kind: &str) {
+pub(crate) fn log_refusal_advance(provider: &str, model: &str, status: StatusCode, kind: &str) {
     tracing::warn!(
         provider = %provider,
         model = %model,

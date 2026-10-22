@@ -467,6 +467,55 @@ async fn chain_exhaustion_relays_the_best_remembered_failure() {
     primary.verify().await;
 }
 
+/// An account-level refusal on the committed chain's current element is not
+/// terminal although its status is: the chain continues from the next element,
+/// and the client gets that element's stream with no error event (#817).
+#[tokio::test]
+async fn an_account_refusal_on_the_primary_advances_the_committed_chain() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = common::env_lock().await;
+    let primary = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."}}"#,
+            "application/json",
+        ))
+        .expect(1)
+        .mount(&primary)
+        .await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(RESPONSES_SSE, "text/event-stream"))
+        .expect(1)
+        .mount(&fallback)
+        .await;
+
+    let mut config = chain_config(
+        (ProviderKind::Anthropic, primary.uri()),
+        (ProviderKind::Responses, fallback.uri()),
+    );
+    config.upstreams[0].auth = Some(UpstreamAuth::Map(AuthMap::ApiKey {
+        env: Some("SHUNT_CHAIN_STREAM_REFUSAL_KEY".to_string()),
+        header: None,
+    }));
+    std::env::set_var("SHUNT_CHAIN_STREAM_REFUSAL_KEY", "refusal-probe");
+    let gateway = start_gateway(config).await;
+    let response = stream_request(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    std::env::remove_var("SHUNT_CHAIN_STREAM_REFUSAL_KEY");
+    assert!(body.contains("from responses"), "got:\n{body}");
+    assert_eq!(count_event(&body, "message_start"), 1, "got:\n{body}");
+    assert_eq!(count_event(&body, "error"), 0, "got:\n{body}");
+    assert!(!body.contains("usage limits"), "got:\n{body}");
+    drop(gateway);
+    primary.verify().await;
+    fallback.verify().await;
+}
+
 #[tokio::test]
 async fn a_non_sse_anthropic_winner_becomes_one_terminal_error_event() {
     if !can_bind_loopback() {
