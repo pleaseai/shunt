@@ -340,6 +340,20 @@ async fn forward_claude_oauth(
         let status = upstream.status();
         match accounts::classify(status, upstream.headers()) {
             FailoverAction::Relay => {
+                // An account-level refusal (#817) is the account's fault, not
+                // the request's: cool it and rotate instead of relaying, and
+                // before the healthy mark, which would clear that cooldown.
+                let upstream = match account_refusal::judge_pool_answer(
+                    &state, &route, account, upstream, bounds,
+                )
+                .await?
+                {
+                    account_refusal::PoolAnswer::Relay(upstream) => upstream,
+                    account_refusal::PoolAnswer::Refused(refused) => {
+                        last_response = Some(refused);
+                        continue;
+                    }
+                };
                 // A relayed 4xx still clears the cooldown (the account answered)
                 // but only a success grows the storm-control allowance.
                 state.accounts.mark_healthy_scoped(
@@ -625,6 +639,18 @@ async fn forward_claude_oauth(
                 // straight back without a wrongful cooldown.
                 match accounts::classify(retry_status, retry.headers()) {
                     FailoverAction::Relay => {
+                        // Same refusal rule as the first attempt's Relay arm.
+                        let retry = match account_refusal::judge_pool_answer(
+                            &state, &route, account, retry, bounds,
+                        )
+                        .await?
+                        {
+                            account_refusal::PoolAnswer::Relay(retry) => retry,
+                            account_refusal::PoolAnswer::Refused(refused) => {
+                                last_response = Some(refused);
+                                continue;
+                            }
+                        };
                         if retry_status.is_success() {
                             state.accounts.mark_healthy_scoped(
                                 &route.provider,
@@ -717,7 +743,18 @@ async fn forward_claude_oauth(
 
     crate::metrics::record_pool_rotation(&route.provider, "exhausted");
     if let Some(response) = last_response {
-        return relay_response(&state, &route, response, None, bounds).await;
+        // A pool whose last account refused relays that refusal and marks it,
+        // so the chain advances past this upstream (#817). The body is already
+        // buffered, so this judge does not wait on the network; each refusal
+        // was logged and cooled where it was seen, so nothing is recorded here.
+        let (response, refused) = account_refusal::judge(response, bounds).await?;
+        let (status, mut response) = relay_response(&state, &route, response, None, bounds).await?;
+        if refused.is_some() {
+            response
+                .extensions_mut()
+                .insert(crate::proxy::failover::AccountRefused);
+        }
+        return Ok((status, response));
     }
 
     Err(AdapterError {

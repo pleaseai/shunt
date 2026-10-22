@@ -1645,3 +1645,67 @@ async fn a_chain_whose_every_upstream_is_skipped_is_still_tried_in_order() {
     first.verify().await;
     second.verify().await;
 }
+
+/// A Claude pool whose every account refuses relays the last refusal marked,
+/// so the chain advances past the pool (#817 FR-7).
+#[tokio::test]
+async fn a_claude_pool_whose_accounts_all_refuse_advances_to_the_next_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_FAILOVER_REFUSING_A", "fake-oauth-refusing-a");
+    vars.set("SHUNT_TEST_FAILOVER_REFUSING_B", "fake-oauth-refusing-b");
+    let claude = MockServer::start().await;
+    // One refusal per account.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(
+            error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE),
+            "application/json",
+        ))
+        .expect(2)
+        .mount(&claude)
+        .await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("from-fallback"))
+        .expect(1)
+        .mount(&fallback)
+        .await;
+    let pool = ["a", "b"]
+        .map(|name| {
+            shunt::config::AccountSelection::Inline(shunt::config::AccountConfig {
+                name: format!("refusing-{name}"),
+                token_env: Some(format!(
+                    "SHUNT_TEST_FAILOVER_REFUSING_{}",
+                    name.to_uppercase()
+                )),
+                uuid: Some(format!("uuid-refusing-{name}")),
+                ..Default::default()
+            })
+        })
+        .to_vec();
+    let config = chain_config(
+        vec![
+            upstream(
+                "claude",
+                claude.uri(),
+                ProviderKind::Anthropic,
+                UpstreamAuth::Map(AuthMap::ClaudeOauth {
+                    account: None,
+                    accounts: Some(pool),
+                }),
+            ),
+            passthrough("fallback", fallback.uri()),
+        ],
+        &[("claude", "model-a"), ("fallback", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post(&gateway).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_gateway_headers(&response, "fallback", "model-b");
+    assert_eq!(response.text().await.unwrap(), "from-fallback");
+    claude.verify().await;
+    fallback.verify().await;
+}

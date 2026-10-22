@@ -2816,3 +2816,275 @@ async fn a_throttle_pause_retry_counts_as_a_second_attempt_on_the_same_account()
     );
     upstream.verify().await;
 }
+
+/// An Anthropic error envelope, as the API answers a refused request.
+fn error_envelope(error_type: &str, message: &str) -> String {
+    serde_json::json!({"type": "error", "error": {"type": error_type, "message": message}})
+        .to_string()
+}
+
+const CREDIT_BALANCE_MESSAGE: &str =
+    "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing.";
+const SPEND_LIMIT_MESSAGE: &str = "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.";
+
+/// The cooldown a refusal with no stated resume time earns: the one-hour
+/// default, far past the 30 s a 5xx rotation would leave.
+fn assert_cooled_for_the_default_refusal_window(
+    state: &shunt::server::AppState,
+    account: &AccountConfig,
+) {
+    assert_pool_observed(state, account);
+    let snapshot = &state
+        .accounts
+        .snapshot("anthropic", std::slice::from_ref(account), None, None)[0];
+    let remaining = snapshot
+        .cooldown_secs_remaining
+        .expect("the refusing account must be cooling down");
+    assert!(
+        (3_500..=3_600).contains(&remaining),
+        "a refusal cools for its one-hour window, got {remaining}s"
+    );
+}
+
+/// A refusal is the account's, not the request's: the pool rotates to the next
+/// account, and the refuser stays cooled so a request pinned to it goes
+/// elsewhere (#817 FR-7).
+#[tokio::test]
+async fn an_account_refusal_rotates_and_cools_the_refusing_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "refusal-a"].concat();
+    let token_b = ["fake-oauth-", "refusal-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_REFUSAL_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_REFUSAL_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(
+            error_envelope("invalid_request_error", CREDIT_BALANCE_MESSAGE),
+            "application/json",
+        ))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+
+    let account_a = account("account-a", "SHUNT_TEST_MULTI_REFUSAL_A", "uuid-refusal-a");
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account("account-b", "SHUNT_TEST_MULTI_REFUSAL_B", "uuid-refusal-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    assert_cooled_for_the_default_refusal_window(&state, &account_a);
+
+    // A session that maps to account A still lands on B while A cools.
+    let session_id = session_id_for_account(0, 2);
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    upstream.verify().await;
+}
+
+/// The post-refresh retry judges its answer the same way: a billing refusal
+/// after a successful refresh rotates and cools the account.
+#[tokio::test]
+async fn a_refusal_after_refresh_rotates_and_cools_the_refusing_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stale = ["fake-oauth-", "refusalrefresh-stale"].concat();
+    let fresh = ["fake-oauth-", "refusalrefresh-fresh"].concat();
+    let token_b = ["fake-oauth-", "refusalrefresh-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_REFUSALREFRESH_B", &token_b);
+
+    let accounts_dir = unique_temp_dir("refusalrefresh");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "refresh-token-a",
+        "uuid-a",
+        future_expiry_ms(),
+    );
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!(r#"{{"access_token":"{fresh}","expires_in":3600}}"#)),
+        )
+        .expect(1)
+        .mount(&auth)
+        .await;
+    vars.set(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(402).set_body_raw(
+            error_envelope("billing_error", "Your account has a billing issue."),
+            "application/json",
+        ))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_MULTI_REFUSALREFRESH_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    assert_cooled_for_the_default_refusal_window(&state, &resolved_store_account("account-a"));
+    upstream.verify().await;
+    auth.verify().await;
+
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// When every account refuses, the pool relays the last refusal with the
+/// upstream's own status and body.
+#[tokio::test]
+async fn a_pool_where_every_account_refuses_relays_the_last_refusal() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "allrefuse-a"].concat();
+    let token_b = ["fake-oauth-", "allrefuse-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_ALLREFUSE_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_ALLREFUSE_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(
+            error_envelope("invalid_request_error", CREDIT_BALANCE_MESSAGE),
+            "application/json",
+        ))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let last = error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(last.clone(), "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_MULTI_ALLREFUSE_A", "uuid-a"),
+        account("account-b", "SHUNT_TEST_MULTI_ALLREFUSE_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.text().await.unwrap(), last);
+    upstream.verify().await;
+}
+
+/// The positive twin of the refusal rotation: a request-level 400 is relayed
+/// at once, the next account is never contacted, and the account is not cooled.
+#[tokio::test]
+async fn a_validation_400_is_relayed_without_rotating_or_cooling() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "validation-a"].concat();
+    let token_b = ["fake-oauth-", "validation-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_VALIDATION_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_VALIDATION_B", &token_b);
+
+    let body = error_envelope("invalid_request_error", "messages: Field required");
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(body.clone(), "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+
+    let account_a = account("account-a", "SHUNT_TEST_MULTI_VALIDATION_A", "uuid-a");
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account("account-b", "SHUNT_TEST_MULTI_VALIDATION_B", "uuid-b"),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+    assert_eq!(response.text().await.unwrap(), body);
+    assert_pool_observed(&state, &account_a);
+    let snapshot = &state
+        .accounts
+        .snapshot("anthropic", &[account_a], None, None)[0];
+    assert_eq!(snapshot.cooldown_secs_remaining, None);
+    upstream.verify().await;
+}

@@ -15,8 +15,10 @@ use serde_json::Value;
 use axum::http::StatusCode;
 
 use crate::{
+    accounts::CooldownScope,
     adapters::{AdapterError, ResponseBounds},
     auth::claude::usage::parse_rfc3339_to_epoch_secs,
+    config::AccountConfig,
     routing::Route,
     server::AppState,
 };
@@ -102,6 +104,61 @@ pub(super) fn note(state: &AppState, route: &Route, status: StatusCode, refusal:
         refusal.kind.label(),
         refusal.skip_window(SystemTime::now()),
     );
+}
+
+/// The pool-rotation reason a refusal records against a Claude pool account,
+/// beside [`crate::accounts::rotation_reason`]'s status-derived labels.
+pub(super) const POOL_REFUSAL_REASON: &str = "account_refusal";
+
+/// What a Claude pool account's relayed answer turned out to be.
+pub(super) enum PoolAnswer {
+    /// Not a refusal: relay it, exactly as before this rule existed.
+    Relay(reqwest::Response),
+    /// The account refused: it is cooled, and the response (rebuilt with the
+    /// upstream's bytes intact) is the pool's fallback if every account refuses.
+    Refused(reqwest::Response),
+}
+
+/// Judge a Claude pool account's relayed answer (`forward_claude_oauth`'s
+/// Relay arms, first attempt and post-refresh retry). A refusal cools the
+/// account for the refusal's window so selection skips it — the pool's
+/// per-account cooldown is its skip state, so no upstream skip is recorded —
+/// and logs once. The refusal proves the bearer authenticated, so a stale
+/// needs-re-login mark is cleared as a relayed 4xx clears it; the cooldown is
+/// left standing, unlike the healthy mark a relayed answer gets.
+pub(super) async fn judge_pool_answer(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    upstream: reqwest::Response,
+    bounds: ResponseBounds,
+) -> Result<PoolAnswer, AdapterError> {
+    let status = upstream.status();
+    let (upstream, refused) = judge(upstream, bounds).await?;
+    let Some(refusal) = refused else {
+        return Ok(PoolAnswer::Relay(upstream));
+    };
+    let window = refusal.skip_window(SystemTime::now());
+    state.accounts.cooldown_scoped(
+        &route.provider,
+        account,
+        window,
+        POOL_REFUSAL_REASON,
+        CooldownScope::Account,
+    );
+    state.accounts.clear_needs_relogin(&route.provider, account);
+    let cooldown_until = (SystemTime::now() + window)
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    tracing::warn!(
+        provider = %route.provider,
+        account = %account.name,
+        status = status.as_u16(),
+        refusal = refusal.kind.label(),
+        cooldown_until_epoch_secs = cooldown_until,
+        "Claude OAuth account refused the request at the account level; cooling it down and rotating to the next account"
+    );
+    Ok(PoolAnswer::Refused(upstream))
 }
 
 /// How long the committed streaming chain (`chain_attempt`) reads a 400 or 402
