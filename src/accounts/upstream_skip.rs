@@ -16,6 +16,9 @@ use std::{collections::HashMap, sync::Mutex, time::Duration};
 
 use tokio::time::Instant;
 
+use super::{account_key, governing_cooldown, is_fable_model, AccountPool};
+use crate::config::AccountConfig;
+
 /// Upstream name → the instant its skip window ends.
 #[derive(Debug, Default)]
 pub(crate) struct UpstreamSkips {
@@ -76,11 +79,85 @@ impl UpstreamSkips {
     }
 }
 
+impl AccountPool {
+    /// How long until the first of `accounts` can serve `model` again: the
+    /// shortest remaining cooldown (the one selection obeys for `model`)
+    /// among the accounts selection may pick, i.e. neither disabled nor
+    /// paused for `provider`. An account that is not cooling counts as zero.
+    /// `None` when no account is selectable at all. The window a pool that
+    /// every account refused is skipped for in multi-element chains (#817).
+    pub(crate) fn earliest_reselect(
+        &self,
+        provider: &str,
+        accounts: &[AccountConfig],
+        model: Option<&str>,
+    ) -> Option<Duration> {
+        let now = std::time::Instant::now();
+        let is_fable = is_fable_model(model);
+        let model_key = model.map(str::to_ascii_lowercase);
+        let entries = self.entries.lock().expect("account health lock poisoned");
+        accounts
+            .iter()
+            .filter(|account| !account.disabled)
+            .filter_map(
+                |account| match entries.get(&account_key(provider, account)) {
+                    None => Some(Duration::ZERO),
+                    Some(health) if health.paused_providers.contains(provider) => None,
+                    Some(health) => Some(
+                        governing_cooldown(health, is_fable, model_key.as_deref())
+                            .map_or(Duration::ZERO, |until| until.saturating_duration_since(now)),
+                    ),
+                },
+            )
+            .min()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::UpstreamSkips;
+    use crate::{accounts::AccountPool, config::AccountConfig};
+
+    fn pool_account(name: &str) -> AccountConfig {
+        AccountConfig {
+            name: name.to_string(),
+            token_env: Some(format!("SHUNT_TEST_RESELECT_{name}")),
+            ..Default::default()
+        }
+    }
+
+    /// The pool's skip window is the shortest cooldown among its selectable
+    /// accounts; an account not cooling makes it zero, and a disabled one
+    /// does not count (#817).
+    #[test]
+    fn earliest_reselect_is_the_shortest_cooldown_among_selectable_accounts() {
+        let pool = AccountPool::default();
+        let (a, b) = (pool_account("a"), pool_account("b"));
+        pool.cooldown("p", &a, Duration::from_secs(100), "test");
+        pool.cooldown("p", &b, Duration::from_secs(300), "test");
+        let both = [a.clone(), b.clone()];
+        let window = pool.earliest_reselect("p", &both, None).unwrap();
+        assert!(
+            (Duration::from_secs(99)..=Duration::from_secs(100)).contains(&window),
+            "{window:?}"
+        );
+
+        let fresh = pool_account("fresh");
+        let window = pool.earliest_reselect("p", &[a.clone(), fresh.clone()], None);
+        assert_eq!(window, Some(Duration::ZERO));
+
+        let disabled = AccountConfig {
+            disabled: true,
+            ..fresh
+        };
+        let window = pool
+            .earliest_reselect("p", &[b, disabled.clone()], None)
+            .unwrap();
+        assert!(window > Duration::from_secs(290), "{window:?}");
+        assert_eq!(pool.earliest_reselect("p", &[disabled], None), None);
+    }
 
     #[test]
     fn a_fresh_state_skips_nothing() {

@@ -745,11 +745,13 @@ async fn forward_claude_oauth(
     if let Some(response) = last_response {
         // A pool whose last account refused relays that refusal and marks it,
         // so the chain advances past this upstream (#817). The body is already
-        // buffered, so this judge does not wait on the network; each refusal
-        // was logged and cooled where it was seen, so nothing is recorded here.
+        // buffered, so this judge does not wait on the network. Each refusal
+        // was logged and cooled where it was seen; the pool as a whole is
+        // skipped until an account can serve again.
         let (response, refused) = account_refusal::judge(response, bounds).await?;
         let (status, mut response) = relay_response(&state, &route, response, None, bounds).await?;
         if refused.is_some() {
+            account_refusal::skip_refused_pool(&state, &route, &accounts);
             response
                 .extensions_mut()
                 .insert(crate::proxy::failover::AccountRefused);

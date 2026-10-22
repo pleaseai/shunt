@@ -161,6 +161,40 @@ pub(super) async fn judge_pool_answer(
     Ok(PoolAnswer::Refused(upstream))
 }
 
+/// Skip a Claude pool upstream that every account refused, so multi-element
+/// chains stop paying one refused round trip per account on each later
+/// request (#817 FR-6). Selection still offers cooling accounts as a last
+/// resort, so without this the exhausted pool is contacted again every time.
+/// The window ends when the first account becomes selectable again; with
+/// none known it is [`REFUSAL_DEFAULT_SKIP`]. A pool with an account
+/// selectable right now (one that did not refuse and is not cooling) is not
+/// skipped. Each refusal was already logged where it was seen; this logs the
+/// distinct pool-level skip once.
+pub(super) fn skip_refused_pool(state: &AppState, route: &Route, accounts: &[AccountConfig]) {
+    let window = match state.accounts.earliest_reselect(
+        &route.provider,
+        accounts,
+        Some(route.upstream_model.as_str()),
+    ) {
+        Some(window) if window.is_zero() => return,
+        Some(window) => window,
+        None => REFUSAL_DEFAULT_SKIP,
+    };
+    let lasts = state
+        .accounts
+        .upstream_skips()
+        .record(&route.provider, window);
+    let skip_until = (SystemTime::now() + lasts)
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    tracing::warn!(
+        provider = %route.provider,
+        model = %route.model,
+        skip_until_epoch_secs = skip_until,
+        "Claude OAuth pool exhausted on account refusals; skipping the upstream until an account can serve again"
+    );
+}
+
 /// How long the committed streaming chain (`chain_attempt`) reads a 400 or 402
 /// body before it decides without it. That chain decides at header arrival,
 /// so the peek must stay short: a body that stalls past it falls back to the
