@@ -47,7 +47,15 @@
 //! | --- | --- |
 //! | a string, or a single text block, with no marker | 429 |
 //! | Claude Code identity block prepended | 200 |
+//! | Agent SDK sentence as a block of its own | 200 |
 //! | billing block prepended | 200 |
+//! | identity sentence plus a trailing newline, or one leading space | 429 |
+//! | identity or Agent SDK sentence followed by more text in one block | 429 |
+//! | a string opening with the identity sentence, then more text | 429 |
+//!
+//! So an identity sentence is a marker only as a block holding exactly that
+//! sentence, while the billing block, whose values vary per request, is
+//! recognized by its opening.
 //!
 //! Two predicates decide the repair, and neither reaches past what was
 //! measured. The classifier is recognized by the opening sentence of its
@@ -103,25 +111,33 @@ const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CL
 const CLASSIFIER_PROMPT_PREFIX: &str =
     "You are a security monitor for autonomous AI coding agents.";
 
-/// Markers upstream is known to accept, so a request that already carries one
-/// — Claude Code's main loop, or a classifier request that has somehow grown
-/// one — is left alone rather than gaining a second.
+/// Identity sentences upstream accepts as a first-party marker, so a request
+/// that already carries one — Claude Code's main loop, or a classifier request
+/// that has somehow grown one — is left alone rather than gaining a second.
 ///
-/// Each was seen accepted on the wire: the identity string as the injected
-/// block that flipped a rejection to `200`, the Agent SDK opening at the head
-/// of accepted main-loop requests, and the billing block at the head of every
-/// accepted Claude Desktop chat and Cowork request. Those are observations of a
-/// live endpoint rather than a published contract, and the list is certainly
-/// not exhaustive. It decides whether every marker-less Claude Code request is
-/// rewritten, not only the classifier, so a first-party marker missing from it
-/// gains a redundant identity block ahead of that request's system prompt —
-/// shifting any cache prefix the prompt had. That costs a cache miss, never a
-/// rejection, which is why the list is still not extended by guesswork.
-const ACCEPTED_MARKER_PREFIXES: &[&str] = &[
-    "You are Claude Code, Anthropic's official CLI for Claude",
-    "You are a Claude agent, built on Anthropic's Claude Agent SDK",
-    "x-anthropic-billing-header:",
+/// Upstream accepts each only as a block whose text is exactly the sentence:
+/// the same sentence with a trailing newline, a leading space, or more text in
+/// the block was rejected (see the module table), so a match is equality, not a
+/// prefix. Both were seen accepted on the wire — the identity as the injected
+/// block that flipped a rejection to `200`, the Agent SDK sentence as a block of
+/// its own. Those are observations of a live endpoint rather than a published
+/// contract, and the list is certainly not exhaustive. It decides whether every
+/// marker-less Claude Code request is rewritten, not only the classifier, so a
+/// first-party marker missing from it gains a redundant identity block ahead of
+/// that request's system prompt — shifting any cache prefix the prompt had.
+/// That costs a cache miss, never a rejection, which is why the list is still
+/// not extended by guesswork.
+const ACCEPTED_IDENTITY_BLOCKS: &[&str] = &[
+    CLAUDE_CODE_IDENTITY,
+    "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
 ];
+
+/// Opening of the billing attribution block, the other accepted marker. Matched
+/// as a prefix, because the block's values (`cc_version`, `cc_entrypoint`, a
+/// fingerprint) vary per request; seen accepted at the head of every Claude
+/// Desktop chat and Cowork request, and of Claude Code side queries sent with
+/// the block left on.
+const BILLING_BLOCK_PREFIX: &str = "x-anthropic-billing-header:";
 
 /// Why a request is about to gain the identity block, for the debug line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,10 +184,12 @@ pub(super) fn restore_claude_code_identity(body: &mut RequestBody, headers: &Hea
 /// request missing an accepted marker is repaired whatever headers it carries,
 /// and one that already has a marker is left alone. Otherwise the request is
 /// repaired only when [`is_claude_code_client`] holds and its `system` carries
-/// no accepted marker — a string `system` is checked as a whole, an array
-/// block by block, and an absent or `null` `system` has none. A `system` of
-/// any other type, or a body that is not an object, is left for upstream to
-/// reject on its own terms.
+/// no accepted marker — an array is checked block by block, and an absent or
+/// `null` `system` has none. A string `system` never counts as marked: upstream
+/// reads it as one block, which passes only when it is exactly an identity
+/// sentence, so wrapping it is right whatever it opens with. A `system` of any
+/// other type, or a body that is not an object, is left for upstream to reject
+/// on its own terms.
 fn needs_identity(request: &Value, headers: &HeaderMap) -> Option<Repair> {
     if let Some(blocks) = classifier_blocks(request) {
         return (!blocks_carry_marker(blocks)).then_some(Repair::Classifier);
@@ -180,8 +198,7 @@ fn needs_identity(request: &Value, headers: &HeaderMap) -> Option<Repair> {
         return None;
     }
     let marked = match request.as_object()?.get("system") {
-        None | Some(Value::Null) => false,
-        Some(Value::String(text)) => is_accepted_marker(text.trim_start()),
+        None | Some(Value::Null | Value::String(_)) => false,
         Some(Value::Array(blocks)) => blocks_carry_marker(blocks),
         Some(_) => return None,
     };
@@ -189,29 +206,34 @@ fn needs_identity(request: &Value, headers: &HeaderMap) -> Option<Repair> {
 }
 
 /// Whether the inbound request comes from Claude Code: it names a Claude Code
-/// session, or [`classify_client`] reads its headers as Claude Code's.
+/// session with a non-empty id, or [`classify_client`] reads its headers as
+/// Claude Code's.
 ///
 /// [`classify_client`]: crate::client_attribution::classify_client
 fn is_claude_code_client(headers: &HeaderMap) -> bool {
-    headers.contains_key("x-claude-code-session-id")
+    headers
+        .get("x-claude-code-session-id")
+        .is_some_and(|session_id| !session_id.is_empty())
         || classify_client(headers) == ClientKind::ClaudeCode
 }
 
-/// Whether any block of `blocks` opens with an accepted marker.
+/// Whether any block of `blocks` is an accepted marker.
 ///
 /// Every block is scanned: an accepted marker anywhere in the array is enough
 /// for upstream, so its position is not ours to assume.
 fn blocks_carry_marker(blocks: &[Value]) -> bool {
-    blocks
-        .iter()
-        .any(|block| block_text(block).is_some_and(is_accepted_marker))
+    blocks.iter().any(|block| {
+        block
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(is_accepted_marker)
+    })
 }
 
-/// Whether `text`, already trimmed at the start, opens with an accepted marker.
+/// Whether a block's untrimmed `text` is an accepted marker: exactly one of
+/// [`ACCEPTED_IDENTITY_BLOCKS`], or a billing block.
 fn is_accepted_marker(text: &str) -> bool {
-    ACCEPTED_MARKER_PREFIXES
-        .iter()
-        .any(|prefix| text.starts_with(prefix))
+    ACCEPTED_IDENTITY_BLOCKS.contains(&text) || text.starts_with(BILLING_BLOCK_PREFIX)
 }
 
 /// The `system` blocks of `request` when it carries the auto-mode classifier's
@@ -222,7 +244,7 @@ fn is_accepted_marker(text: &str) -> bool {
 /// unreachable "the array stopped being an array between the two calls" arm
 /// that a second extraction has to write.
 ///
-/// Deliberately independent of [`ACCEPTED_MARKER_PREFIXES`]: that list only
+/// Deliberately independent of [`ACCEPTED_IDENTITY_BLOCKS`]: that list only
 /// decides whether the *identity repair* would be redundant, and a classifier
 /// request that already carries an accepted marker is still the classifier
 /// request as far as which model should serve it is concerned.

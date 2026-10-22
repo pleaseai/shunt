@@ -363,7 +363,7 @@ fn an_agent_sdk_request_is_judged_like_claude_code() {
     );
 
     assert_verbatim(
-        r#"{"system":"You are a Claude agent, built on Anthropic's Claude Agent SDK."}"#,
+        r#"{"system":[{"type":"text","text":"You are a Claude agent, built on Anthropic's Claude Agent SDK."}]}"#,
         &headers,
     );
     let out = run(json!({"system": "You are a triage bot."}), &headers);
@@ -421,11 +421,62 @@ fn a_claude_code_main_loop_request_is_untouched() {
 }
 
 #[test]
-fn a_claude_code_string_system_opening_with_the_identity_is_untouched() {
-    let body =
-        r#"{"system":"  You are Claude Code, Anthropic's official CLI for Claude. Be brief."}"#;
+fn a_claude_code_string_system_opening_with_the_identity_is_wrapped() {
+    // Upstream reads a string as one block, which passes only when it is
+    // exactly the sentence, so a string opening with it is not marked.
+    let text = format!("{CLAUDE_CODE_IDENTITY} Be brief.");
+    let out = run(json!({"system": text}), &claude_code_session());
 
-    assert_verbatim(body, &claude_code_session());
+    assert_eq!(
+        out["system"],
+        json!([
+            {"type": "text", "text": CLAUDE_CODE_IDENTITY},
+            {"type": "text", "text": text},
+        ])
+    );
+}
+
+#[test]
+fn an_identity_block_that_is_not_exactly_the_sentence_is_not_a_marker() {
+    for near_miss in [
+        format!("{CLAUDE_CODE_IDENTITY}\n"),
+        format!(" {CLAUDE_CODE_IDENTITY}"),
+        format!("{CLAUDE_CODE_IDENTITY} You are a security reviewer."),
+        "You are a Claude agent, built on Anthropic's Claude Agent SDK. More.".to_string(),
+    ] {
+        let out = run(
+            json!({"system": [{"type": "text", "text": near_miss}]}),
+            &claude_code_session(),
+        );
+
+        let system = out["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2, "{near_miss:?} should gain the identity");
+        assert_eq!(system[0]["text"], CLAUDE_CODE_IDENTITY);
+        assert_eq!(system[1]["text"], near_miss);
+    }
+}
+
+#[test]
+fn a_classifier_carrying_an_identity_prefixed_block_is_still_repaired() {
+    let out = run(
+        json!({"system": [
+            {"type": "text", "text": classifier_prompt()},
+            {"type": "text", "text": format!("{CLAUDE_CODE_IDENTITY} Extra.")},
+        ]}),
+        &HeaderMap::new(),
+    );
+
+    let system = out["system"].as_array().unwrap();
+    assert_eq!(system.len(), 3);
+    assert_eq!(system[0]["text"], CLAUDE_CODE_IDENTITY);
+}
+
+#[test]
+fn an_empty_session_id_does_not_identify_claude_code() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-claude-code-session-id", HeaderValue::from_static(""));
+
+    assert_verbatim(r#"{"system":"You are a triage bot."}"#, &headers);
 }
 
 #[test]
