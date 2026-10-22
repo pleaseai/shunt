@@ -475,7 +475,7 @@ async fn an_account_refusal_on_the_primary_advances_the_committed_chain() {
     if !can_bind_loopback() {
         return;
     }
-    let _env = common::env_lock().await;
+    let _env = common::set_env(&[("SHUNT_CHAIN_STREAM_REFUSAL_KEY", "refusal-probe")]).await;
     let primary = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(400).set_body_raw(
@@ -500,13 +500,11 @@ async fn an_account_refusal_on_the_primary_advances_the_committed_chain() {
         env: Some("SHUNT_CHAIN_STREAM_REFUSAL_KEY".to_string()),
         header: None,
     }));
-    std::env::set_var("SHUNT_CHAIN_STREAM_REFUSAL_KEY", "refusal-probe");
     let gateway = start_gateway(config).await;
     let response = stream_request(&gateway).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
-    std::env::remove_var("SHUNT_CHAIN_STREAM_REFUSAL_KEY");
     assert!(body.contains("from responses"), "got:\n{body}");
     assert_eq!(count_event(&body, "message_start"), 1, "got:\n{body}");
     assert_eq!(count_event(&body, "error"), 0, "got:\n{body}");
