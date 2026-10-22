@@ -48,23 +48,23 @@ Considered and not built:
 
 ## Tasks
 
-- [ ] T001 Recognise the three account-level refusals and the spend-limit resume time (file: src/adapters/anthropic/account_refusal.rs)
+- [ ] T001 Recognise the three account-level refusals and the spend-limit resume time (file: src/adapters/anthropic/account_refusal.rs) [FR-1, FR-2, FR-3, FR-5, AC-002, AC-004, AC-007, AC-012]
   Validation: the documented spend-limit (org and workspace), credit-balance (400 and 402), and any-402 `billing_error` bodies classify as refusals; a validation 400, a 400 whose message only contains `usage limits`, and a non-JSON or HTML body do not; the stated resume time parses to that UTC instant, and a missing, unreadable, or past time yields the 1-hour default.
   Method: `cargo test --all-features account_refusal`
-- [ ] T002 Advance the ordered chain on a refusal and keep every other 400 terminal (file: src/adapters/anthropic/mod.rs) (depends on T001)
+- [ ] T002 Advance the ordered chain on a refusal and keep every other 400 terminal (file: src/adapters/anthropic/mod.rs) (depends on T001) [FR-4, FR-5, FR-10, NFR-1, NFR-2, NFR-3, AC-001, AC-003, AC-005, AC-006, AC-016, AC-017]
   Validation: in a two-upstream mock chain, each refusal reaches the second upstream and the client gets its response; a validation 400 returns immediately with the second mock at `expect(0)`; a single-upstream refusal returns the upstream's own status and message; a 429 or 5xx still advances without its body being read; the Codex pool's model-refusal tests pass on the shared body-buffer helper.
   Method: `cargo test --all-features --test failover` plus `cargo test --all-features --test codex_multi_account`
-- [ ] T003 Advance a committed streaming chain on a refusal (file: src/adapters/anthropic/mod.rs) (depends on T001)
+- [ ] T003 Advance a committed streaming chain on a refusal (file: src/adapters/anthropic/mod.rs) (depends on T001) [FR-4, AC-008]
   Validation: a committed stream whose current element answers with a refusal continues from the next element instead of emitting a terminal error event; a stalled 400 body still returns within the existing 1 s bound as terminal.
   Method: `cargo test --all-features chain_attempt` plus `cargo test --all-features --test failover`
   STOP: the stalled-400 test needs its timeout or assertion changed to pass.
-- [ ] T004 Skip a refusing API-key upstream until its window ends (file: src/accounts.rs) (depends on T002, T003)
+- [ ] T004 Skip a refusing API-key upstream until its window ends (file: src/accounts.rs) (depends on T002, T003) [FR-6, FR-8, FR-9, FR-12, NFR-3, AC-009, AC-010, AC-011, AC-012, AC-014, AC-015, AC-018]
   Validation: after a spend-limit refusal stating a future time, later requests skip that upstream without contacting it until the time passes, then reach it again; a credit-balance or billing refusal skips for 1 hour; a passthrough upstream is never skipped; a chain whose every element is skipped is still tried in configured order; a fresh gateway skips nothing; each refusal logs one warning naming the upstream, the refusal kind, and the expiry.
   Method: `cargo test --all-features --test failover` with tokio paused time for the window boundaries
-- [ ] T005 Rotate the Claude subscription pool on a refusal and cool the refusing account (file: src/adapters/anthropic/mod.rs) (depends on T001)
+- [ ] T005 Rotate the Claude subscription pool on a refusal and cool the refusing account (file: src/adapters/anthropic/mod.rs) (depends on T001) [FR-7, AC-013]
   Validation: a refusal from one pool account sends the request to the next eligible account and cools the first for the refusal's window, on both the first attempt and the post-refresh retry; when every account refuses, the pool relays the last refusal and the chain advances past the upstream.
   Method: `cargo test --all-features --test multi_account`
-- [ ] T006 Document the account-level refusal rule in the failover contract and user docs (file: docs/upstreams-failover.md)
+- [ ] T006 Document the account-level refusal rule in the failover contract and user docs (file: docs/upstreams-failover.md) [FR-11]
   Validation: §3, §4, and §6 of the contract name the three refusals, the skip windows, the passthrough exception, and that every other 400 stays terminal; the site configuration reference and troubleshooting page state the same in English and in every existing `ko`/`ja`/`zh-cn` copy, with no fragment link to an anchor the locale lacks.
   Method: `cd site && bun run build` succeeds, then grep the built `site/dist` pages for the new text in each locale
 

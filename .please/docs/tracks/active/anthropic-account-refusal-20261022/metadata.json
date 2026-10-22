@@ -1,9 +1,9 @@
 {
   "track_id": "anthropic-account-refusal-20261022",
   "type": "feature",
-  "status": "planned",
+  "status": "in_progress",
   "created_at": "2026-10-22T08:42:29Z",
-  "updated_at": "2026-10-22T09:03:56Z",
+  "updated_at": "2026-10-22T09:06:15Z",
   "issue": "#817",
   "pr": "",
   "project": "2",
