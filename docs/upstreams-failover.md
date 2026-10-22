@@ -279,10 +279,14 @@ The pool survives as the **intra-upstream** mechanism; the chain is the
     returns the upstream's own status and body unless a failure of higher
     priority (`429`, then `401`/`403`, `404`, `5xx`) was remembered. A refusal
     ranks below a `5xx`, and between two refusals the first one stays.
-  - *Observability.* Each refusal logs one `warn` with `provider`, `model`,
-    `status`, `refusal` (`spend_limit`, `credit_balance`, or `billing`), and
-    `skip_until_epoch_secs` (absent for passthrough). The pool rotation metric
-    records the reason `account_refusal`.
+  - *Observability.* Off the pool, each refusal logs one `warn` with
+    `provider`, `model`, `status`, `refusal` (`spend_limit`, `credit_balance`,
+    or `billing`), and `skip_until_epoch_secs` (absent for passthrough). On the
+    Claude OAuth pool, each account refusal logs one `warn` with `provider`,
+    `account`, `status`, `refusal`, and `cooldown_until_epoch_secs`. When every
+    account has refused, a separate `warn` logs `provider`, `model`, and
+    `skip_until_epoch_secs`. The pool rotation metric records the reason
+    `account_refusal`.
 - **Physical-account state sharing**: per-account state (quota windows,
   health, cooldowns, in-flight admission counts, refresh locks) is re-keyed
   from provider name to *(store family, stable account identity)*. Identity
