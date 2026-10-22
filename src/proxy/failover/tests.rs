@@ -1212,12 +1212,10 @@ fn skipping_a_mapped_primary_does_not_promote_a_passthrough_fallback_credential(
         .upstream_skips()
         .record("openai", Duration::from_secs(60));
     let configured = vec![injecting_fallback_route(), passthrough_route()];
-    let configured_primary = configured[0].clone();
 
-    let routes = super::skip_refused_routes(&state, configured);
-    assert_eq!(routes, vec![passthrough_route()]);
     let mut base = caller_headers();
-    super::strip_credentials_if_primary_skipped(&configured_primary, &routes, &mut base);
+    let routes = super::skip_refused_routes_for_caller(&state, configured, &mut base);
+    assert_eq!(routes, vec![passthrough_route()]);
     let inbound = context_for(&state, &base);
     let sent = headers_for_route(&state, &routes[0], &base, &inbound, true, None);
 

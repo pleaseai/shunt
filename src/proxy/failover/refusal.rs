@@ -82,19 +82,25 @@ pub(crate) fn skip_refused_routes(state: &AppState, routes: Vec<Route>) -> Vec<R
         })
 }
 
-/// Remove the caller's credential slots when skipping dropped the configured
-/// primary. The credential-retention rule keys on the primary: a passthrough
-/// fallback behind a credential-injecting primary is off-origin and has both
-/// slots stripped, so a skip must not promote it to primary and let it keep
-/// the caller's `authorization` / `x-api-key`. `configured_primary` is the
-/// first route before [`skip_refused_routes`] ran.
-pub(crate) fn strip_credentials_if_primary_skipped(
-    configured_primary: &Route,
-    routes: &[Route],
+/// [`skip_refused_routes`] for a caller that dispatches the chain with the
+/// caller's own headers: when skipping drops the configured primary, the
+/// caller's credential slots are removed from `headers` in the same step.
+/// The credential-retention rule keys on the primary: a passthrough fallback
+/// behind a credential-injecting primary is off-origin and has both slots
+/// stripped, so a skip must not promote it to primary and let it keep the
+/// caller's `authorization` / `x-api-key`. Every chain-building entry that
+/// forwards caller headers uses this, so the skip and the strip cannot be
+/// applied apart.
+pub(crate) fn skip_refused_routes_for_caller(
+    state: &AppState,
+    routes: Vec<Route>,
     headers: &mut axum::http::HeaderMap,
-) {
-    if routes.first() != Some(configured_primary) {
+) -> Vec<Route> {
+    let configured_primary = routes.first().cloned();
+    let routes = skip_refused_routes(state, routes);
+    if routes.first() != configured_primary.as_ref() {
         headers.remove("authorization");
         headers.remove("x-api-key");
     }
+    routes
 }

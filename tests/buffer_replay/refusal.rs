@@ -3,11 +3,12 @@
 
 use reqwest::StatusCode;
 use serde_json::json;
-use shunt::config::{AuthMode, UpstreamAuth};
+use shunt::config::{AuthMode, ProviderKind, UpstreamAuth};
 use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
 use super::harness::{
-    anthropic_sse, escalation_router, header, judge_text, messages_mock, post, sse_reply, Tiers,
+    anthropic_json, anthropic_sse, escalation_router, header, judge_text, messages_mock, post,
+    sse_reply, Tiers,
 };
 use super::judge_harness::{
     can_bind_loopback, env, start_gateway, CAPABLE_UPSTREAM_MODEL, EFFICIENT_UPSTREAM_MODEL,
@@ -27,18 +28,28 @@ pub(crate) async fn chained_gateway_with(
     down_reply: ResponseTemplate,
 ) -> super::judge_harness::TestGateway {
     let weak_responses = super::judge_harness::api_key("down", down.uri(), JUDGE_KEY_ENV);
-    chained_gateway_via(strong, efficient, judge, down, down_reply, weak_responses).await
+    chained_gateway_via(
+        strong,
+        efficient,
+        judge,
+        down,
+        down_reply,
+        weak_responses,
+        ProviderKind::Responses,
+    )
+    .await
 }
 
 /// [`chained_gateway_with`] with the Responses route's upstream entry given:
 /// the one the chain reaches `down` through (its `name` must be `down`).
-async fn chained_gateway_via(
+pub(crate) async fn chained_gateway_via(
     strong: &MockServer,
     efficient: &MockServer,
     judge: &MockServer,
     down: &MockServer,
     down_reply: ResponseTemplate,
     mut weak_responses: shunt::config::UpstreamConfig,
+    kind: ProviderKind,
 ) -> super::judge_harness::TestGateway {
     Mock::given(method("POST"))
         .respond_with(down_reply)
@@ -50,7 +61,7 @@ async fn chained_gateway_via(
     let tiers = Tiers::of(strong, efficient, &responses, judge.uri());
     let mut config =
         super::harness::unvalidated_gated_config(&tiers, &escalation_router("chained-alias"));
-    weak_responses.kind = Some(shunt::config::ProviderKind::Responses);
+    weak_responses.kind = Some(kind);
     // Ahead of `efficient`: the chain follows `[[upstreams]]` order.
     let at = config
         .upstreams
@@ -180,6 +191,7 @@ async fn a_refused_streaming_weak_chain_relays_a_pool_exhausted_retry_after() {
         &down,
         rate_limited("13"),
         pooled,
+        ProviderKind::Responses,
     )
     .await;
 
@@ -194,4 +206,69 @@ async fn a_refused_streaming_weak_chain_relays_a_pool_exhausted_retry_after() {
         "13"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A gated capture whose mapped primary sits inside a refusal skip window must
+/// not promote the passthrough fallback behind it to the primary credential
+/// role: the caller's `authorization` and `x-api-key` stay stripped, as on the
+/// first, unskipped request (#817).
+///
+/// Non-vacuity: drop the strip from `skip_refused_routes_for_caller` (or call
+/// plain `skip_refused_routes` in `capture`) and the second request's
+/// fallback receives the caller's credential.
+#[tokio::test]
+async fn a_skipped_mapped_primary_does_not_hand_the_caller_credential_to_a_gated_fallback() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _env = env().await;
+    let (strong, efficient, judge, down) = (
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+        MockServer::start().await,
+    );
+    messages_mock(
+        sse_reply(anthropic_sse(CAPABLE_UPSTREAM_MODEL, "STRONG")),
+        0,
+    )
+    .mount(&strong)
+    .await;
+    messages_mock(anthropic_json(EFFICIENT_UPSTREAM_MODEL, "WEAK"), 0)
+        .expect(0..)
+        .mount(&efficient)
+        .await;
+    messages_mock(judge_text(DECLINE), 0)
+        .expect(0..)
+        .mount(&judge)
+        .await;
+    // One round trip only: the second request must skip this upstream.
+    let refusal = ResponseTemplate::new(402).set_body_raw(
+        json!({"type": "error", "error": {"type": "billing_error", "message": "billing"}})
+            .to_string(),
+        "application/json",
+    );
+    let mapped = super::judge_harness::api_key("down", down.uri(), JUDGE_KEY_ENV);
+    let gateway = chained_gateway_via(
+        &strong,
+        &efficient,
+        &judge,
+        &down,
+        refusal,
+        mapped,
+        ProviderKind::Anthropic,
+    )
+    .await;
+
+    for _ in 0..2 {
+        let response = super::harness::post_with_caller_credential(&gateway, false).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let seen = efficient.received_requests().await.unwrap();
+    assert_eq!(seen.len(), 2, "the fallback served both requests");
+    for request in seen {
+        assert!(request.headers.get("authorization").is_none());
+        assert!(request.headers.get("x-api-key").is_none());
+    }
 }

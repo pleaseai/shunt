@@ -59,7 +59,7 @@ use super::bounds::{
 use crate::config::CallBounds;
 use crate::proxy::failover::{
     chain::{run_chain, ChainRequest, ChainSuccess},
-    skip_refused_routes, InboundContext,
+    skip_refused_routes_for_caller, InboundContext,
 };
 use crate::proxy::ForwardError;
 use crate::request::RequestBody;
@@ -200,10 +200,16 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let routes = skip_refused_routes(
+    let mut base_headers = request.base_headers.clone();
+    let routes = skip_refused_routes_for_caller(
         request.state,
         routing::resolve_target_chain(&request.state.config, target, request.router_id),
+        &mut base_headers,
     );
+    let request = &GatedRequest {
+        base_headers: &base_headers,
+        ..*request
+    };
     // The turn is billed here, at capture, whatever the verdict then does with
     // it: a replay is served with the served-response hook off, and a turn
     // discarded for escalation is never served at all.
