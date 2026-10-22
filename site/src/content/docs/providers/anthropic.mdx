@@ -147,8 +147,8 @@ model for a safety verdict on the pending action. It omits the Claude Code ident
 auto-mode classifier and on any Claude Code request (identified by `x-claude-code-session-id`, a
 `claude-cli/` user agent, or `x-app: cli`) that carries no accepted marker. The repair applies only when the outbound bearer is a
 subscription OAuth token, never to `count_tokens` (which upstream does not gate), and an empty
-`x-claude-code-session-id` does not count. Other clients, and requests on an API key, keep
-byte-for-byte passthrough. The [429 troubleshooting row](/reference/troubleshooting/) describes the failure that
+`x-claude-code-session-id` does not count. Other clients, and requests on an API key, are
+left alone by this repair. The [429 troubleshooting row](/reference/troubleshooting/) describes the failure that
 repairs.
 
 The classifier does not use the session's model by default. Measured on Claude Code 2.1.226, it

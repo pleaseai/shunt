@@ -139,7 +139,7 @@ anthropic = "claude-sonnet-5"
 mod 的 `$.model.complete` 之类的旁路查询也是如此。shunt 会在自动模式分类器以及任何不带可接受标记的
 Claude Code 请求(通过 `x-claude-code-session-id`、`claude-cli/` user agent 或 `x-app: cli` 识别)上恢复 identity。
 该恢复仅在发出的 bearer 是订阅 OAuth 令牌时生效,不作用于上游并不检查的 `count_tokens`,空的
-`x-claude-code-session-id` 也不算 Claude Code。其他客户端以及使用 API 密钥的请求仍然逐字节透传;这次修复所避免的故障见
+`x-claude-code-session-id` 也不算 Claude Code。其他客户端以及使用 API 密钥的请求不会触发该恢复;这次修复所避免的故障见
 [429 故障排查条目](/zh-cn/reference/troubleshooting/)。
 
 分类器默认并不使用会话自身的模型。在 Claude Code 2.1.226 上实测:若服务端下发了模型就用它,

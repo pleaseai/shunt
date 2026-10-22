@@ -150,7 +150,7 @@ shunt はオートモードの分類器と、受け入れられるマーカー�
 （`x-claude-code-session-id`、`claude-cli/` の user agent、または `x-app: cli` で識別）に identity を復元します。
 この復元は送信する bearer がサブスクリプション OAuth トークンのときだけ適用され、アップストリームが
 確認しない `count_tokens` には適用されず、空の `x-claude-code-session-id` は Claude Code とみなしません。
-他のクライアントと API キーのリクエストはバイト単位のまま通します。この復元が防ぐ失敗は
+他のクライアントと API キーのリクエストにはこの復元を適用しません。この復元が防ぐ失敗は
 [429 のトラブルシューティング項目](/ja/reference/troubleshooting/)で説明しています。
 
 分類器はデフォルトではセッションのモデルを使いません。Claude Code 2.1.226 で計測したところ、
