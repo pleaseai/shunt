@@ -438,6 +438,19 @@ async fn forward_claude_oauth(
                     last_response = Some(upstream);
                     continue;
                 };
+                // Same refusal rule as the Relay arms: the retry may be the
+                // account-level refusal the throttle was hiding.
+                let retry = match account_refusal::judge_pool_answer(
+                    &state, &route, account, retry, bounds,
+                )
+                .await?
+                {
+                    account_refusal::PoolAnswer::Relay(retry) => retry,
+                    account_refusal::PoolAnswer::Refused(refused) => {
+                        last_response = Some(refused);
+                        continue;
+                    }
+                };
                 let retry_status = retry.status();
                 if retry_status.is_success() {
                     state

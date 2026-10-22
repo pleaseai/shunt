@@ -2905,6 +2905,82 @@ async fn an_account_refusal_rotates_and_cools_the_refusing_account() {
     upstream.verify().await;
 }
 
+/// The same-account retry after a throttle pause judges its answer too: a
+/// headerless 429 pauses and retries, and a billing refusal on that retry
+/// rotates to the next account instead of being relayed as terminal (#817
+/// FR-7).
+#[tokio::test]
+async fn a_refusal_on_the_throttle_retry_rotates_to_the_next_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "refusalpause-a"].concat();
+    let token_b = ["fake-oauth-", "refusalpause-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_REFUSALPAUSE_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_REFUSALPAUSE_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    // First call: a throttle with no quota verdict, which pauses the account.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .set_body_string(r#"{"error":"throttled"}"#),
+        )
+        .up_to_n_times(1)
+        .expect(1)
+        .with_priority(1)
+        .mount(&upstream)
+        .await;
+    // The retry: the account-level refusal.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(
+            error_envelope("invalid_request_error", CREDIT_BALANCE_MESSAGE),
+            "application/json",
+        ))
+        .expect(1)
+        .with_priority(2)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let account_a = account(
+        "account-a",
+        "SHUNT_TEST_MULTI_REFUSALPAUSE_A",
+        "uuid-refusalpause-a",
+    );
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account(
+            "account-b",
+            "SHUNT_TEST_MULTI_REFUSALPAUSE_B",
+            "uuid-refusalpause-b",
+        ),
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    assert_cooled_for_the_default_refusal_window(&state, &account_a);
+    upstream.verify().await;
+}
+
 /// The post-refresh retry judges its answer the same way: a billing refusal
 /// after a successful refresh rotates and cools the account.
 #[tokio::test]
