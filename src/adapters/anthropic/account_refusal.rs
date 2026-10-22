@@ -12,10 +12,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use axum::http::StatusCode;
+
 use crate::{
     adapters::{AdapterError, ResponseBounds},
     auth::claude::usage::parse_rfc3339_to_epoch_secs,
-    proxy::failover::AccountRefused,
+    routing::Route,
+    server::AppState,
 };
 
 /// Skip window when the refusal states no usable resume time.
@@ -75,20 +78,30 @@ impl AccountRefusal {
 pub(super) async fn judge(
     upstream: reqwest::Response,
     bounds: ResponseBounds,
-) -> Result<(reqwest::Response, Option<AccountRefused>), AdapterError> {
+) -> Result<(reqwest::Response, Option<AccountRefusal>), AdapterError> {
     let status = upstream.status().as_u16();
     if status != 400 && status != 402 {
         return Ok((upstream, None));
     }
     let clock = bounds.idle.map(|idle| (idle, tokio::time::Instant::now()));
     let (upstream, body) = crate::adapters::buffer_error_body(upstream, clock, true).await?;
-    let refused = body
-        .and_then(|body| classify(status, &body))
-        .map(|refusal| AccountRefused {
-            kind: refusal.kind.label(),
-            skip_for: refusal.skip_window(SystemTime::now()),
-        });
-    Ok((upstream, refused))
+    Ok((upstream, body.and_then(|body| classify(status, &body))))
+}
+
+/// Record a refusal `route`'s upstream answered: start its skip window unless
+/// the route is passthrough (the caller's own credential, never skipped), and
+/// log it once. Called where the refusal is classified, on both chain paths.
+pub(super) fn note(state: &AppState, route: &Route, status: StatusCode, refusal: AccountRefusal) {
+    let skips =
+        (!state.config.route_is_passthrough(route)).then(|| state.accounts.upstream_skips());
+    crate::proxy::failover::record_refusal(
+        skips,
+        &route.provider,
+        &route.model,
+        status,
+        refusal.kind.label(),
+        refusal.skip_window(SystemTime::now()),
+    );
 }
 
 /// How long the committed streaming chain (`chain_attempt`) reads a 400 or 402
@@ -102,18 +115,18 @@ pub(super) const CHAIN_PEEK_BUDGET: Duration = Duration::from_millis(250);
 /// The committed streaming chain's form of [`judge`]: read a 400 or 402 body
 /// under [`CHAIN_PEEK_BUDGET`] and no idle clock (that path has none). The
 /// response comes back rebuilt with the upstream's bytes intact, read or not,
-/// and with the refusal kind plus the body it was judged on when it is one.
+/// and with the refusal plus the body it was judged on when it is one.
 /// Every other status returns untouched and unread.
 pub(super) async fn peek(
     upstream: reqwest::Response,
-) -> Result<(reqwest::Response, Option<(RefusalKind, bytes::Bytes)>), AdapterError> {
+) -> Result<(reqwest::Response, Option<(AccountRefusal, bytes::Bytes)>), AdapterError> {
     let status = upstream.status().as_u16();
     if status != 400 && status != 402 {
         return Ok((upstream, None));
     }
     let (upstream, body) =
         crate::adapters::buffer_error_body_within(upstream, None, true, CHAIN_PEEK_BUDGET).await?;
-    let refused = body.and_then(|body| classify(status, &body).map(|refusal| (refusal.kind, body)));
+    let refused = body.and_then(|body| classify(status, &body).map(|refusal| (refusal, body)));
     Ok((upstream, refused))
 }
 
@@ -263,6 +276,27 @@ mod tests {
             ..future
         };
         assert_eq!(missing.skip_window(now), REFUSAL_DEFAULT_SKIP);
+    }
+
+    /// Credit-balance and billing refusals state no resume time, so they skip
+    /// for the one-hour default (#817 AC-011).
+    #[test]
+    fn credit_balance_and_billing_refusals_skip_for_one_hour() {
+        let credit = envelope(
+            "invalid_request_error",
+            "Your credit balance is too low to access the Anthropic API.",
+        );
+        let billing = envelope("billing_error", "Payment required.");
+        let now = UNIX_EPOCH + Duration::from_secs(RESUME);
+        for (status, body) in [(400, &credit), (402, &credit), (402, &billing)] {
+            let refusal = classify(status, body).expect("a refusal");
+            assert_eq!(
+                refusal.skip_window(now),
+                Duration::from_secs(60 * 60),
+                "{status} {:?}",
+                refusal.kind
+            );
+        }
     }
 
     #[test]

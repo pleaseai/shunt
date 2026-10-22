@@ -1475,3 +1475,173 @@ async fn rate_limit_and_server_error_advance_without_reading_the_body() {
         healthy.verify().await;
     }
 }
+
+/// An Anthropic upstream that injects the key held in `key_env`, so a refusal
+/// it answers is the gateway's own credential and starts a skip window.
+fn api_key_upstream(name: &str, base_url: String, key_env: &str) -> UpstreamConfig {
+    upstream(
+        name,
+        base_url,
+        ProviderKind::Anthropic,
+        UpstreamAuth::Map(AuthMap::ApiKey {
+            env: Some(key_env.to_string()),
+            header: Some(ApiKeyHeader::XApiKey),
+        }),
+    )
+}
+
+/// A responder that notes which upstream answered, in arrival order, before
+/// answering with `template`.
+struct Noting {
+    name: &'static str,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    template: ResponseTemplate,
+}
+
+impl wiremock::Respond for Noting {
+    fn respond(&self, _: &Request) -> ResponseTemplate {
+        self.log.lock().unwrap().push(self.name);
+        self.template.clone()
+    }
+}
+
+#[tokio::test]
+async fn a_spend_limit_refusal_skips_the_api_key_upstream_on_later_requests() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let key_env = format!("SHUNT_REFUSAL_SKIP_KEY_{}", std::process::id());
+    let mut vars = common::env_lock().await;
+    vars.set(&key_env, "upstream-key");
+    let refusing = MockServer::start().await;
+    let healthy = MockServer::start().await;
+    // Contacted once: the second request must skip it without a round trip.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(
+            error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE),
+            "application/json",
+        ))
+        .expect(1)
+        .mount(&refusing)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("healthy"))
+        .expect(2)
+        .mount(&healthy)
+        .await;
+    let config = chain_config(
+        vec![
+            api_key_upstream("refusing", refusing.uri(), &key_env),
+            api_key_upstream("healthy", healthy.uri(), &key_env),
+        ],
+        &[("refusing", "model-a"), ("healthy", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    for attempt in ["refused then advanced", "skipped"] {
+        let response = post(&gateway).await;
+        assert_eq!(response.status(), StatusCode::OK, "{attempt}");
+        assert_gateway_headers(&response, "healthy", "model-b");
+        assert_eq!(response.text().await.unwrap(), "healthy", "{attempt}");
+    }
+    refusing.verify().await;
+    healthy.verify().await;
+}
+
+#[tokio::test]
+async fn a_refusing_passthrough_upstream_is_never_skipped() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let refusing = MockServer::start().await;
+    let healthy = MockServer::start().await;
+    // Contacted by both requests: the caller's own credential is not skipped.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(
+            error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE),
+            "application/json",
+        ))
+        .expect(2)
+        .mount(&refusing)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("healthy"))
+        .expect(2)
+        .mount(&healthy)
+        .await;
+    let config = chain_config(
+        vec![
+            passthrough("refusing", refusing.uri()),
+            passthrough("healthy", healthy.uri()),
+        ],
+        &[("refusing", "model-a"), ("healthy", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    for _ in 0..2 {
+        let response = post(&gateway).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_gateway_headers(&response, "healthy", "model-b");
+    }
+    refusing.verify().await;
+    healthy.verify().await;
+}
+
+#[tokio::test]
+async fn a_chain_whose_every_upstream_is_skipped_is_still_tried_in_order() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let key_env = format!("SHUNT_REFUSAL_ALL_SKIPPED_KEY_{}", std::process::id());
+    let mut vars = common::env_lock().await;
+    vars.set(&key_env, "upstream-key");
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(Noting {
+            name: "first",
+            log: log.clone(),
+            template: ResponseTemplate::new(400).set_body_raw(
+                error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE),
+                "application/json",
+            ),
+        })
+        .expect(2)
+        .mount(&first)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(Noting {
+            name: "second",
+            log: log.clone(),
+            template: ResponseTemplate::new(402).set_body_raw(
+                error_envelope("billing_error", "Your account has a billing issue."),
+                "application/json",
+            ),
+        })
+        .expect(2)
+        .mount(&second)
+        .await;
+    let config = chain_config(
+        vec![
+            api_key_upstream("first", first.uri(), &key_env),
+            api_key_upstream("second", second.uri(), &key_env),
+        ],
+        &[("first", "model-a"), ("second", "model-b")],
+    );
+    let gateway = start_gateway(config).await;
+
+    for attempt in ["both refuse", "both skipped"] {
+        let response = post(&gateway).await;
+        // The exhausted chain relays the first refusal, as it does unskipped.
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{attempt}");
+        assert_gateway_headers(&response, "first", "model-a");
+    }
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["first", "second", "first", "second"],
+        "every skipped chain falls back to the configured order"
+    );
+    first.verify().await;
+    second.verify().await;
+}

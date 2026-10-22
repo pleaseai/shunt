@@ -11,33 +11,69 @@
 //! chain reads the marker and advances without knowing any provider's shape.
 //! The response itself keeps the upstream's status and body intact, so a
 //! chain that exhausts on refusals relays the upstream's own answer.
+//!
+//! A refusal also starts a skip window for the refusing `api_key` upstream
+//! (`crate::accounts::UpstreamSkips`), so later requests go past it without a
+//! refused round trip until the window ends.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::StatusCode;
 
+use crate::{accounts::UpstreamSkips, routing::Route, server::AppState};
+
 /// An upstream refused the account behind this response, not the request.
+/// The adapter that judged the body has already recorded the refusal through
+/// [`record_refusal`]; the chain only reads that it happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AccountRefused {
-    /// Stable snake_case label naming the refusal (`spend_limit`,
-    /// `credit_balance`, `billing`), for logs and metrics.
-    pub(crate) kind: &'static str,
-    /// How long the refusing credential is not worth retrying, measured from
-    /// the moment the refusal was classified.
-    // Read by the per-upstream skip state (T004 of #817).
-    #[allow(dead_code)]
-    pub(crate) skip_for: Duration,
+pub(crate) struct AccountRefused;
+
+/// Record an account-level refusal where the adapter classified it: start the
+/// upstream's skip window (unless `skips` is `None`, a passthrough route that
+/// lends the caller's own credential and is never skipped), then log the
+/// refusal exactly once. A named function for the same reason as
+/// `log_error_advance`: the adapters run inside spawned tasks a test
+/// subscriber never reaches.
+pub(crate) fn record_refusal(
+    skips: Option<&UpstreamSkips>,
+    provider: &str,
+    model: &str,
+    status: StatusCode,
+    kind: &str,
+    skip_for: Duration,
+) {
+    let skip_until = skips.map(|skips| {
+        let lasts = skips.record(provider, skip_for);
+        let until = SystemTime::now() + lasts;
+        until.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    });
+    match skip_until {
+        Some(skip_until) => tracing::warn!(
+            provider = %provider,
+            model = %model,
+            status = status.as_u16(),
+            refusal = kind,
+            skip_until_epoch_secs = skip_until,
+            "upstream refused the account; skipping it until the window ends"
+        ),
+        None => tracing::warn!(
+            provider = %provider,
+            model = %model,
+            status = status.as_u16(),
+            refusal = kind,
+            "upstream refused the account; passthrough upstream is not skipped"
+        ),
+    }
 }
 
-/// Record a chain advance caused by an account-level refusal. A named function
-/// for the same reason as `log_error_advance`: the chain runs inside spawned
-/// tasks a test subscriber never reaches.
-pub(crate) fn log_refusal_advance(provider: &str, model: &str, status: StatusCode, kind: &str) {
-    tracing::warn!(
-        provider = %provider,
-        model = %model,
-        status = status.as_u16(),
-        refusal = kind,
-        "upstream refused the account; failover advancing"
-    );
+/// Drop the routes whose upstream is inside a refusal skip window, keeping
+/// the order of the rest. When every route is skipped the configured chain is
+/// returned unchanged, so the request is still tried in order. Shared by every
+/// entry that builds a chain: `forward`, and `routing::serve`'s judge and
+/// gated-capture calls, which resolve their own chains.
+pub(crate) fn skip_refused_routes(state: &AppState, routes: Vec<Route>) -> Vec<Route> {
+    state
+        .accounts
+        .upstream_skips()
+        .retain_unskipped(routes, |route| route.provider.as_str())
 }

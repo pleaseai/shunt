@@ -166,8 +166,11 @@ async fn forward(
     // relay_response (header filtering, SSE keepalive, status passthrough), so
     // reuse it with no account attribution instead of duplicating that logic.
     let (status, mut response) = relay_response(&state, &route, upstream, None, bounds).await?;
-    if let Some(refused) = refused {
-        response.extensions_mut().insert(refused);
+    if let Some(refusal) = refused {
+        account_refusal::note(&state, &route, status, refusal);
+        response
+            .extensions_mut()
+            .insert(crate::proxy::failover::AccountRefused);
     }
     Ok((status, response))
 }
@@ -1658,13 +1661,8 @@ pub(crate) async fn chain_attempt(
         // own envelope. A body that is no refusal, or that the peek could not
         // finish, keeps the deferred terminal answer below.
         let upstream = match account_refusal::peek(upstream).await {
-            Ok((_, Some((kind, body)))) => {
-                crate::proxy::failover::log_refusal_advance(
-                    &route.provider,
-                    &route.model,
-                    status,
-                    kind.label(),
-                );
+            Ok((_, Some((refusal, body)))) => {
+                account_refusal::note(state, route, status, refusal);
                 return crate::proxy::chain_stream::Attempt::Failed {
                     advance: true,
                     remember: true,
@@ -2588,6 +2586,15 @@ mod tests {
         status: u16,
         body: &'static str,
     ) -> crate::proxy::chain_stream::Attempt {
+        chain_attempt_answered_with_state(status, body).await.0
+    }
+
+    /// [`chain_attempt_answered`], also handing back the state the attempt ran
+    /// on, for a test that reads what the attempt recorded there.
+    async fn chain_attempt_answered_with_state(
+        status: u16,
+        body: &'static str,
+    ) -> (crate::proxy::chain_stream::Attempt, super::AppState) {
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2622,7 +2629,7 @@ mod tests {
         .unwrap();
         let attempt = super::chain_attempt(&state, &route, &uri, &client_headers(), request).await;
         std::env::remove_var("SHUNT_CHAIN_REFUSAL_KEY");
-        attempt
+        (attempt, state)
     }
 
     const SPEND_LIMIT_400: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."}}"#;
@@ -2652,6 +2659,14 @@ mod tests {
                 _ => panic!("expected a failed attempt, got a winner"),
             }
         }
+    }
+
+    /// A refusal on the committed chain starts the `api_key` upstream's skip
+    /// window where it is classified, as the ordered chain's does (#817).
+    #[tokio::test]
+    async fn chain_attempt_skips_an_api_key_upstream_that_refused() {
+        let (_, state) = chain_attempt_answered_with_state(400, SPEND_LIMIT_400).await;
+        assert!(state.accounts.upstream_skips().is_skipped("anthropic"));
     }
 
     /// The positive twin: a validation 400 is read but stays terminal, with

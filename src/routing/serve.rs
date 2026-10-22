@@ -40,7 +40,7 @@ use crate::auth::slots::{ShuntCredentials, SHARED_SLOTS};
 use crate::config::CallBounds;
 use crate::proxy::failover::{
     chain::{run_chain, ChainRequest},
-    InboundContext,
+    skip_refused_routes, InboundContext,
 };
 use crate::routing;
 use crate::server::AppState;
@@ -184,7 +184,10 @@ async fn dispatch(
         admitted.headers,
         false,
     ));
-    let routes = routing::resolve_target_chain(&state.config, target.as_str(), admitted.router_id);
+    let routes = skip_refused_routes(
+        state,
+        routing::resolve_target_chain(&state.config, target.as_str(), admitted.router_id),
+    );
     let headers = judge_headers(state, admitted.headers);
     // `/v1/messages` because the judge request *is* a Messages request: the
     // codec emits that shape and the adapters route on this path exactly as

@@ -15,10 +15,12 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::config::{AccountConfig, PoolConfig};
 
 mod request_stats;
+mod upstream_skip;
 
 pub use request_stats::AttemptOutcome;
 pub(crate) use request_stats::CountAttempt;
 use request_stats::RequestStats;
+pub(crate) use upstream_skip::UpstreamSkips;
 
 /// Credential-store namespace. Stable account ids only coalesce inside their
 /// own store family, so a Claude UUID can never collide with a ChatGPT account id.
@@ -643,6 +645,10 @@ pub struct AccountPool {
     /// not one per provider), so this override is too. `None` defers to the
     /// config file's own value; memory-only, cleared on restart.
     sort_by_reset_override: Mutex<Option<bool>>,
+    /// Skip windows for `api_key` upstreams that refused the account
+    /// (issue #817). Lives here because the pool is the process-lifetime state
+    /// every `AppState` snapshot shares across reloads; memory-only.
+    upstream_skips: UpstreamSkips,
 }
 
 /// Why one account is not selectable for this request.
@@ -753,6 +759,11 @@ impl Drop for ReprobeReservation {
 impl AccountPool {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The per-upstream skip windows that account-level refusals start.
+    pub(crate) fn upstream_skips(&self) -> &UpstreamSkips {
+        &self.upstream_skips
     }
 
     /// Synchronize the upstream's current configured identities before an
