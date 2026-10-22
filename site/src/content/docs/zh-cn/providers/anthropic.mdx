@@ -137,7 +137,7 @@ anthropic = "claude-sonnet-5"
 —— 一个带有独立系统提示、向模型索要待执行动作安全判定的 Messages 请求。它在订阅 OAuth 凭据下
 缺少 `api.anthropic.com` 所查找的 Claude Code identity 块,`CLAUDE_CODE_ATTRIBUTION_HEADER=0` 时
 mod 的 `$.model.complete` 之类的旁路查询也是如此。shunt 会在自动模式分类器以及任何不带可接受标记的
-Claude Code 请求(通过 `x-claude-code-session-id` 或 `claude-cli/` user agent 识别)上恢复 identity,
+Claude Code 请求(通过 `x-claude-code-session-id`、`claude-cli/` user agent 或 `x-app: cli` 识别)上恢复 identity,
 其他客户端仍然逐字节透传;这次修复所避免的故障见
 [429 故障排查条目](/zh-cn/reference/troubleshooting/)。
 

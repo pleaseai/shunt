@@ -147,7 +147,7 @@ Claude Code をオートモードで動かすと、ワークスペースの外�
 OAuth の認証情報に対して `api.anthropic.com` が探す Claude Code の identity ブロックを欠いており、
 `CLAUDE_CODE_ATTRIBUTION_HEADER=0` のときの mod の `$.model.complete` のようなサイドクエリも同様です。
 shunt はオートモードの分類器と、受け入れられるマーカーを持たないすべての Claude Code リクエスト
-（`x-claude-code-session-id` または `claude-cli/` の user agent で識別）に identity を復元し、
+（`x-claude-code-session-id`、`claude-cli/` の user agent、または `x-app: cli` で識別）に identity を復元し、
 他のクライアントはバイト単位のまま通します。この復元が防ぐ失敗は
 [429 のトラブルシューティング項目](/ja/reference/troubleshooting/)で説明しています。
 

@@ -1006,7 +1006,7 @@ With `=0`, some Claude Code side requests carry no first-party marker at all: mo
 classifier never carries the identity prompt. On a subscription-OAuth Anthropic route those would
 otherwise reach `api.anthropic.com` unmarked and come back as a bare 429 (`client-shape-rejection`). shunt
 re-adds the Claude Code identity block on Claude Code requests (identified by
-`x-claude-code-session-id` or a `claude-cli/` user agent) that carry no accepted marker, so `=0`
+`x-claude-code-session-id`, a `claude-cli/` user agent, or `x-app: cli`) that carry no accepted marker, so `=0`
 stays safe.
 
 ### 5.8 Context / usage display for mapped models

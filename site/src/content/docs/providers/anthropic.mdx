@@ -144,8 +144,8 @@ goes through a **permission classifier** — a separate Messages request whose s
 model for a safety verdict on the pending action. It omits the Claude Code identity block
 `api.anthropic.com` looks for on a subscription-OAuth credential, as do side queries such as mods'
 `$.model.complete` with `CLAUDE_CODE_ATTRIBUTION_HEADER=0`. shunt restores the identity on the
-auto-mode classifier and on any Claude Code request (identified by `x-claude-code-session-id` or a
-`claude-cli/` user agent) that carries no accepted marker; other clients keep byte-for-byte
+auto-mode classifier and on any Claude Code request (identified by `x-claude-code-session-id`, a
+`claude-cli/` user agent, or `x-app: cli`) that carries no accepted marker; other clients keep byte-for-byte
 passthrough. The [429 troubleshooting row](/reference/troubleshooting/) describes the failure that
 repairs.
 
