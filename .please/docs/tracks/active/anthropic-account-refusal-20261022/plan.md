@@ -54,7 +54,7 @@ Considered and not built:
 - [x] T002 Advance the ordered chain on a refusal and keep every other 400 terminal (file: src/adapters/anthropic/mod.rs) (depends on T001) [FR-4, FR-5, FR-10, NFR-1, NFR-2, NFR-3, AC-001, AC-003, AC-005, AC-006, AC-016, AC-017]
   Validation: in a two-upstream mock chain, each refusal reaches the second upstream and the client gets its response; a validation 400 returns immediately with the second mock at `expect(0)`; a single-upstream refusal returns the upstream's own status and message; a 429 or 5xx still advances without its body being read; the Codex pool's model-refusal tests pass on the shared body-buffer helper.
   Method: `cargo test --all-features --test failover` plus `cargo test --all-features --test codex_multi_account`
-- [ ] T003 Advance a committed streaming chain on a refusal (file: src/adapters/anthropic/mod.rs) (depends on T001) [FR-4, AC-008]
+- [x] T003 Advance a committed streaming chain on a refusal (file: src/adapters/anthropic/mod.rs) (depends on T001) [FR-4, AC-008]
   Validation: a committed stream whose current element answers with a refusal continues from the next element instead of emitting a terminal error event; a stalled 400 body still returns within the existing 1 s bound as terminal.
   Method: `cargo test --all-features chain_attempt` plus `cargo test --all-features --test failover`
   STOP: the stalled-400 test needs its timeout or assertion changed to pass.
@@ -101,6 +101,8 @@ Considered and not built:
   Evidence: `cargo test --all-features --lib account_refusal` → 8 passed, 0 failed (exit 0); fmt and clippy -D warnings clean
 - [x] (2026-10-22 19:20 KST) T002 Advance the ordered chain on a refusal and keep every other 400 terminal
   Evidence: `cargo test --all-features --test failover` → 25 passed, 0 failed (exit 0; 5 new); `cargo test --all-features --test codex_multi_account` → 34 passed, 0 failed (exit 0); mutations: dropping the marker check fails 2 new tests, buffering 429/5xx fails the stalled-body test, substring matching fails the terminal-400 test; fmt and clippy -D warnings clean
+- [x] (2026-10-22 21:10 KST) T003 Advance a committed streaming chain on a refusal
+  Evidence: `cargo test --all-features chain_attempt` → 8 passed, 0 failed (exit 0; 2 new, stalled-400 test unchanged and green); `cargo test --all-features --test failover` → 25 passed (exit 0); `--test codex_multi_account` → 34 passed (exit 0); `--lib` → 3609 passed (exit 0); `--test responses_chain_stream` → new `an_account_refusal_on_the_primary_advances_the_committed_chain` ok, 14 passed / 3 failed (the 3 pre-existing `refused_base_url` failures on this Mac); mutations: refusal arm `advance: is_advance_status` fails the unit advance test and the integration test, an always-true classifier fails the validation-400 twin, a 5 s peek budget fails the stalled-400 test; fmt and clippy -D warnings clean. Also touched: src/adapters/error_body.rs (budget parameter), src/adapters/mod.rs (re-export), src/proxy/failover{.rs,/refusal.rs} (`log_refusal_advance` made `pub(crate)`), tests/responses_chain_stream.rs
 
 ## Decision Log
 
