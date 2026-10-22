@@ -48,7 +48,7 @@ Considered and not built:
 
 ## Tasks
 
-- [ ] T001 Recognise the three account-level refusals and the spend-limit resume time (file: src/adapters/anthropic/account_refusal.rs) [FR-1, FR-2, FR-3, FR-5, AC-002, AC-004, AC-007, AC-012]
+- [x] T001 Recognise the three account-level refusals and the spend-limit resume time (file: src/adapters/anthropic/account_refusal.rs) [FR-1, FR-2, FR-3, FR-5, AC-002, AC-004, AC-007, AC-012]
   Validation: the documented spend-limit (org and workspace), credit-balance (400 and 402), and any-402 `billing_error` bodies classify as refusals; a validation 400, a 400 whose message only contains `usage limits`, and a non-JSON or HTML body do not; the stated resume time parses to that UTC instant, and a missing, unreadable, or past time yields the 1-hour default.
   Method: `cargo test --all-features account_refusal`
 - [ ] T002 Advance the ordered chain on a refusal and keep every other 400 terminal (file: src/adapters/anthropic/mod.rs) (depends on T001) [FR-4, FR-5, FR-10, NFR-1, NFR-2, NFR-3, AC-001, AC-003, AC-005, AC-006, AC-016, AC-017]
@@ -96,6 +96,9 @@ Considered and not built:
 - A pool refusal on the post-refresh retry path cools the account exactly like the first attempt (T005).
 
 ## Progress
+
+- [x] (2026-10-22 KST) T001 Recognise the three account-level refusals and the spend-limit resume time
+  Evidence: `cargo test --all-features --lib account_refusal` → 8 passed, 0 failed (exit 0); fmt and clippy -D warnings clean
 
 ## Decision Log
 
