@@ -22,6 +22,7 @@ use crate::{
     server::AppState,
 };
 
+mod account_refusal;
 mod auto_mode_classifier;
 mod deferral;
 mod model_rewrite;
