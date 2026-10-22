@@ -159,10 +159,17 @@ async fn forward(
             "upstream returned 429"
         );
     }
+    // An account-level refusal is judged here, on the one 400/402 body read,
+    // and handed to the chain as a marker so it advances (#817).
+    let (upstream, refused) = account_refusal::judge(upstream, bounds).await?;
     // The non-pooled path builds its response exactly like the pooled path's
     // relay_response (header filtering, SSE keepalive, status passthrough), so
     // reuse it with no account attribution instead of duplicating that logic.
-    relay_response(&state, &route, upstream, None, bounds).await
+    let (status, mut response) = relay_response(&state, &route, upstream, None, bounds).await?;
+    if let Some(refused) = refused {
+        response.extensions_mut().insert(refused);
+    }
+    Ok((status, response))
 }
 
 async fn forward_claude_oauth(

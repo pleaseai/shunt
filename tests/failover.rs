@@ -1242,3 +1242,236 @@ async fn legacy_single_element_chain_adds_gateway_headers() {
     assert_eq!(response.text().await.unwrap(), "legacy");
     upstream.verify().await;
 }
+
+/// An Anthropic error envelope, as the API answers a refused request.
+fn error_envelope(error_type: &str, message: &str) -> String {
+    json!({"type": "error", "error": {"type": error_type, "message": message}}).to_string()
+}
+
+const SPEND_LIMIT_MESSAGE: &str = "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.";
+const CREDIT_BALANCE_MESSAGE: &str = "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.";
+
+/// An upstream that answers `status` with a JSON content type, sends a few
+/// bytes of a body it declares much longer, and then holds the connection
+/// open without ever finishing it: any read of that body waits until the
+/// reader's own budget gives up.
+async fn spawn_stalled_error_upstream(status: u16) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 8192];
+        let _ = socket.read(&mut request).await;
+        let head = format!(
+            "HTTP/1.1 {status} Upstream\r\ncontent-type: application/json\r\ncontent-length: 4096\r\n\r\n{{\"type\":"
+        );
+        socket.write_all(head.as_bytes()).await.unwrap();
+        socket.flush().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        drop(socket);
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn account_refusals_advance_to_the_next_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    for (status, error_type, message) in [
+        (400, "invalid_request_error", SPEND_LIMIT_MESSAGE),
+        (400, "invalid_request_error", CREDIT_BALANCE_MESSAGE),
+        (402, "billing_error", "Your account has a billing issue."),
+    ] {
+        let first = MockServer::start().await;
+        let second = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .set_body_raw(error_envelope(error_type, message), "application/json"),
+            )
+            .expect(1)
+            .mount(&first)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("healthy"))
+            .expect(1)
+            .mount(&second)
+            .await;
+        let config = chain_config(
+            vec![
+                passthrough("first", first.uri()),
+                passthrough("second", second.uri()),
+            ],
+            &[("first", "model-a"), ("second", "model-b")],
+        );
+        let gateway = start_gateway(config).await;
+
+        let response = post(&gateway).await;
+
+        assert_eq!(response.status(), StatusCode::OK, "{status} {message}");
+        assert_gateway_headers(&response, "second", "model-b");
+        assert_eq!(response.text().await.unwrap(), "healthy");
+        first.verify().await;
+        second.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn request_level_400_with_an_error_envelope_returns_immediately() {
+    if !can_bind_loopback() {
+        return;
+    }
+    for message in [
+        "messages: Field required",
+        // Mentions the phrase but does not start with it: not a refusal.
+        "max_tokens exceeds the usage limits of this model",
+    ] {
+        let body = error_envelope("invalid_request_error", message);
+        let bad = MockServer::start().await;
+        let skipped = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(body.clone(), "application/json"))
+            .expect(1)
+            .mount(&bad)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&skipped)
+            .await;
+        let config = chain_config(
+            vec![
+                passthrough("bad", bad.uri()),
+                passthrough("skipped", skipped.uri()),
+            ],
+            &[("bad", "model-a"), ("skipped", "model-b")],
+        );
+        let gateway = start_gateway(config).await;
+
+        let response = post(&gateway).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{message}");
+        assert_gateway_headers(&response, "bad", "model-a");
+        assert_eq!(response.text().await.unwrap(), body);
+        bad.verify().await;
+        skipped.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn single_upstream_refusal_relays_the_upstream_status_and_message() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let body = error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE);
+    let only = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_raw(body.clone(), "application/json"))
+        .expect(1)
+        .mount(&only)
+        .await;
+    let config = chain_config(
+        vec![passthrough("only", only.uri())],
+        &[("only", "model-a")],
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_gateway_headers(&response, "only", "model-a");
+    assert_eq!(response.text().await.unwrap(), body);
+    only.verify().await;
+}
+
+#[tokio::test]
+async fn exhausted_refusal_chain_relays_the_refusal_unless_a_failure_outranks_it() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let spend = error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE);
+    let credit = error_envelope("invalid_request_error", CREDIT_BALANCE_MESSAGE);
+    // Both refuse: the first refusal is relayed, after the second was tried.
+    // A refusal then a 429: the 429 outranks it, as for any terminal status.
+    for (second_status, second_body, expected_status, expected_body, expected_upstream) in [
+        (402, credit.as_str(), 400, spend.as_str(), "first"),
+        (429, "second-429", 429, "second-429", "second"),
+    ] {
+        let first = MockServer::start().await;
+        let second = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_raw(spend.clone(), "application/json"),
+            )
+            .expect(1)
+            .mount(&first)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(second_status)
+                    .set_body_raw(second_body.to_string(), "application/json"),
+            )
+            .expect(1)
+            .mount(&second)
+            .await;
+        let config = chain_config(
+            vec![
+                passthrough("first", first.uri()),
+                passthrough("second", second.uri()),
+            ],
+            &[("first", "model-a"), ("second", "model-b")],
+        );
+        let gateway = start_gateway(config).await;
+
+        let response = post(&gateway).await;
+
+        assert_eq!(response.status().as_u16(), expected_status);
+        let expected_model = if expected_upstream == "first" {
+            "model-a"
+        } else {
+            "model-b"
+        };
+        assert_gateway_headers(&response, expected_upstream, expected_model);
+        assert_eq!(response.text().await.unwrap(), expected_body);
+        first.verify().await;
+        second.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn rate_limit_and_server_error_advance_without_reading_the_body() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // The routes keep the client's model id, so the relay leaves a non-SSE
+    // body lazy instead of reading it whole for the alias rewrite. Reading
+    // the stalled body here would hold the decision until the 5 s error
+    // envelope budget, well past the bound below.
+    for status in [429, 503] {
+        let stalled = spawn_stalled_error_upstream(status).await;
+        let healthy = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("healthy"))
+            .expect(1)
+            .mount(&healthy)
+            .await;
+        let config = chain_config(
+            vec![
+                passthrough("stalled", stalled),
+                passthrough("healthy", healthy.uri()),
+            ],
+            &[("stalled", CLIENT_MODEL), ("healthy", CLIENT_MODEL)],
+        );
+        let gateway = start_gateway(config).await;
+
+        let response = tokio::time::timeout(std::time::Duration::from_secs(2), post(&gateway))
+            .await
+            .unwrap_or_else(|_| panic!("a {status} advance waited on its body"));
+
+        assert_eq!(response.status(), StatusCode::OK, "status {status}");
+        assert_gateway_headers(&response, "healthy", CLIENT_MODEL);
+        assert_eq!(response.text().await.unwrap(), "healthy");
+        healthy.verify().await;
+    }
+}

@@ -8,14 +8,15 @@
 //! Matching is on the start of the documented message, never a substring: a
 //! validation 400 that merely mentions `usage limits` must stay terminal.
 
-// T002 wires this module up and removes the allow.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::auth::claude::usage::parse_rfc3339_to_epoch_secs;
+use crate::{
+    adapters::{AdapterError, ResponseBounds},
+    auth::claude::usage::parse_rfc3339_to_epoch_secs,
+    proxy::failover::AccountRefused,
+};
 
 /// Skip window when the refusal states no usable resume time.
 pub(crate) const REFUSAL_DEFAULT_SKIP: Duration = Duration::from_secs(60 * 60);
@@ -32,6 +33,17 @@ pub(crate) enum RefusalKind {
     SpendLimit,
     CreditBalance,
     Billing,
+}
+
+impl RefusalKind {
+    /// The stable label the chain logs and the skip state records.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::SpendLimit => "spend_limit",
+            Self::CreditBalance => "credit_balance",
+            Self::Billing => "billing",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +63,32 @@ impl AccountRefusal {
             _ => REFUSAL_DEFAULT_SKIP,
         }
     }
+}
+
+/// Judge a relayed upstream response for an account-level refusal before it
+/// reaches the client. Only a 400 or 402 has its body read, under the shared
+/// error-body bounds; every other status returns untouched and unread. The
+/// returned response carries the upstream's bytes intact either way, and a
+/// body that stalls past the budget, passes the cap, or is not the Anthropic
+/// envelope is simply not a refusal. `bounds.idle` starts at header arrival,
+/// as the relay's own body read starts it.
+pub(super) async fn judge(
+    upstream: reqwest::Response,
+    bounds: ResponseBounds,
+) -> Result<(reqwest::Response, Option<AccountRefused>), AdapterError> {
+    let status = upstream.status().as_u16();
+    if status != 400 && status != 402 {
+        return Ok((upstream, None));
+    }
+    let clock = bounds.idle.map(|idle| (idle, tokio::time::Instant::now()));
+    let (upstream, body) = crate::adapters::buffer_error_body(upstream, clock, true).await?;
+    let refused = body
+        .and_then(|body| classify(status, &body))
+        .map(|refusal| AccountRefused {
+            kind: refusal.kind.label(),
+            skip_for: refusal.skip_window(SystemTime::now()),
+        });
+    Ok((upstream, refused))
 }
 
 /// Classify an upstream error response; `None` means it is not an account-level refusal.

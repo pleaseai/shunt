@@ -27,11 +27,13 @@ use super::{
 
 pub(crate) mod chain;
 pub(crate) mod gated;
+pub(crate) mod refusal;
 
 // Re-exported at the old path: the adapters and the committed streaming chain
 // classify statuses with these, and the split that moved the loop into `chain`
 // is not a change to where that rule is spelled.
 pub(crate) use chain::{failure_priority, is_advance_status};
+pub(crate) use refusal::AccountRefused;
 
 pub(super) async fn forward(
     state: AppState,

@@ -23,6 +23,7 @@ use axum::response::IntoResponse;
 
 use crate::{error::ShuntError, routing::Route, server::AppState};
 
+use super::refusal::{log_refusal_advance, AccountRefused};
 use super::{
     dispatch, headers_for_route, is_passthrough_route, provider_origin, stamp_gateway_headers,
     InboundContext, RouterStamp,
@@ -221,7 +222,10 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                     &stamped_model,
                     router_stamp,
                 );
-                if !is_advance_status(status) {
+                // An account-level refusal advances like a 429 although its
+                // status is terminal; the adapter judged the body (#817).
+                let refused = response.extensions().get::<AccountRefused>().copied();
+                if !is_advance_status(status) && refused.is_none() {
                     finish(&provider, status);
                     return Ok(ChainSuccess {
                         status,
@@ -229,12 +233,17 @@ pub(crate) async fn run_chain(request: ChainRequest<'_>) -> Result<ChainSuccess,
                         target,
                     });
                 }
-                tracing::warn!(
-                    provider = %provider,
-                    model = %target.model,
-                    status = status.as_u16(),
-                    "upstream response triggered failover advance"
-                );
+                match refused {
+                    Some(refused) => {
+                        log_refusal_advance(&provider, &target.model, status, refused.kind)
+                    }
+                    None => tracing::warn!(
+                        provider = %provider,
+                        model = %target.model,
+                        status = status.as_u16(),
+                        "upstream response triggered failover advance"
+                    ),
+                }
                 remember_failure(
                     &mut remembered,
                     status,
@@ -399,7 +408,7 @@ mod tests {
 
     use axum::http::StatusCode;
 
-    use super::{log_before_headers_advance, log_error_advance};
+    use super::{log_before_headers_advance, log_error_advance, log_refusal_advance};
 
     struct BufferWriter(Arc<Mutex<Vec<u8>>>);
 
@@ -496,5 +505,19 @@ mod tests {
             logs.contains("upstream_message=\"zzdistinctzz\""),
             "got: {logs}"
         );
+    }
+
+    /// A refusal advance names the refusal kind beside the usual fields (#817).
+    #[test]
+    fn a_refusal_advance_logs_the_refusal_kind_at_warn() {
+        let logs = capture(|| {
+            log_refusal_advance("primary", "model-a", StatusCode::BAD_REQUEST, "spend_limit");
+        });
+
+        assert!(logs.contains("WARN"), "got: {logs}");
+        for field in ["provider=primary", "model=model-a", "status=400"] {
+            assert!(logs.contains(field), "missing {field}; got: {logs}");
+        }
+        assert!(logs.contains("refusal=\"spend_limit\""), "got: {logs}");
     }
 }
