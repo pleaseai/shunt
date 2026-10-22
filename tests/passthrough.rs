@@ -298,6 +298,7 @@ async fn claude_code_side_query_on_a_subscription_oauth_bearer_gains_the_identit
     if !can_bind_loopback() {
         return;
     }
+    let _env = common::env_lock().await;
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -342,6 +343,7 @@ async fn claude_code_count_tokens_on_a_subscription_oauth_bearer_is_forwarded_by
     if !can_bind_loopback() {
         return;
     }
+    let _env = common::env_lock().await;
     let body = r#"{"model":"claude-opus-5","messages":[],"system":"Summarize the diff."}"#;
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
