@@ -49,10 +49,10 @@ The system MUST classify as an account-level refusal a response from an upstream
 - WHEN an upstream answers 402 `billing_error` with the credit-balance message
 - THEN classify it as an account-level refusal
 
-### Requirement: classify as an account-level refusal any a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`
+### Requirement: classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`
 <!-- req: REQ-003 tracks=anthropic-account-refusal-20261022 -->
 
-The system MUST classify as an account-level refusal any a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`.
+The system MUST classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`.
 
 #### Scenario: When an upstream answers 402 `billing_error` with any other message, the system shall advance to the next chain element.
 

@@ -76,7 +76,7 @@
     {
       "id": "REQ-003",
       "kind": "functional",
-      "statement": "classify as an account-level refusal any a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`",
+      "statement": "classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`",
       "source_tracks": [
         "anthropic-account-refusal-20261022"
       ],

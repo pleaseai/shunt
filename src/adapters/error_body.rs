@@ -60,9 +60,9 @@ pub(crate) async fn buffer_error_body_capped(
     budget: Duration,
     cap: Option<usize>,
 ) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
-    let limit = cap.map_or(crate::error::ERROR_ENVELOPE_BYTES, |cap| {
-        cap.min(crate::error::ERROR_ENVELOPE_BYTES)
-    });
+    let limit = cap
+        .unwrap_or(crate::error::ERROR_ENVELOPE_BYTES)
+        .min(crate::error::ERROR_ENVELOPE_BYTES);
     let declared_oversized = upstream
         .content_length()
         .is_some_and(|length| length > limit as u64);

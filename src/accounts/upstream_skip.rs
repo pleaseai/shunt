@@ -17,7 +17,8 @@ use std::{collections::HashMap, sync::Mutex, time::Duration};
 use tokio::time::Instant;
 
 use super::{
-    account_key, cap_exclusion, expire_stale_quota, governing_cooldown, unix_now, AccountPool,
+    account_key, cap_exclusion, collapse_representatives, expire_stale_quota, governing_cooldown,
+    unix_now, AccountPool,
 };
 use crate::config::{AccountConfig, PoolConfig};
 
@@ -98,9 +99,9 @@ fn skipped_at(until: &mut HashMap<String, Instant>, upstream: &str, now: Instant
 
 impl AccountPool {
     /// How long until the first of `accounts` can serve a request again: the
-    /// shortest wait among the accounts selection may pick, i.e. neither
-    /// disabled nor paused for `provider` (the same exclusions `select_order`
-    /// applies). An account's wait is its remaining account-wide cooldown; a
+    /// shortest wait among the accounts selection may pick: one representative
+    /// per identity, neither disabled nor paused for `provider` (the same
+    /// collapse and exclusions `select_order` applies). An account's wait is its remaining account-wide cooldown; a
     /// hard-capped account counts from when its cap clears (never less than
     /// its cooldown), and one whose cap has no known end is left out.
     /// Model-scoped and Fable-scoped cooldowns are ignored: they leave the
@@ -117,8 +118,9 @@ impl AccountPool {
         let now = std::time::Instant::now();
         let unix_now = unix_now();
         let entries = self.entries.lock().expect("account health lock poisoned");
-        accounts
-            .iter()
+        collapse_representatives(provider, accounts)
+            .into_iter()
+            .map(|index| &accounts[index])
             .filter(|account| !account.disabled)
             .filter_map(
                 |account| match entries.get(&account_key(provider, account)) {
@@ -250,6 +252,42 @@ mod tests {
         )]);
 
         let window = pool.earliest_reselect("p", &[a, capped], None).unwrap();
+
+        assert!(
+            (Duration::from_secs(55)..=Duration::from_secs(60)).contains(&window),
+            "{window:?}"
+        );
+    }
+
+    /// Aliases of one identity count once, through the representative
+    /// selection would pick: an uncapped alias of a capped representative
+    /// does not make the pool selectable now (#817).
+    #[test]
+    fn earliest_reselect_reads_the_identity_representative_not_its_alias() {
+        let pool = AccountPool::default();
+        let representative = AccountConfig {
+            uuid: Some("uuid-shared".to_string()),
+            max_utilization: Some(0.5),
+            priority: 0,
+            ..pool_account("rep")
+        };
+        let alias = AccountConfig {
+            uuid: Some("uuid-shared".to_string()),
+            priority: 1,
+            ..pool_account("alias")
+        };
+        pool.import_quotas([(
+            account_key("p", &representative),
+            QuotaState {
+                utilization_5h: Some(0.9),
+                reset_5h: Some(unix_now() + 60),
+                ..Default::default()
+            },
+        )]);
+
+        let window = pool
+            .earliest_reselect("p", &[representative, alias], None)
+            .unwrap();
 
         assert!(
             (Duration::from_secs(55)..=Duration::from_secs(60)).contains(&window),
