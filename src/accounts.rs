@@ -3519,7 +3519,8 @@ fn unix_now() -> u64 {
 pub(crate) fn epoch_secs_after(lasts: Duration) -> u64 {
     (SystemTime::now() + lasts)
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
 }
 
 fn record_pool_utilization(provider: &str, utilization: [Option<f64>; 3]) {

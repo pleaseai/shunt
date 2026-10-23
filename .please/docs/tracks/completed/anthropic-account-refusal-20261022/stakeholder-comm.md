@@ -8,7 +8,7 @@ Thanks for the detailed report in #817. Here is how we understand it.
 
 **Impact**: A chain ordered "API key first, then subscription" stops at the first exhausted key. The workaround you found, removing the API upstreams, works but gives up the API credit.
 
-**Next step**: We are changing shunt to recognise three account-level refusals: a spend limit you set, an exhausted credit balance, and a billing error. On these, shunt moves to the next upstream and skips the refusing key until access resumes, or for 1 hour when Anthropic gives no time. Every other 400 still stops the chain. No timeline promised.
+**Next step**: We are changing shunt to recognise three account-level refusals: a spend limit you set, an exhausted credit balance, and a billing error. On these, shunt moves to the next upstream and skips a refusing key the gateway holds until access resumes, or for 1 hour when Anthropic gives no time. A key a client passes through is not skipped; only that request moves on. Every other 400 still stops the chain. No timeline promised.
 
 One thing to expect: the monthly API credit that comes with a Max plan does not cover Claude Code. When Claude Code is the client, expect that credit to be refused; with this change, the request then moves on to your subscription pool.
 
@@ -22,7 +22,7 @@ Thanks again for the report in #817. The fix is ready for review.
 
 **What to expect**:
 - With an "API key first, then subscription" chain, a request that hits an exhausted key is now served by the next upstream, with no client-side change.
-- The gateway log shows one warning per refusal, `upstream refused the account; skipping it until the window ends`, with the upstream name, the kind of refusal, and when the skip ends.
+- The gateway log shows one warning per refusal. For an API-key upstream it reads `upstream refused the account; skipping it until the window ends`, with the upstream name, the kind of refusal, and when the skip ends. A subscription-pool account logs its cooldown instead, and a key a client passes through logs the refusal without a skip time.
 - The skip is kept in memory, so restarting shunt clears it.
 - If every upstream refuses, you still get Anthropic's own refusal message.
 - As noted earlier, the monthly API credit that comes with a Max plan does not cover Claude Code, so Claude Code traffic on that credit is refused and moves on to your subscription pool.

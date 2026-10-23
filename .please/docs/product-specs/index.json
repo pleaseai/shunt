@@ -199,8 +199,8 @@
       "id": "SPEC-002",
       "domain": "routing",
       "feature": "failover",
-      "created_at": "2026-10-23T07:59:27.729Z",
-      "updated_at": "2026-10-23T07:59:27.729Z",
+      "created_at": "2026-10-23T08:13:28.479Z",
+      "updated_at": "2026-10-23T08:13:28.479Z",
       "source_tracks": [
         "anthropic-account-refusal-20261022"
       ],
@@ -209,17 +209,17 @@
         {
           "id": "REQ-001",
           "kind": "functional",
-          "statement": "classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 whose error message starts with `You have reached your specified API usage limits` or `You have reached your specified workspace API usage limits` (a spend limit the account owner set)"
+          "statement": "classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 400 whose error message starts with `You have reached your specified API usage limits` or `You have reached your specified workspace API usage limits` (a spend limit the account owner set)"
         },
         {
           "id": "REQ-002",
           "kind": "functional",
-          "statement": "classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 or 402 whose error message starts with `Your credit balance is too low to access the Anthropic API` (prepaid or plan-included credit exhausted)"
+          "statement": "classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 400 or 402 whose error message starts with `Your credit balance is too low to access the Anthropic API` (prepaid or plan-included credit exhausted)"
         },
         {
           "id": "REQ-003",
           "kind": "functional",
-          "statement": "classify as an account-level refusal any Anthropic-protocol upstream response with HTTP 402 and error type `billing_error`"
+          "statement": "classify as an account-level refusal any a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`"
         },
         {
           "id": "REQ-004",
@@ -229,7 +229,7 @@
         {
           "id": "REQ-005",
           "kind": "functional",
-          "statement": "keep every other 400 and 402 response terminal: relay it to the client immediately and unchanged, without trying another upstream"
+          "statement": "keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream"
         },
         {
           "id": "REQ-006",
@@ -254,7 +254,7 @@
         {
           "id": "REQ-010",
           "kind": "functional",
-          "statement": "when every element of a chain has refused or is skipped, return an account-level refusal to the client with the upstream's own status and error message intact, unless another remembered failure takes precedence under the existing preference order"
+          "statement": "when the chain is exhausted with no successful response and an account-level refusal was the best remembered failure, return it to the client with the upstream's own status and error message intact, under the existing preference order"
         },
         {
           "id": "REQ-011",
@@ -269,7 +269,7 @@
         {
           "id": "REQ-013",
           "kind": "non-functional",
-          "statement": "read an error body only for 400 and 402 responses, within a fixed size budget, so other statuses keep deciding failover from the status line alone"
+          "statement": "read an error body for refusal classification only for 400 and 402 responses, within a fixed budget, so other statuses decide failover from the status line alone (except where a path already buffers bodies for another reason, such as alias routes)"
         },
         {
           "id": "REQ-014",
@@ -279,7 +279,7 @@
         {
           "id": "REQ-015",
           "kind": "non-functional",
-          "statement": "log each account-level refusal at warning level with the upstream name, the refusal kind, and the skip expiry, and count the advance in the existing failover metric"
+          "statement": "log each account-level refusal at warning level with the upstream name and the refusal kind, log the skip expiry only for a credential that is actually skipped (not for passthrough), log the account cooldown for a Claude pool refusal, and count the advance in the existing failover metric"
         }
       ]
     }

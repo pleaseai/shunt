@@ -16,24 +16,24 @@ These refusals describe the credential, not the request: another credential can 
 
 ### Functional Requirements
 
-- [ ] FR-1: classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 whose error message starts with `You have reached your specified API usage limits` or `You have reached your specified workspace API usage limits` (a spend limit the account owner set)
-- [ ] FR-2: classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 or 402 whose error message starts with `Your credit balance is too low to access the Anthropic API` (prepaid or plan-included credit exhausted)
-- [ ] FR-3: classify as an account-level refusal any Anthropic-protocol upstream response with HTTP 402 and error type `billing_error`
+- [ ] FR-1: classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 400 whose error message starts with `You have reached your specified API usage limits` or `You have reached your specified workspace API usage limits` (a spend limit the account owner set)
+- [ ] FR-2: classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 400 or 402 whose error message starts with `Your credit balance is too low to access the Anthropic API` (prepaid or plan-included credit exhausted)
+- [ ] FR-3: classify as an account-level refusal any a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`
 - [ ] FR-4: advance the failover chain to the next element on an account-level refusal, the same way it advances on a 429, both before response headers are committed to the client and inside an already committed streaming response
-- [ ] FR-5: keep every other 400 and 402 response terminal: relay it to the client immediately and unchanged, without trying another upstream
+- [ ] FR-5: keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream
 - [ ] FR-6: skip a credential the gateway owns (an API-key upstream, or one account of a Claude subscription pool) for new requests after it returns an account-level refusal, until the refusal's stated access-resume time for a spend-limit refusal, or for 1 hour for a refusal that states no time
 - [ ] FR-7: rotate a Claude subscription pool to its next account on an account-level refusal before the chain moves to the next upstream, consistent with how the pool already handles account-scoped failures
 - [ ] FR-8: never put a client-supplied credential (passthrough authentication) into the skip state, because the refusal belongs to that client's key and not to the upstream
 - [ ] FR-9: hold the skip state in memory only; a restart clears it
-- [ ] FR-10: when every element of a chain has refused or is skipped, return an account-level refusal to the client with the upstream's own status and error message intact, unless another remembered failure takes precedence under the existing preference order
+- [ ] FR-10: when the chain is exhausted with no successful response and an account-level refusal was the best remembered failure, return it to the client with the upstream's own status and error message intact, under the existing preference order
 - [ ] FR-11: update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the three refusals, the skip durations, and that all other 400s stay terminal
 - [ ] FR-12: try a chain whose every element is in the skip window as configured instead of refusing locally, so a credential that was topped up or raised is noticed before its window ends
 
 ### Non-functional Requirements
 
-- [ ] NFR-1: read an error body only for 400 and 402 responses, within a fixed size budget, so other statuses keep deciding failover from the status line alone
+- [ ] NFR-1: read an error body for refusal classification only for 400 and 402 responses, within a fixed budget, so other statuses decide failover from the status line alone (except where a path already buffers bodies for another reason, such as alias routes)
 - [ ] NFR-2: leave successful and non-refusal responses byte-for-byte unchanged, including streaming responses
-- [ ] NFR-3: log each account-level refusal at warning level with the upstream name, the refusal kind, and the skip expiry, and count the advance in the existing failover metric
+- [ ] NFR-3: log each account-level refusal at warning level with the upstream name and the refusal kind, log the skip expiry only for a credential that is actually skipped (not for passthrough), log the account cooldown for a Claude pool refusal, and count the advance in the existing failover metric
 
 ## Acceptance Criteria
 

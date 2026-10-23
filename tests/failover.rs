@@ -1277,11 +1277,16 @@ fn two_upstream_chain(first: UpstreamConfig, second: UpstreamConfig) -> Config {
 /// bytes of a body it declares much longer, and then holds the connection
 /// open without ever finishing it: any read of that body waits until the
 /// reader's own budget gives up.
-async fn spawn_stalled_error_upstream(status: u16) -> String {
+/// Also returns a counter of the connections it has accepted, so a test can
+/// prove the upstream was contacted.
+async fn spawn_stalled_error_upstream(status: u16) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let accepted = hits.clone();
     tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
+        accepted.fetch_add(1, Ordering::SeqCst);
         let mut request = [0_u8; 8192];
         let _ = socket.read(&mut request).await;
         let head = format!(
@@ -1292,7 +1297,7 @@ async fn spawn_stalled_error_upstream(status: u16) -> String {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         drop(socket);
     });
-    format!("http://{addr}")
+    (format!("http://{addr}"), hits)
 }
 
 #[tokio::test]
@@ -1300,6 +1305,7 @@ async fn account_refusals_advance_to_the_next_upstream() {
     if !can_bind_loopback() {
         return;
     }
+    let _vars = common::env_lock().await;
     for (status, error_type, message) in [
         (400, "invalid_request_error", SPEND_LIMIT_MESSAGE),
         (400, "invalid_request_error", CREDIT_BALANCE_MESSAGE),
@@ -1335,6 +1341,7 @@ async fn request_level_400_with_an_error_envelope_returns_immediately() {
     if !can_bind_loopback() {
         return;
     }
+    let _vars = common::env_lock().await;
     for message in [
         "messages: Field required",
         // Mentions the phrase but does not start with it: not a refusal.
@@ -1371,6 +1378,7 @@ async fn single_upstream_refusal_relays_the_upstream_status_and_message() {
     if !can_bind_loopback() {
         return;
     }
+    let _vars = common::env_lock().await;
     let body = error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE);
     let only = MockServer::start().await;
     mount_post(
@@ -1398,6 +1406,7 @@ async fn exhausted_refusal_chain_relays_the_refusal_unless_a_failure_outranks_it
     if !can_bind_loopback() {
         return;
     }
+    let _vars = common::env_lock().await;
     let spend = error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE);
     let credit = error_envelope("invalid_request_error", CREDIT_BALANCE_MESSAGE);
     // Both refuse: the first refusal is relayed, after the second was tried.
@@ -1447,12 +1456,13 @@ async fn rate_limit_and_server_error_advance_without_reading_the_body() {
     if !can_bind_loopback() {
         return;
     }
+    let _vars = common::env_lock().await;
     // The routes keep the client's model id, so the relay leaves a non-SSE
     // body lazy instead of reading it whole for the alias rewrite. Reading
     // the stalled body here would hold the decision until the 5 s error
     // envelope budget, well past the bound below.
     for status in [429, 503] {
-        let stalled = spawn_stalled_error_upstream(status).await;
+        let (stalled, stalled_hits) = spawn_stalled_error_upstream(status).await;
         let healthy = MockServer::start().await;
         mount_post(
             &healthy,
@@ -1476,6 +1486,11 @@ async fn rate_limit_and_server_error_advance_without_reading_the_body() {
         assert_eq!(response.status(), StatusCode::OK, "status {status}");
         assert_gateway_headers(&response, "healthy", CLIENT_MODEL);
         assert_eq!(response.text().await.unwrap(), "healthy");
+        assert_eq!(
+            stalled_hits.load(Ordering::SeqCst),
+            1,
+            "the stalled upstream was contacted once for {status}"
+        );
         healthy.verify().await;
     }
 }
@@ -1548,6 +1563,7 @@ async fn a_refusing_passthrough_upstream_is_never_skipped() {
     if !can_bind_loopback() {
         return;
     }
+    let _vars = common::env_lock().await;
     let refusing = MockServer::start().await;
     let healthy = MockServer::start().await;
     // Contacted by both requests: the caller's own credential is not skipped.

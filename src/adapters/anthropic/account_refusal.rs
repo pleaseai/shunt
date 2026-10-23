@@ -63,7 +63,10 @@ impl AccountRefusal {
     /// How long to skip the account: until the stated resume time when it is
     /// still ahead of `now`, otherwise [`REFUSAL_DEFAULT_SKIP`].
     pub(crate) fn skip_window(&self, now: SystemTime) -> Duration {
-        let now_secs = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let now_secs = now
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs();
         match self.resume_at_epoch_secs {
             Some(resume) if resume > now_secs => Duration::from_secs(resume - now_secs),
             _ => REFUSAL_DEFAULT_SKIP,
@@ -229,6 +232,9 @@ pub(crate) fn classify(status: u16, body: &[u8]) -> Option<AccountRefusal> {
         return None;
     }
     let value: Value = serde_json::from_slice(body).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("error") {
+        return None;
+    }
     let error = value.get("error")?;
     let message = error.get("message").and_then(Value::as_str).unwrap_or("");
     let error_type = error.get("type").and_then(Value::as_str);
@@ -259,10 +265,34 @@ fn parse_resume(message: &str) -> Option<u64> {
     let rest = &message[message.find(RESUME_MARKER)? + RESUME_MARKER.len()..];
     let (date, rest) = rest.split_once(" at ")?;
     let (clock, _) = rest.split_once(" UTC")?;
-    let well_formed = date.len() == 10 && clock.len() == 5;
-    well_formed
-        .then(|| parse_rfc3339_to_epoch_secs(&format!("{date}T{clock}:00Z")))
-        .flatten()
+    if date.len() != 10 || clock.len() != 5 {
+        return None;
+    }
+    if !date_exists(date) {
+        return None;
+    }
+    parse_rfc3339_to_epoch_secs(&format!("{date}T{clock}:00Z"))
+}
+
+/// Whether `YYYY-MM-DD` names a real calendar day. The shared RFC 3339 parser
+/// only range-checks the day against 31, so `2026-02-31` would roll over.
+fn date_exists(date: &str) -> bool {
+    let (Some(year), Some(month), Some(day)) = (
+        date.get(0..4).and_then(|y| y.parse::<u32>().ok()),
+        date.get(5..7).and_then(|m| m.parse::<u32>().ok()),
+        date.get(8..10).and_then(|d| d.parse::<u32>().ok()),
+    ) else {
+        return false;
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
 }
 
 #[cfg(test)]
@@ -350,6 +380,36 @@ mod tests {
         assert_eq!(classify(400, &bom), None);
     }
 
+    /// The top-level `"type": "error"` envelope is required: the same messages
+    /// without it, or under another type, are not refusals.
+    #[test]
+    fn a_body_without_the_error_envelope_type_is_not_a_refusal() {
+        let bodies = [
+            (
+                400,
+                "invalid_request_error",
+                spend_msg(SPEND_LIMIT_PREFIXES[0]),
+            ),
+            (
+                400,
+                "invalid_request_error",
+                "Your credit balance is too low to access the Anthropic API.".to_string(),
+            ),
+            (402, "billing_error", "Payment required.".to_string()),
+        ];
+        for (status, error_type, message) in bodies {
+            let error = serde_json::json!({"type": error_type, "message": message});
+            let typed = serde_json::json!({"type": "error", "error": error}).to_string();
+            assert!(classify(status, typed.as_bytes()).is_some(), "{status}");
+            for outer in [
+                serde_json::json!({"error": error}),
+                serde_json::json!({"type": "message", "error": error}),
+            ] {
+                assert_eq!(classify(status, outer.to_string().as_bytes()), None);
+            }
+        }
+    }
+
     #[test]
     fn skip_window_uses_future_resume_else_one_hour() {
         let now = UNIX_EPOCH + Duration::from_secs(RESUME - 600);
@@ -406,6 +466,32 @@ mod tests {
             assert_eq!(refusal.skip_window(UNIX_EPOCH), REFUSAL_DEFAULT_SKIP);
         }
     }
+    /// A stated date that does not exist is unreadable, not rolled over to the
+    /// next month; real leap days are accepted.
+    #[test]
+    fn impossible_calendar_dates_yield_default_window() {
+        let resume = |date: &str| {
+            let msg = format!(
+                "{}. You will regain access on {date} at 00:00 UTC.",
+                SPEND_LIMIT_PREFIXES[0]
+            );
+            classify(400, &envelope("invalid_request_error", &msg))
+                .unwrap()
+                .resume_at_epoch_secs
+        };
+        for date in [
+            "2026-02-31",
+            "2026-04-31",
+            "2026-02-29",
+            "2026-00-10",
+            "2026-01-00",
+        ] {
+            assert_eq!(resume(date), None, "{date}");
+        }
+        assert_eq!(resume("2028-02-29"), Some(1_835_395_200));
+        assert_eq!(resume("2026-11-01"), Some(RESUME));
+    }
+
     /// A refusal-shaped 400 whose body is longer than `len` bytes.
     fn padded_refusal(len: usize) -> String {
         let message = format!("{}. {}", SPEND_LIMIT_PREFIXES[0], "x".repeat(len));

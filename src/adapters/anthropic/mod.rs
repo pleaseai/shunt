@@ -1639,6 +1639,7 @@ pub(crate) async fn chain_attempt(
                 envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                 status,
                 retry_after: None,
+                refused: false,
             };
         }
     };
@@ -1702,6 +1703,7 @@ pub(crate) async fn chain_attempt(
                     StatusCode::BAD_GATEWAY
                 },
                 retry_after: None,
+                refused: false,
             };
         }
     };
@@ -1739,6 +1741,7 @@ pub(crate) async fn chain_attempt(
                     ),
                     status,
                     retry_after,
+                    refused: true,
                 };
             }
             Ok((upstream, None)) => upstream,
@@ -1752,6 +1755,7 @@ pub(crate) async fn chain_attempt(
                     ),
                     status,
                     retry_after,
+                    refused: false,
                 };
             }
         };
@@ -1764,6 +1768,7 @@ pub(crate) async fn chain_attempt(
             envelope,
             status,
             retry_after,
+            refused: false,
         };
     }
     let is_sse = upstream
@@ -1791,6 +1796,7 @@ pub(crate) async fn chain_attempt(
             envelope,
             status: StatusCode::BAD_GATEWAY,
             retry_after: None,
+            refused: false,
         };
     }
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());

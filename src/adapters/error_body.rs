@@ -79,7 +79,7 @@ pub(crate) async fn buffer_error_body_capped(
     let mut idle_deadline = clock.map(|(idle, since)| since + idle);
     let complete = !declared_oversized
         && loop {
-            let wait = idle_deadline.map_or(budget_ends, |deadline| deadline.min(budget_ends));
+            let wait = idle_deadline.unwrap_or(budget_ends).min(budget_ends);
             match tokio::time::timeout_at(wait, rest.next()).await {
                 Ok(None) => break true,
                 Ok(Some(Ok(chunk))) => {

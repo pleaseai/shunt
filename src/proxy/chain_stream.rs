@@ -143,6 +143,10 @@ pub(crate) enum Attempt {
         /// so a refusal whose headers are not yet committed can carry it too
         /// (issue #655). `None` for a gateway-synthesized failure.
         retry_after: Option<HeaderValue>,
+        /// The failure is an account-level refusal (spend limit, credit
+        /// balance, billing) the adapter already logged where it classified
+        /// it, so the chain advances on it without a second warning.
+        refused: bool,
     },
 }
 
@@ -860,6 +864,7 @@ pub(super) async fn forward_chain_stream(
                                     envelope,
                                     status,
                                     retry_after,
+                                    refused,
                                 } => {
                                     crate::metrics::record_proxied_request(
                                         &provider,
@@ -901,12 +906,14 @@ pub(super) async fn forward_chain_stream(
                                                 &route.provider,
                                                 "advanced",
                                             );
-                                            tracing::warn!(
-                                                provider = %provider,
-                                                model = %model,
-                                                status = status.as_u16(),
-                                                "upstream failed before the first relayed frame; advancing the committed streaming chain"
-                                            );
+                                            if !refused {
+                                                tracing::warn!(
+                                                    provider = %provider,
+                                                    model = %model,
+                                                    status = status.as_u16(),
+                                                    "upstream failed before the first relayed frame; advancing the committed streaming chain"
+                                                );
+                                            }
                                             phase = Phase::Attempt {
                                                 attempts,
                                                 remembered,

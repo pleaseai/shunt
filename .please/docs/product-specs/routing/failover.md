@@ -6,8 +6,8 @@ feature: failover
 depends: []
 conflicts: []
 traces: []
-created_at: 2026-10-23T07:59:27.729Z
-updated_at: 2026-10-23T07:59:27.729Z
+created_at: 2026-10-23T08:13:28.479Z
+updated_at: 2026-10-23T08:13:28.479Z
 source_tracks: ["anthropic-account-refusal-20261022"]
 ---
 
@@ -15,14 +15,14 @@ source_tracks: ["anthropic-account-refusal-20261022"]
 
 ## Purpose
 
-Failover Specification 관련 요구사항.
+Requirements for advancing the failover chain on Anthropic account-level refusals.
 
 ## Requirements
 
-### Requirement: classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 whose error message starts with `You have reached your specified API usage limits` or `You have reached your specified workspace API usage limits` (a spend limit the account owner set)
+### Requirement: classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 400 whose error message starts with `You have reached your specified API usage limits` or `You have reached your specified workspace API usage limits` (a spend limit the account owner set)
 <!-- req: REQ-001 tracks=anthropic-account-refusal-20261022 -->
 
-The system MUST classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 whose error message starts with `You have reached your specified API usage limits` or `You have reached your specified workspace API usage limits` (a spend limit the account owner set).
+The system MUST classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 400 whose error message starts with `You have reached your specified API usage limits` or `You have reached your specified workspace API usage limits` (a spend limit the account owner set).
 
 #### Scenario: When the first upstream of a two-element chain answers 400 `invalid_request_error` with `You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.`, the system shall send the request to the second upstream and return its response.
 
@@ -34,10 +34,10 @@ The system MUST classify as an account-level refusal an Anthropic-protocol upstr
 - WHEN an upstream answers 400 with `You have reached your specified workspace API usage limits`
 - THEN classify it as an account-level refusal
 
-### Requirement: classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 or 402 whose error message starts with `Your credit balance is too low to access the Anthropic API` (prepaid or plan-included credit exhausted)
+### Requirement: classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 400 or 402 whose error message starts with `Your credit balance is too low to access the Anthropic API` (prepaid or plan-included credit exhausted)
 <!-- req: REQ-002 tracks=anthropic-account-refusal-20261022 -->
 
-The system MUST classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 or 402 whose error message starts with `Your credit balance is too low to access the Anthropic API` (prepaid or plan-included credit exhausted).
+The system MUST classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 400 or 402 whose error message starts with `Your credit balance is too low to access the Anthropic API` (prepaid or plan-included credit exhausted).
 
 #### Scenario: When an upstream answers 400 with `Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.`, the system shall advance to the next chain element.
 
@@ -49,10 +49,10 @@ The system MUST classify as an account-level refusal an Anthropic-protocol upstr
 - WHEN an upstream answers 402 `billing_error` with the credit-balance message
 - THEN classify it as an account-level refusal
 
-### Requirement: classify as an account-level refusal any Anthropic-protocol upstream response with HTTP 402 and error type `billing_error`
+### Requirement: classify as an account-level refusal any a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`
 <!-- req: REQ-003 tracks=anthropic-account-refusal-20261022 -->
 
-The system MUST classify as an account-level refusal any Anthropic-protocol upstream response with HTTP 402 and error type `billing_error`.
+The system MUST classify as an account-level refusal any a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`.
 
 #### Scenario: When an upstream answers 402 `billing_error` with any other message, the system shall advance to the next chain element.
 
@@ -84,10 +84,10 @@ The system MUST advance the failover chain to the next element on an account-lev
 - WHEN a committed streaming response's current chain element answers with an account-level refusal
 - THEN continue the stream from the next chain element instead of emitting a terminal error event
 
-### Requirement: keep every other 400 and 402 response terminal: relay it to the client immediately and unchanged, without trying another upstream
+### Requirement: keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream
 <!-- req: REQ-005 tracks=anthropic-account-refusal-20261022 -->
 
-The system MUST keep every other 400 and 402 response terminal: relay it to the client immediately and unchanged, without trying another upstream.
+The system MUST keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream.
 
 #### Scenario: If an upstream answers 400 `invalid_request_error` with a request-validation message such as `messages: Field required`, then the system shall return that 400 to the client without contacting any later chain element.
 
@@ -154,10 +154,10 @@ The system MUST hold the skip state in memory only; a restart clears it.
 - WHEN the gateway restarts
 - THEN treat every previously skipped credential as eligible
 
-### Requirement: when every element of a chain has refused or is skipped, return an account-level refusal to the client with the upstream's own status and error message intact, unless another remembered failure takes precedence under the existing preference order
+### Requirement: when the chain is exhausted with no successful response and an account-level refusal was the best remembered failure, return it to the client with the upstream's own status and error message intact, under the existing preference order
 <!-- req: REQ-010 tracks=anthropic-account-refusal-20261022 -->
 
-The system MUST when every element of a chain has refused or is skipped, return an account-level refusal to the client with the upstream's own status and error message intact, unless another remembered failure takes precedence under the existing preference order.
+The system MUST when the chain is exhausted with no successful response and an account-level refusal was the best remembered failure, return it to the client with the upstream's own status and error message intact, under the existing preference order.
 
 #### Scenario: When the only chain element returns a spend-limit refusal, the system shall return HTTP 400 with the upstream's original message.
 
@@ -181,17 +181,17 @@ The system MUST try a chain whose every element is in the skip window as configu
 
 ## Non-functional Requirements
 
-### Requirement: read an error body only for 400 and 402 responses, within a fixed size budget, so other statuses keep deciding failover from the status line alone
+### Requirement: read an error body for refusal classification only for 400 and 402 responses, within a fixed budget, so other statuses decide failover from the status line alone (except where a path already buffers bodies for another reason, such as alias routes)
 <!-- req: REQ-013 tracks=anthropic-account-refusal-20261022 -->
 
-The system SHOULD read an error body only for 400 and 402 responses, within a fixed size budget, so other statuses keep deciding failover from the status line alone.
+The system SHOULD read an error body for refusal classification only for 400 and 402 responses, within a fixed budget, so other statuses decide failover from the status line alone (except where a path already buffers bodies for another reason, such as alias routes).
 
 ### Requirement: leave successful and non-refusal responses byte-for-byte unchanged, including streaming responses
 <!-- req: REQ-014 tracks=anthropic-account-refusal-20261022 -->
 
 The system SHOULD leave successful and non-refusal responses byte-for-byte unchanged, including streaming responses.
 
-### Requirement: log each account-level refusal at warning level with the upstream name, the refusal kind, and the skip expiry, and count the advance in the existing failover metric
+### Requirement: log each account-level refusal at warning level with the upstream name and the refusal kind, log the skip expiry only for a credential that is actually skipped (not for passthrough), log the account cooldown for a Claude pool refusal, and count the advance in the existing failover metric
 <!-- req: REQ-015 tracks=anthropic-account-refusal-20261022 -->
 
-The system SHOULD log each account-level refusal at warning level with the upstream name, the refusal kind, and the skip expiry, and count the advance in the existing failover metric.
+The system SHOULD log each account-level refusal at warning level with the upstream name and the refusal kind, log the skip expiry only for a credential that is actually skipped (not for passthrough), log the account cooldown for a Claude pool refusal, and count the advance in the existing failover metric.

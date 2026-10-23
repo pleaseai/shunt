@@ -582,6 +582,7 @@ pub(crate) async fn chain_attempt(
                     envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                     status: StatusCode::BAD_GATEWAY,
                     retry_after: None,
+                    refused: false,
                 };
             }
         };
@@ -604,6 +605,7 @@ pub(crate) async fn chain_attempt(
                     envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                     status: StatusCode::BAD_GATEWAY,
                     retry_after: None,
+                    refused: false,
                 };
             }
             let (order, reprobe, cap) = state.accounts.select_order_deferred_with_cap(
@@ -707,6 +709,7 @@ pub(crate) async fn chain_attempt(
                         envelope,
                         status,
                         retry_after,
+                        refused: false,
                     };
                 }
                 Some(Err(envelope)) => {
@@ -719,6 +722,7 @@ pub(crate) async fn chain_attempt(
                         envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                         status: StatusCode::BAD_GATEWAY,
                         retry_after: None,
+                        refused: false,
                     };
                 }
                 None => {
@@ -733,6 +737,7 @@ pub(crate) async fn chain_attempt(
                         ),
                         status: StatusCode::BAD_GATEWAY,
                         retry_after: None,
+                        refused: false,
                     };
                 }
             }
@@ -756,6 +761,7 @@ pub(crate) async fn chain_attempt(
                 envelope: crate::proxy::chain_stream::LazyEnvelope::Ready(envelope),
                 status,
                 retry_after: None,
+                refused: false,
             };
         }
     };
@@ -846,6 +852,7 @@ pub(crate) async fn chain_attempt(
             envelope,
             status,
             retry_after,
+            refused: false,
         },
     }
 }

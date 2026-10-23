@@ -143,7 +143,8 @@ Wraps adapter dispatch in `forward()`. Per attempt, in chain order:
    unread.
 
    An Anthropic-protocol upstream (every upstream the Anthropic adapter
-   serves) also advances on an **account-level refusal**: the upstream refused
+   serves, except a `kimi_oauth` pool, which relays these refusals unchanged)
+   also advances on an **account-level refusal**: the upstream refused
    the account, not the request, so the next element may serve the same
    request. The adapter reads the body of a `400` or `402` and judges the start
    of `error.message` (never a substring):
@@ -275,9 +276,11 @@ The pool survives as the **intra-upstream** mechanism; the chain is the
     mark for that account. When the pool's last answer is a refusal, the pool
     relays it and the chain advances past the pool upstream. The upstream is then
     skipped only if no account can be picked right now, until the soonest
-    account-wide cooldown ends. Capped, paused, and disabled accounts, and model-
-    and Fable-scoped cooldowns, are ignored; with no account to time, the skip is
-    1 hour. A later, shorter refusal does not shorten an account's cooldown.
+    account can serve again: its account-wide cooldown ends or, for a capped
+    account, its cap clears (never earlier than its cooldown). Paused and
+    disabled accounts, capped accounts whose cap has no known end, and model-
+    and Fable-scoped cooldowns, are ignored; with no account to time, the skip
+    is 1 hour. A later, shorter refusal does not shorten an account's cooldown.
   - *Exhaustion.* A chain that ends with a refusal as its remembered failure
     returns the upstream's own status and body unless a failure of higher
     priority (`429`, then `401`/`403`, `404`, `5xx`) was remembered. A refusal

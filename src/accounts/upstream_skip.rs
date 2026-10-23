@@ -98,14 +98,16 @@ fn skipped_at(until: &mut HashMap<String, Instant>, upstream: &str, now: Instant
 
 impl AccountPool {
     /// How long until the first of `accounts` can serve a request again: the
-    /// shortest remaining account-wide cooldown among the accounts selection
-    /// may pick, i.e. neither disabled, paused for `provider`, nor held out by
-    /// a hard cap (the same exclusions `select_order` applies). Model-scoped
-    /// and Fable-scoped cooldowns are ignored: they leave the account
-    /// selectable for other requests, so they must not open an upstream-wide
-    /// window. An account that is not cooling counts as zero. `None` when no
-    /// account is selectable at all. The window a pool that every account
-    /// refused is skipped for in multi-element chains (#817).
+    /// shortest wait among the accounts selection may pick, i.e. neither
+    /// disabled nor paused for `provider` (the same exclusions `select_order`
+    /// applies). An account's wait is its remaining account-wide cooldown; a
+    /// hard-capped account counts from when its cap clears (never less than
+    /// its cooldown), and one whose cap has no known end is left out.
+    /// Model-scoped and Fable-scoped cooldowns are ignored: they leave the
+    /// account selectable for other requests, so they must not open an
+    /// upstream-wide window. An account that is not cooling counts as zero.
+    /// `None` when no account is selectable at all. The window a pool that
+    /// every account refused is skipped for in multi-element chains (#817).
     pub(crate) fn earliest_reselect(
         &self,
         provider: &str,
@@ -128,15 +130,15 @@ impl AccountPool {
                         // account out here either.
                         let mut quota = health.quota.clone();
                         expire_stale_quota(&mut quota, unix_now);
-                        if cap_exclusion(&quota, account, false, pool).is_some() {
-                            return None;
+                        let cooling = governing_cooldown(health, false, None)
+                            .unwrap_or(now)
+                            .saturating_duration_since(now);
+                        match cap_exclusion(&quota, account, false, pool) {
+                            None => Some(cooling),
+                            Some(cap) => cap.eligible_at.map(|at| {
+                                Duration::from_secs(at.saturating_sub(unix_now)).max(cooling)
+                            }),
                         }
-                        Some(
-                            governing_cooldown(health, false, None)
-                                .map_or(Duration::ZERO, |until| {
-                                    until.saturating_duration_since(now)
-                                }),
-                        )
                     }
                 },
             )
@@ -150,7 +152,7 @@ mod tests {
 
     use super::UpstreamSkips;
     use crate::{
-        accounts::{account_key, AccountPool, QuotaState},
+        accounts::{account_key, unix_now, AccountPool, QuotaState},
         config::AccountConfig,
     };
 
@@ -193,7 +195,7 @@ mod tests {
         assert_eq!(pool.earliest_reselect("p", &[disabled], None), None);
     }
 
-    /// A hard-capped account is not selectable, so it must not make the pool
+    /// A hard-capped account is not selectable now, so it must not make the pool
     /// look immediately usable and keep the skip window from opening (#817).
     #[test]
     fn earliest_reselect_ignores_a_hard_capped_account() {
@@ -221,7 +223,38 @@ mod tests {
         let window = pool.earliest_reselect("p", &[a.clone(), capped.clone()], None);
 
         assert!(window.unwrap() > Duration::from_secs(90), "{window:?}");
-        assert_eq!(pool.earliest_reselect("p", &[capped], None), None);
+        // Alone, the capped account is no longer dropped: it counts from its reset.
+        let alone = pool.earliest_reselect("p", &[capped], None).unwrap();
+        assert!(alone > Duration::from_secs(3590), "{alone:?}");
+    }
+
+    /// A capped account counts from when its cap clears, not never: if one
+    /// account refused for an hour and the other's cap resets in a minute, the
+    /// pool is skipped for about a minute, not the hour (#817).
+    #[test]
+    fn earliest_reselect_counts_a_capped_account_from_its_cap_reset() {
+        let pool = AccountPool::default();
+        let a = pool_account("a");
+        let capped = AccountConfig {
+            max_utilization: Some(0.5),
+            ..pool_account("capped")
+        };
+        pool.cooldown("p", &a, Duration::from_secs(3600), "test");
+        pool.import_quotas([(
+            account_key("p", &capped),
+            QuotaState {
+                utilization_5h: Some(0.9),
+                reset_5h: Some(unix_now() + 60),
+                ..Default::default()
+            },
+        )]);
+
+        let window = pool.earliest_reselect("p", &[a, capped], None).unwrap();
+
+        assert!(
+            (Duration::from_secs(55)..=Duration::from_secs(60)).contains(&window),
+            "{window:?}"
+        );
     }
 
     /// A Fable-scoped cooldown leaves the account usable for other requests,

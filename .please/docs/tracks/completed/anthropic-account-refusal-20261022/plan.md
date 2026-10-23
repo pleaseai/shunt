@@ -110,7 +110,7 @@ Considered and not built:
   Revision (2026-10-22 21:18 KST, commit c70eea92): a pool exhausted on refusals now records its upstream in the skip map. `cargo test --all-features --test failover` → 29 passed (exit 0; `a_claude_pool_whose_accounts_all_refuse_advances_to_the_next_upstream` now sends two requests, pool `expect(2)` across both, fallback `expect(2)`); `--test multi_account` → 41 passed (exit 0); `--lib` → 3619 passed (exit 0; new `earliest_reselect_is_the_shortest_cooldown_among_selectable_accounts`); fmt and clippy -D warnings clean. Mutations, each red and then restored: drop the upstream record (chain test red), `max` instead of `min` (unit test red), an uncooled account ignored (unit test red). Also touched: src/accounts/upstream_skip.rs (`AccountPool::earliest_reselect`)
 - [x] (2026-10-22 KST) T006 Document the account-level refusal rule in the failover contract and user docs
   Evidence: `cd site && bun run build` → exit 0, 209 pages; built `site/dist` en/ko/ja/zh-cn `reference/configuration` and `reference/troubleshooting` each contain `regain access on` and the new text (commit e41c0494). README*.md state no advance statuses, so left unchanged.
-- [x] (2026-10-23 KST) Review-stage commits (SHA: `20dc6054`, `7e479af5`, `982e0ae1`, `b063bc2f`, `0bd21c77`, `161fbf34`, `03b3b909`, `71c9657b`, `5e3eb359`, `f47d358d`)
+- [x] (2026-10-23 KST) Review-stage commits (SHA: `20dc6054`, `7e479af5`, `982e0ae1`, `b063bc2f`, `0bd21c77`, `161fbf34`, `03b3b909`, `71c9657b`, `5e3eb359`, `f47d358d`, `60a78cf6`)
 
 ## Decision Log
 
@@ -165,6 +165,5 @@ Considered and not built:
 - A refusal body that sends some bytes and then stalls can hold the response up to 5 s past the caller's idle limit.
 - The `judge` doc says a stall past the budget "is simply not a refusal", but with an idle clock set a zero-byte stall returns the idle error.
 - No integration test checks that a stated resume time becomes the recorded skip or cooldown.
-- `classify` does not require the top-level `"type": "error"`.
 - Comments at `account_refusal.rs` and `upstream_skip.rs` still say "every account refused" where the rule is now "the pool's last answer is a refusal".
 - `src/adapters/anthropic/account_refusal.rs` (523 lines) and `src/proxy/failover/chain.rs` (566 lines) exceed the 500-line guideline.
