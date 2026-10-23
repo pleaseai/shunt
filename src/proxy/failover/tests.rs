@@ -1214,7 +1214,7 @@ fn skipping_a_mapped_primary_does_not_promote_a_passthrough_fallback_credential(
     let configured = vec![injecting_fallback_route(), passthrough_route()];
 
     let mut base = caller_headers();
-    let routes = super::skip_refused_routes_for_caller(&state, configured, &mut base);
+    let routes = super::skip_refused_routes(&state, configured, &mut base);
     assert_eq!(routes, vec![passthrough_route()]);
     let inbound = context_for(&state, &base);
     let sent = headers_for_route(&state, &routes[0], &base, &inbound, true, None);
@@ -1235,7 +1235,7 @@ fn a_skip_window_never_drops_a_route_that_is_passthrough_now() {
     let configured = vec![passthrough_route(), injecting_fallback_route()];
 
     assert_eq!(
-        super::skip_refused_routes(&state, configured.clone()),
+        super::skip_refused_routes(&state, configured.clone(), &mut HeaderMap::new()),
         configured
     );
 }

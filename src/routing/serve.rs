@@ -184,11 +184,12 @@ async fn dispatch(
         admitted.headers,
         false,
     ));
+    let mut headers = judge_headers(state, admitted.headers);
     let routes = skip_refused_routes(
         state,
         routing::resolve_target_chain(&state.config, target.as_str(), admitted.router_id),
+        &mut headers,
     );
-    let headers = judge_headers(state, admitted.headers);
     // `/v1/messages` because the judge request *is* a Messages request: the
     // codec emits that shape and the adapters route on this path exactly as
     // they do for a client turn.

@@ -33,9 +33,7 @@ pub(crate) mod refusal;
 // classify statuses with these, and the split that moved the loop into `chain`
 // is not a change to where that rule is spelled.
 pub(crate) use chain::{failure_priority, is_advance_status};
-pub(crate) use refusal::{
-    record_refusal, skip_refused_routes, skip_refused_routes_for_caller, AccountRefused,
-};
+pub(crate) use refusal::{record_refusal, skip_refused_routes, AccountRefused};
 
 pub(super) async fn forward(
     state: AppState,
@@ -515,7 +513,7 @@ async fn forward_admitted(
     // The route list is final here, so an upstream inside a refusal skip
     // window drops out once, before either chain shape is built (#817).
     let mut base_headers = base_headers;
-    let routes = skip_refused_routes_for_caller(&state, routes, &mut base_headers);
+    let routes = skip_refused_routes(&state, routes, &mut base_headers);
     let first_route = routes
         .first()
         .expect("route chains are non-empty after resolution");

@@ -479,7 +479,7 @@ async fn an_account_refusal_on_the_primary_advances_the_committed_chain() {
     let primary = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(400).set_body_raw(
-            r#"{"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."}}"#,
+            common::error_envelope("invalid_request_error", common::SPEND_LIMIT_MESSAGE),
             "application/json",
         ))
         .expect(1)

@@ -36,30 +36,20 @@ pub(crate) async fn buffer_error_body(
     clock: Option<(Duration, tokio::time::Instant)>,
     verbatim: bool,
 ) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
-    buffer_error_body_within(
+    buffer_error_body_capped(
         upstream,
         clock,
         verbatim,
         crate::error::ERROR_ENVELOPE_BUDGET,
+        None,
     )
     .await
 }
 
 /// [`buffer_error_body`] under a caller-chosen `budget` in place of
 /// [`crate::error::ERROR_ENVELOPE_BUDGET`], for a caller that must decide
-/// sooner than the envelope read allows. Every other bound and rule is the
-/// same.
-pub(crate) async fn buffer_error_body_within(
-    upstream: reqwest::Response,
-    clock: Option<(Duration, tokio::time::Instant)>,
-    verbatim: bool,
-    budget: Duration,
-) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
-    buffer_error_body_capped(upstream, clock, verbatim, budget, None).await
-}
-
-/// [`buffer_error_body_within`] that also honours the caller's own byte cap:
-/// the read stops at the smaller of `cap` and
+/// sooner than the envelope read allows. It also honours the caller's own byte
+/// cap: the read stops at the smaller of `cap` and
 /// [`crate::error::ERROR_ENVELOPE_BYTES`], and a body that declares or passes
 /// that limit is passed on unjudged, so the relay that follows still applies
 /// the caller's cap to it exactly as it would have without this read.

@@ -161,13 +161,31 @@ async fn forward(
     }
     // An account-level refusal is judged here, on the one 400/402 body read,
     // and handed to the chain as a marker so it advances (#817).
-    let (upstream, refused) = account_refusal::judge(upstream, bounds).await?;
     // The non-pooled path builds its response exactly like the pooled path's
     // relay_response (header filtering, SSE keepalive, status passthrough), so
-    // reuse it with no account attribution instead of duplicating that logic.
-    let (status, mut response) = relay_response(&state, &route, upstream, None, bounds).await?;
-    if let Some(refusal) = refused {
+    // it reuses it with no account attribution instead of duplicating that logic.
+    relay_judged(&state, &route, upstream, bounds, |status, refusal| {
         account_refusal::note(&state, &route, status, refusal);
+    })
+    .await
+}
+
+/// Judge `upstream` for an account-level refusal, relay it with no account
+/// attribution, and mark the relayed response [`AccountRefused`] when it was
+/// one, after `on_refused` recorded the refusal.
+///
+/// [`AccountRefused`]: crate::proxy::failover::AccountRefused
+async fn relay_judged(
+    state: &AppState,
+    route: &Route,
+    upstream: reqwest::Response,
+    bounds: crate::adapters::ResponseBounds,
+    on_refused: impl FnOnce(StatusCode, account_refusal::AccountRefusal),
+) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let (upstream, refused) = account_refusal::judge(upstream, bounds).await?;
+    let (status, mut response) = relay_response(state, route, upstream, None, bounds).await?;
+    if let Some(refusal) = refused {
+        on_refused(status, refusal);
         response
             .extensions_mut()
             .insert(crate::proxy::failover::AccountRefused);
@@ -343,16 +361,17 @@ async fn forward_claude_oauth(
                 // An account-level refusal (#817) is the account's fault, not
                 // the request's: cool it and rotate instead of relaying, and
                 // before the healthy mark, which would clear that cooldown.
-                let upstream = match account_refusal::judge_pool_answer(
-                    &state, &route, account, upstream, bounds,
+                let Some(upstream) = account_refusal::judge_pool_answer(
+                    &state,
+                    &route,
+                    account,
+                    upstream,
+                    bounds,
+                    &mut last_response,
                 )
                 .await?
-                {
-                    account_refusal::PoolAnswer::Relay(upstream) => upstream,
-                    account_refusal::PoolAnswer::Refused(refused) => {
-                        last_response = Some(refused);
-                        continue;
-                    }
+                else {
+                    continue;
                 };
                 // A relayed 4xx still clears the cooldown (the account answered)
                 // but only a success grows the storm-control allowance.
@@ -440,16 +459,17 @@ async fn forward_claude_oauth(
                 };
                 // Same refusal rule as the Relay arms: the retry may be the
                 // account-level refusal the throttle was hiding.
-                let retry = match account_refusal::judge_pool_answer(
-                    &state, &route, account, retry, bounds,
+                let Some(retry) = account_refusal::judge_pool_answer(
+                    &state,
+                    &route,
+                    account,
+                    retry,
+                    bounds,
+                    &mut last_response,
                 )
                 .await?
-                {
-                    account_refusal::PoolAnswer::Relay(retry) => retry,
-                    account_refusal::PoolAnswer::Refused(refused) => {
-                        last_response = Some(refused);
-                        continue;
-                    }
+                else {
+                    continue;
                 };
                 let retry_status = retry.status();
                 if retry_status.is_success() {
@@ -653,16 +673,17 @@ async fn forward_claude_oauth(
                 match accounts::classify(retry_status, retry.headers()) {
                     FailoverAction::Relay => {
                         // Same refusal rule as the first attempt's Relay arm.
-                        let retry = match account_refusal::judge_pool_answer(
-                            &state, &route, account, retry, bounds,
+                        let Some(retry) = account_refusal::judge_pool_answer(
+                            &state,
+                            &route,
+                            account,
+                            retry,
+                            bounds,
+                            &mut last_response,
                         )
                         .await?
-                        {
-                            account_refusal::PoolAnswer::Relay(retry) => retry,
-                            account_refusal::PoolAnswer::Refused(refused) => {
-                                last_response = Some(refused);
-                                continue;
-                            }
+                        else {
+                            continue;
                         };
                         if retry_status.is_success() {
                             state.accounts.mark_healthy_scoped(
@@ -761,15 +782,10 @@ async fn forward_claude_oauth(
         // buffered, so this judge does not wait on the network. Each refusal
         // was logged and cooled where it was seen; the pool as a whole is
         // skipped until an account can serve again.
-        let (response, refused) = account_refusal::judge(response, bounds).await?;
-        let (status, mut response) = relay_response(&state, &route, response, None, bounds).await?;
-        if refused.is_some() {
+        return relay_judged(&state, &route, response, bounds, |_, _| {
             account_refusal::skip_refused_pool(&state, &route, &accounts);
-            response
-                .extensions_mut()
-                .insert(crate::proxy::failover::AccountRefused);
-        }
-        return Ok((status, response));
+        })
+        .await;
     }
 
     Err(AdapterError {
@@ -2634,15 +2650,8 @@ mod tests {
 
     /// Run one committed-chain attempt against a mock answering `status` with
     /// `body`, on an `api_key` provider so no client credential is needed.
-    async fn chain_attempt_answered(
-        status: u16,
-        body: &'static str,
-    ) -> crate::proxy::chain_stream::Attempt {
-        chain_attempt_answered_with_state(status, body).await.0
-    }
-
-    /// [`chain_attempt_answered`], also handing back the state the attempt ran
-    /// on, for a test that reads what the attempt recorded there.
+    /// Also hands back the state the attempt ran on, for a test that reads
+    /// what the attempt recorded there.
     async fn chain_attempt_answered_with_state(
         status: u16,
         body: &'static str,
@@ -2694,7 +2703,7 @@ mod tests {
     #[tokio::test]
     async fn chain_attempt_advances_on_an_account_refusal() {
         for (status, body) in [(400, SPEND_LIMIT_400), (402, BILLING_402)] {
-            match chain_attempt_answered(status, body).await {
+            match chain_attempt_answered_with_state(status, body).await.0 {
                 crate::proxy::chain_stream::Attempt::Failed {
                     advance,
                     remember,
@@ -2726,7 +2735,7 @@ mod tests {
     #[tokio::test]
     async fn chain_attempt_keeps_a_validation_400_terminal() {
         let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages: field required"}}"#;
-        match chain_attempt_answered(400, body).await {
+        match chain_attempt_answered_with_state(400, body).await.0 {
             crate::proxy::chain_stream::Attempt::Failed {
                 advance,
                 remember,

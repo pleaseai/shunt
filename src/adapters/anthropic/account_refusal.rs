@@ -15,9 +15,11 @@ use serde_json::Value;
 use axum::http::StatusCode;
 
 use crate::{
+    accounts::epoch_secs_after,
     adapters::{AdapterError, ResponseBounds},
     auth::claude::usage::parse_rfc3339_to_epoch_secs,
     config::AccountConfig,
+    error::ERROR_ENVELOPE_BUDGET,
     routing::Route,
     server::AppState,
 };
@@ -80,20 +82,33 @@ pub(super) async fn judge(
     upstream: reqwest::Response,
     bounds: ResponseBounds,
 ) -> Result<(reqwest::Response, Option<AccountRefusal>), AdapterError> {
+    let clock = bounds.idle.map(|idle| (idle, tokio::time::Instant::now()));
+    let (upstream, refused) =
+        judge_body(upstream, clock, ERROR_ENVELOPE_BUDGET, bounds.max_bytes).await?;
+    Ok((upstream, refused.map(|(refusal, _)| refusal)))
+}
+
+/// Only a 400 or 402 body can be an account-level refusal.
+fn can_refuse(status: u16) -> bool {
+    status == 400 || status == 402
+}
+
+/// The status guard, bounded read, and classification [`judge`] and [`peek`]
+/// share, returning the refusal with the body it was judged on.
+async fn judge_body(
+    upstream: reqwest::Response,
+    clock: Option<(Duration, tokio::time::Instant)>,
+    budget: Duration,
+    cap: Option<usize>,
+) -> Result<(reqwest::Response, Option<(AccountRefusal, bytes::Bytes)>), AdapterError> {
     let status = upstream.status().as_u16();
-    if status != 400 && status != 402 {
+    if !can_refuse(status) {
         return Ok((upstream, None));
     }
-    let clock = bounds.idle.map(|idle| (idle, tokio::time::Instant::now()));
-    let (upstream, body) = crate::adapters::buffer_error_body_capped(
-        upstream,
-        clock,
-        true,
-        crate::error::ERROR_ENVELOPE_BUDGET,
-        bounds.max_bytes,
-    )
-    .await?;
-    Ok((upstream, body.and_then(|body| classify(status, &body))))
+    let (upstream, body) =
+        crate::adapters::buffer_error_body_capped(upstream, clock, true, budget, cap).await?;
+    let refused = body.and_then(|body| classify(status, &body).map(|refusal| (refusal, body)));
+    Ok((upstream, refused))
 }
 
 /// Record a refusal `route`'s upstream answered: start its skip window unless
@@ -116,33 +131,27 @@ pub(super) fn note(state: &AppState, route: &Route, status: StatusCode, refusal:
 /// beside [`crate::accounts::rotation_reason`]'s status-derived labels.
 pub(super) const POOL_REFUSAL_REASON: &str = "account_refusal";
 
-/// What a Claude pool account's relayed answer turned out to be.
-pub(super) enum PoolAnswer {
-    /// Not a refusal: relay it, exactly as before this rule existed.
-    Relay(reqwest::Response),
-    /// The account refused: it is cooled, and the response (rebuilt with the
-    /// upstream's bytes intact) is the pool's fallback if every account refuses.
-    Refused(reqwest::Response),
-}
-
 /// Judge a Claude pool account's relayed answer (`forward_claude_oauth`'s
 /// Relay arms, first attempt and post-refresh retry). A refusal cools the
 /// account for the refusal's window so selection skips it — the pool's
 /// per-account cooldown is its skip state, so no upstream skip is recorded —
 /// and logs once. The refusal proves the bearer authenticated, so a stale
 /// needs-re-login mark is cleared as a relayed 4xx clears it; the cooldown is
-/// left standing, unlike the healthy mark a relayed answer gets.
+/// left standing, unlike the healthy mark a relayed answer gets. `Some` is the
+/// response to relay; `None` is a refusal, whose response is stored in
+/// `last_response` as the pool's fallback if every account refuses.
 pub(super) async fn judge_pool_answer(
     state: &AppState,
     route: &Route,
     account: &AccountConfig,
     upstream: reqwest::Response,
     bounds: ResponseBounds,
-) -> Result<PoolAnswer, AdapterError> {
+    last_response: &mut Option<reqwest::Response>,
+) -> Result<Option<reqwest::Response>, AdapterError> {
     let status = upstream.status();
     let (upstream, refused) = judge(upstream, bounds).await?;
     let Some(refusal) = refused else {
-        return Ok(PoolAnswer::Relay(upstream));
+        return Ok(Some(upstream));
     };
     let window = refusal.skip_window(SystemTime::now());
     let standing =
@@ -150,9 +159,7 @@ pub(super) async fn judge_pool_answer(
             .accounts
             .cooldown_refusal(&route.provider, account, window, POOL_REFUSAL_REASON);
     state.accounts.clear_needs_relogin(&route.provider, account);
-    let cooldown_until = (SystemTime::now() + standing)
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let cooldown_until = epoch_secs_after(standing);
     tracing::warn!(
         provider = %route.provider,
         account = %account.name,
@@ -161,7 +168,8 @@ pub(super) async fn judge_pool_answer(
         cooldown_until_epoch_secs = cooldown_until,
         "Claude OAuth account refused the request at the account level; cooling it down and rotating to the next account"
     );
-    Ok(PoolAnswer::Refused(upstream))
+    *last_response = Some(upstream);
+    Ok(None)
 }
 
 /// Skip a Claude pool upstream that every account refused, so multi-element
@@ -187,9 +195,7 @@ pub(super) fn skip_refused_pool(state: &AppState, route: &Route, accounts: &[Acc
         .accounts
         .upstream_skips()
         .record(&route.provider, window);
-    let skip_until = (SystemTime::now() + lasts)
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let skip_until = epoch_secs_after(lasts);
     tracing::warn!(
         provider = %route.provider,
         model = %route.model,
@@ -214,19 +220,12 @@ pub(super) const CHAIN_PEEK_BUDGET: Duration = Duration::from_millis(250);
 pub(super) async fn peek(
     upstream: reqwest::Response,
 ) -> Result<(reqwest::Response, Option<(AccountRefusal, bytes::Bytes)>), AdapterError> {
-    let status = upstream.status().as_u16();
-    if status != 400 && status != 402 {
-        return Ok((upstream, None));
-    }
-    let (upstream, body) =
-        crate::adapters::buffer_error_body_within(upstream, None, true, CHAIN_PEEK_BUDGET).await?;
-    let refused = body.and_then(|body| classify(status, &body).map(|refusal| (refusal, body)));
-    Ok((upstream, refused))
+    judge_body(upstream, None, CHAIN_PEEK_BUDGET, None).await
 }
 
 /// Classify an upstream error response; `None` means it is not an account-level refusal.
 pub(crate) fn classify(status: u16, body: &[u8]) -> Option<AccountRefusal> {
-    if status != 400 && status != 402 {
+    if !can_refuse(status) {
         return None;
     }
     let value: Value = serde_json::from_slice(body).ok()?;
@@ -508,11 +507,11 @@ mod tests {
         };
         let upstream = upstream_response(padded_refusal(500)).await;
 
-        let answer = judge_pool_answer(&state, &route, &account, upstream, capped(100))
+        let answer = judge_pool_answer(&state, &route, &account, upstream, capped(100), &mut None)
             .await
             .unwrap();
 
-        assert!(matches!(answer, PoolAnswer::Relay(_)));
+        assert!(answer.is_some());
         assert_eq!(
             state
                 .accounts

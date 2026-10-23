@@ -28,6 +28,7 @@ use wiremock::{
 };
 
 mod common;
+use common::{error_envelope, CREDIT_BALANCE_MESSAGE, SPEND_LIMIT_MESSAGE};
 
 const CLIENT_MODEL: &str = "failover-model";
 
@@ -1243,13 +1244,34 @@ async fn legacy_single_element_chain_adds_gateway_headers() {
     upstream.verify().await;
 }
 
-/// An Anthropic error envelope, as the API answers a refused request.
-fn error_envelope(error_type: &str, message: &str) -> String {
-    json!({"type": "error", "error": {"type": error_type, "message": message}}).to_string()
+/// An Anthropic account-refusal reply: `status` with an error envelope.
+fn refusal_reply(status: u16, error_type: &str, message: &str) -> ResponseTemplate {
+    ResponseTemplate::new(status)
+        .set_body_raw(error_envelope(error_type, message), "application/json")
 }
 
-const SPEND_LIMIT_MESSAGE: &str = "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.";
-const CREDIT_BALANCE_MESSAGE: &str = "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.";
+/// The org spend-limit refusal the skip tests answer with.
+fn spend_limit_reply() -> ResponseTemplate {
+    refusal_reply(400, "invalid_request_error", SPEND_LIMIT_MESSAGE)
+}
+
+/// Mount a POST responder on `server` that must be hit exactly `times`.
+async fn mount_post(server: &MockServer, responder: impl wiremock::Respond + 'static, times: u64) {
+    Mock::given(method("POST"))
+        .respond_with(responder)
+        .expect(times)
+        .mount(server)
+        .await;
+}
+
+/// A two-upstream chain, `first` then `second`, mapped to `model-a` / `model-b`.
+fn two_upstream_chain(first: UpstreamConfig, second: UpstreamConfig) -> Config {
+    let (first_name, second_name) = (first.name.clone(), second.name.clone());
+    chain_config(
+        vec![first, second],
+        &[(&first_name, "model-a"), (&second_name, "model-b")],
+    )
+}
 
 /// An upstream that answers `status` with a JSON content type, sends a few
 /// bytes of a body it declares much longer, and then holds the connection
@@ -1285,25 +1307,16 @@ async fn account_refusals_advance_to_the_next_upstream() {
     ] {
         let first = MockServer::start().await;
         let second = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(
-                ResponseTemplate::new(status)
-                    .set_body_raw(error_envelope(error_type, message), "application/json"),
-            )
-            .expect(1)
-            .mount(&first)
-            .await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("healthy"))
-            .expect(1)
-            .mount(&second)
-            .await;
-        let config = chain_config(
-            vec![
-                passthrough("first", first.uri()),
-                passthrough("second", second.uri()),
-            ],
-            &[("first", "model-a"), ("second", "model-b")],
+        mount_post(&first, refusal_reply(status, error_type, message), 1).await;
+        mount_post(
+            &second,
+            ResponseTemplate::new(200).set_body_string("healthy"),
+            1,
+        )
+        .await;
+        let config = two_upstream_chain(
+            passthrough("first", first.uri()),
+            passthrough("second", second.uri()),
         );
         let gateway = start_gateway(config).await;
 
@@ -1330,22 +1343,16 @@ async fn request_level_400_with_an_error_envelope_returns_immediately() {
         let body = error_envelope("invalid_request_error", message);
         let bad = MockServer::start().await;
         let skipped = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(400).set_body_raw(body.clone(), "application/json"))
-            .expect(1)
-            .mount(&bad)
-            .await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&skipped)
-            .await;
-        let config = chain_config(
-            vec![
-                passthrough("bad", bad.uri()),
-                passthrough("skipped", skipped.uri()),
-            ],
-            &[("bad", "model-a"), ("skipped", "model-b")],
+        mount_post(
+            &bad,
+            ResponseTemplate::new(400).set_body_raw(body.clone(), "application/json"),
+            1,
+        )
+        .await;
+        mount_post(&skipped, ResponseTemplate::new(200), 0).await;
+        let config = two_upstream_chain(
+            passthrough("bad", bad.uri()),
+            passthrough("skipped", skipped.uri()),
         );
         let gateway = start_gateway(config).await;
 
@@ -1366,11 +1373,12 @@ async fn single_upstream_refusal_relays_the_upstream_status_and_message() {
     }
     let body = error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE);
     let only = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(400).set_body_raw(body.clone(), "application/json"))
-        .expect(1)
-        .mount(&only)
-        .await;
+    mount_post(
+        &only,
+        ResponseTemplate::new(400).set_body_raw(body.clone(), "application/json"),
+        1,
+    )
+    .await;
     let config = chain_config(
         vec![passthrough("only", only.uri())],
         &[("only", "model-a")],
@@ -1400,27 +1408,22 @@ async fn exhausted_refusal_chain_relays_the_refusal_unless_a_failure_outranks_it
     ] {
         let first = MockServer::start().await;
         let second = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(
-                ResponseTemplate::new(400).set_body_raw(spend.clone(), "application/json"),
-            )
-            .expect(1)
-            .mount(&first)
-            .await;
-        Mock::given(method("POST"))
-            .respond_with(
-                ResponseTemplate::new(second_status)
-                    .set_body_raw(second_body.to_string(), "application/json"),
-            )
-            .expect(1)
-            .mount(&second)
-            .await;
-        let config = chain_config(
-            vec![
-                passthrough("first", first.uri()),
-                passthrough("second", second.uri()),
-            ],
-            &[("first", "model-a"), ("second", "model-b")],
+        mount_post(
+            &first,
+            ResponseTemplate::new(400).set_body_raw(spend.clone(), "application/json"),
+            1,
+        )
+        .await;
+        mount_post(
+            &second,
+            ResponseTemplate::new(second_status)
+                .set_body_raw(second_body.to_string(), "application/json"),
+            1,
+        )
+        .await;
+        let config = two_upstream_chain(
+            passthrough("first", first.uri()),
+            passthrough("second", second.uri()),
         );
         let gateway = start_gateway(config).await;
 
@@ -1451,11 +1454,12 @@ async fn rate_limit_and_server_error_advance_without_reading_the_body() {
     for status in [429, 503] {
         let stalled = spawn_stalled_error_upstream(status).await;
         let healthy = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("healthy"))
-            .expect(1)
-            .mount(&healthy)
-            .await;
+        mount_post(
+            &healthy,
+            ResponseTemplate::new(200).set_body_string("healthy"),
+            1,
+        )
+        .await;
         let config = chain_config(
             vec![
                 passthrough("stalled", stalled),
@@ -1516,25 +1520,16 @@ async fn a_spend_limit_refusal_skips_the_api_key_upstream_on_later_requests() {
     let refusing = MockServer::start().await;
     let healthy = MockServer::start().await;
     // Contacted once: the second request must skip it without a round trip.
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(400).set_body_raw(
-            error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE),
-            "application/json",
-        ))
-        .expect(1)
-        .mount(&refusing)
-        .await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("healthy"))
-        .expect(2)
-        .mount(&healthy)
-        .await;
-    let config = chain_config(
-        vec![
-            api_key_upstream("refusing", refusing.uri(), &key_env),
-            api_key_upstream("healthy", healthy.uri(), &key_env),
-        ],
-        &[("refusing", "model-a"), ("healthy", "model-b")],
+    mount_post(&refusing, spend_limit_reply(), 1).await;
+    mount_post(
+        &healthy,
+        ResponseTemplate::new(200).set_body_string("healthy"),
+        2,
+    )
+    .await;
+    let config = two_upstream_chain(
+        api_key_upstream("refusing", refusing.uri(), &key_env),
+        api_key_upstream("healthy", healthy.uri(), &key_env),
     );
     let gateway = start_gateway(config).await;
 
@@ -1556,25 +1551,16 @@ async fn a_refusing_passthrough_upstream_is_never_skipped() {
     let refusing = MockServer::start().await;
     let healthy = MockServer::start().await;
     // Contacted by both requests: the caller's own credential is not skipped.
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(400).set_body_raw(
-            error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE),
-            "application/json",
-        ))
-        .expect(2)
-        .mount(&refusing)
-        .await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("healthy"))
-        .expect(2)
-        .mount(&healthy)
-        .await;
-    let config = chain_config(
-        vec![
-            passthrough("refusing", refusing.uri()),
-            passthrough("healthy", healthy.uri()),
-        ],
-        &[("refusing", "model-a"), ("healthy", "model-b")],
+    mount_post(&refusing, spend_limit_reply(), 2).await;
+    mount_post(
+        &healthy,
+        ResponseTemplate::new(200).set_body_string("healthy"),
+        2,
+    )
+    .await;
+    let config = two_upstream_chain(
+        passthrough("refusing", refusing.uri()),
+        passthrough("healthy", healthy.uri()),
     );
     let gateway = start_gateway(config).await;
 
@@ -1598,36 +1584,29 @@ async fn a_chain_whose_every_upstream_is_skipped_is_still_tried_in_order() {
     let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let first = MockServer::start().await;
     let second = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(Noting {
+    mount_post(
+        &first,
+        Noting {
             name: "first",
             log: log.clone(),
-            template: ResponseTemplate::new(400).set_body_raw(
-                error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE),
-                "application/json",
-            ),
-        })
-        .expect(2)
-        .mount(&first)
-        .await;
-    Mock::given(method("POST"))
-        .respond_with(Noting {
+            template: spend_limit_reply(),
+        },
+        2,
+    )
+    .await;
+    mount_post(
+        &second,
+        Noting {
             name: "second",
             log: log.clone(),
-            template: ResponseTemplate::new(402).set_body_raw(
-                error_envelope("billing_error", "Your account has a billing issue."),
-                "application/json",
-            ),
-        })
-        .expect(2)
-        .mount(&second)
-        .await;
-    let config = chain_config(
-        vec![
-            api_key_upstream("first", first.uri(), &key_env),
-            api_key_upstream("second", second.uri(), &key_env),
-        ],
-        &[("first", "model-a"), ("second", "model-b")],
+            template: refusal_reply(402, "billing_error", "Your account has a billing issue."),
+        },
+        2,
+    )
+    .await;
+    let config = two_upstream_chain(
+        api_key_upstream("first", first.uri(), &key_env),
+        api_key_upstream("second", second.uri(), &key_env),
     );
     let gateway = start_gateway(config).await;
 
@@ -1660,20 +1639,14 @@ async fn a_claude_pool_whose_accounts_all_refuse_advances_to_the_next_upstream()
     vars.set("SHUNT_TEST_FAILOVER_REFUSING_B", "fake-oauth-refusing-b");
     let claude = MockServer::start().await;
     // One refusal per account, on the first request only.
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(400).set_body_raw(
-            error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE),
-            "application/json",
-        ))
-        .expect(2)
-        .mount(&claude)
-        .await;
+    mount_post(&claude, spend_limit_reply(), 2).await;
     let fallback = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("from-fallback"))
-        .expect(2)
-        .mount(&fallback)
-        .await;
+    mount_post(
+        &fallback,
+        ResponseTemplate::new(200).set_body_string("from-fallback"),
+        2,
+    )
+    .await;
     let pool = ["a", "b"]
         .map(|name| {
             shunt::config::AccountSelection::Inline(shunt::config::AccountConfig {
@@ -1687,20 +1660,17 @@ async fn a_claude_pool_whose_accounts_all_refuse_advances_to_the_next_upstream()
             })
         })
         .to_vec();
-    let config = chain_config(
-        vec![
-            upstream(
-                "claude",
-                claude.uri(),
-                ProviderKind::Anthropic,
-                UpstreamAuth::Map(AuthMap::ClaudeOauth {
-                    account: None,
-                    accounts: Some(pool),
-                }),
-            ),
-            passthrough("fallback", fallback.uri()),
-        ],
-        &[("claude", "model-a"), ("fallback", "model-b")],
+    let config = two_upstream_chain(
+        upstream(
+            "claude",
+            claude.uri(),
+            ProviderKind::Anthropic,
+            UpstreamAuth::Map(AuthMap::ClaudeOauth {
+                account: None,
+                accounts: Some(pool),
+            }),
+        ),
+        passthrough("fallback", fallback.uri()),
     );
     let gateway = start_gateway(config).await;
 

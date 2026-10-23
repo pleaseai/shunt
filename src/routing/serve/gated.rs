@@ -59,7 +59,7 @@ use super::bounds::{
 use crate::config::CallBounds;
 use crate::proxy::failover::{
     chain::{run_chain, ChainRequest, ChainSuccess},
-    skip_refused_routes_for_caller, InboundContext,
+    skip_refused_routes, InboundContext,
 };
 use crate::proxy::ForwardError;
 use crate::request::RequestBody;
@@ -201,7 +201,7 @@ async fn capture(request: &GatedRequest<'_>, target: &str, bounds: CallBounds) -
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let mut base_headers = request.base_headers.clone();
-    let routes = skip_refused_routes_for_caller(
+    let routes = skip_refused_routes(
         request.state,
         routing::resolve_target_chain(&request.state.config, target, request.router_id),
         &mut base_headers,

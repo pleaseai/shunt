@@ -18,6 +18,7 @@ use wiremock::{
 };
 
 mod common;
+use common::{error_envelope, CREDIT_BALANCE_MESSAGE, SPEND_LIMIT_MESSAGE};
 
 struct BearerToken(String);
 
@@ -2817,15 +2818,27 @@ async fn a_throttle_pause_retry_counts_as_a_second_attempt_on_the_same_account()
     upstream.verify().await;
 }
 
-/// An Anthropic error envelope, as the API answers a refused request.
-fn error_envelope(error_type: &str, message: &str) -> String {
-    serde_json::json!({"type": "error", "error": {"type": error_type, "message": message}})
-        .to_string()
+/// A gateway over `account-a` and `account-b`, whose tokens come from the
+/// `{env_stem}_A` / `{env_stem}_B` variables the test has set. Returns account
+/// A's config for the cooldown assertions.
+async fn start_two_account_gateway(
+    upstream: &MockServer,
+    env_stem: &str,
+) -> (TestGateway, shunt::server::AppState, AccountConfig) {
+    let account_a = account("account-a", &format!("{env_stem}_A"), "uuid-a");
+    let (gateway, state) = start_gateway_with_state(test_config(
+        &upstream.uri(),
+        account_a.clone(),
+        account("account-b", &format!("{env_stem}_B"), "uuid-b"),
+    ))
+    .await;
+    (gateway, state, account_a)
 }
 
-const CREDIT_BALANCE_MESSAGE: &str =
-    "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing.";
-const SPEND_LIMIT_MESSAGE: &str = "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.";
+/// The response was served by the named pool account.
+fn assert_served_by(response: &reqwest::Response, account: &str) {
+    assert_eq!(response.headers().get("x-shunt-account").unwrap(), account);
+}
 
 /// The cooldown a refusal with no stated resume time earns: the one-hour
 /// default, far past the 30 s a 5xx rotation would leave.
@@ -2879,29 +2892,18 @@ async fn an_account_refusal_rotates_and_cools_the_refusing_account() {
         .mount(&upstream)
         .await;
 
-    let account_a = account("account-a", "SHUNT_TEST_MULTI_REFUSAL_A", "uuid-refusal-a");
-    let (gateway, state) = start_gateway_with_state(test_config(
-        &upstream.uri(),
-        account_a.clone(),
-        account("account-b", "SHUNT_TEST_MULTI_REFUSAL_B", "uuid-refusal-b"),
-    ))
-    .await;
+    let (gateway, state, account_a) =
+        start_two_account_gateway(&upstream, "SHUNT_TEST_MULTI_REFUSAL").await;
 
     let response = post_messages(&gateway, None).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("x-shunt-account").unwrap(),
-        "account-b"
-    );
+    assert_served_by(&response, "account-b");
     assert_cooled_for_the_default_refusal_window(&state, &account_a);
 
     // A session that maps to account A still lands on B while A cools.
     let session_id = session_id_for_account(0, 2);
     let response = post_messages(&gateway, Some(&session_id)).await;
-    assert_eq!(
-        response.headers().get("x-shunt-account").unwrap(),
-        "account-b"
-    );
+    assert_served_by(&response, "account-b");
     upstream.verify().await;
 }
 
@@ -2955,28 +2957,12 @@ async fn a_refusal_on_the_throttle_retry_rotates_to_the_next_account() {
         .mount(&upstream)
         .await;
 
-    let account_a = account(
-        "account-a",
-        "SHUNT_TEST_MULTI_REFUSALPAUSE_A",
-        "uuid-refusalpause-a",
-    );
-    let (gateway, state) = start_gateway_with_state(test_config(
-        &upstream.uri(),
-        account_a.clone(),
-        account(
-            "account-b",
-            "SHUNT_TEST_MULTI_REFUSALPAUSE_B",
-            "uuid-refusalpause-b",
-        ),
-    ))
-    .await;
+    let (gateway, state, account_a) =
+        start_two_account_gateway(&upstream, "SHUNT_TEST_MULTI_REFUSALPAUSE").await;
 
     let response = post_messages(&gateway, None).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("x-shunt-account").unwrap(),
-        "account-b"
-    );
+    assert_served_by(&response, "account-b");
     assert_cooled_for_the_default_refusal_window(&state, &account_a);
     upstream.verify().await;
 }
@@ -3055,10 +3041,7 @@ async fn a_refusal_after_refresh_rotates_and_cools_the_refusing_account() {
 
     let response = post_messages(&gateway, None).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("x-shunt-account").unwrap(),
-        "account-b"
-    );
+    assert_served_by(&response, "account-b");
     assert_cooled_for_the_default_refusal_window(&state, &resolved_store_account("account-a"));
     upstream.verify().await;
     auth.verify().await;
@@ -3099,12 +3082,8 @@ async fn a_pool_where_every_account_refuses_relays_the_last_refusal() {
         .mount(&upstream)
         .await;
 
-    let gateway = start_gateway_with(test_config(
-        &upstream.uri(),
-        account("account-a", "SHUNT_TEST_MULTI_ALLREFUSE_A", "uuid-a"),
-        account("account-b", "SHUNT_TEST_MULTI_ALLREFUSE_B", "uuid-b"),
-    ))
-    .await;
+    let (gateway, _state, _account_a) =
+        start_two_account_gateway(&upstream, "SHUNT_TEST_MULTI_ALLREFUSE").await;
 
     let response = post_messages(&gateway, None).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -3142,20 +3121,12 @@ async fn a_validation_400_is_relayed_without_rotating_or_cooling() {
         .mount(&upstream)
         .await;
 
-    let account_a = account("account-a", "SHUNT_TEST_MULTI_VALIDATION_A", "uuid-a");
-    let (gateway, state) = start_gateway_with_state(test_config(
-        &upstream.uri(),
-        account_a.clone(),
-        account("account-b", "SHUNT_TEST_MULTI_VALIDATION_B", "uuid-b"),
-    ))
-    .await;
+    let (gateway, state, account_a) =
+        start_two_account_gateway(&upstream, "SHUNT_TEST_MULTI_VALIDATION").await;
 
     let response = post_messages(&gateway, None).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(
-        response.headers().get("x-shunt-account").unwrap(),
-        "account-a"
-    );
+    assert_served_by(&response, "account-a");
     assert_eq!(response.text().await.unwrap(), body);
     assert_pool_observed(&state, &account_a);
     let snapshot = &state

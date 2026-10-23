@@ -213,9 +213,8 @@ async fn a_refused_streaming_weak_chain_relays_a_pool_exhausted_retry_after() {
 /// role: the caller's `authorization` and `x-api-key` stay stripped, as on the
 /// first, unskipped request (#817).
 ///
-/// Non-vacuity: drop the strip from `skip_refused_routes_for_caller` (or call
-/// plain `skip_refused_routes` in `capture`) and the second request's
-/// fallback receives the caller's credential.
+/// Non-vacuity: drop the strip from `skip_refused_routes` (the primary-dropped
+/// branch) and the second request's fallback receives the caller's credential.
 #[tokio::test]
 async fn a_skipped_mapped_primary_does_not_hand_the_caller_credential_to_a_gated_fallback() {
     if !can_bind_loopback() {

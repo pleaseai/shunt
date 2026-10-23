@@ -3514,6 +3514,14 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+/// Seconds since the Unix epoch at `lasts` from now, for the `*_until_epoch_secs`
+/// log fields. A clock before the epoch reads as 0.
+pub(crate) fn epoch_secs_after(lasts: Duration) -> u64 {
+    (SystemTime::now() + lasts)
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 fn record_pool_utilization(provider: &str, utilization: [Option<f64>; 3]) {
     for (window, value) in ["5h", "7d", "7d_oi"].into_iter().zip(utilization) {
         crate::metrics::record_pool_utilization(provider, window, value);

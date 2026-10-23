@@ -12,15 +12,13 @@
 //! unless a test pauses the runtime, so the window boundaries are testable
 //! with paused time.
 
-use std::{
-    collections::HashMap,
-    sync::Mutex,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, sync::Mutex, time::Duration};
 
 use tokio::time::Instant;
 
-use super::{account_key, cap_exclusion, expire_stale_quota, governing_cooldown, AccountPool};
+use super::{
+    account_key, cap_exclusion, expire_stale_quota, governing_cooldown, unix_now, AccountPool,
+};
 use crate::config::{AccountConfig, PoolConfig};
 
 /// Upstream name → the instant its skip window ends.
@@ -46,42 +44,55 @@ impl UpstreamSkips {
     }
 
     /// Whether `upstream` is inside an unexpired skip window.
+    #[cfg(test)]
     pub(crate) fn is_skipped(&self, upstream: &str) -> bool {
-        let now = Instant::now();
         let mut until = self.until.lock().expect("upstream skip lock poisoned");
-        match until.get(upstream) {
-            Some(end) if *end > now => true,
-            Some(_) => {
-                until.remove(upstream);
-                false
-            }
-            None => false,
-        }
+        skipped_at(&mut until, upstream, Instant::now())
     }
 
     /// Drop the items whose upstream is being skipped, keeping the order of
-    /// the rest. When every item would be dropped the list comes back
-    /// unchanged: a request is still worth trying in configured order rather
-    /// than refused by the gateway without contacting anyone. `upstream`
-    /// returns `None` for an item that is never skipped, whatever window its
-    /// name carries.
+    /// the rest, and report whether the first item was among them. When every
+    /// item would be dropped the list comes back unchanged (and the first is
+    /// not reported dropped): a request is still worth trying in configured
+    /// order rather than refused by the gateway without contacting anyone.
+    /// `upstream` returns `None` for an item that is never skipped, whatever
+    /// window its name carries. The lock is taken and the clock read once.
     pub(crate) fn retain_unskipped<T>(
         &self,
         items: Vec<T>,
         upstream: impl Fn(&T) -> Option<&str>,
-    ) -> Vec<T> {
-        let skipped: Vec<bool> = items
-            .iter()
-            .map(|item| upstream(item).is_some_and(|name| self.is_skipped(name)))
-            .collect();
-        if !skipped.contains(&true) || !skipped.contains(&false) {
-            return items;
+    ) -> (Vec<T>, bool) {
+        let now = Instant::now();
+        let mut until = self.until.lock().expect("upstream skip lock poisoned");
+        let mut is_skipped =
+            |item: &T| upstream(item).is_some_and(|name| skipped_at(&mut until, name, now));
+        let (mut any_skipped, mut any_kept) = (false, false);
+        for item in &items {
+            if is_skipped(item) {
+                any_skipped = true;
+            } else {
+                any_kept = true;
+            }
         }
-        items
-            .into_iter()
-            .zip(skipped)
-            .filter_map(|(item, skipped)| (!skipped).then_some(item))
-            .collect()
+        if !any_skipped || !any_kept {
+            return (items, false);
+        }
+        let first_dropped = items.first().is_some_and(&mut is_skipped);
+        let kept = items.into_iter().filter(|item| !is_skipped(item)).collect();
+        (kept, first_dropped)
+    }
+}
+
+/// Whether `upstream` is inside an unexpired window at `now`; an expired
+/// entry is dropped on the way.
+fn skipped_at(until: &mut HashMap<String, Instant>, upstream: &str, now: Instant) -> bool {
+    match until.get(upstream) {
+        Some(end) if *end > now => true,
+        Some(_) => {
+            until.remove(upstream);
+            false
+        }
+        None => false,
     }
 }
 
@@ -102,10 +113,7 @@ impl AccountPool {
         pool: Option<&PoolConfig>,
     ) -> Option<Duration> {
         let now = std::time::Instant::now();
-        let unix_now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let unix_now = unix_now();
         let entries = self.entries.lock().expect("account health lock poisoned");
         accounts
             .iter()
@@ -243,7 +251,9 @@ mod tests {
 
         assert!(!skips.is_skipped("primary"));
         assert_eq!(
-            skips.retain_unskipped(vec!["primary", "secondary"], |name| Some(*name)),
+            skips
+                .retain_unskipped(vec!["primary", "secondary"], |name| Some(*name))
+                .0,
             vec!["primary", "secondary"]
         );
     }
@@ -292,7 +302,9 @@ mod tests {
         skips.record("b", Duration::from_secs(60));
 
         assert_eq!(
-            skips.retain_unskipped(vec!["a", "b", "c"], |name| Some(*name)),
+            skips
+                .retain_unskipped(vec!["a", "b", "c"], |name| Some(*name))
+                .0,
             vec!["a", "c"]
         );
     }
@@ -304,7 +316,7 @@ mod tests {
         skips.record("b", Duration::from_secs(60));
 
         assert_eq!(
-            skips.retain_unskipped(vec!["a", "b"], |name| Some(*name)),
+            skips.retain_unskipped(vec!["a", "b"], |name| Some(*name)).0,
             vec!["a", "b"]
         );
     }

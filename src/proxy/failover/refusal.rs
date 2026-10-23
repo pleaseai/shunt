@@ -16,11 +16,15 @@
 //! (`crate::accounts::UpstreamSkips`), so later requests go past it without a
 //! refused round trip until the window ends.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 
-use crate::{accounts::UpstreamSkips, routing::Route, server::AppState};
+use crate::{
+    accounts::{epoch_secs_after, UpstreamSkips},
+    routing::Route,
+    server::AppState,
+};
 
 /// An upstream refused the account behind this response, not the request.
 /// The adapter that judged the body has already recorded the refusal through
@@ -42,11 +46,7 @@ pub(crate) fn record_refusal(
     kind: &str,
     skip_for: Duration,
 ) {
-    let skip_until = skips.map(|skips| {
-        let lasts = skips.record(provider, skip_for);
-        let until = SystemTime::now() + lasts;
-        until.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
-    });
+    let skip_until = skips.map(|skips| epoch_secs_after(skips.record(provider, skip_for)));
     match skip_until {
         Some(skip_until) => tracing::warn!(
             provider = %provider,
@@ -70,35 +70,28 @@ pub(crate) fn record_refusal(
 /// the order of the rest. A route that is passthrough now is never dropped,
 /// even when a window recorded earlier under its name survives a reload that
 /// switched the upstream's auth. When every route is skipped the configured
-/// chain is returned unchanged, so the request is still tried in order. Shared by every
-/// entry that builds a chain: `forward`, and `routing::serve`'s judge and
-/// gated-capture calls, which resolve their own chains.
-pub(crate) fn skip_refused_routes(state: &AppState, routes: Vec<Route>) -> Vec<Route> {
-    state
+/// chain is returned unchanged, so the request is still tried in order.
+///
+/// The chain is dispatched with the caller's own `headers`, so when skipping
+/// drops the configured primary the caller's credential slots are removed from
+/// them in the same step. The credential-retention rule keys on the primary: a
+/// passthrough fallback behind a credential-injecting primary is off-origin and
+/// has both slots stripped, so a skip must not promote it to primary and let it
+/// keep the caller's `authorization` / `x-api-key`. Shared by every entry that
+/// builds a chain: `forward`, and `routing::serve`'s judge and gated-capture
+/// calls, which resolve their own chains.
+pub(crate) fn skip_refused_routes(
+    state: &AppState,
+    routes: Vec<Route>,
+    headers: &mut HeaderMap,
+) -> Vec<Route> {
+    let (routes, primary_dropped) = state
         .accounts
         .upstream_skips()
         .retain_unskipped(routes, |route| {
             (!state.config.route_is_passthrough(route)).then_some(route.provider.as_str())
-        })
-}
-
-/// [`skip_refused_routes`] for a caller that dispatches the chain with the
-/// caller's own headers: when skipping drops the configured primary, the
-/// caller's credential slots are removed from `headers` in the same step.
-/// The credential-retention rule keys on the primary: a passthrough fallback
-/// behind a credential-injecting primary is off-origin and has both slots
-/// stripped, so a skip must not promote it to primary and let it keep the
-/// caller's `authorization` / `x-api-key`. Every chain-building entry that
-/// forwards caller headers uses this, so the skip and the strip cannot be
-/// applied apart.
-pub(crate) fn skip_refused_routes_for_caller(
-    state: &AppState,
-    routes: Vec<Route>,
-    headers: &mut axum::http::HeaderMap,
-) -> Vec<Route> {
-    let configured_primary = routes.first().cloned();
-    let routes = skip_refused_routes(state, routes);
-    if routes.first() != configured_primary.as_ref() {
+        });
+    if primary_dropped {
         headers.remove("authorization");
         headers.remove("x-api-key");
     }
