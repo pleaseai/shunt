@@ -1,0 +1,358 @@
+{
+  "id": "SPEC-002",
+  "level": "V_M",
+  "domain": "routing",
+  "feature": "failover",
+  "depends": [],
+  "conflicts": [],
+  "traces": [],
+  "created_at": "2026-10-23T07:59:27.729Z",
+  "updated_at": "2026-10-23T07:59:27.729Z",
+  "source_tracks": [
+    "anthropic-account-refusal-20261022"
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "kind": "functional",
+      "statement": "classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 whose error message starts with `You have reached your specified API usage limits` or `You have reached your specified workspace API usage limits` (a spend limit the account owner set)",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "scenarios": [
+        {
+          "name": "When the first upstream of a two-element chain answers 400 `invalid_request_error` with `You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.`, the system shall send the request to the second upstream and return its response.",
+          "given": [],
+          "when": [
+            "the first upstream of a two-element chain answers 400 `invalid_request_error` with `You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.`"
+          ],
+          "then": [
+            "send the request to the second upstream and return its response"
+          ]
+        },
+        {
+          "name": "When an upstream answers 400 with `You have reached your specified workspace API usage limits`, the system shall classify it as an account-level refusal.",
+          "given": [],
+          "when": [
+            "an upstream answers 400 with `You have reached your specified workspace API usage limits`"
+          ],
+          "then": [
+            "classify it as an account-level refusal"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "kind": "functional",
+      "statement": "classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 or 402 whose error message starts with `Your credit balance is too low to access the Anthropic API` (prepaid or plan-included credit exhausted)",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "scenarios": [
+        {
+          "name": "When an upstream answers 400 with `Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.`, the system shall advance to the next chain element.",
+          "given": [],
+          "when": [
+            "an upstream answers 400 with `Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.`"
+          ],
+          "then": [
+            "advance to the next chain element"
+          ]
+        },
+        {
+          "name": "When an upstream answers 402 `billing_error` with the credit-balance message, the system shall classify it as an account-level refusal.",
+          "given": [],
+          "when": [
+            "an upstream answers 402 `billing_error` with the credit-balance message"
+          ],
+          "then": [
+            "classify it as an account-level refusal"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "kind": "functional",
+      "statement": "classify as an account-level refusal any Anthropic-protocol upstream response with HTTP 402 and error type `billing_error`",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "scenarios": [
+        {
+          "name": "When an upstream answers 402 `billing_error` with any other message, the system shall advance to the next chain element.",
+          "given": [],
+          "when": [
+            "an upstream answers 402 `billing_error` with any other message"
+          ],
+          "then": [
+            "advance to the next chain element"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "kind": "functional",
+      "statement": "advance the failover chain to the next element on an account-level refusal, the same way it advances on a 429, both before response headers are committed to the client and inside an already committed streaming response",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "scenarios": [
+        {
+          "name": "When the first upstream of a two-element chain answers 400 `invalid_request_error` with `You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.`, the system shall send the request to the second upstream and return its response.",
+          "given": [],
+          "when": [
+            "the first upstream of a two-element chain answers 400 `invalid_request_error` with `You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.`"
+          ],
+          "then": [
+            "send the request to the second upstream and return its response"
+          ]
+        },
+        {
+          "name": "When an upstream answers 400 with `Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.`, the system shall advance to the next chain element.",
+          "given": [],
+          "when": [
+            "an upstream answers 400 with `Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.`"
+          ],
+          "then": [
+            "advance to the next chain element"
+          ]
+        },
+        {
+          "name": "When an upstream answers 402 `billing_error` with any other message, the system shall advance to the next chain element.",
+          "given": [],
+          "when": [
+            "an upstream answers 402 `billing_error` with any other message"
+          ],
+          "then": [
+            "advance to the next chain element"
+          ]
+        },
+        {
+          "name": "When a committed streaming response's current chain element answers with an account-level refusal, the system shall continue the stream from the next chain element instead of emitting a terminal error event.",
+          "given": [],
+          "when": [
+            "a committed streaming response's current chain element answers with an account-level refusal"
+          ],
+          "then": [
+            "continue the stream from the next chain element instead of emitting a terminal error event"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "kind": "functional",
+      "statement": "keep every other 400 and 402 response terminal: relay it to the client immediately and unchanged, without trying another upstream",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "scenarios": [
+        {
+          "name": "If an upstream answers 400 `invalid_request_error` with a request-validation message such as `messages: Field required`, then the system shall return that 400 to the client without contacting any later chain element.",
+          "given": [],
+          "when": [
+            "an upstream answers 400 `invalid_request_error` with a request-validation message such as `messages: Field required`"
+          ],
+          "then": [
+            "return that 400 to the client without contacting any later chain element"
+          ]
+        },
+        {
+          "name": "If an upstream answers 400 with a message that contains `usage limits` but does not start with one of the FR-1 phrases, then the system shall treat it as terminal.",
+          "given": [],
+          "when": [
+            "an upstream answers 400 with a message that contains `usage limits` but does not start with one of the FR-1 phrases"
+          ],
+          "then": [
+            "treat it as terminal"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "kind": "functional",
+      "statement": "skip a credential the gateway owns (an API-key upstream, or one account of a Claude subscription pool) for new requests after it returns an account-level refusal, until the refusal's stated access-resume time for a spend-limit refusal, or for 1 hour for a refusal that states no time",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "scenarios": [
+        {
+          "name": "While an API-key upstream is within the skip window set by a spend-limit refusal that stated `2026-11-01 at 00:00 UTC`, the system shall route new requests past it without contacting it.",
+          "given": [
+            "an API-key upstream is within the skip window set by a spend-limit refusal that stated `2026-11-01 at 00:00 UTC`"
+          ],
+          "when": [],
+          "then": [
+            "route new requests past it without contacting it"
+          ]
+        },
+        {
+          "name": "When the stated access-resume time has passed, the system shall send the next request to that upstream again.",
+          "given": [],
+          "when": [
+            "the stated access-resume time has passed"
+          ],
+          "then": [
+            "send the next request to that upstream again"
+          ]
+        },
+        {
+          "name": "When an upstream returns a credit-balance or `billing_error` refusal, the system shall skip it for 1 hour.",
+          "given": [],
+          "when": [
+            "an upstream returns a credit-balance or `billing_error` refusal"
+          ],
+          "then": [
+            "skip it for 1 hour"
+          ]
+        },
+        {
+          "name": "If a spend-limit refusal's access-resume time cannot be read, then the system shall skip the upstream for 1 hour.",
+          "given": [],
+          "when": [
+            "a spend-limit refusal's access-resume time cannot be read"
+          ],
+          "then": [
+            "skip the upstream for 1 hour"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "kind": "functional",
+      "statement": "rotate a Claude subscription pool to its next account on an account-level refusal before the chain moves to the next upstream, consistent with how the pool already handles account-scoped failures",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "scenarios": [
+        {
+          "name": "When one account of a Claude subscription pool returns an account-level refusal, the system shall try the pool's next eligible account before advancing to the next upstream.",
+          "given": [],
+          "when": [
+            "one account of a Claude subscription pool returns an account-level refusal"
+          ],
+          "then": [
+            "try the pool's next eligible account before advancing to the next upstream"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "kind": "functional",
+      "statement": "never put a client-supplied credential (passthrough authentication) into the skip state, because the refusal belongs to that client's key and not to the upstream",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "scenarios": [
+        {
+          "name": "When a passthrough-authenticated upstream returns an account-level refusal, the system shall advance the chain for that request and shall not skip the upstream for later requests.",
+          "given": [],
+          "when": [
+            "a passthrough-authenticated upstream returns an account-level refusal"
+          ],
+          "then": [
+            "advance the chain for that request and shall not skip the upstream for later requests"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "kind": "functional",
+      "statement": "hold the skip state in memory only; a restart clears it",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "scenarios": [
+        {
+          "name": "When the gateway restarts, the system shall treat every previously skipped credential as eligible.",
+          "given": [],
+          "when": [
+            "the gateway restarts"
+          ],
+          "then": [
+            "treat every previously skipped credential as eligible"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "kind": "functional",
+      "statement": "when every element of a chain has refused or is skipped, return an account-level refusal to the client with the upstream's own status and error message intact, unless another remembered failure takes precedence under the existing preference order",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "scenarios": [
+        {
+          "name": "When the only chain element returns a spend-limit refusal, the system shall return HTTP 400 with the upstream's original message.",
+          "given": [],
+          "when": [
+            "the only chain element returns a spend-limit refusal"
+          ],
+          "then": [
+            "return HTTP 400 with the upstream's original message"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-011",
+      "kind": "functional",
+      "statement": "update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the three refusals, the skip durations, and that all other 400s stay terminal",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ]
+    },
+    {
+      "id": "REQ-012",
+      "kind": "functional",
+      "statement": "try a chain whose every element is in the skip window as configured instead of refusing locally, so a credential that was topped up or raised is noticed before its window ends",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "scenarios": [
+        {
+          "name": "While every element of a chain is in the skip window, the system shall send the request to the chain's elements in their configured order.",
+          "given": [
+            "every element of a chain is in the skip window"
+          ],
+          "when": [],
+          "then": [
+            "send the request to the chain's elements in their configured order"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-013",
+      "kind": "non-functional",
+      "statement": "read an error body only for 400 and 402 responses, within a fixed size budget, so other statuses keep deciding failover from the status line alone",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ]
+    },
+    {
+      "id": "REQ-014",
+      "kind": "non-functional",
+      "statement": "leave successful and non-refusal responses byte-for-byte unchanged, including streaming responses",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ]
+    },
+    {
+      "id": "REQ-015",
+      "kind": "non-functional",
+      "statement": "log each account-level refusal at warning level with the upstream name, the refusal kind, and the skip expiry, and count the advance in the existing failover metric",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ]
+    }
+  ]
+}

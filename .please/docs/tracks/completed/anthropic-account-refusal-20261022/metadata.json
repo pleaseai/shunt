@@ -1,12 +1,13 @@
 {
   "track_id": "anthropic-account-refusal-20261022",
   "type": "feature",
-  "status": "in_progress",
+  "status": "completed",
   "created_at": "2026-10-22T08:42:29Z",
-  "updated_at": "2026-10-22T09:06:15Z",
+  "updated_at": "2026-10-23T08:01:23Z",
   "issue": "#817",
-  "pr": "",
+  "pr": "#825",
   "project": "2",
   "project_item_id": "PVTI_lADODf_st84BRosizhCpvPY",
-  "code_branch": "amondnet/817-anthropic-account-refusal"
+  "code_branch": "amondnet/817-anthropic-account-refusal",
+  "code_pr": "#825"
 }

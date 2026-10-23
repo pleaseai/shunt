@@ -20,6 +20,11 @@
 | TD-015 | codex-spend-caps-20261021 | `cached_tokens` without `input_tokens` is billed twice (the estimate already includes the cached prefix) | Low | 2026-10-21 |
 | TD-016 | codex-spend-caps-20261021 | The refusal log line uses the field name `upstream_status` | Low | 2026-10-21 |
 | TD-017 | codex-spend-caps-20261021 | `src/codex_endpoint.rs` (710 lines) and `src/stream_metrics.rs` (903 lines) exceed the 500-line guideline | Low | 2026-10-21 |
+| TD-018 | anthropic-account-refusal-20261022 | A refusal body that sends part of its bytes and then stalls can hold the response up to 5 s past the caller's idle limit (#825) | Low | 2026-10-23 |
+| TD-019 | anthropic-account-refusal-20261022 | The `judge` doc says a body stalled past the budget is not a refusal, but with an idle clock a zero-byte stall returns the idle error (#825) | Low | 2026-10-23 |
+| TD-020 | anthropic-account-refusal-20261022 | No integration test checks that a stated `You will regain access on … UTC` time becomes the recorded skip or cooldown; only unit tests cover the parsed window (#825) | Low | 2026-10-23 |
+| TD-021 | anthropic-account-refusal-20261022 | `classify` does not require the top-level `"type": "error"`, so a third-party body without it advances the chain (#825) | Low | 2026-10-23 |
+| TD-022 | anthropic-account-refusal-20261022 | Stale "every account refused" comments in `account_refusal.rs` and `upstream_skip.rs`; `account_refusal.rs` (523 lines) and `failover/chain.rs` (566 lines) exceed the 500-line guideline (#825) | Low | 2026-10-23 |
 
 ## Resolved
 

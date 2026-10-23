@@ -194,6 +194,94 @@
           "statement": "add no perceptible latency to Codex-endpoint turns, including for principals without caps"
         }
       ]
+    },
+    {
+      "id": "SPEC-002",
+      "domain": "routing",
+      "feature": "failover",
+      "created_at": "2026-10-23T07:59:27.729Z",
+      "updated_at": "2026-10-23T07:59:27.729Z",
+      "source_tracks": [
+        "anthropic-account-refusal-20261022"
+      ],
+      "traces": [],
+      "requirements": [
+        {
+          "id": "REQ-001",
+          "kind": "functional",
+          "statement": "classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 whose error message starts with `You have reached your specified API usage limits` or `You have reached your specified workspace API usage limits` (a spend limit the account owner set)"
+        },
+        {
+          "id": "REQ-002",
+          "kind": "functional",
+          "statement": "classify as an account-level refusal an Anthropic-protocol upstream response with HTTP 400 or 402 whose error message starts with `Your credit balance is too low to access the Anthropic API` (prepaid or plan-included credit exhausted)"
+        },
+        {
+          "id": "REQ-003",
+          "kind": "functional",
+          "statement": "classify as an account-level refusal any Anthropic-protocol upstream response with HTTP 402 and error type `billing_error`"
+        },
+        {
+          "id": "REQ-004",
+          "kind": "functional",
+          "statement": "advance the failover chain to the next element on an account-level refusal, the same way it advances on a 429, both before response headers are committed to the client and inside an already committed streaming response"
+        },
+        {
+          "id": "REQ-005",
+          "kind": "functional",
+          "statement": "keep every other 400 and 402 response terminal: relay it to the client immediately and unchanged, without trying another upstream"
+        },
+        {
+          "id": "REQ-006",
+          "kind": "functional",
+          "statement": "skip a credential the gateway owns (an API-key upstream, or one account of a Claude subscription pool) for new requests after it returns an account-level refusal, until the refusal's stated access-resume time for a spend-limit refusal, or for 1 hour for a refusal that states no time"
+        },
+        {
+          "id": "REQ-007",
+          "kind": "functional",
+          "statement": "rotate a Claude subscription pool to its next account on an account-level refusal before the chain moves to the next upstream, consistent with how the pool already handles account-scoped failures"
+        },
+        {
+          "id": "REQ-008",
+          "kind": "functional",
+          "statement": "never put a client-supplied credential (passthrough authentication) into the skip state, because the refusal belongs to that client's key and not to the upstream"
+        },
+        {
+          "id": "REQ-009",
+          "kind": "functional",
+          "statement": "hold the skip state in memory only; a restart clears it"
+        },
+        {
+          "id": "REQ-010",
+          "kind": "functional",
+          "statement": "when every element of a chain has refused or is skipped, return an account-level refusal to the client with the upstream's own status and error message intact, unless another remembered failure takes precedence under the existing preference order"
+        },
+        {
+          "id": "REQ-011",
+          "kind": "functional",
+          "statement": "update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the three refusals, the skip durations, and that all other 400s stay terminal"
+        },
+        {
+          "id": "REQ-012",
+          "kind": "functional",
+          "statement": "try a chain whose every element is in the skip window as configured instead of refusing locally, so a credential that was topped up or raised is noticed before its window ends"
+        },
+        {
+          "id": "REQ-013",
+          "kind": "non-functional",
+          "statement": "read an error body only for 400 and 402 responses, within a fixed size budget, so other statuses keep deciding failover from the status line alone"
+        },
+        {
+          "id": "REQ-014",
+          "kind": "non-functional",
+          "statement": "leave successful and non-refusal responses byte-for-byte unchanged, including streaming responses"
+        },
+        {
+          "id": "REQ-015",
+          "kind": "non-functional",
+          "statement": "log each account-level refusal at warning level with the upstream name, the refusal kind, and the skip expiry, and count the advance in the existing failover metric"
+        }
+      ]
     }
   ]
 }

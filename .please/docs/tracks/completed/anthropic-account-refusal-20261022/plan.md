@@ -110,6 +110,7 @@ Considered and not built:
   Revision (2026-10-22 21:18 KST, commit c70eea92): a pool exhausted on refusals now records its upstream in the skip map. `cargo test --all-features --test failover` → 29 passed (exit 0; `a_claude_pool_whose_accounts_all_refuse_advances_to_the_next_upstream` now sends two requests, pool `expect(2)` across both, fallback `expect(2)`); `--test multi_account` → 41 passed (exit 0); `--lib` → 3619 passed (exit 0; new `earliest_reselect_is_the_shortest_cooldown_among_selectable_accounts`); fmt and clippy -D warnings clean. Mutations, each red and then restored: drop the upstream record (chain test red), `max` instead of `min` (unit test red), an uncooled account ignored (unit test red). Also touched: src/accounts/upstream_skip.rs (`AccountPool::earliest_reselect`)
 - [x] (2026-10-22 KST) T006 Document the account-level refusal rule in the failover contract and user docs
   Evidence: `cd site && bun run build` → exit 0, 209 pages; built `site/dist` en/ko/ja/zh-cn `reference/configuration` and `reference/troubleshooting` each contain `regain access on` and the new text (commit e41c0494). README*.md state no advance statuses, so left unchanged.
+- [x] (2026-10-23 KST) Review-stage commits (SHA: `20dc6054`, `7e479af5`, `982e0ae1`, `b063bc2f`, `0bd21c77`, `161fbf34`, `03b3b909`, `71c9657b`, `5e3eb359`, `f47d358d`)
 
 ## Decision Log
 
@@ -140,3 +141,30 @@ Considered and not built:
   Evidence: `src/adapters/anthropic/mod.rs` `relay_response` branch `else if alias.is_some() || wrap_buffered` calls `collect_upstream_body` without a status check.
 - Observation: a pool whose every account is cooling is still tried, cooled accounts last (`select_order_inner` appends `cooled` to the order). Without a chain-level record, a pool cooled by refusals was therefore re-contacted on every later request, one refused round trip per account. Resolved in the T005 revision: the exhausted pool's upstream is skipped until its first account can serve again (see Decision Log). A pool-only chain still tries the pool through FR-12's all-skipped fallback.
   Evidence: the first draft of `a_claude_pool_whose_accounts_all_refuse_advances_to_the_next_upstream` sent a second request and wiremock recorded 4 pool requests (a, b, a, b). After the revision the same two-request test passes with the pool at `expect(2)`, and dropping the upstream record turns it red.
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+- The ordered `[[upstreams]]` chain, including a committed streaming chain, advances on three Anthropic account-level refusals: the spend limit (organisation or workspace), a low credit balance (400 or 402), and any 402 `billing_error`. Every other 400 and 402 stays terminal and relays unchanged.
+- A refusing non-passthrough upstream is skipped for new requests until the stated resume time, or for 1 hour. The skip state is memory-only, and an all-skipped chain is tried as configured.
+- In the Claude OAuth pool, a refusal cools the account for the same window (max-merged with any longer cooldown) and rotates, on the first attempt and after a refresh. A pool whose last answer is a refusal skips its upstream until its earliest account can serve again.
+- `buffer_error_body` is shared between the Codex pool and the Anthropic adapter (`src/adapters/error_body.rs`).
+- Contract (`docs/upstreams-failover.md` §3, §4, §6) and site configuration/troubleshooting pages in en/ko/ja/zh-cn. PR #825.
+
+### What Went Well
+- Signalling the refusal through a response-extension marker kept `is_advance_status` unchanged, so a malformed request is never resent and the verbatim body survives exhaustion.
+- The STOP condition held: a 250 ms committed-stream peek kept the stalled-400 test passing unchanged.
+- Mutation checks on every task caught weak tests early (marker dropped, substring match, wrong window).
+
+### What Could Improve
+- The T005 design ("the pool is never in the skip map") was revised after the first draft of the chain test showed a fully refused pool re-contacted on every request. Probing the all-accounts-cooled path during planning would have caught it.
+- Review loops repeatedly exited `needs_human_read` because greptile could not run locally (`libada` load failure). An unavailable engine should be fixed or disabled in config rather than left to stall every loop.
+- A finalize step wiped the PR body: `gh pr view` ran outside the repo, produced an empty file, and `gh pr edit --body-file` still ran. Read and edit PR bodies inside the repository and refuse to write an empty body.
+
+### Tech Debt Created
+- A refusal body that sends some bytes and then stalls can hold the response up to 5 s past the caller's idle limit.
+- The `judge` doc says a stall past the budget "is simply not a refusal", but with an idle clock set a zero-byte stall returns the idle error.
+- No integration test checks that a stated resume time becomes the recorded skip or cooldown.
+- `classify` does not require the top-level `"type": "error"`.
+- Comments at `account_refusal.rs` and `upstream_skip.rs` still say "every account refused" where the rule is now "the pool's last answer is a refusal".
+- `src/adapters/anthropic/account_refusal.rs` (523 lines) and `src/proxy/failover/chain.rs` (566 lines) exceed the 500-line guideline.
