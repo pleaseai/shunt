@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.59.0](https://github.com/pleaseai/shunt/compare/v0.58.0...v0.59.0) (2026-10-23)
+
+
+### Features
+
+* **failover:** advance the chain on Anthropic account-level refusals ([#825](https://github.com/pleaseai/shunt/issues/825)) ([17c00ff](https://github.com/pleaseai/shunt/commit/17c00ffb4fed1e88ebe58c8053e0b1980f711291))
+
 ## [0.58.0](https://github.com/pleaseai/shunt/compare/v0.57.1...v0.58.0) (2026-10-22)
 
 
