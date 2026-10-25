@@ -142,6 +142,21 @@ jobs:
         if: always()
         run: sccache --show-stats
 
+  # RustSec advisories and dependency sources for the whole graph (all
+  # features), configured in deny.toml. Fails on any new advisory not listed
+  # there with a reason, and on any registry or git source not allowed there.
+  deny:
+    name: cargo-deny · advisories · sources
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Check advisories and sources
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories sources
+
   coverage:
     name: coverage · codecov · sonarqube
     runs-on: ubuntu-latest
