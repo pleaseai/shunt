@@ -109,8 +109,16 @@ async fn judge_body(
     if !can_refuse(status) {
         return Ok((upstream, None));
     }
+    // `normalize` drops the declared length, so check it first: a body declared
+    // over the limit is passed on unread, as `buffer_error_body_capped` passes it.
+    let declared_oversized = upstream
+        .content_length()
+        .is_some_and(|length| length > crate::adapters::error_body_limit(cap) as u64);
     // Judge the envelope, not its content coding.
     let upstream = crate::response_coding::normalize(upstream);
+    if declared_oversized {
+        return Ok((upstream, None));
+    }
     let (upstream, body) =
         crate::adapters::buffer_error_body_capped(upstream, clock, true, budget, cap).await?;
     let refused = body.and_then(|body| classify(status, &body).map(|refusal| (refusal, body)));
@@ -220,7 +228,8 @@ pub(super) const CHAIN_PEEK_BUDGET: Duration = Duration::from_millis(250);
 
 /// The committed streaming chain's form of [`judge`]: read a 400 or 402 body
 /// under [`CHAIN_PEEK_BUDGET`] and no idle clock (that path has none). The
-/// response comes back rebuilt with the upstream's bytes intact, read or not,
+/// response comes back rebuilt with the upstream's body intact, read or not
+/// (decoded as [`judge`] decodes it),
 /// and with the refusal plus the body it was judged on when it is one.
 /// Every other status returns untouched and unread.
 pub(super) async fn peek(

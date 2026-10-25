@@ -384,6 +384,41 @@ async fn bodyless_statuses_stay_unmarked_but_empty_success_is_truncated() {
 }
 
 #[tokio::test]
+async fn byte_validators_do_not_outlive_the_upstream_bytes() {
+    let validators = ["content-digest", "repr-digest", "digest", "content-md5"];
+    for (etag, expected) in [("\"v1\"", "W/\"v1\""), ("W/\"v1\"", "W/\"v1\"")] {
+        let mut upstream = Response::builder()
+            .header(header::CONTENT_ENCODING, "gzip")
+            .header(header::ETAG, etag)
+            .header(header::ACCEPT_RANGES, "bytes");
+        for name in validators {
+            upstream = upstream.header(name, "sha-256=:AAAA:");
+        }
+        let body = reqwest::Body::from(compressed(UpstreamCoding::Gzip, b"plain"));
+        let upstream = normalize(upstream.body(body).unwrap().into());
+        for name in validators.into_iter().chain(["accept-ranges"]) {
+            assert!(!upstream.headers().contains_key(name), "{name}");
+        }
+        assert_eq!(upstream.headers()[header::ETAG], expected);
+        assert_eq!(upstream.bytes().await.unwrap(), "plain");
+    }
+    let bytes = compressed(UpstreamCoding::Gzip, b"plain");
+    let partial = Response::builder()
+        .status(206)
+        .header(header::CONTENT_ENCODING, "gzip")
+        .header(
+            header::CONTENT_RANGE,
+            format!("bytes 0-{}/*", bytes.len() - 1),
+        )
+        .body(reqwest::Body::from(bytes.clone()))
+        .unwrap();
+    let partial = normalize(partial.into());
+    assert!(partial.extensions().get::<UpstreamCoding>().is_none());
+    assert_eq!(partial.headers()[header::CONTENT_ENCODING], "gzip");
+    assert_eq!(partial.bytes().await.unwrap(), bytes);
+}
+
+#[tokio::test]
 async fn coding_headers_and_response_metadata_survive_the_pipeline() {
     let bytes = compressed(UpstreamCoding::Gzip, b"plain JSON");
     let upstream = Response::builder()

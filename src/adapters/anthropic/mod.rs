@@ -1714,7 +1714,6 @@ pub(crate) async fn chain_attempt(
             };
         }
     };
-    let upstream = crate::response_coding::normalize(upstream);
     let status = upstream.status();
     if !status.is_success() {
         // The single-route path relays a non-2xx upstream response as the HTTP
@@ -1767,6 +1766,8 @@ pub(crate) async fn chain_attempt(
                 };
             }
         };
+        // After the peek, which needs the declared length `normalize` drops.
+        let upstream = crate::response_coding::normalize(upstream);
         let envelope = crate::proxy::chain_stream::LazyEnvelope::Deferred(Box::pin(
             mapped_error_envelope(status, upstream),
         ));
@@ -1779,6 +1780,7 @@ pub(crate) async fn chain_attempt(
             refused: false,
         };
     }
+    let upstream = crate::response_coding::normalize(upstream);
     let is_sse = upstream
         .headers()
         .get("content-type")

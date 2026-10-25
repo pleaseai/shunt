@@ -366,6 +366,40 @@ async fn compressed_400_keeps_the_client_coding_after_the_refusal_read() {
 }
 
 #[tokio::test]
+async fn compressed_400_declared_over_the_limit_is_passed_on_unread() {
+    use futures_util::StreamExt as _;
+    let _env = common::env_lock().await;
+    let first = compressed("gzip", br#"{"type":"error""#);
+    let app = axum::Router::new().route(
+        "/v1/messages",
+        axum::routing::post(move || {
+            let first = bytes::Bytes::from(first.clone());
+            async move {
+                let body = futures_util::stream::iter([Ok::<_, std::convert::Infallible>(first)])
+                    .chain(futures_util::stream::pending());
+                axum::http::Response::builder()
+                    .status(400)
+                    .header("content-type", "application/json")
+                    .header("content-encoding", "gzip")
+                    .header("content-length", 300 * 1024)
+                    .body(axum::body::Body::from_stream(body))
+                    .unwrap()
+            }
+        }),
+    );
+    let upstream = serve(app).await;
+    let gateway = gateway(config(upstream.url.clone(), false)).await;
+    // Reading this stalled body would hold the status for the 5 s refusal budget.
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        request(&gateway, "gzip", false, false, false),
+    )
+    .await
+    .expect("a body declared over the limit is not read before the status");
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
 async fn malformed_compressed_stream_ends_with_a_body_error() {
     let _env = common::env_lock().await;
     for coding in ["gzip", "deflate", "zstd"] {
@@ -389,11 +423,17 @@ async fn malformed_compressed_stream_ends_with_a_body_error() {
                 .header("accept-encoding", coding)
                 .json(&json!({"model":"native","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hello"}]}))
                 .send().await;
-            if let Ok(response) = response {
-                assert!(
+            // hyper polls the body before it flushes the buffered headers, so an
+            // immediately invalid body can end the exchange before the status.
+            match response {
+                Ok(response) => assert!(
                     response.bytes().await.is_err(),
                     "invalid stream must not complete cleanly: {coding}"
-                );
+                ),
+                Err(error) => assert!(
+                    !error.is_connect() && !error.is_timeout(),
+                    "the gateway must take the request and then end it: {coding}: {error}"
+                ),
             }
         }
     }

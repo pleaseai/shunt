@@ -90,7 +90,13 @@ judge and gated calls consume the decoded body. Gated replay retains the coding
 marker for client-side encoding. A committed mixed chain relays the decoded
 Anthropic winner in its existing unencoded SSE response. Informational, 204,
 205, and 304 responses are not decoded or marked; a coded 200 with an empty body
-still fails as truncated input.
+still fails as truncated input. A 206 is not decoded either, because its
+`Content-Range` counts the coded bytes; like an unsupported coding, it stays on
+the passthrough path. A decoded response loses
+`Content-Digest`, `Repr-Digest`, `Digest`, `Content-MD5` and `Accept-Ranges`,
+and a strong `ETag` becomes weak, because the client receives shunt's encoding
+of the body. The account-refusal read passes a 400 or 402 whose declared length
+exceeds its limit on unread, as it does for an uncompressed body.
 
 The outbound offer retains gzip, deflate, zstd, identity entries, and `*;q=0`
 exclusions in client order with their parameters. With no acceptable supported

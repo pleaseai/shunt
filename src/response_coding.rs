@@ -5,7 +5,7 @@ use std::{io, sync::OnceLock};
 
 use axum::{
     body::Body,
-    http::{header, HeaderMap, HeaderValue, Response},
+    http::{header, HeaderMap, HeaderValue, Response, StatusCode},
 };
 use bytes::Bytes;
 use futures_util::{stream, Stream, StreamExt};
@@ -86,9 +86,10 @@ fn encode_slots() -> &'static tokio::sync::Semaphore {
     SLOTS.get_or_init(crate::offload::cpu_sized_semaphore)
 }
 
-/// Leave unsupported and stacked codings on the existing passthrough path.
+/// Leave unsupported and stacked codings on the existing passthrough path, and
+/// a 206, whose `Content-Range` counts the coded bytes.
 pub(crate) fn normalize(upstream: reqwest::Response) -> reqwest::Response {
-    if bodyless(upstream.status()) {
+    if bodyless(upstream.status()) || upstream.status() == StatusCode::PARTIAL_CONTENT {
         return upstream;
     }
     let mut values = upstream.headers().get_all(header::CONTENT_ENCODING).iter();
@@ -103,10 +104,33 @@ pub(crate) fn normalize(upstream: reqwest::Response) -> reqwest::Response {
     let (mut parts, body) = response.into_parts();
     parts.headers.remove(header::CONTENT_ENCODING);
     parts.headers.remove(header::CONTENT_LENGTH);
+    drop_byte_validators(&mut parts.headers);
     parts.extensions.insert(coding);
     // Reuse reqwest's body stream without changing the adapter's error type.
     let stream = reqwest::Response::from(Response::new(body)).bytes_stream();
     Response::from_parts(parts, reqwest::Body::wrap_stream(decode(stream, coding))).into()
+}
+
+/// The client receives shunt's encoding of the decoded body, not the upstream's
+/// bytes, so digests of those bytes and `Accept-Ranges` are dropped and a strong
+/// `ETag` is made weak.
+fn drop_byte_validators(headers: &mut HeaderMap) {
+    for name in [
+        "content-digest",
+        "repr-digest",
+        "digest",
+        "content-md5",
+        "accept-ranges",
+    ] {
+        headers.remove(name);
+    }
+    let weak = headers
+        .get(header::ETAG)
+        .filter(|etag| !etag.as_bytes().starts_with(b"W/"))
+        .map(|etag| HeaderValue::from_bytes(&[b"W/".as_slice(), etag.as_bytes()].concat()));
+    if let Some(Ok(weak)) = weak {
+        headers.insert(header::ETAG, weak);
+    }
 }
 
 fn bodyless(status: axum::http::StatusCode) -> bool {

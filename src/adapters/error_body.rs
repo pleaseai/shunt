@@ -46,6 +46,13 @@ pub(crate) async fn buffer_error_body(
     .await
 }
 
+/// The read limit [`buffer_error_body_capped`] applies: the smaller of `cap`
+/// and [`crate::error::ERROR_ENVELOPE_BYTES`].
+pub(crate) fn error_body_limit(cap: Option<usize>) -> usize {
+    cap.unwrap_or(crate::error::ERROR_ENVELOPE_BYTES)
+        .min(crate::error::ERROR_ENVELOPE_BYTES)
+}
+
 /// [`buffer_error_body`] under a caller-chosen `budget` in place of
 /// [`crate::error::ERROR_ENVELOPE_BUDGET`], for a caller that must decide
 /// sooner than the envelope read allows. It also honours the caller's own byte
@@ -60,9 +67,7 @@ pub(crate) async fn buffer_error_body_capped(
     budget: Duration,
     cap: Option<usize>,
 ) -> Result<(reqwest::Response, Option<bytes::Bytes>), AdapterError> {
-    let limit = cap
-        .unwrap_or(crate::error::ERROR_ENVELOPE_BYTES)
-        .min(crate::error::ERROR_ENVELOPE_BYTES);
+    let limit = error_body_limit(cap);
     let declared_oversized = upstream
         .content_length()
         .is_some_and(|length| length > limit as u64);
