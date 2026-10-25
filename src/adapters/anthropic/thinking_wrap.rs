@@ -24,8 +24,8 @@
 //! the round trip holds across reloads and sticky-binding expiry alike.
 //!
 //! **Which responses are wrapped** is [`signing_key`]'s call: not a
-//! `claude_oauth` pool and not `api.anthropic.com`. First-party responses stay
-//! byte-for-byte passthrough, which is what Anthropic's own signatures need.
+//! `claude_oauth` pool and not `api.anthropic.com`. First-party responses are
+//! not wrapped, which is what Anthropic's own signatures need.
 //!
 //! **Streaming.** A client concatenates a thinking block's
 //! `content_block_start.content_block.signature` and every `signature_delta`
@@ -134,12 +134,12 @@ pub(super) fn signing_key(provider: &ProviderConfig) -> Option<String> {
 
 /// Ask a third-party upstream for an uncompressed reply.
 ///
-/// The client's `Accept-Encoding` is otherwise forwarded, and shunt's HTTP
-/// client decodes no content coding, so a compressed reply would reach the
-/// wrap still encoded: unparseable, it would pass through with its signature
-/// raw. `identity` rather than removing the header, since a request without
-/// one leaves the coding to the server. Every other provider keeps the
-/// client's header, as passthrough.
+/// [`crate::response_coding::normalize`] decodes only gzip, deflate and zstd
+/// before the wrap, so a reply in another coding would reach the wrap still
+/// encoded: unparseable, it would pass through with its signature raw.
+/// `identity` rather than removing the header, since a request without one
+/// leaves the coding to the server. Other providers get the offer
+/// [`crate::response_coding::filter_accept_encoding`] leaves.
 pub(super) fn request_identity_encoding(headers: &mut HeaderMap, provider: &ProviderConfig) {
     if signing_key(provider).is_some() {
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));

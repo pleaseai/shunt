@@ -77,7 +77,8 @@ impl AccountRefusal {
 /// Judge a relayed upstream response for an account-level refusal before it
 /// reaches the client. Only a 400 or 402 has its body read, under the shared
 /// error-body bounds; every other status returns untouched and unread. The
-/// returned response carries the upstream's bytes intact either way, and a
+/// returned response carries the upstream's body intact either way (a 400 or
+/// 402 in a supported content coding comes back decoded), and a
 /// body that stalls past the budget, passes the smaller of the caller's cap (`bounds.max_bytes`) and the envelope ceiling, or is not the Anthropic
 /// envelope is simply not a refusal. `bounds.idle` starts at header arrival,
 /// as the relay's own body read starts it.
@@ -108,6 +109,8 @@ async fn judge_body(
     if !can_refuse(status) {
         return Ok((upstream, None));
     }
+    // Judge the envelope, not its content coding.
+    let upstream = crate::response_coding::normalize(upstream);
     let (upstream, body) =
         crate::adapters::buffer_error_body_capped(upstream, clock, true, budget, cap).await?;
     let refused = body.and_then(|body| classify(status, &body).map(|refusal| (refusal, body)));

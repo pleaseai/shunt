@@ -68,7 +68,7 @@ base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 figment = { version = "0.10", features = ["toml", "yaml", "env"] }
-flate2 = "1"
+flate2 = { version = "1", features = ["zlib-rs"] }
 futures-util = "0.3"
 # The inbound concurrency limiter delegates `poll_frame` so streaming response
 # permits live through body completion without discarding HTTP trailers.

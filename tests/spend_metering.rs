@@ -464,6 +464,45 @@ async fn a_non_streamed_reply_bills_its_usage_and_keeps_its_framing() {
     assert_eq!(spent(&gateway, PRINCIPAL), [expected; 3]);
 }
 
+/// A gzip reply is billed on its decoded usage, streamed or whole.
+#[tokio::test]
+async fn a_compressed_reply_bills_its_decoded_usage() {
+    let _env = env().await;
+    let reply = json!({"id": "msg_1", "type": "message", "model": "upstream-billed",
+        "content": [{"type": "text", "text": "Hello"}],
+        "usage": {"input_tokens": 1000, "output_tokens": 500,
+                  "cache_read_input_tokens": 200, "cache_creation_input_tokens": 300,
+                  "server_tool_use": {"web_search_requests": 2}}})
+    .to_string();
+    for stream in [true, false] {
+        let (body, content_type) = if stream {
+            (completed_stream("upstream-billed"), "text/event-stream")
+        } else {
+            (reply.clone(), "application/json")
+        };
+        let anth = anthropic_upstream(
+            ResponseTemplate::new(200)
+                .insert_header("content-encoding", "gzip")
+                .set_body_raw(common::gzip(body.as_bytes()), content_type),
+        )
+        .await;
+        let resp = unused_upstream().await;
+        let gateway = start(config(&anth.uri(), &resp.uri(), true)).await;
+
+        let response = messages(&gateway, "billed-alias", stream).await;
+        assert_eq!(response.status(), StatusCode::OK, "stream = {stream}");
+        response.bytes().await.unwrap();
+
+        let expected =
+            rates(BILLED).cost_femto_usd(&completed_usage()) + 2 * WEB_SEARCH_LIST_PRICE_FEMTO_USD;
+        assert_eq!(
+            spent(&gateway, PRINCIPAL),
+            [expected; 3],
+            "stream = {stream}"
+        );
+    }
+}
+
 /// Responses SSE: 1000 prompt tokens of which 200 cached, 40 output.
 const RESPONSES_SSE: &str = concat!(
     "event: response.created\n",

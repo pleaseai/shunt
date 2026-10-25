@@ -1,3 +1,5 @@
+mod response_coding;
+
 use std::{
     collections::HashMap,
     convert::Infallible,

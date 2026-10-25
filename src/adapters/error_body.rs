@@ -72,6 +72,7 @@ pub(crate) async fn buffer_error_body_capped(
     let status = upstream.status();
     let version = upstream.version();
     let mut headers = upstream.headers().clone();
+    let extensions = upstream.extensions().clone();
     let mut rest = upstream.bytes_stream();
     let budget_ends = tokio::time::Instant::now() + budget;
     let mut read = Vec::new();
@@ -131,5 +132,6 @@ pub(crate) async fn buffer_error_body_capped(
     *rebuilt.status_mut() = status;
     *rebuilt.version_mut() = version;
     *rebuilt.headers_mut() = headers;
+    *rebuilt.extensions_mut() = extensions;
     Ok((reqwest::Response::from(rebuilt), judged))
 }

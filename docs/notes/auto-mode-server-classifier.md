@@ -75,12 +75,40 @@ message for that case, not from a documented contract.
 
 ## What shunt does
 
-**First-party passthrough.** shunt's Anthropic adapter already forwards the
-header, the body and the upstream's SSE bytes unchanged for `api.anthropic.com`
-routes; `safeguard_results` arrives verbatim (verified live on
-`claude-sonnet-4-6` and `claude-fable-5-1`) **[live]**. Nothing in this change
-touches that path — a response that already carries the field is never
-re-serialized.
+**First-party verdicts.** The Anthropic adapter forwards the request's
+safeguard field and beta to `api.anthropic.com`. Verdicts arrived on
+`claude-sonnet-4-6` and `claude-fable-5-1` **[live]**. The response synthesis
+pass leaves a present `safeguard_results` unchanged.
+
+**Response coding.** `response_coding::normalize` incrementally decodes native
+Anthropic gzip, zlib-wrapped deflate, and zstd responses before the
+account-refusal judge, model alias rewriting, keepalive insertion, safeguard
+synthesis, metrics and spend metering, and internal routing collectors. `proxy::post` re-encodes a marked client response with the
+upstream's coding and flushes after each plaintext piece. This prevents a
+compressed SSE body from waiting in a plaintext frame accumulator. Internal
+judge and gated calls consume the decoded body. Gated replay retains the coding
+marker for client-side encoding. A committed mixed chain relays the decoded
+Anthropic winner in its existing unencoded SSE response. Informational, 204,
+205, and 304 responses are not decoded or marked; a coded 200 with an empty body
+still fails as truncated input.
+
+The outbound offer retains gzip, deflate, zstd, identity entries, and `*;q=0`
+exclusions in client order with their parameters. With no acceptable supported
+coding, shunt sends an explicit identity offer, also when the client excludes
+identity: a reply in a coding shunt cannot decode would reach the plaintext
+layers and the spend meter still encoded. A third-party upstream whose thinking signatures
+shunt wraps gets `identity` instead
+(`thinking_wrap::request_identity_encoding`). A response in an unsupported or
+stacked coding stays on the passthrough path. Codec steps
+run under bounded blocking-pool admission and emit decoded pieces of at most
+16 KiB. The zstd decoder does not allocate a window buffer above 8 MiB, the
+largest window RFC 9659 lets a "zstd" content-coding encoder require. `Decoder` uses flate2's gzip wrapper and drains pending output before
+requesting more input. At a member boundary, it starts a fresh gzip decoder
+when input remains or arrives later. A malformed or truncated coding body
+raises a body-stream error. See
+`tests/anthropic_response_coding.rs` and
+`tests/anthropic_response_coding_internal.rs` for gated delivery and routing
+regressions.
 
 **Synthesis elsewhere** (`src/proxy/safeguards.rs`). A route served by a
 translation adapter (Responses/Codex, Cursor, Gemini, Antigravity) builds its own
