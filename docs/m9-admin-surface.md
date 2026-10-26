@@ -379,10 +379,11 @@ redirect URL from the browser address bar or `<code>#<state>`. Completion checks
 the pending state in constant time, requires a refresh token, derives the account
 ID from the access-token JWT, and writes the verbatim `auth.json` shape at `0600`.
 `SHUNT_CODEX_TOKEN_URL` overrides the exchange endpoint for local tests; an
-invalid or non-HTTPS/non-loopback override is ignored with a warning (mirroring the
-Claude completion flow) instead of silently, and the exchange POST uses the
-redirect-hardened client so a permitted endpoint cannot 3xx the single-use code to
-an unsafe plaintext host. No access, refresh, or ID token is returned or logged.
+invalid override, or one that is neither loopback nor HTTPS to the built-in
+endpoint's host, is ignored with a warning (mirroring the Claude completion flow)
+instead of silently, and the exchange POST uses the redirect-hardened client, which
+follows a 3xx only within the host it started on, so a permitted endpoint cannot
+hand the single-use code to another host. No access, refresh, or ID token is returned or logged.
 
 Like Claude, an empty-account `chatgpt_oauth` provider scans the Codex store and
 makes the new account live on its next request. Explicit-account providers need a

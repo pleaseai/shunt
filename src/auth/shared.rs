@@ -127,14 +127,36 @@ pub(crate) fn is_safe_refresh_url(url: &reqwest::Url) -> bool {
             && crate::config::host_is_loopback(url.host_str().unwrap_or_default()))
 }
 
+/// Whether a `SHUNT_*_TOKEN_URL` override may stand in for `default_url`: a loopback
+/// endpoint, which is the local mock these overrides exist for, or HTTPS to the
+/// default's own host.
+///
+/// Narrower than [`is_safe_refresh_url`] on purpose. That floor governs where a
+/// refresh may go once an endpoint is chosen; this decides which endpoint is chosen.
+/// An override is the first hop, so no redirect policy sees it, and HTTPS to any
+/// other host would hand that host the long-lived `refresh_token` (or the one-time
+/// authorization code) encrypted but in full.
+fn is_permitted_token_url_override(url: &reqwest::Url, default_url: &str) -> bool {
+    if !is_safe_refresh_url(url) {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default();
+    crate::config::host_is_loopback(host)
+        || reqwest::Url::parse(default_url)
+            .ok()
+            .and_then(|default| default.host_str().map(str::to_owned))
+            .is_some_and(|default_host| default_host == host)
+}
+
 /// Resolve an OAuth refresh endpoint from a `SHUNT_*_TOKEN_URL` override; an empty,
-/// malformed, or unsafe one (see [`is_safe_refresh_url`]) falls back to `default_url`.
+/// malformed, or unpermitted one (see [`is_permitted_token_url_override`]) falls
+/// back to `default_url`.
 pub(crate) fn sanitize_token_url(raw: Option<String>, default_url: &str) -> String {
     raw.filter(|value| !value.is_empty())
         .filter(|value| {
             value
                 .parse::<reqwest::Url>()
-                .is_ok_and(|url| is_safe_refresh_url(&url))
+                .is_ok_and(|url| is_permitted_token_url_override(&url, default_url))
         })
         .unwrap_or_else(|| default_url.to_string())
 }
@@ -158,28 +180,39 @@ pub(crate) fn admin_token_url_override(env_var: &str, default_url: &str) -> Stri
         );
         return default_url.to_string();
     };
-    if is_safe_refresh_url(&url) {
+    if is_permitted_token_url_override(&url, default_url) {
         raw
     } else {
         tracing::warn!(
             env = env_var,
             scheme = url.scheme(),
             host = url.host_str().unwrap_or_default(),
-            "admin: ignoring token URL override (only https, or http to loopback, is allowed)"
+            "admin: ignoring token URL override (only a loopback URL, or https to the built-in endpoint's host, is allowed)"
         );
         default_url.to_string()
     }
 }
 
 /// Process-wide client for the OAuth refresh POST; follows a 3xx only to a safe
-/// endpoint ([`is_safe_refresh_url`]), closing [`sanitize_token_url`]'s initial-URL gap.
+/// endpoint ([`is_safe_refresh_url`]) on the host the request started on, closing
+/// [`sanitize_token_url`]'s initial-URL gap.
+///
+/// Same host, not merely HTTPS: a 307 or 308 replays the POST body, which carries
+/// the refresh token or authorization code, so a token endpoint may move it to
+/// another path or port of its own host but never hand it to a different one.
+/// reqwest strips `Authorization` on a host change, but not a body.
 pub(crate) fn token_refresh_client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                    if attempt.previous().len() >= 10 || !is_safe_refresh_url(attempt.url()) {
+                    let origin = attempt.previous().first().and_then(|url| url.host_str());
+                    let same_host = origin.is_some() && origin == attempt.url().host_str();
+                    if attempt.previous().len() >= 10
+                        || !same_host
+                        || !is_safe_refresh_url(attempt.url())
+                    {
                         attempt.error("unsafe or excessive token refresh redirect refused")
                     } else {
                         attempt.follow()
@@ -1158,7 +1191,13 @@ mod tests {
         env::set_var(&env_name, "");
         assert_eq!(admin_token_url_override(&env_name, default), default);
 
-        // Safe overrides are honored: https anywhere, or http to loopback.
+        // Permitted overrides are honored: loopback over either scheme, or https to
+        // the built-in endpoint's own host.
+        env::set_var(&env_name, "https://auth.example.com/v2/token");
+        assert_eq!(
+            admin_token_url_override(&env_name, default),
+            "https://auth.example.com/v2/token"
+        );
         env::set_var(&env_name, "https://localhost:9999/token");
         assert_eq!(
             admin_token_url_override(&env_name, default),
@@ -1175,6 +1214,10 @@ mod tests {
         env::set_var(&env_name, "not a url");
         assert_eq!(admin_token_url_override(&env_name, default), default);
         env::set_var(&env_name, "http://evil.example.com/token");
+        assert_eq!(admin_token_url_override(&env_name, default), default);
+        // HTTPS to any other host would receive the one-time code on the first
+        // hop, where no redirect policy sees it, so it is ignored too.
+        env::set_var(&env_name, "https://evil.example.com/token");
         assert_eq!(admin_token_url_override(&env_name, default), default);
 
         env::remove_var(&env_name);
