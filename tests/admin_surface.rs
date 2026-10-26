@@ -582,6 +582,57 @@ async fn admin_oidc_callback_is_not_found_without_oidc() {
     assert_login_budget_unspent(&client, &gateway, "no-oidc-secret").await;
 }
 
+/// A callback with a live `state` still spends the budget, and once the budget
+/// is gone it answers `429`. The state has been redeemed by then, so the same
+/// link then answers `400` and the user starts sign-in again: the one cost of
+/// redeeming before counting.
+#[tokio::test]
+async fn admin_oidc_callback_with_a_live_state_still_spends_the_login_budget() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let idp = MockServer::start().await;
+    vars.set("SHUNT_TEST_ADMIN_OIDC_SPENT_TOKENS", "ops:spent-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_SPENT_SECRET", "client-secret");
+    let config = admin_oidc_config(
+        "SHUNT_TEST_ADMIN_OIDC_SPENT_TOKENS",
+        "SHUNT_TEST_ADMIN_OIDC_SPENT_SECRET",
+        &idp,
+    );
+    let gateway = start_with_addr(config).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    // Starting sign-in spends one of the 30; 29 failed logins spend the rest.
+    let (_, state) = oidc_state(&client, &gateway).await;
+    for attempt in 0..29 {
+        let response = client
+            .post(format!("{}/admin/login", gateway.base_url))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("token=wrong")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "login attempt {attempt}"
+        );
+    }
+
+    let callback = format!(
+        "{}/admin/oidc/callback?code=authorization-code&state={state}",
+        gateway.base_url
+    );
+    let response = client.get(&callback).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let response = client.get(&callback).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn admin_oidc_discovery_builds_authorization_redirect() {
     if !can_bind_loopback() {
