@@ -500,6 +500,88 @@ async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_ori
     assert!(!error_html.contains("access_denied"));
 }
 
+/// Callbacks fired by another site, which an `<img>` tag can do because the
+/// callback is a `GET`. None carries a live `state`, so each is refused before
+/// the shared login budget (30 a minute, `src/admin/session.rs`) is spent.
+const FORGED_CALLBACKS: usize = 40;
+
+async fn send_forged_callbacks(client: &reqwest::Client, gateway: &Gateway, expected: StatusCode) {
+    for attempt in 0..FORGED_CALLBACKS {
+        let response = client
+            .get(format!(
+                "{}/admin/oidc/callback?code=x&state=forged-{attempt}",
+                gateway.base_url
+            ))
+            .header("sec-fetch-site", "cross-site")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "forged callback {attempt}");
+    }
+}
+
+/// `POST /admin/login` answers `429` once the budget is gone, so a `303` here
+/// proves the forged callbacks before it spent none of it.
+async fn assert_login_budget_unspent(client: &reqwest::Client, gateway: &Gateway, token: &str) {
+    let response = client
+        .post(format!("{}/admin/login", gateway.base_url))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(format!("token={token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "forged OIDC callbacks must not spend the admin login budget"
+    );
+}
+
+#[tokio::test]
+async fn admin_oidc_forged_callbacks_do_not_spend_the_login_budget() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let idp = MockServer::start().await;
+    vars.set("SHUNT_TEST_ADMIN_OIDC_FORGED_TOKENS", "ops:forged-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_FORGED_SECRET", "client-secret");
+    let config = admin_oidc_config(
+        "SHUNT_TEST_ADMIN_OIDC_FORGED_TOKENS",
+        "SHUNT_TEST_ADMIN_OIDC_FORGED_SECRET",
+        &idp,
+    );
+    let gateway = start_with_addr(config).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    send_forged_callbacks(&client, &gateway, StatusCode::BAD_REQUEST).await;
+    assert_login_budget_unspent(&client, &gateway, "forged-secret").await;
+    // The sign-in the forged callbacks were imitating still starts, too.
+    oidc_state(&client, &gateway).await;
+}
+
+/// Without `[server.admin.oidc]` no sign-in can have started, so the callback
+/// has nothing to redeem: it answers `404` and spends nothing either.
+#[tokio::test]
+async fn admin_oidc_callback_is_not_found_without_oidc() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_NO_OIDC_TOKENS", "ops:no-oidc-secret");
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_NO_OIDC_TOKENS")).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    send_forged_callbacks(&client, &gateway, StatusCode::NOT_FOUND).await;
+    assert_login_budget_unspent(&client, &gateway, "no-oidc-secret").await;
+}
+
 #[tokio::test]
 async fn admin_oidc_discovery_builds_authorization_redirect() {
     if !can_bind_loopback() {

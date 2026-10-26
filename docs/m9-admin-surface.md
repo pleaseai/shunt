@@ -241,6 +241,12 @@ process-lifetime state:
   downgrading that dashboard to read-only until the operator signed in again.
   Scripted logins are unaffected: the check passes when neither `Sec-Fetch-Site`
   nor `Origin` is present.
+- **The OIDC callback redeems `state` before it spends that budget.** The
+  callback is a `GET`, so another site can fire it with an `<img>` tag, and a
+  same-origin check cannot apply to the identity provider's own redirect. A
+  callback carrying no live `state` is therefore refused before the rate limit
+  is consulted; only `POST /admin/api/oidc/start`, which is same-origin checked,
+  mints one. Without `[server.admin.oidc]` the callback answers `404`.
 - **Pending-login store** is in-memory only, single-use, and TTL-bound; each
   completion attempt is counted and the entry is discarded after a small cap. The
   256-bit OAuth `state` already makes guessing infeasible.
