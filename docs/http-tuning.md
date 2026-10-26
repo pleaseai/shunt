@@ -19,6 +19,7 @@ analytics routes retain their endpoint-specific body limits.
 allow_cidrs = ["10.0.0.0/8"]
 deny_cidrs = ["10.20.0.0/16"]
 trust_forwarded_for = false
+allowed_hosts = ["shunt.internal.example"]
 
 [server.limits]
 max_request_bytes = 33554432
@@ -56,6 +57,29 @@ access-control switch resolves client addresses only for CIDR allow/deny rules;
 the gateway switch resolves client addresses for the device-flow rate limiters.
 When both surfaces run behind a trusted reverse proxy, set both switches. Setting
 only one leaves the other surface using the socket peer address.
+
+### Host check
+
+A web page can point its own domain at `127.0.0.1` once it has loaded (DNS
+rebinding). From then on the browser treats shunt's port as the page's own
+origin, so the page can send any header and read every reply, and with no
+`[server.auth]` that means the operator's accounts. The browser still sends the
+name it resolved in `Host`, so shunt refuses a request whose `Host` names a
+host it does not answer for, with `403 permission_error` (OpenAI-shaped on the
+inbound Codex routes), before any other layer runs (`src/host_guard.rs`).
+
+Accepted without configuration: IP literals (no DNS is involved), `localhost`
+and `*.localhost` (RFC 6761; browsers resolve these to loopback themselves), the
+hosts of `[server.gateway] public_url` and `[server.admin.oidc] public_url`, and
+a request with no `Host` header. `/` and `/health` are exempt, as they are from
+the allow list.
+
+The check runs on a loopback bind, where those are the only names a real client
+uses, and is off on any other bind unless `allowed_hosts` is set. A non-empty
+`allowed_hosts` adds names (bare, lowercase, no scheme or port) and turns the
+check on for any bind; `["*"]` turns it off. A reverse proxy or tunnel that
+forwards the original `Host` to a loopback-bound shunt, or a container reaching
+it as `host.docker.internal`, needs its name listed.
 
 Changing this table requires a restart because its middleware is installed when
 the router is built.

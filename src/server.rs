@@ -16,6 +16,7 @@ use crate::{
     config::{Config, ConfigError, CountTokens, ProviderKind},
     discovery,
     gateway::{self, GatewayAuth, GatewayStores},
+    host_guard::{enforce_host, HostGuard},
     http_tuning::{enforce_http_tuning, HttpTuningLayer},
     oauth_usage, protocol, proxy,
     reload::{RuntimeState, SharedState},
@@ -249,6 +250,8 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // rewriting `server.bind` must not move that gate without a restart (see
     // `AppState::boot_is_loopback`).
     let boot_is_loopback = boot_is_loopback(config);
+    // Fixed at boot with the rest of `[server.access_control]`.
+    let host_guard = HostGuard::from_config(config, boot_is_loopback);
     let spend_state_path = spend_state_path(config);
     let rate_limits = config.server.rate_limits.clone();
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
@@ -383,6 +386,12 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
             enforce_http_tuning,
         ));
     }
+    // Outermost, so a request naming a host shunt does not answer for is
+    // refused before any other layer or handler runs (DNS rebinding; see
+    // `crate::host_guard`).
+    if let Some(host_guard) = host_guard {
+        router = router.layer(middleware::from_fn_with_state(host_guard, enforce_host));
+    }
 
     // Clone the state into the router; the returned clone shares the same
     // `AccountPool`/`SharedState` Arcs, so a background poller populating quota
@@ -429,6 +438,102 @@ mod tests {
     };
 
     use super::build_router;
+
+    /// The status `router` answers `GET path` with, sent with `host` as its
+    /// `Host` header (or none).
+    async fn status_for_host(router: &axum::Router, host: Option<&str>, path: &str) -> StatusCode {
+        let mut request = Request::builder().uri(path);
+        if let Some(host) = host {
+            request = request.header("host", host);
+        }
+        router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// DNS rebinding (`crate::host_guard`): on the default loopback bind a
+    /// request naming another host is refused before routing, while loopback
+    /// names, IP literals, a request with no `Host`, and liveness still pass.
+    #[tokio::test]
+    async fn a_loopback_bind_refuses_requests_for_other_host_names() {
+        let (router, _shared, _state) = build_router(Config::default()).unwrap();
+        for host in [
+            "evil.example:3001",
+            "evil.example",
+            "localhost.evil.example:3001",
+        ] {
+            assert_eq!(
+                status_for_host(&router, Some(host), "/routes").await,
+                StatusCode::FORBIDDEN,
+                "{host}"
+            );
+        }
+        for host in [
+            Some("127.0.0.1:3001"),
+            Some("localhost:3001"),
+            Some("[::1]:3001"),
+            Some("app.localhost:3001"),
+            None,
+        ] {
+            assert_eq!(
+                status_for_host(&router, host, "/routes").await,
+                StatusCode::OK,
+                "{host:?}"
+            );
+        }
+        for path in ["/", "/health"] {
+            assert_eq!(
+                status_for_host(&router, Some("evil.example:3001"), path).await,
+                StatusCode::OK,
+                "{path} stays exempt"
+            );
+        }
+    }
+
+    /// `[server.access_control] allowed_hosts` adds names, makes the check run
+    /// on a non-loopback bind, and `"*"` turns it off.
+    #[tokio::test]
+    async fn allowed_hosts_and_public_urls_extend_the_host_check() {
+        let mut listed = Config::default();
+        listed.server.bind = "0.0.0.0:3001".into();
+        listed.server.access_control.allowed_hosts = vec!["shunt.example.com".into()];
+        let (router, _shared, _state) = build_router(listed).unwrap();
+        assert_eq!(
+            status_for_host(&router, Some("evil.example"), "/routes").await,
+            StatusCode::FORBIDDEN
+        );
+        for host in [
+            "shunt.example.com",
+            "SHUNT.example.com:443",
+            "192.168.1.5:3001",
+        ] {
+            assert_eq!(
+                status_for_host(&router, Some(host), "/routes").await,
+                StatusCode::OK,
+                "{host}"
+            );
+        }
+
+        // A non-loopback bind with no list keeps today's behavior: no check.
+        let mut open = Config::default();
+        open.server.bind = "0.0.0.0:3001".into();
+        let (router, _shared, _state) = build_router(open).unwrap();
+        assert_eq!(
+            status_for_host(&router, Some("evil.example"), "/routes").await,
+            StatusCode::OK
+        );
+
+        let mut wildcard = Config::default();
+        wildcard.server.access_control.allowed_hosts = vec!["*".into()];
+        let (router, _shared, _state) = build_router(wildcard).unwrap();
+        assert_eq!(
+            status_for_host(&router, Some("evil.example"), "/routes").await,
+            StatusCode::OK
+        );
+    }
 
     /// `Config::default()` with `[server.auth]` bound to a unique env var and
     /// `[server.usage]` enabled, plus the built-in `codex` provider given one
