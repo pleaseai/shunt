@@ -73,9 +73,11 @@ and `*.localhost` (RFC 6761; browsers resolve these to loopback themselves), the
 hosts of `[server.gateway] public_url` and `[server.admin.oidc] public_url`, and
 a request with neither a `Host` header nor a URI authority (HTTP/2 carries the
 name in `:authority`, which is checked instead). `/` and `/health` are exempt, as
-they are from the allow list. The `public_url` hosts are read from the live
-config, so a reload that moves the gateway to a new name is followed at once;
-whether the check runs, and `allowed_hosts`, are fixed at boot.
+they are from the allow list. The `public_url` hosts are read from the running
+gateway and admin login, so a reload that moves the gateway to a new name is
+followed at once, and removing `[server.gateway]` keeps the running gateway's
+host until a restart, as it keeps its routes. Whether the check runs, and
+`allowed_hosts`, are fixed at boot.
 
 The check runs on a loopback bind, where those are the only names a real client
 uses, and is off on any other bind unless `allowed_hosts` is set. A non-empty

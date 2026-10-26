@@ -28,10 +28,12 @@ use axum::{
 };
 
 use crate::{
+    admin::AdminAuth,
     concurrency::is_codex_request,
     config::Config,
     error::{into_openai_error_shape, ShuntError},
-    reload::SharedState,
+    gateway::GatewayAuth,
+    reload::{RuntimeState, SharedState},
 };
 
 /// The `allowed_hosts` entry that turns the check off.
@@ -62,43 +64,41 @@ impl HostGuard {
         })
     }
 
-    /// Whether a request whose `Host` header holds `value` may be served.
-    /// `config` is the live one: the `public_url` hosts follow a reload,
-    /// because the gateway and admin login advertise them as soon as it lands.
-    fn admits(&self, value: &str, config: &Config) -> bool {
-        let Some(name) = host_name(value) else {
-            return false;
-        };
+    /// Whether `name` (normalized by [`host_name`]) is one shunt always
+    /// answers for, or an `allowed_hosts` entry.
+    fn admits(&self, name: &str) -> bool {
         let unbracketed = name
             .strip_prefix('[')
             .and_then(|name| name.strip_suffix(']'))
-            .unwrap_or(&name);
+            .unwrap_or(name);
         unbracketed.parse::<IpAddr>().is_ok()
             || name == "localhost"
             || name.ends_with(".localhost")
-            || self.allowed.contains(&name)
-            || public_url_hosts(config).any(|host| host == name)
+            || self.allowed.iter().any(|host| host == name)
     }
 }
 
-/// The hosts of `[server.gateway] public_url` and `[server.admin.oidc]
-/// public_url`, normalized by [`host_name`].
-fn public_url_hosts(config: &Config) -> impl Iterator<Item = String> + '_ {
-    let gateway = config
-        .server
-        .gateway
-        .as_ref()
-        .map(|gateway| gateway.public_url.as_str());
-    let admin = config
-        .server
-        .admin
-        .as_ref()
-        .and_then(|admin| admin.oidc.as_ref())
-        .map(|oidc| oidc.public_url.as_str());
-    [gateway, admin].into_iter().flatten().filter_map(|url| {
-        let url = url::Url::parse(url).ok()?;
-        host_name(url.host_str()?)
-    })
+/// The hosts the running gateway and admin login advertise, normalized by
+/// [`host_name`]. Read from the resolved auth in the live state rather than
+/// from the config: a reload re-resolves both, so a moved `public_url` is
+/// followed at once, and it keeps the running gateway auth when
+/// `[server.gateway]` is removed (its routes stay until a restart), which the
+/// config alone would not show.
+fn live_public_url_hosts(runtime: &RuntimeState) -> impl Iterator<Item = String> + '_ {
+    let gateway = runtime.gateway_auth.as_deref().map(GatewayAuth::public_url);
+    let admin = runtime
+        .admin_auth
+        .as_deref()
+        .and_then(AdminAuth::oidc_public_url);
+    [gateway, admin]
+        .into_iter()
+        .flatten()
+        .filter_map(public_url_host)
+}
+
+/// The host of a resolved `public_url`, normalized by [`host_name`].
+fn public_url_host(url: &str) -> Option<String> {
+    host_name(url::Url::parse(url).ok()?.host_str()?)
 }
 
 /// The host part of a `Host` header value (or `allowed_hosts` entry), lowercased
@@ -138,8 +138,10 @@ pub(crate) async fn enforce_host(
             .map(|authority| authority.as_str()),
     };
     let admitted = requested.is_none_or(|host| {
-        let runtime = check.shared.load();
-        check.guard.admits(host, &runtime.config)
+        host_name(host).is_some_and(|name| {
+            check.guard.admits(&name)
+                || live_public_url_hosts(&check.shared.load()).any(|host| host == name)
+        })
     });
     if admitted {
         return next.run(request).await;
@@ -162,7 +164,11 @@ pub(crate) async fn enforce_host(
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
+    use axum::body::Body;
+    use tower::ServiceExt;
+
     use super::*;
 
     fn guard(allowed: &[&str]) -> HostGuard {
@@ -170,6 +176,12 @@ mod tests {
             allowed: allowed.iter().map(|host| (*host).to_string()).collect(),
             codex_endpoint_enabled: false,
         }
+    }
+
+    /// What the middleware decides for a `Host` value, before the live
+    /// `public_url` hosts are consulted.
+    fn admits(guard: &HostGuard, value: &str) -> bool {
+        host_name(value).is_some_and(|name| guard.admits(&name))
     }
 
     #[test]
@@ -186,10 +198,7 @@ mod tests {
             "app.localhost:3001",
             "10.0.0.5:8080",
         ] {
-            assert!(
-                guard.admits(host, &Config::default()),
-                "{host} must be admitted"
-            );
+            assert!(admits(&guard, host), "{host} must be admitted");
         }
     }
 
@@ -204,53 +213,36 @@ mod tests {
             "user@127.0.0.1:3001",
             "",
             "evil example",
+            "<non-ascii>",
         ] {
-            assert!(
-                !guard.admits(host, &Config::default()),
-                "{host:?} must be refused"
-            );
+            assert!(!admits(&guard, host), "{host:?} must be refused");
         }
     }
 
     #[test]
     fn admits_configured_names_case_insensitively_on_any_port() {
         let guard = guard(&["shunt.example.com"]);
-        assert!(guard.admits("shunt.example.com", &Config::default()));
-        assert!(guard.admits("Shunt.Example.com:8443", &Config::default()));
-        assert!(!guard.admits("other.example.com", &Config::default()));
-        assert!(!guard.admits("sub.shunt.example.com", &Config::default()));
+        assert!(admits(&guard, "shunt.example.com"));
+        assert!(admits(&guard, "Shunt.Example.com:8443"));
+        assert!(!admits(&guard, "other.example.com"));
+        assert!(!admits(&guard, "sub.shunt.example.com"));
     }
 
-    /// The `public_url` hosts shunt already advertises are accepted without
-    /// being listed: they are the names its own login redirects point at.
     #[test]
-    fn configured_public_url_hosts_are_admitted() {
-        let mut config = Config::default();
-        config.server.gateway =
-            Some(toml::from_str(r#"public_url = "https://Gateway.Example""#).unwrap());
-        config.server.admin = Some(
-            toml::from_str(
-                r#"
-                    [oidc]
-                    public_url = "https://admin.example:8443"
-                    issuer = "https://idp.example"
-                    client_id = "shunt"
-                "#,
-            )
-            .unwrap(),
+    fn public_url_host_normalizes_like_a_host_header() {
+        assert_eq!(
+            public_url_host("https://Gateway.Example").as_deref(),
+            Some("gateway.example")
         );
-        let guard = HostGuard::from_config(&config, true).expect("loopback bind checks Host");
-        assert!(guard.admits("gateway.example", &config));
-        assert!(guard.admits("admin.example:8443", &config));
-        assert!(!guard.admits("evil.example", &config));
-
-        // A reload that moves the gateway to a new name moves the check with
-        // it: the guard reads `public_url` from the live config it is handed.
-        let mut reloaded = config.clone();
-        reloaded.server.gateway =
-            Some(toml::from_str(r#"public_url = "https://login.example""#).unwrap());
-        assert!(guard.admits("login.example", &reloaded));
-        assert!(!guard.admits("gateway.example", &reloaded));
+        assert_eq!(
+            public_url_host("https://admin.example:8443").as_deref(),
+            Some("admin.example")
+        );
+        assert_eq!(
+            public_url_host("http://[::1]:8787").as_deref(),
+            Some("[::1]")
+        );
+        assert_eq!(public_url_host("not a url"), None);
     }
 
     #[test]
@@ -272,5 +264,61 @@ mod tests {
         assert_eq!(host_name("https://example.com"), None);
         assert_eq!(host_name("example.com/path"), None);
         assert_eq!(host_name("user@example.com"), None);
+    }
+
+    /// The gateway's `public_url` host is admitted without being listed, and
+    /// the check follows the running gateway through reloads: a moved
+    /// `public_url` takes effect at once, and removing `[server.gateway]` keeps
+    /// the running gateway (and so its host) until a restart, as `reload` does.
+    #[tokio::test]
+    async fn the_gateway_host_is_admitted_and_follows_reloads() {
+        let _env_lock = crate::config::test_env_lock();
+        let suffix = std::process::id();
+        let secret_env = format!("SHUNT_HOST_GUARD_GATEWAY_SECRET_{suffix}");
+        let users_env = format!("SHUNT_HOST_GUARD_GATEWAY_USERS_{suffix}");
+        std::env::set_var(&secret_env, "0123456789abcdef0123456789abcdef");
+        std::env::set_var(&users_env, "alice@example.com:secret");
+        let dir = std::env::temp_dir().join(format!("shunt-host-guard-reload-{suffix}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shunt.toml");
+        let gateway_at = |url: &str| {
+            format!(
+                "[server.gateway]\npublic_url = \"{url}\"\njwt_secret_env = \"{secret_env}\"\nusers_env = \"{users_env}\"\n"
+            )
+        };
+
+        std::fs::write(&path, gateway_at("https://gateway.example")).unwrap();
+        let config = Config::load(Some(&path)).unwrap();
+        let (router, shared, _state) = crate::server::build_router(config).unwrap();
+        let status = |host: &'static str| {
+            let router = router.clone();
+            async move {
+                let request = axum::http::Request::builder()
+                    .uri("/routes")
+                    .header("host", host)
+                    .body(Body::empty())
+                    .unwrap();
+                router.oneshot(request).await.unwrap().status()
+            }
+        };
+        assert_eq!(status("gateway.example").await, StatusCode::OK);
+        assert_eq!(status("evil.example").await, StatusCode::FORBIDDEN);
+
+        std::fs::write(&path, gateway_at("https://login.example")).unwrap();
+        crate::reload::reload(&shared, Some(&path)).unwrap();
+        assert_eq!(status("login.example").await, StatusCode::OK);
+        assert_eq!(status("gateway.example").await, StatusCode::FORBIDDEN);
+
+        std::fs::write(&path, "").unwrap();
+        crate::reload::reload(&shared, Some(&path)).unwrap();
+        assert_eq!(
+            status("login.example").await,
+            StatusCode::OK,
+            "the retained gateway keeps its host"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::env::remove_var(secret_env);
+        std::env::remove_var(users_env);
     }
 }
