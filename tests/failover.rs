@@ -1336,6 +1336,46 @@ async fn account_refusals_advance_to_the_next_upstream() {
     }
 }
 
+/// A refusal whose body the upstream compressed is judged on the decoded
+/// envelope, so it advances like an uncompressed one.
+#[tokio::test]
+async fn a_compressed_account_refusal_advances_to_the_next_upstream() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let _vars = common::env_lock().await;
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    let body = error_envelope("invalid_request_error", SPEND_LIMIT_MESSAGE);
+    mount_post(
+        &first,
+        ResponseTemplate::new(400)
+            .insert_header("content-encoding", "gzip")
+            .set_body_raw(common::gzip(body.as_bytes()), "application/json"),
+        1,
+    )
+    .await;
+    mount_post(
+        &second,
+        ResponseTemplate::new(200).set_body_string("healthy"),
+        1,
+    )
+    .await;
+    let config = two_upstream_chain(
+        passthrough("first", first.uri()),
+        passthrough("second", second.uri()),
+    );
+    let gateway = start_gateway(config).await;
+
+    let response = post(&gateway).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_gateway_headers(&response, "second", "model-b");
+    assert_eq!(response.text().await.unwrap(), "healthy");
+    first.verify().await;
+    second.verify().await;
+}
+
 #[tokio::test]
 async fn request_level_400_with_an_error_envelope_returns_immediately() {
     if !can_bind_loopback() {

@@ -474,6 +474,90 @@ async fn refresh_server_error_is_not_terminal() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+/// A token endpoint that accepts the request and never answers must not hold
+/// `REFRESH_LOCK` forever: the refresh gives up at the store's bound, as a
+/// transient (non-terminal) failure, and leaves the stored pair untouched.
+#[tokio::test]
+async fn refresh_against_a_stalled_endpoint_times_out_as_transient() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(60))
+                .set_body_json(json!({ "access_token": "never-delivered" })),
+        )
+        .mount(&server)
+        .await;
+
+    let path = temp_credentials_path("stalled-refresh");
+    write_credentials(&path, "expired-access", "live-refresh", 0);
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", server.uri()),
+    )
+    .with_request_timeout(Duration::from_millis(200));
+
+    let error = tokio::time::timeout(STALLED_REFRESH_GUARD, store.force_refresh())
+        .await
+        .expect("the refresh must give up at its own bound, not wait out the stall")
+        .unwrap_err();
+    assert_timed_out_as_transient(&error, &path);
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// The bound covers the response body too: headers that arrive promptly,
+/// followed by a body that never completes, must not hold `REFRESH_LOCK`.
+#[tokio::test]
+async fn refresh_with_a_stalled_response_body_times_out_as_transient() {
+    let stalled = crate::testutil::StalledBody::start(
+        axum::http::StatusCode::OK,
+        "{\"access_token\":",
+        "\"never-delivered\"}",
+    )
+    .await;
+
+    let path = temp_credentials_path("stalled-refresh-body");
+    write_credentials(&path, "expired-access", "live-refresh", 0);
+    let store = ClaudeAuthStore::with_token_url(
+        path.clone(),
+        reqwest::Client::new(),
+        format!("{}/token", stalled.base_url),
+    )
+    .with_request_timeout(Duration::from_millis(200));
+
+    let error = tokio::time::timeout(STALLED_REFRESH_GUARD, store.force_refresh())
+        .await
+        .expect("the refresh must give up at its own bound, not wait on the body")
+        .unwrap_err();
+    assert_timed_out_as_transient(&error, &path);
+
+    stalled.release().await;
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// Outer guard for the stalled-refresh tests: well above their 200 ms bound,
+/// far below the stall itself, so only a missing or ignored bound trips it.
+const STALLED_REFRESH_GUARD: Duration = Duration::from_secs(5);
+
+fn assert_timed_out_as_transient(error: &anyhow::Error, path: &Path) {
+    assert!(
+        format!("{error:#}").contains("timed out"),
+        "the error must say the refresh timed out, got: {error:#}"
+    );
+    assert!(
+        !is_terminal_refresh_failure(error),
+        "a timeout must stay non-terminal, got: {error:#}"
+    );
+    let stored = read_file(path).unwrap();
+    assert_eq!(stored["claudeAiOauth"]["refreshToken"], "live-refresh");
+}
+
 /// An OAuth error envelope that is *not* `invalid_grant` is also non-terminal:
 /// only the code the spec reserves for a permanently dead grant may condemn an
 /// account. Pins that the classifier matches the code, not merely "the body

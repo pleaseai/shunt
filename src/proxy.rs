@@ -75,7 +75,7 @@ pub async fn post(
                     latency_ms = started_at.elapsed().as_millis(),
                     "proxied request"
                 );
-                response
+                crate::response_coding::encode_response(response)
             }
             Err(error) => {
                 tracing::warn!(

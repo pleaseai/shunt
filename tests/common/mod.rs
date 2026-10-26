@@ -199,3 +199,11 @@ pub fn error_envelope(error_type: &str, message: &str) -> String {
 pub const SPEND_LIMIT_MESSAGE: &str = "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.";
 /// The exhausted-credit message Anthropic documents.
 pub const CREDIT_BALANCE_MESSAGE: &str = "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.";
+
+/// `bytes` gzip-encoded, as an upstream sends a `content-encoding: gzip` body.
+pub fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
