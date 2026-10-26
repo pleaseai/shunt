@@ -144,7 +144,8 @@ fn is_permitted_token_url_override(url: &reqwest::Url, default_url: &str) -> boo
     crate::config::host_is_loopback(host)
         || reqwest::Url::parse(default_url)
             .ok()
-            .and_then(|default| default.host_str().map(str::to_owned))
+            .as_ref()
+            .and_then(reqwest::Url::host_str)
             .is_some_and(|default_host| default_host == host)
 }
 

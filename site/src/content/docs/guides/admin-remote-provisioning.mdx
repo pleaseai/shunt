@@ -93,7 +93,7 @@ An empty-account `chatgpt_oauth` provider, including the built-in `codex` provid
 name = "codex-backup"
 ```
 
-`SHUNT_CODEX_TOKEN_URL` overrides the ChatGPT token endpoint for local integration testing. shunt accepts a loopback URL, or HTTPS to the built-in endpoint's own host, and ignores anything else with a warning; leave it unset in production.
+`SHUNT_CODEX_TOKEN_URL` overrides the ChatGPT token endpoint for local integration testing. shunt accepts a loopback URL, or HTTPS to the built-in endpoint's own host, and ignores anything else (the admin login flow logs a warning when it does); leave it unset in production.
 
 ## Provision an Antigravity account in the browser
 

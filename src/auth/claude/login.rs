@@ -269,11 +269,14 @@ pub(crate) struct TokenAccount {
 }
 
 pub(crate) async fn exchange_code(
-    // The injected client follows redirects freely (the admin flow passes the
-    // shared proxy client); the code-exchange POST carries the one-time
-    // authorization code and PKCE verifier, so it goes through the
-    // redirect-hardened `token_refresh_client()` instead, as the Codex exchange
-    // does — a token endpoint must not be able to 3xx the code to another host.
+    // The injected client is not hardened for the token host: the CLI passes
+    // `reqwest::Client::new()`, and the admin flow passes the shared proxy
+    // client, whose redirect policy guards only OpenAI, ChatGPT and
+    // `*.anthropic.com` origins, not platform.claude.com. The code-exchange POST
+    // carries the one-time authorization code and PKCE verifier, so it goes
+    // through the redirect-hardened `token_refresh_client()` instead, as the
+    // Codex exchange does — a token endpoint must not be able to 3xx the code to
+    // another host.
     _client: &reqwest::Client,
     code: &str,
     state: &str,
@@ -691,9 +694,9 @@ mod tests {
 
     /// A 307 replays the exchange body, authorization code and PKCE verifier
     /// included, so the exchange must not follow one to another host even when
-    /// the caller hands it a client that follows redirects freely (the admin flow
-    /// passes the shared proxy client). `localhost` and the mock's `127.0.0.1`
-    /// are different hosts as far as the redirect policy is concerned.
+    /// the caller hands it a client that would (`reqwest::Client::new()`, as the
+    /// CLI does). `localhost` and the mock's `127.0.0.1` are different hosts as
+    /// far as the redirect policy is concerned.
     #[tokio::test]
     async fn oauth_exchange_does_not_follow_a_redirect_to_another_host() {
         let sink = MockServer::start().await;
