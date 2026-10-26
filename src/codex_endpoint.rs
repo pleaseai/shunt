@@ -330,6 +330,11 @@ pub(crate) fn extract_session_id(headers: &HeaderMap) -> Option<String> {
 /// `[[server.auth.jwt]]` JWT in the bearer slot. `Ok(None)` when no
 /// `[server.auth]` is configured. An unreachable JWT issuer key set is a `503`,
 /// never a `401`, so an operator is not sent hunting a credential that is fine.
+/// Why [`authenticate_inbound`] refuses a cross-origin browser request when no
+/// inbound auth is configured; the WebSocket turn loop reports the same text.
+pub(crate) const CROSS_ORIGIN_REFUSAL: &str =
+    "requests from a different browser origin require inbound authentication";
+
 pub(crate) async fn authenticate_inbound(
     auth: Option<&InboundAuth>,
     jwks: &JwksCache,
@@ -337,6 +342,17 @@ pub(crate) async fn authenticate_inbound(
     provider: &str,
 ) -> Result<Option<String>, ShuntError> {
     let Some(auth) = auth else {
+        // Without `[server.auth]` the pool's credential is injected for anyone
+        // who can reach the port, so refuse a page on another site: it can send
+        // a "simple" cross-origin request without a preflight, and shunt would
+        // spend the pool on it. The WebSocket handshake makes the same check.
+        if !crate::headers::same_origin_or_non_browser(headers) {
+            return Err(ShuntError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                CROSS_ORIGIN_REFUSAL,
+            ));
+        }
         return Ok(None);
     };
     match gate::authenticate(auth, jwks, headers, gate::Slots::Bearer).await {

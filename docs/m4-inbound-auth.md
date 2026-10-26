@@ -290,6 +290,31 @@ the strip a compile-time obligation rather than a convention a tripwire polices.
 improvement, but the three sites hand their map to three different HTTP clients, so the churn is
 larger than this change should carry.
 
+### 2.2 Without `[server.auth]`: browser pages on other sites
+
+With no inbound authentication (neither `[server.auth]` nor `[server.gateway]` login), an
+injected-credential route spends the operator's account for anyone who can reach the
+listener. On loopback that is meant to be the operator alone, but a web page they visit can
+reach the port too: a cross-origin `text/plain` POST needs no CORS preflight, and the body is
+parsed as JSON whatever its `Content-Type`. Such a request cannot read the reply, but it
+spends the pool, and against `claude_oauth` it used to cost far more (below).
+
+So an injected-credential route without inbound auth refuses a request whose `Origin` is not
+shunt's own, with `403 permission_error`. Browsers attach `Origin` to every cross-origin
+request that can carry a body, and a page can neither forge nor remove it; `Origin: null`
+(a sandboxed frame) is refused too. Non-browser clients send no `Origin` and are unaffected.
+The rule is `crate::headers::same_origin_or_non_browser`, the one the Codex WebSocket
+handshake has applied since M7, and the inbound Codex HTTP routes apply it as well. With
+inbound auth configured it does not apply: a page cannot attach the token without a preflight
+shunt never answers.
+
+Separately, every forward drops `Origin`, `Referer`, and `Sec-Fetch-*`
+(`crate::headers::strip_browser_context`). shunt calls the upstream as a server, not for the
+page. Anthropic answers an OAuth request that carries `Origin` with `401 authentication_error`
+("CORS requests must set 'anthropic-dangerous-direct-browser-access' header"), which the
+Claude pool reads as a dead credential: a forced refresh, a cooldown, and a "needs re-login"
+mark, for every account the chain tries.
+
 ## 3. Comparison & hygiene
 
 - **Constant-time comparison**, no new dependency: compare presented token against every

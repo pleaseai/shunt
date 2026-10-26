@@ -48,6 +48,8 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 `tokens_env` 自身的值也和其他配置文件字符串一样,可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))——它仍然指向 shunt 用来读取 token 的环境变量。
 
+未配置入站认证时(既没有此表,也没有 `[server.gateway]` 登录),注入凭据的路由会以 `403 permission_error` 拒绝 `Origin` 头部不是 shunt 自身的请求:浏览器会为跨源请求附加 `Origin`,这样的请求来自其他站点的页面,而该页面无需预检即可发送 `text/plain` 的 POST。非浏览器客户端不发送 `Origin`,因此不受影响;从其他源调用 shunt 的浏览器应用需要配置 `[server.auth]`。无论如何配置,shunt 在将请求转发到上游之前都会删除 `Origin`、`Referer` 和 `Sec-Fetch-*`。
+
 ### `[[server.auth.jwt]]`(可选)
 
 一个表数组,增加第二种入站凭据:由外部 identity provider 签发的 JWT,shunt **只验证、从不签发** —— 没有登录流程、没有会话存储、没有签名 secret。客户端的配置方式与静态 token 完全相同(base URL 加 bearer),因此不同于 `[server.gateway]` 登录,它不会让 Claude Code 进入 gateway provider 模式,也不会失去该模式禁用的客户端功能。参见[行为规范](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)。

@@ -961,6 +961,24 @@ pub(crate) async fn check_inbound_auth(
         .iter()
         .any(|route| spend_gate::route_meters(state, route));
     if !injects_credential || (state.inbound_auth.is_none() && state.gateway_auth.is_none()) {
+        // Unauthenticated, the chain injects the pool's credential for whoever
+        // reaches the port, so refuse a page on another site: it can POST a
+        // "simple" cross-origin request (`text/plain`, no preflight), and the
+        // body is parsed as JSON whatever its `Content-Type`. Same rule as the
+        // Codex WebSocket handshake (`crate::headers::same_origin_or_non_browser`).
+        if injects_credential && !crate::headers::same_origin_or_non_browser(headers) {
+            return Err(Box::new(ForwardError {
+                message: "cross-origin browser request refused without inbound auth".to_string(),
+                response: Box::new(
+                    ShuntError::new(
+                        StatusCode::FORBIDDEN,
+                        "permission_error",
+                        "requests from a different browser origin require inbound authentication",
+                    )
+                    .into_response(),
+                ),
+            }));
+        }
         return Ok((
             forwarded,
             InboundContext {

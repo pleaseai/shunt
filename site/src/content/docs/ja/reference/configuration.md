@@ -48,6 +48,8 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 `tokens_env` の値も、他の設定ファイル文字列と同様に `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。shunt がトークンを読み取る環境変数名を指す点は変わりません。
 
+インバウンド認証が設定されていない場合（このテーブルも `[server.gateway]` ログインもない場合）、認証情報を注入するルートは、`Origin` ヘッダーが shunt 自身のものではないリクエストを `403 permission_error` で拒否します。ブラウザはクロスオリジンのリクエストに `Origin` を付けます。そのようなリクエストは別サイトのページから送られたもので、そのページはプリフライトなしで `text/plain` の POST を送れます。ブラウザ以外のクライアントは `Origin` を送らないため影響を受けません。別のオリジンから shunt を呼び出すブラウザアプリには `[server.auth]` が必要です。設定にかかわらず、shunt はリクエストをアップストリームへ転送する前に `Origin`、`Referer`、`Sec-Fetch-*` を削除します。
+
 ### `[[server.auth.jwt]]`（オプション）
 
 インバウンド認証情報の 2 つ目の種類を追加するテーブル配列です。外部 identity provider が発行した JWT を shunt は**検証するだけで、発行は一切しません** — ログインフローもセッションストアも署名 secret もありません。クライアントの設定は静的トークンと同じ（base URL と bearer）なので、`[server.gateway]` ログインと違って Claude Code を gateway provider モードに入れず、そのモードで無効化されるクライアント機能も失いません。[動作仕様](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)を参照してください。

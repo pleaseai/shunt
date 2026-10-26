@@ -820,6 +820,58 @@ async fn inbound_auth_gates_the_endpoint() {
 }
 
 #[tokio::test]
+async fn without_inbound_auth_a_cross_origin_browser_request_is_refused() {
+    // Without [server.auth] the endpoint injects a pool bearer for anyone who can
+    // reach the port, so a page on another site is refused before any upstream
+    // call: a `text/plain` POST needs no preflight, and its `Origin` is set by the
+    // browser. A page served from shunt's own origin is still forwarded, and the
+    // browser headers it carried stay off the upstream request.
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-origin");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_INBOUND_ORIGIN", &token_a);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(HeaderAbsent("origin"))
+        .and(HeaderAbsent("referer"))
+        .and(HeaderAbsent("sec-fetch-site"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![account("account-origin", "SHUNT_TEST_INBOUND_ORIGIN")],
+    ))
+    .await;
+    let send = |origin: &str, fetch_site: &str| {
+        reqwest::Client::new()
+            .post(format!("{}/responses", gateway.base_url))
+            .header("content-type", "text/plain")
+            .header("origin", origin)
+            .header("referer", format!("{origin}/page"))
+            .header("sec-fetch-site", fetch_site)
+            .body(INBOUND_BODY)
+            .send()
+    };
+
+    for origin in ["https://evil.example", "null"] {
+        let response = send(origin, "cross-site").await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "origin {origin}");
+        let body = response.text().await.unwrap();
+        assert!(body.contains("different browser origin"), "got: {body}");
+    }
+
+    let same_origin = send(&gateway.base_url, "same-origin").await.unwrap();
+    assert_eq!(same_origin.status(), StatusCode::OK);
+    upstream.verify().await;
+}
+
+#[tokio::test]
 async fn authorization_bearer_authenticates_the_endpoint() {
     // The OpenAI / LiteLLM / llmgateway idiom: a Codex CLI pointed at shunt with
     // `OPENAI_API_KEY` (or a custom provider's `env_key`) sends the shunt token as
