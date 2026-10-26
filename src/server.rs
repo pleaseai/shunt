@@ -16,7 +16,7 @@ use crate::{
     config::{Config, ConfigError, CountTokens, ProviderKind},
     discovery,
     gateway::{self, GatewayAuth, GatewayStores},
-    host_guard::{enforce_host, HostGuard},
+    host_guard::{enforce_host, HostCheck, HostGuard},
     http_tuning::{enforce_http_tuning, HttpTuningLayer},
     oauth_usage, protocol, proxy,
     reload::{RuntimeState, SharedState},
@@ -250,7 +250,9 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // rewriting `server.bind` must not move that gate without a restart (see
     // `AppState::boot_is_loopback`).
     let boot_is_loopback = boot_is_loopback(config);
-    // Fixed at boot with the rest of `[server.access_control]`.
+    // Whether the Host check runs, and its `allowed_hosts`, are fixed at boot
+    // with the rest of `[server.access_control]`; the `public_url` hosts it
+    // also accepts are read from the live config on each request.
     let host_guard = HostGuard::from_config(config, boot_is_loopback);
     let spend_state_path = spend_state_path(config);
     let rate_limits = config.server.rate_limits.clone();
@@ -389,8 +391,12 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // Outermost, so a request naming a host shunt does not answer for is
     // refused before any other layer or handler runs (DNS rebinding; see
     // `crate::host_guard`).
-    if let Some(host_guard) = host_guard {
-        router = router.layer(middleware::from_fn_with_state(host_guard, enforce_host));
+    if let Some(guard) = host_guard {
+        let check = HostCheck {
+            guard,
+            shared: shared.clone(),
+        };
+        router = router.layer(middleware::from_fn_with_state(check, enforce_host));
     }
 
     // Clone the state into the router; the returned clone shares the same

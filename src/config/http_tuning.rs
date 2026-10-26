@@ -34,9 +34,7 @@ impl AccessControlConfig {
         self.parsed_allow_cidrs = parse_cidrs("allow_cidrs", &self.allow_cidrs)?;
         self.parsed_deny_cidrs = parse_cidrs("deny_cidrs", &self.deny_cidrs)?;
         for (index, entry) in self.allowed_hosts.iter().enumerate() {
-            if entry != "*"
-                && crate::host_guard::host_name(entry).as_deref() != Some(entry.as_str())
-            {
+            if !is_allowed_host_entry(entry) {
                 return Err(ConfigError::InvalidAllowedHost {
                     index,
                     value: entry.clone(),
@@ -76,6 +74,24 @@ impl AccessControlConfig {
                 .iter()
                 .any(|network| network.contains(&address))
     }
+}
+
+/// An `allowed_hosts` entry is `"*"`, or a host exactly as the guard compares
+/// it: lowercase, with no scheme, port, trailing dot or wildcard. The guard
+/// matches names exactly, so `*.example.com` would never match anything and is
+/// refused here rather than silently ignored.
+fn is_allowed_host_entry(entry: &str) -> bool {
+    if entry == crate::host_guard::ANY_HOST {
+        return true;
+    }
+    let name_chars = entry
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-._".contains(&byte));
+    let ipv6 = entry
+        .strip_prefix('[')
+        .and_then(|entry| entry.strip_suffix(']'))
+        .is_some_and(|address| address.parse::<std::net::Ipv6Addr>().is_ok());
+    (name_chars || ipv6) && crate::host_guard::host_name(entry).as_deref() == Some(entry)
 }
 
 fn parse_cidrs(field: &'static str, entries: &[String]) -> Result<Vec<IpNet>, ConfigError> {
@@ -301,7 +317,13 @@ mod tests {
 
     #[test]
     fn allowed_hosts_accepts_bare_lowercase_names_and_the_wildcard_only() {
-        for valid in [vec![], vec!["shunt.example.com"], vec!["*"]] {
+        for valid in [
+            vec![],
+            vec!["shunt.example.com"],
+            vec!["my_service"],
+            vec!["[::1]", "10.0.0.5"],
+            vec!["*"],
+        ] {
             let mut config = AccessControlConfig {
                 allowed_hosts: valid.iter().map(ToString::to_string).collect(),
                 ..AccessControlConfig::default()
@@ -316,6 +338,8 @@ mod tests {
             "shunt.example.com.",
             "",
             "ops@shunt.example.com",
+            "*.example.com",
+            "shunt*.example.com",
         ] {
             let mut config = AccessControlConfig {
                 allowed_hosts: vec!["ok.example".into(), invalid.into()],

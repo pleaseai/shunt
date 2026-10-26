@@ -3188,7 +3188,7 @@ pub enum ConfigError {
         value: String,
         message: String,
     },
-    #[error("server.access_control.allowed_hosts[{index}] `{value}` is not a lowercase host name without a scheme or port (or \"*\")")]
+    #[error("server.access_control.allowed_hosts[{index}] `{value}` is not a lowercase host name without a scheme, port or wildcard (or \"*\")")]
     InvalidAllowedHost { index: usize, value: String },
     #[error("server.limits.max_request_bytes must be greater than zero")]
     InvalidMaxRequestBytes,

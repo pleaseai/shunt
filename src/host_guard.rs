@@ -13,10 +13,10 @@
 //! shunt already advertises, plus `[server.access_control] allowed_hosts`.
 //!
 //! The check runs on a loopback bind, where those are the only names a real
-//! client can use, and on any bind once `allowed_hosts` is set. A request with no
-//! `Host` at all (HTTP/1.0) is not a browser request and passes. `/` and
-//! `/health` are exempt, as they are from the address allow list: they expose
-//! nothing a rebinding page could use.
+//! client can use, and on any bind once `allowed_hosts` is set. A request with
+//! neither a `Host` header nor a URI authority (HTTP/1.0) is not a browser
+//! request and passes. `/` and `/health` are exempt, as they are from the
+//! address allow list: they expose nothing a rebinding page could use.
 
 use std::{net::IpAddr, sync::Arc};
 
@@ -31,15 +31,18 @@ use crate::{
     concurrency::is_codex_request,
     config::Config,
     error::{into_openai_error_shape, ShuntError},
+    reload::SharedState,
 };
 
 /// The `allowed_hosts` entry that turns the check off.
-const ANY_HOST: &str = "*";
+pub(crate) const ANY_HOST: &str = "*";
 
+/// The boot-fixed part of the check: whether it runs at all, and the
+/// `allowed_hosts` names. Like the rest of `[server.access_control]`, both
+/// need a restart to change.
 #[derive(Clone, Debug)]
 pub(crate) struct HostGuard {
-    /// Configured names accepted besides the built-in ones, normalized by
-    /// [`host_name`].
+    /// `allowed_hosts`, normalized by [`host_name`].
     allowed: Arc<[String]>,
     codex_endpoint_enabled: bool,
 }
@@ -47,42 +50,22 @@ pub(crate) struct HostGuard {
 impl HostGuard {
     /// The guard for this boot, or `None` when the check is off: on a
     /// non-loopback bind with no `allowed_hosts`, or when `allowed_hosts`
-    /// contains `"*"`. Like the rest of `[server.access_control]`, it is fixed
-    /// when the router is built.
+    /// contains `"*"`.
     pub(crate) fn from_config(config: &Config, boot_is_loopback: bool) -> Option<Self> {
         let listed = &config.server.access_control.allowed_hosts;
         if listed.iter().any(|host| host == ANY_HOST) || (listed.is_empty() && !boot_is_loopback) {
             return None;
         }
-        let public_urls = [
-            config
-                .server
-                .gateway
-                .as_ref()
-                .map(|gateway| gateway.public_url.as_str()),
-            config
-                .server
-                .admin
-                .as_ref()
-                .and_then(|admin| admin.oidc.as_ref())
-                .map(|oidc| oidc.public_url.as_str()),
-        ];
-        let allowed = listed
-            .iter()
-            .filter_map(|host| host_name(host))
-            .chain(public_urls.into_iter().flatten().filter_map(|url| {
-                let url = url::Url::parse(url).ok()?;
-                host_name(url.host_str()?)
-            }))
-            .collect();
         Some(Self {
-            allowed,
+            allowed: listed.iter().filter_map(|host| host_name(host)).collect(),
             codex_endpoint_enabled: config.server.codex_endpoint.is_some(),
         })
     }
 
     /// Whether a request whose `Host` header holds `value` may be served.
-    fn admits(&self, value: &str) -> bool {
+    /// `config` is the live one: the `public_url` hosts follow a reload,
+    /// because the gateway and admin login advertise them as soon as it lands.
+    fn admits(&self, value: &str, config: &Config) -> bool {
         let Some(name) = host_name(value) else {
             return false;
         };
@@ -94,7 +77,28 @@ impl HostGuard {
             || name == "localhost"
             || name.ends_with(".localhost")
             || self.allowed.contains(&name)
+            || public_url_hosts(config).any(|host| host == name)
     }
+}
+
+/// The hosts of `[server.gateway] public_url` and `[server.admin.oidc]
+/// public_url`, normalized by [`host_name`].
+fn public_url_hosts(config: &Config) -> impl Iterator<Item = String> + '_ {
+    let gateway = config
+        .server
+        .gateway
+        .as_ref()
+        .map(|gateway| gateway.public_url.as_str());
+    let admin = config
+        .server
+        .admin
+        .as_ref()
+        .and_then(|admin| admin.oidc.as_ref())
+        .map(|oidc| oidc.public_url.as_str());
+    [gateway, admin].into_iter().flatten().filter_map(|url| {
+        let url = url::Url::parse(url).ok()?;
+        host_name(url.host_str()?)
+    })
 }
 
 /// The host part of a `Host` header value (or `allowed_hosts` entry), lowercased
@@ -109,32 +113,39 @@ pub(crate) fn host_name(value: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// [`HostGuard`] plus the live state its `public_url` hosts are read from: the
+/// state [`enforce_host`] runs with.
+#[derive(Clone)]
+pub(crate) struct HostCheck {
+    pub(crate) guard: HostGuard,
+    pub(crate) shared: SharedState,
+}
+
 pub(crate) async fn enforce_host(
-    State(guard): State<HostGuard>,
+    State(check): State<HostCheck>,
     request: Request,
     next: Next,
 ) -> Response {
     if matches!(request.uri().path(), "/" | "/health") {
         return next.run(request).await;
     }
-    let admitted = match request.headers().get(HOST) {
-        Some(value) => value.to_str().is_ok_and(|value| guard.admits(value)),
-        // HTTP/2 carries the name in `:authority`, which reaches the URI.
+    // HTTP/2 carries the name in `:authority`, which reaches the URI.
+    let requested = match request.headers().get(HOST) {
+        Some(value) => Some(value.to_str().unwrap_or("<non-ascii>")),
         None => request
             .uri()
             .authority()
-            .is_none_or(|authority| guard.admits(authority.as_str())),
+            .map(|authority| authority.as_str()),
     };
+    let admitted = requested.is_none_or(|host| {
+        let runtime = check.shared.load();
+        check.guard.admits(host, &runtime.config)
+    });
     if admitted {
         return next.run(request).await;
     }
-    let host = request
-        .headers()
-        .get(HOST)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("<non-ascii>");
     tracing::warn!(
-        host = %host.chars().take(255).collect::<String>(),
+        host = %requested.unwrap_or_default().chars().take(255).collect::<String>(),
         "refused a request for a host this listener does not answer for; add it to [server.access_control] allowed_hosts if it is yours"
     );
     let response = ShuntError::new(
@@ -143,7 +154,7 @@ pub(crate) async fn enforce_host(
         "this server does not answer for the requested host; an operator can add it to [server.access_control] allowed_hosts",
     )
     .into_response();
-    if is_codex_request(request.uri(), guard.codex_endpoint_enabled) {
+    if is_codex_request(request.uri(), check.guard.codex_endpoint_enabled) {
         into_openai_error_shape(response).await
     } else {
         response
@@ -175,7 +186,10 @@ mod tests {
             "app.localhost:3001",
             "10.0.0.5:8080",
         ] {
-            assert!(guard.admits(host), "{host} must be admitted");
+            assert!(
+                guard.admits(host, &Config::default()),
+                "{host} must be admitted"
+            );
         }
     }
 
@@ -191,17 +205,20 @@ mod tests {
             "",
             "evil example",
         ] {
-            assert!(!guard.admits(host), "{host:?} must be refused");
+            assert!(
+                !guard.admits(host, &Config::default()),
+                "{host:?} must be refused"
+            );
         }
     }
 
     #[test]
     fn admits_configured_names_case_insensitively_on_any_port() {
         let guard = guard(&["shunt.example.com"]);
-        assert!(guard.admits("shunt.example.com"));
-        assert!(guard.admits("Shunt.Example.com:8443"));
-        assert!(!guard.admits("other.example.com"));
-        assert!(!guard.admits("sub.shunt.example.com"));
+        assert!(guard.admits("shunt.example.com", &Config::default()));
+        assert!(guard.admits("Shunt.Example.com:8443", &Config::default()));
+        assert!(!guard.admits("other.example.com", &Config::default()));
+        assert!(!guard.admits("sub.shunt.example.com", &Config::default()));
     }
 
     /// The `public_url` hosts shunt already advertises are accepted without
@@ -223,9 +240,17 @@ mod tests {
             .unwrap(),
         );
         let guard = HostGuard::from_config(&config, true).expect("loopback bind checks Host");
-        assert!(guard.admits("gateway.example"));
-        assert!(guard.admits("admin.example:8443"));
-        assert!(!guard.admits("evil.example"));
+        assert!(guard.admits("gateway.example", &config));
+        assert!(guard.admits("admin.example:8443", &config));
+        assert!(!guard.admits("evil.example", &config));
+
+        // A reload that moves the gateway to a new name moves the check with
+        // it: the guard reads `public_url` from the live config it is handed.
+        let mut reloaded = config.clone();
+        reloaded.server.gateway =
+            Some(toml::from_str(r#"public_url = "https://login.example""#).unwrap());
+        assert!(guard.admits("login.example", &reloaded));
+        assert!(!guard.admits("gateway.example", &reloaded));
     }
 
     #[test]

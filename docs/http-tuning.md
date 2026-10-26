@@ -71,12 +71,16 @@ inbound Codex routes), before any other layer runs (`src/host_guard.rs`).
 Accepted without configuration: IP literals (no DNS is involved), `localhost`
 and `*.localhost` (RFC 6761; browsers resolve these to loopback themselves), the
 hosts of `[server.gateway] public_url` and `[server.admin.oidc] public_url`, and
-a request with no `Host` header. `/` and `/health` are exempt, as they are from
-the allow list.
+a request with neither a `Host` header nor a URI authority (HTTP/2 carries the
+name in `:authority`, which is checked instead). `/` and `/health` are exempt, as
+they are from the allow list. The `public_url` hosts are read from the live
+config, so a reload that moves the gateway to a new name is followed at once;
+whether the check runs, and `allowed_hosts`, are fixed at boot.
 
 The check runs on a loopback bind, where those are the only names a real client
 uses, and is off on any other bind unless `allowed_hosts` is set. A non-empty
-`allowed_hosts` adds names (bare, lowercase, no scheme or port) and turns the
+`allowed_hosts` adds names (bare, lowercase, no scheme, port or wildcard;
+matched exactly) and turns the
 check on for any bind; `["*"]` turns it off. A reverse proxy or tunnel that
 forwards the original `Host` to a loopback-bound shunt, or a container reaching
 it as `host.docker.internal`, needs its name listed.
