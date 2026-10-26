@@ -48,7 +48,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 `tokens_env` 自身的值也和其他配置文件字符串一样,可以写成 `${VAR}` / `${file:...}`(见 [Secret 引用](#secret-引用))——它仍然指向 shunt 用来读取 token 的环境变量。
 
-未配置入站认证时(既没有此表,也没有 `[server.gateway]` 登录),注入凭据的路由会以 `403 permission_error` 拒绝 `Origin` 头部不是 shunt 自身的请求:浏览器会为跨源请求附加 `Origin`,这样的请求来自其他站点的页面,而该页面无需预检即可发送 `text/plain` 的 POST。非浏览器客户端不发送 `Origin`,因此不受影响;从其他源调用 shunt 的浏览器应用需要配置 `[server.auth]`。无论如何配置,shunt 在将请求转发到上游之前都会删除 `Origin`、`Referer` 和 `Sec-Fetch-*`。
+未配置入站认证时(既没有此表,也没有 `[server.gateway]` 登录),注入凭据的路由会以 `403 permission_error` 拒绝 `Origin` 的主机或端口与 `Host` 头部不同的请求;只要没有此表,入站 Codex 路由也会以 OpenAI 格式的 `403 forbidden` 拒绝这类请求:浏览器会为跨源请求附加 `Origin`,这样的请求来自其他站点的页面,而该页面无需预检即可发送 `text/plain` 的 POST。非浏览器客户端不发送 `Origin`,因此不受影响;从其他源调用 shunt 的浏览器应用需要配置 `[server.auth]`。无论如何配置,shunt 在将请求转发到上游之前都会删除 `Origin`、`Referer` 和 `Sec-Fetch-*`。
 
 ### `[[server.auth.jwt]]`(可选)
 

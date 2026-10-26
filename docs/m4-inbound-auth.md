@@ -299,14 +299,17 @@ reach the port too: a cross-origin `text/plain` POST needs no CORS preflight, an
 parsed as JSON whatever its `Content-Type`. Such a request cannot read the reply, but it
 spends the pool, and against `claude_oauth` it used to cost far more (below).
 
-So an injected-credential route without inbound auth refuses a request whose `Origin` is not
-shunt's own, with `403 permission_error`. Browsers attach `Origin` to every cross-origin
-request that can carry a body, and a page can neither forge nor remove it; `Origin: null`
-(a sandboxed frame) is refused too. Non-browser clients send no `Origin` and are unaffected.
-The rule is `crate::headers::same_origin_or_non_browser`, the one the Codex WebSocket
-handshake has applied since M7, and the inbound Codex HTTP routes apply it as well. With
-inbound auth configured it does not apply: a page cannot attach the token without a preflight
-shunt never answers.
+So an injected-credential route without inbound auth refuses a request whose `Origin` names
+a different host or port than its `Host` header, with `403 permission_error`. Browsers attach
+`Origin` to every cross-origin request that can carry a body, and a page can neither forge
+nor remove it; `Origin: null` (a sandboxed frame) is refused too. Non-browser clients send no
+`Origin` and are unaffected. The rule is `crate::headers::same_origin_or_non_browser`, the
+one the Codex WebSocket handshake has applied since M7. It compares authorities only, since
+`Host` carries no scheme, so behind a TLS-terminating proxy an `http://` and an `https://`
+page on shunt's own name both pass. The inbound Codex HTTP routes apply it as well, with an
+OpenAI-shaped `403 forbidden`, and there only `[server.auth]` counts as inbound auth, as it
+does for the rest of those routes. With inbound auth configured the check does not apply: a
+page cannot attach the token without a preflight shunt never answers.
 
 Separately, every forward drops `Origin`, `Referer`, and `Sec-Fetch-*`
 (`crate::headers::strip_browser_context`). shunt calls the upstream as a server, not for the

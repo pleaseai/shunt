@@ -48,7 +48,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 `tokens_env` 자신의 값도 다른 설정 파일 문자열과 마찬가지로 `${VAR}` / `${file:...}`로 쓸 수 있습니다([Secret 참조](#secret-참조) 참고) — shunt가 토큰을 읽어오는 환경 변수 이름을 가리키는 역할은 그대로입니다.
 
-인바운드 인증이 구성되지 않은 경우(이 테이블도 `[server.gateway]` 로그인도 없는 경우), 자격 증명을 주입하는 라우트는 `Origin` 헤더가 shunt 자신의 것이 아닌 요청을 `403 permission_error`로 거부합니다. 브라우저는 교차 출처 요청에 `Origin`을 붙이며, 이런 요청은 다른 사이트의 페이지가 보낸 것입니다. 그런 페이지는 preflight 없이 `text/plain` POST를 보낼 수 있습니다. 브라우저가 아닌 클라이언트는 `Origin`을 보내지 않으므로 영향을 받지 않습니다. 다른 출처에서 shunt를 호출하는 브라우저 앱에는 `[server.auth]`가 필요합니다. 구성과 관계없이 shunt는 요청을 업스트림으로 전달하기 전에 `Origin`, `Referer`, `Sec-Fetch-*`를 제거합니다.
+인바운드 인증이 구성되지 않은 경우(이 테이블도 `[server.gateway]` 로그인도 없는 경우), 자격 증명을 주입하는 라우트는 `Origin`의 호스트나 포트가 `Host` 헤더와 다른 요청을 `403 permission_error`로 거부합니다. 인바운드 Codex 라우트는 이 테이블이 없을 때마다 같은 요청을 OpenAI 형식의 `403 forbidden`으로 거부합니다. 브라우저는 교차 출처 요청에 `Origin`을 붙이며, 이런 요청은 다른 사이트의 페이지가 보낸 것입니다. 그런 페이지는 preflight 없이 `text/plain` POST를 보낼 수 있습니다. 브라우저가 아닌 클라이언트는 `Origin`을 보내지 않으므로 영향을 받지 않습니다. 다른 출처에서 shunt를 호출하는 브라우저 앱에는 `[server.auth]`가 필요합니다. 구성과 관계없이 shunt는 요청을 업스트림으로 전달하기 전에 `Origin`, `Referer`, `Sec-Fetch-*`를 제거합니다.
 
 ### `[[server.auth.jwt]]` (선택)
 

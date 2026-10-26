@@ -325,16 +325,17 @@ pub(crate) fn extract_session_id(headers: &HeaderMap) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// Gate one inbound Codex request against `[server.auth]`: a static token in the
-/// configured header or `Authorization: Bearer`, or a verified
-/// `[[server.auth.jwt]]` JWT in the bearer slot. `Ok(None)` when no
-/// `[server.auth]` is configured. An unreachable JWT issuer key set is a `503`,
-/// never a `401`, so an operator is not sent hunting a credential that is fine.
 /// Why [`authenticate_inbound`] refuses a cross-origin browser request when no
 /// inbound auth is configured; the WebSocket turn loop reports the same text.
 pub(crate) const CROSS_ORIGIN_REFUSAL: &str =
     "requests from a different browser origin require inbound authentication";
 
+/// Gate one inbound Codex request against `[server.auth]`: a static token in the
+/// configured header or `Authorization: Bearer`, or a verified
+/// `[[server.auth.jwt]]` JWT in the bearer slot. `Ok(None)` when no
+/// `[server.auth]` is configured, except for a cross-origin browser request,
+/// which is refused with `403`. An unreachable JWT issuer key set is a `503`,
+/// never a `401`, so an operator is not sent hunting a credential that is fine.
 pub(crate) async fn authenticate_inbound(
     auth: Option<&InboundAuth>,
     jwks: &JwksCache,
