@@ -37,7 +37,7 @@ The existing `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`,
 | `allow_cidrs` | `[]` | Allowed client CIDRs. A non-empty list makes other addresses default-deny. `/` and `/health` bypass this allow check only |
 | `deny_cidrs` | `[]` | Denied client CIDRs. Deny is evaluated first and also applies to `/` and `/health` |
 | `trust_forwarded_for` | `false` | Use the first `X-Forwarded-For` value, then `X-Real-IP`, instead of the connection peer. Enable only behind a trusted proxy that overwrites client-supplied forwarding headers |
-| `allowed_hosts` | `[]` | Extra names accepted in the `Host` header. On a loopback bind, shunt refuses a request for any name it does not recognize with `403` (a DNS-rebinding guard); a non-empty list adds names and applies the check on any bind; `["*"]` turns it off. Bare lowercase names (letters, digits, `-`, `_`, `.`), with no scheme, port or wildcard |
+| `allowed_hosts` | `[]` | Extra names accepted in the `Host` header. On a loopback bind, shunt refuses a request for any name it does not recognize with `403` (a DNS-rebinding guard); a non-empty list adds names and applies the check on any bind; `["*"]` turns it off. Bare lowercase names (letters, digits, `-`, `_`, `.`) or a bracketed IPv6 literal, with no scheme, port or wildcard |
 
 CIDRs are validated by `shunt check`. A missing peer address is rejected when `allow_cidrs` is non-empty. Access-control changes require a restart because the router layer is installed at boot.
 
