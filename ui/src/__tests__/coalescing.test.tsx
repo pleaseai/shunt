@@ -258,7 +258,7 @@ describe('folding managed accounts and local observations into one row', () => {
     ['needs_relogin', { needs_relogin: true }, 'Needs re-login'],
     ['capped', { capped: true }, 'Capped'],
     ['capped_fable', { capped_fable: true }, 'Capped (Fable)'],
-    ['exhausted', { utilization_7d: 1, near_quota: true }, 'Exhausted'],
+    ['exhausted', { exhausted: true, near_quota: true }, 'Exhausted'],
     ['cooling', { cooldown_secs_remaining: 600 }, 'Cooling'],
     ['near_quota', { near_quota: true }, 'Near quota'],
     ['fable cooldown', { cooldown_fable_secs_remaining: 600 }, 'Cooling (Fable)'],
@@ -283,7 +283,7 @@ describe('folding managed accounts and local observations into one row', () => {
       accounts: [],
       pool: poolWith('claude_oauth', 'anthropic', {
         near_quota: true,
-        status: 'rejected',
+        exhausted: true,
         utilization_5h: 0,
         utilization_7d: 1,
       }),

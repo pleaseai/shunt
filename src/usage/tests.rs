@@ -23,6 +23,7 @@ fn snapshot(
         has_state: true,
         available: true,
         near_quota: false,
+        exhausted: false,
         capped: false,
         capped_fable: false,
         cap_clears_at: None,

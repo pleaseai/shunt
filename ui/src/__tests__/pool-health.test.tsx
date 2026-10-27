@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { renderDashboard, rowOf, tbody } from '../test/harness';
 import type { PoolAccount } from '../types';
 
-function poolWith(account: PoolAccount) {
-  return { pool: [{ provider: 'claude', auth: 'claude_oauth', accounts: [account] }] };
+function poolWith(...accounts: PoolAccount[]) {
+  return { pool: [{ provider: 'claude', auth: 'claude_oauth', accounts }] };
 }
 
 /** The State cell of the pool row for `name`, read off the rendered table. */
@@ -133,6 +133,7 @@ describe('the pool table reports why an account is out, not just that it is', ()
         name: 'spent-one',
         has_state: true,
         near_quota: true,
+        exhausted: true,
         utilization_7d: 1,
         cooldown_secs_remaining: 300,
       }),
@@ -140,41 +141,34 @@ describe('the pool table reports why an account is out, not just that it is', ()
     expect(stateOf('spent-one')).toBe('exhausted');
   });
 
-  /** A rejection is exhausted even before the utilization that explains it arrives. */
-  it('reports a rejected account as exhausted', async () => {
+  /**
+   * Whether a window is used up is the pool's decision, made from per-window
+   * statuses. The raw aggregate `status` can still read `rejected` after a
+   * per-window status cleared it, and a Fable-only rejection leaves other models
+   * served, so the table must not second-guess the flag from `status`.
+   */
+  it('keeps an account the pool does not call exhausted out of that state', async () => {
     await renderDashboard(
-      poolWith({ name: 'rejected-one', has_state: true, near_quota: true, status: 'rejected' }),
+      poolWith(
+        {
+          name: 'stale-rejection',
+          has_state: true,
+          near_quota: true,
+          exhausted: false,
+          status: 'rejected',
+          utilization_5h: 0.99,
+        },
+        {
+          name: 'fable-out',
+          has_state: true,
+          exhausted: false,
+          status: 'rejected',
+          utilization_7d_oi: 1,
+          capped_fable: true,
+        },
+      ),
     );
-    expect(stateOf('rejected-one')).toBe('exhausted');
-  });
-
-  /** An account at its switch threshold can still serve; it stays near quota. */
-  it('keeps an account below 100% as near quota', async () => {
-    await renderDashboard(
-      poolWith({
-        name: 'warned-one',
-        has_state: true,
-        near_quota: true,
-        utilization_5h: 0.99,
-        status: 'allowed_warning',
-      }),
-    );
-    expect(stateOf('warned-one')).toBe('near quota');
-  });
-
-  /** A rejection only the Fable window explains leaves every other model served. */
-  it('does not call a fable-only rejection exhausted', async () => {
-    await renderDashboard(
-      poolWith({
-        name: 'fable-out',
-        has_state: true,
-        status: 'rejected',
-        utilization_5h: 0.2,
-        utilization_7d: 0.4,
-        utilization_7d_oi: 1,
-        capped_fable: true,
-      }),
-    );
+    expect(stateOf('stale-rejection')).toBe('near quota');
     expect(stateOf('fable-out')).toBe('capped (fable)');
   });
 

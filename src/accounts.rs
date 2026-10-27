@@ -454,6 +454,12 @@ pub struct AccountSnapshot {
     /// Fable `model`).
     pub available: bool,
     pub near_quota: bool,
+    /// A shared window (5h or 7d) is used up: the provider rejected it, or its
+    /// observed utilization reached 100%. Unlike `near_quota`, which is also set
+    /// at the switch threshold while the account can still serve, this says the
+    /// account cannot serve until a window resets. See
+    /// [`shared_window_exhausted`].
+    pub exhausted: bool,
     /// A shared-window (5h or 7d) `max_utilization` cap excludes the account
     /// from selection for every model.
     pub capped: bool,
@@ -560,6 +566,7 @@ impl AccountSnapshot {
             has_state: false,
             available: !account.disabled && !paused,
             near_quota: false,
+            exhausted: false,
             capped: false,
             capped_fable: false,
             cap_clears_at: None,
@@ -2516,6 +2523,7 @@ impl AccountPool {
                             && !capped
                             && !(is_fable && capped_fable),
                         near_quota: quota.near,
+                        exhausted: shared_window_exhausted(&health.quota),
                         capped,
                         capped_fable,
                         cap_clears_at: cap_exclusion(&health.quota, account, false, pool)
@@ -3204,6 +3212,21 @@ fn governing_cooldown(
         .into_iter()
         .flatten()
         .max()
+}
+
+/// Whether a shared quota window (5-hour or weekly) is used up, for the admin
+/// view: rejected by the provider, or observed at 100%. The rejection test is
+/// [`assess_quota`]'s for a non-Fable request, so a stale aggregate `status`
+/// counts only when no per-window status has been recorded, and an isolated
+/// `7d_oi` rejection (Fable-only) does not count: other models are still served.
+fn shared_window_exhausted(quota: &QuotaState) -> bool {
+    let has_window_status =
+        quota.status_5h.is_some() || quota.status_7d.is_some() || quota.status_7d_oi.is_some();
+    let rejected = quota.status_5h.as_deref() == Some("rejected")
+        || quota.status_7d.as_deref() == Some("rejected")
+        || (!has_window_status && quota.status.as_deref() == Some("rejected"));
+    let used_up = |utilization: Option<f64>| utilization.is_some_and(|value| value >= 1.0);
+    rejected || used_up(quota.utilization_5h) || used_up(quota.utilization_7d)
 }
 
 fn governing_weekly_reset(quota: &QuotaState, is_fable: bool) -> Option<u64> {
@@ -9431,6 +9454,74 @@ mod tests {
         let mut entries = pool.entries.lock().expect("account health lock poisoned");
         let health = entries.entry(account_key(provider, account)).or_default();
         edit(&mut health.quota);
+    }
+
+    #[test]
+    fn shared_window_exhausted_follows_the_per_window_rejection_rules() {
+        let quota = |edit: &dyn Fn(&mut QuotaState)| {
+            let mut quota = QuotaState::default();
+            edit(&mut quota);
+            shared_window_exhausted(&quota)
+        };
+        assert!(!quota(&|_| {}), "no observation is not exhausted");
+        assert!(
+            quota(&|q| q.status_7d = Some("rejected".into())),
+            "weekly rejected"
+        );
+        assert!(
+            quota(&|q| q.status_5h = Some("rejected".into())),
+            "5-hour rejected"
+        );
+        assert!(
+            quota(&|q| q.utilization_7d = Some(1.0)),
+            "weekly observed at 100%"
+        );
+        assert!(
+            !quota(&|q| q.utilization_5h = Some(0.99)),
+            "99% can still serve"
+        );
+        assert!(
+            !quota(&|q| q.status_7d_oi = Some("rejected".into())),
+            "a Fable-only rejection leaves other models served"
+        );
+        // A stale aggregate rejection is ignored once per-window statuses
+        // exist, exactly as selection ignores it.
+        assert!(!quota(&|q| {
+            q.status = Some("rejected".into());
+            q.status_7d = Some("allowed".into());
+        }));
+        assert!(
+            quota(&|q| q.status = Some("rejected".into())),
+            "with no per-window status the aggregate is all there is"
+        );
+    }
+
+    #[test]
+    fn snapshot_reports_exhausted_only_for_a_used_up_shared_window() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("spent"), account("warned"), account("fable-out")];
+        set_quota(&pool, "anthropic", &accounts[0], |q| {
+            q.utilization_7d = Some(1.0);
+            q.status_7d = Some("rejected".into());
+        });
+        set_quota(&pool, "anthropic", &accounts[1], |q| {
+            q.utilization_5h = Some(0.99);
+            q.status_5h = Some("allowed_warning".into());
+        });
+        set_quota(&pool, "anthropic", &accounts[2], |q| {
+            q.utilization_7d_oi = Some(1.0);
+            q.status_7d_oi = Some("rejected".into());
+        });
+        // The snapshot reports observed accounts only; `set_quota` writes the
+        // quota alone.
+        for health in pool.entries.lock().unwrap().values_mut() {
+            health.observed = true;
+        }
+        let snaps = pool.snapshot("anthropic", &accounts, None, None);
+        assert!(snaps[0].exhausted);
+        assert!(!snaps[1].exhausted, "near its threshold, not out");
+        assert!(snaps[1].near_quota);
+        assert!(!snaps[2].exhausted, "Fable-only");
     }
 
     const FABLE: Option<&str> = Some("claude-fable-5");
