@@ -198,16 +198,29 @@ pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<(
     crate::atomic_file::write_private_atomic_in_existing_dir(path, &bytes)
 }
 
-/// Validate a store account name: non-empty and `[a-z0-9-]+` only. Shared by the
-/// Claude and Codex account stores so the path-safety invariant — a name can
-/// never escape the accounts directory — cannot drift between them.
+/// [`validate_account_name`]'s rule in words, for the messages that report a
+/// rejected name without repeating it.
+pub const ACCOUNT_NAME_RULE: &str =
+    "only lowercase letters, digits, and . _ @ + -, and must not start or end with a dot";
+
+/// Validate a store account name. Shared by every account store so the
+/// path-safety invariant — a name can never escape the accounts directory —
+/// cannot drift between them.
+///
+/// A name is lowercase ASCII letters and digits plus `.`, `_`, `@`, `+` and `-`,
+/// enough for it to be the login's own email address. It becomes
+/// `<accounts dir>/<name>.json` and a segment of the admin account routes, so:
+/// - no path separator can appear, and a leading or trailing dot is refused,
+///   which rules out the `.` and `..` dot segments, hidden files, and the
+///   trailing dot Windows strips from a file name;
+/// - no uppercase: on a case-insensitive filesystem two names that differ only
+///   in case would share one store file.
 pub fn validate_account_name(name: &str) -> anyhow::Result<()> {
-    if name.is_empty()
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    let allowed =
+        |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._@+-".contains(&byte);
+    if name.is_empty() || !name.bytes().all(allowed) || name.starts_with('.') || name.ends_with('.')
     {
-        anyhow::bail!("account name {name:?} must match [a-z0-9-]+");
+        anyhow::bail!("account name {name:?} must contain {ACCOUNT_NAME_RULE}");
     }
     Ok(())
 }
@@ -1104,12 +1117,48 @@ mod tests {
 
     #[test]
     fn validate_account_name_accepts_kebab_and_rejects_the_rest() {
-        for ok in ["primary", "a", "a-1", "backup-2"] {
+        for ok in ["primary", "a", "a-1", "backup-2", "-edge", "edge-"] {
             assert!(validate_account_name(ok).is_ok(), "rejected {ok:?}");
         }
-        for bad in ["", "Bad", "a b", "under_score", "a.b", "café"] {
+        for bad in ["", "Bad", "a b", "café", "a/b", "a\\b", "a:b", "a%40b"] {
             assert!(validate_account_name(bad).is_err(), "accepted {bad:?}");
         }
+    }
+
+    /// A name can be the login's email address, with the separators emails
+    /// use, so an operator need not invent a second label for each account.
+    #[test]
+    fn validate_account_name_accepts_an_email_address() {
+        for ok in [
+            "me@example.org",
+            "first.last@example.com",
+            "first_last+work@example.co.uk",
+            "a..b",
+            "@",
+        ] {
+            assert!(validate_account_name(ok).is_ok(), "rejected {ok:?}");
+        }
+    }
+
+    /// The dot is the one new character with a path meaning: `.` and `..` are
+    /// dot segments in an admin route, and a leading dot hides the store file.
+    /// Uppercase stays out because a case-insensitive filesystem would give
+    /// `Me@x.com` and `me@x.com` the same store file.
+    #[test]
+    fn validate_account_name_refuses_edge_dots_and_uppercase() {
+        for bad in [
+            ".",
+            "..",
+            ".hidden",
+            "trailing.",
+            "../escape",
+            "a/../b",
+            "Me@example.com",
+        ] {
+            assert!(validate_account_name(bad).is_err(), "accepted {bad:?}");
+        }
+        let message = validate_account_name("..").unwrap_err().to_string();
+        assert!(message.contains(ACCOUNT_NAME_RULE), "{message}");
     }
 
     #[test]

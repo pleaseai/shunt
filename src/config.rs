@@ -2814,7 +2814,10 @@ pub enum ConfigError {
     KimiOauthNotHttps { provider: String },
     #[error("providers.{provider}.accounts contains duplicate account name \"{name}\"")]
     DuplicateAccountName { provider: String, name: String },
-    #[error("providers.{provider}.accounts account name \"{name}\" must match [a-z0-9-]+")]
+    #[error(
+        "providers.{provider}.accounts account name \"{name}\" must contain {rule}",
+        rule = crate::auth::shared::ACCOUNT_NAME_RULE
+    )]
     InvalidAccountName { provider: String, name: String },
     #[error("providers.{provider}.accounts account \"{name}\" sets both credentials and token_env; set at most one credential source")]
     AccountMultipleCredentialSources { provider: String, name: String },
@@ -6848,7 +6851,7 @@ mod tests {
             ConfigError::DuplicateAccountName { .. }
         ));
 
-        for invalid in ["", "Main", "main_account", "main.account"] {
+        for invalid in ["", "Main", ".main", "main.", "main/account"] {
             let mut config = claude_oauth_config();
             config.providers.get_mut("anthropic").unwrap().accounts = vec![account(invalid)];
             assert!(matches!(
@@ -6856,6 +6859,14 @@ mod tests {
                 ConfigError::InvalidAccountName { .. }
             ));
         }
+
+        // A login's own email address is a valid name.
+        let mut config = claude_oauth_config();
+        config.providers.get_mut("anthropic").unwrap().accounts = vec![
+            account("first.last+work@example.com"),
+            account("main_account"),
+        ];
+        config.validate().expect("email-shaped names are valid");
     }
 
     #[test]

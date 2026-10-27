@@ -1530,8 +1530,8 @@ fn take_estimate(estimate_handle: &mut Option<tokio::task::JoinHandle<u64>>) -> 
 /// Inject `x-shunt-account` naming which pool account produced the response,
 /// mirroring the Anthropic adapter's `relay_response`. Silently skipped if the
 /// account name is not a valid header value — should never happen, since
-/// account names are validated against `[a-z0-9-]+` at import time (see
-/// `auth::codex::store::validate_account_name`).
+/// account names are validated as visible ASCII at import time (see
+/// `auth::shared::validate_account_name`).
 pub(super) fn with_account_header(
     mut response: axum::response::Response,
     account_name: &str,

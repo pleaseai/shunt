@@ -2570,6 +2570,124 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An account can be named after its login's email address. The store scan
+/// lists it, the pool reports it, and the account routes resolve it from a
+/// percent-encoded path segment, the way the dashboard sends it. A file whose
+/// stem starts with a dot is still not an account.
+#[tokio::test]
+async fn an_email_named_store_account_works_through_the_admin_routes() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let dir = unique_dir();
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
+        "SHUNT_TEST_ADMIN_TOKENS_EMAIL_NAME",
+        "ops:secret-email-name",
+    );
+    // The default `antigravity` and `grok` providers pool with empty account
+    // lists, so `/admin/api/pool` would scan their real stores; point both at
+    // an empty directory.
+    let empty_store = unique_dir();
+    vars.set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &empty_store);
+    vars.set("SHUNT_XAI_ACCOUNTS_DIR", &empty_store);
+    for name in ["first.last+work@example.com", ".hidden"] {
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            serde_json::json!({
+                "claudeAiOauth": {
+                    "accessToken": format!("{name}-access"),
+                    "refreshToken": format!("{name}-refresh"),
+                    "expiresAt": 4_102_444_800_000i64,
+                },
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_EMAIL_NAME");
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, _state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request.header("x-shunt-admin-token", "secret-email-name")
+    };
+
+    let listed: serde_json::Value = auth(client.get(format!("{base_url}/admin/api/accounts")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let names: Vec<&str> = listed["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|account| account["name"].as_str())
+        .collect();
+    assert_eq!(names, ["first.last+work@example.com"]);
+
+    let pool: serde_json::Value = auth(client.get(format!("{base_url}/admin/api/pool")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let anthropic = pool["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["provider"] == "anthropic")
+        .expect("the anthropic pool is reported");
+    assert_eq!(
+        anthropic["accounts"][0]["name"],
+        "first.last+work@example.com"
+    );
+
+    // The dashboard sends the name through encodeURIComponent.
+    let response = auth(client.delete(format!(
+        "{base_url}/admin/api/accounts/claude/first.last%2Bwork%40example.com"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("first.last+work@example.com.json").exists());
+    assert!(
+        dir.join(".hidden.json").exists(),
+        "never an account, never removed"
+    );
+
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/claude")))
+        .header("content-type", "application/json")
+        .body(r#"{"name":".hidden"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(response
+        .text()
+        .await
+        .unwrap()
+        .contains("must not start or end with a dot"));
+
+    task.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&empty_store);
+}
+
 #[tokio::test]
 async fn claude_remove_preserves_a_configured_providers_health_the_store_scan_cannot_see() {
     // Regression test: an identity can be shared between a store-scanned
