@@ -258,6 +258,10 @@ pub struct PoolConfig {
     /// within their priority tier. Off by default.
     #[serde(default)]
     pub sort_by_reset: bool,
+    /// How a request picks among the healthy accounts; see [`PoolSelection`].
+    /// Defaults to `spread`, the session-sticky behavior.
+    #[serde(default)]
+    pub selection: PoolSelection,
     /// Poll Claude's `/api/oauth/usage`, Codex's `/wham/usage`, and
     /// Antigravity's `retrieveUserQuotaSummary` every N seconds for refreshable
     /// accounts. Unset or `0` disables polling; positive values below 60 are
@@ -298,6 +302,27 @@ pub struct PoolConfig {
     pub reprobe_seconds: Option<u64>,
 }
 
+/// `[server.pool] selection` — how a request picks among the healthy accounts
+/// (available, and under their soft threshold). Accounts near a threshold,
+/// capped, or cooling down are handled the same way under every value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolSelection {
+    /// Each session sticks to the account its session id hashes to (a
+    /// round-robin slot when it has none), so sessions spread across the pool.
+    #[default]
+    Spread,
+    /// Every request goes to the healthy account whose governing weekly window
+    /// resets soonest, after `priority`, and the pool moves on only when that
+    /// account nears a threshold, is capped, or cools down. Weekly quota is
+    /// use-it-or-lose-it at each account's reset, so spending the one that
+    /// expires first wastes the least. An account with no known weekly reset
+    /// (no window open yet, or none observed) sorts after every known one, so
+    /// it stays in reserve. Concentrating traffic on one account also keeps the
+    /// shared prompt prefix cached once rather than once per account.
+    SoonestWeeklyReset,
+}
+
 pub(crate) fn default_hard_threshold() -> f64 {
     0.98
 }
@@ -316,6 +341,7 @@ impl Default for PoolConfig {
             default_max_utilization_fable: None,
             burn_rate_avoidance: false,
             sort_by_reset: false,
+            selection: PoolSelection::Spread,
             usage_refresh_seconds: None,
             state_path: None,
             ramp_initial_concurrency: None,
@@ -6310,6 +6336,18 @@ mod tests {
                 .validate()
                 .unwrap_or_else(|error| panic!("boundary {seconds} rejected: {error}"));
         }
+    }
+
+    #[test]
+    fn pool_selection_parses_and_defaults_to_spread() {
+        use super::{PoolConfig, PoolSelection};
+        let parsed: PoolConfig = toml::from_str("").unwrap();
+        assert_eq!(parsed.selection, PoolSelection::Spread);
+        let parsed: PoolConfig = toml::from_str(r#"selection = "soonest_weekly_reset""#).unwrap();
+        assert_eq!(parsed.selection, PoolSelection::SoonestWeeklyReset);
+        let parsed: PoolConfig = toml::from_str(r#"selection = "spread""#).unwrap();
+        assert_eq!(parsed.selection, PoolSelection::Spread);
+        assert!(toml::from_str::<PoolConfig>(r#"selection = "fill_first""#).is_err());
     }
 
     #[test]

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::config::{AccountConfig, PoolConfig};
+use crate::config::{AccountConfig, PoolConfig, PoolSelection};
 
 mod request_stats;
 mod upstream_skip;
@@ -1192,11 +1192,17 @@ impl AccountPool {
             order
         };
 
+        // `soonest_weekly_reset` has no per-session account: every request
+        // takes the head of the ordering below, which is what keeps a session
+        // on one account (and its prompt cache warm) until the head changes.
+        let drain_by_reset =
+            pool.is_some_and(|pool| pool.selection == PoolSelection::SoonestWeeklyReset);
         let sticky = ident_reps[start_slot];
         let (sticky_cooldown, ref sticky_quota, _, _) = snapshots[sticky];
         // `rotation` already excludes a disabled or paused sticky account, so
         // membership in it covers both checks the fast path needs.
-        if rotation.contains(&sticky)
+        if !drain_by_reset
+            && rotation.contains(&sticky)
             && sticky_cooldown.is_none_or(|until| until <= now)
             && !sticky_quota.near
         {
@@ -1222,16 +1228,16 @@ impl AccountPool {
                         .priority
                         .cmp(&accounts[right].priority)
                         .then_with(|| {
-                            if sort_by_reset {
+                            if drain_by_reset {
+                                // Governing weekly reset, unknown last; then
+                                // configuration order rather than this
+                                // request's rotation, so every request picks
+                                // the same head.
+                                soonest_reset_first(snapshots[left].2, snapshots[right].2)
+                                    .then(left.cmp(&right))
+                            } else if sort_by_reset {
                                 // Soonest reset first; None (unknown) sorts last.
-                                let l = snapshots[left].3;
-                                let r = snapshots[right].3;
-                                match (l, r) {
-                                    (Some(lt), Some(rt)) => lt.cmp(&rt),
-                                    (Some(_), None) => std::cmp::Ordering::Less,
-                                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                                    (None, None) => std::cmp::Ordering::Equal,
-                                }
+                                soonest_reset_first(snapshots[left].3, snapshots[right].3)
                             } else {
                                 snapshots[right]
                                     .1
@@ -3204,6 +3210,17 @@ fn governing_cooldown(
         .into_iter()
         .flatten()
         .max()
+}
+
+/// Order two reset instants soonest first, with an unknown (`None`) reset after
+/// every known one.
+fn soonest_reset_first(left: Option<u64>, right: Option<u64>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
 }
 
 fn governing_weekly_reset(quota: &QuotaState, is_fable: bool) -> Option<u64> {
@@ -11517,6 +11534,137 @@ mod tests {
             "the account with no reset signal sorts after a known one"
         );
         assert_eq!(order.last(), Some(&sticky), "near sticky sorts last");
+    }
+
+    /// Give `account` a weekly window: `utilization` used, resetting at `reset`.
+    fn note_weekly(pool: &AccountPool, account: &AccountConfig, utilization: &str, reset: u64) {
+        pool.note_quota(
+            "anthropic",
+            account,
+            &quota_headers(&[
+                (
+                    "anthropic-ratelimit-unified-7d-utilization",
+                    utilization.to_string(),
+                ),
+                ("anthropic-ratelimit-unified-7d-reset", reset.to_string()),
+            ]),
+        );
+    }
+
+    fn soonest_weekly_reset() -> PoolConfig {
+        PoolConfig {
+            selection: PoolSelection::SoonestWeeklyReset,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn soonest_weekly_reset_sends_every_session_to_the_soonest_reset_account() {
+        // Under `spread` these sessions hash across the pool; here they all
+        // take the account whose weekly quota expires first, then the next.
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b"), account("c")];
+        let cfg = soonest_weekly_reset();
+        let now = unix_now();
+        note_weekly(&pool, &accounts[0], "0.2", now + 5 * 86_400);
+        note_weekly(&pool, &accounts[1], "0.6", now + 86_400);
+        note_weekly(&pool, &accounts[2], "0.4", now + 3 * 86_400);
+        for session in ["s-1", "s-2", "s-3", "s-4", "s-5", "s-6"] {
+            let order = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+            assert_eq!(order, vec![1, 2, 0], "session {session}");
+        }
+        let sessionless = pool.select_order("anthropic", &accounts, None, None, Some(&cfg));
+        assert_eq!(sessionless, vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn soonest_weekly_reset_moves_on_when_the_head_nears_a_threshold() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b"), account("c")];
+        let cfg = soonest_weekly_reset();
+        let now = unix_now();
+        note_weekly(&pool, &accounts[0], "0.2", now + 5 * 86_400);
+        note_weekly(&pool, &accounts[1], "0.6", now + 86_400);
+        note_weekly(&pool, &accounts[2], "0.4", now + 3 * 86_400);
+        // The head's 5-hour window fills: traffic moves to the next-soonest
+        // weekly reset, and the near account sorts behind every healthy one.
+        pool.note_quota(
+            "anthropic",
+            &accounts[1],
+            &quota_headers(&[(
+                "anthropic-ratelimit-unified-5h-utilization",
+                "0.99".to_string(),
+            )]),
+        );
+        for session in ["s-1", "s-2", "s-3"] {
+            let order = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+            assert_eq!(order, vec![2, 0, 1], "session {session}");
+        }
+    }
+
+    #[test]
+    fn soonest_weekly_reset_keeps_accounts_with_no_known_reset_in_reserve() {
+        // An unknown weekly reset sorts after every known one (the legacy
+        // no-pool-table tiebreak puts it first): an account whose weekly window
+        // has not opened stays untouched until the pool needs it.
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b"), account("c")];
+        let cfg = soonest_weekly_reset();
+        let now = unix_now();
+        note_weekly(&pool, &accounts[2], "0.4", now + 6 * 86_400);
+        let order = pool.select_order("anthropic", &accounts, Some("reserve"), None, Some(&cfg));
+        assert_eq!(order[0], 2, "the only known reset comes first");
+        assert_eq!(
+            &order[1..],
+            &[0, 1],
+            "unknown resets follow in configuration order"
+        );
+    }
+
+    #[test]
+    fn soonest_weekly_reset_still_honors_priority() {
+        let pool = AccountPool::new();
+        let mut accounts = vec![account("a"), account("b")];
+        accounts[1].priority = 10;
+        let cfg = soonest_weekly_reset();
+        let now = unix_now();
+        note_weekly(&pool, &accounts[0], "0.3", now + 86_400);
+        note_weekly(&pool, &accounts[1], "0.3", now + 6 * 86_400);
+        let order = pool.select_order("anthropic", &accounts, Some("priority"), None, Some(&cfg));
+        assert_eq!(
+            order,
+            vec![1, 0],
+            "a lower priority value wins over a sooner reset"
+        );
+    }
+
+    #[test]
+    fn spread_selection_keeps_sessions_spread() {
+        // The default: with no other signal, sessions hash across the pool, so
+        // across many sessions more than one account comes first.
+        let pool = AccountPool::new();
+        let accounts = vec![account("a"), account("b"), account("c")];
+        let cfg = PoolConfig::default();
+        assert_eq!(cfg.selection, PoolSelection::Spread);
+        let now = unix_now();
+        note_weekly(&pool, &accounts[0], "0.2", now + 5 * 86_400);
+        note_weekly(&pool, &accounts[1], "0.6", now + 86_400);
+        note_weekly(&pool, &accounts[2], "0.4", now + 3 * 86_400);
+        let heads: HashSet<usize> = (0..24)
+            .map(|n| {
+                pool.select_order(
+                    "anthropic",
+                    &accounts,
+                    Some(&format!("spread-{n}")),
+                    None,
+                    Some(&cfg),
+                )[0]
+            })
+            .collect();
+        assert!(
+            heads.len() > 1,
+            "spread puts sessions on more than one account"
+        );
     }
 
     #[test]

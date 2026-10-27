@@ -195,8 +195,10 @@ possible backends*, not the same product.
   concurrency on a freshly switched account (opt-in `ramp_initial_concurrency`
   storm control), and the admin dashboard exposes per-account usage.
   CLIProxyAPI, LiteLLM, and Portkey provide broader fleet-oriented balancing and
-  visibility, and CLIProxyAPI in particular supports quota-aware fill-first ordering
-  that shunt's Codex pool still lacks; see §6, item H for the remaining gap.
+  visibility. CLIProxyAPI in particular supports quota-aware fill-first ordering;
+  shunt's opt-in `[server.pool] selection = "soonest_weekly_reset"` is its
+  counterpart, ordered by weekly reset rather than a fixed list; see §6, item H for
+  the remaining gap.
 - **Narrow backend breadth.** Only Anthropic-Messages passthrough or OpenAI-Responses
   translation; no native Gemini/Bedrock/Azure/Ollama unless they expose one of those
   two protocols.
@@ -305,9 +307,10 @@ toward being a fleet gateway and warrant a conscious decision first.
   per-account rate-limit headers — near-quota rotation, burn-rate ordering, and
   `[server.pool]` thresholds, matching the Anthropic (`claude_oauth`) pool's
   proactive-plus-reactive design — and both pools gained opt-in storm control
-  (`ramp_initial_concurrency`). Deliberate *fill-first* ordering (preferring the
-  most-utilized account to drain windows sequentially) remains unbuilt; shunt
-  spreads by headroom instead.
+  (`ramp_initial_concurrency`). Sequential draining is opt-in:
+  `[server.pool] selection = "soonest_weekly_reset"` sends every request to the
+  healthy account whose weekly quota expires first and moves on only when it nears
+  a threshold; the default still spreads sessions by hash and headroom.
 
 - **H. Per-account quota/usage visibility.** Follows G. For Anthropic accounts the
   opt-in admin dashboard ([#77]) already surfaces each account's 5h/7d window and
@@ -353,8 +356,9 @@ and trades away most fleet features (broad multi-account LB, management, plugins
 backend breadth) by design. It now provides a narrow Anthropic OAuth account pool
 with model-aware proactive quota scheduling plus reactive failover, and a mirrored
 ChatGPT/Codex pool with the same proactive-plus-reactive machinery fed by the
-backend's `x-codex-*` rate-limit headers (issue #195); deliberate fill-first
-ordering across accounts is the remaining gap (§6, items G–H).
+backend's `x-codex-*` rate-limit headers (issue #195), and opt-in sequential
+draining by soonest weekly reset; per-account visibility for Codex is the remaining
+gap (§6, item H).
 The highest-value in-scope work is finishing the tool-search
 context savings ([#43]) — largely addressed by the native `tool_search`
 path, auto-enabled by default for known hosts (the ChatGPT/Codex backend and

@@ -328,6 +328,7 @@ headers = { "x-api-key" = "..." }
 | `default_max_utilization_fable` | 未设置 | 仅 fable 的周(`7d_oi`)窗口的硬上限默认值;只作用于 Fable 模型请求 |
 | `burn_rate_avoidance` | `false` | 同时避开按预测会在窗口重置之前耗尽其软阈值的账户 |
 | `sort_by_reset` | `false` | 按配额重置时间最早排序(升序;未知重置排最后)可用账户,而不是按燃烧速率余量排序。可在不编辑 `shunt.toml` 的情况下,通过管理仪表盘或 `PATCH /admin/api/pool` 在运行时切换 —— 参见[账户池控制](/zh-cn/guides/pool-account-controls/) |
+| `selection` | `"spread"` | 请求在健康账户之间的选择方式。`"spread"` 把每个会话固定到其会话 ID 哈希所对应的账户,使会话分散在整个池中。`"soonest_weekly_reset"` 把所有请求发往每周窗口最早重置的健康账户(优先级在 `priority` 之后;未知重置排最后),只有当该账户接近阈值、达到上限或进入冷却时才切换到下一个,从而先用掉最先过期的每周配额。配合 `usage_refresh_seconds` 使用效果最佳,它能让每个账户的重置时间保持可知 |
 | `usage_refresh_seconds` | 禁用(`0`/未设置) | Claude `GET /api/oauth/usage`、Codex `GET /wham/usage`、Antigravity `POST :retrieveUserQuotaSummary` 和池中 xAI(Grok)账户的 `GET /billing` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
 | `state_path` | 未设置 | 用于持久化池中按账户配额状态的文件;重启时从最后观测到的使用率热启动,而非从空池开始。未设置则禁用持久化(默认)。设置 [`[store]`](#store可选) 后,配额保存在存储中,此文件只作为导入来源 |
 | `ramp_initial_concurrency` | 禁用(`0`/未设置) | 风暴控制:对刚开始承接流量的账户身份的初始并发准入额度。`0` 或未设置则禁用准入门控 |
