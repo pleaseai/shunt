@@ -23,6 +23,8 @@ function statusNote(row: AccountRow, state: string): string | null {
       return 'Hard cap reached · clears when the window resets';
     case 'capped-fable':
       return 'Fable hard cap reached · other models still served';
+    case 'exhausted':
+      return 'Quota used up · clears when the window resets';
     default:
       break;
   }

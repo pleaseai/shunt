@@ -94,6 +94,21 @@ const WINDOW_KEYS = [
 ] as const;
 
 /**
+ * Whether a shared quota window (5-hour or weekly) is used up: observed at 100%,
+ * or the provider's last answer for the account was `rejected`. `near_quota`
+ * cannot say this on its own: the pool also sets it at its switch threshold
+ * (98% by default), while the account can still serve. An exhausted account
+ * cannot serve until a window resets. A rejection the Fable window alone
+ * explains (`7d_oi` used up, both shared windows below 100%) is left to the
+ * Fable states, because every other model is still served.
+ */
+export function quotaExhausted(account: PoolAccount): boolean {
+  const usedUp = (utilization: number | null | undefined) => (utilization ?? 0) >= 1;
+  if (usedUp(account.utilization_5h) || usedUp(account.utilization_7d)) return true;
+  return account.status === 'rejected' && !usedUp(account.utilization_7d_oi);
+}
+
+/**
  * The status a managed pool account gets before any observation is folded in.
  *
  * The order is the ladder, not a preference: `needs_relogin` is checked ahead of
@@ -107,6 +122,8 @@ function managedState(account: PoolAccount): string {
   if (!account.has_state) return 'unseen';
   // A hard cap lasts until its window resets, so it outranks the short cooldown.
   if (account.capped) return 'capped';
+  // So does a used-up window, and it is the fact `near_quota` would hide.
+  if (quotaExhausted(account)) return 'exhausted';
   if (account.cooldown_secs_remaining) return 'cooling';
   if (account.near_quota) return 'near-quota';
   if (account.capped_fable) return 'capped-fable';
@@ -329,6 +346,7 @@ export function effectiveState(row: AccountRow): string {
     row.state === 'needs-relogin' ||
     row.state === 'capped' ||
     row.state === 'capped-fable' ||
+    row.state === 'exhausted' ||
     row.state === 'cooling' ||
     row.state === 'near-quota' ||
     row.state === 'cooling-fable'
@@ -363,6 +381,8 @@ export function rowStatusText(state: string): string {
       return 'Capped';
     case 'capped-fable':
       return 'Capped (Fable)';
+    case 'exhausted':
+      return 'Exhausted';
     case 'cooling':
       return 'Cooling';
     case 'cooling-fable':

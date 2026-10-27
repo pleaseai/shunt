@@ -1,5 +1,6 @@
 import { useState, type ReactElement } from 'react';
 
+import { quotaExhausted } from '../accounts';
 import { patchPoolAccount, patchPoolSortByReset } from '../api';
 import { pctResetCap, titleCase } from '../format';
 import { useCanWrite, useSession } from '../session';
@@ -23,6 +24,8 @@ function poolState(account: PoolAccount): string {
   // coming. Reporting the warning while hiding the active gate is the defect.
   // A hard cap lasts until its window resets, so it outranks the short cooldown.
   if (account.capped) return 'capped';
+  // So does a used-up window, which `near_quota` alone reports as a warning.
+  if (quotaExhausted(account)) return 'exhausted';
   if (account.cooldown_secs_remaining) return 'cooling';
   if (account.near_quota) return 'near quota';
   if (account.capped_fable) return 'capped (fable)';

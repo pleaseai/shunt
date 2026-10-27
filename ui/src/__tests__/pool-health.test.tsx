@@ -122,6 +122,62 @@ describe('the pool table reports why an account is out, not just that it is', ()
     expect(stateOf('fable-capped')).toBe('capped (fable)');
   });
 
+  /**
+   * `near_quota` is also true for an account the pool has merely moved off at
+   * its switch threshold, so reporting it for a used-up window hid the
+   * difference between "nearly out" and "out until the window resets".
+   */
+  it('reports a used-up window as exhausted over cooling and near quota', async () => {
+    await renderDashboard(
+      poolWith({
+        name: 'spent-one',
+        has_state: true,
+        near_quota: true,
+        utilization_7d: 1,
+        cooldown_secs_remaining: 300,
+      }),
+    );
+    expect(stateOf('spent-one')).toBe('exhausted');
+  });
+
+  /** A rejection is exhausted even before the utilization that explains it arrives. */
+  it('reports a rejected account as exhausted', async () => {
+    await renderDashboard(
+      poolWith({ name: 'rejected-one', has_state: true, near_quota: true, status: 'rejected' }),
+    );
+    expect(stateOf('rejected-one')).toBe('exhausted');
+  });
+
+  /** An account at its switch threshold can still serve; it stays near quota. */
+  it('keeps an account below 100% as near quota', async () => {
+    await renderDashboard(
+      poolWith({
+        name: 'warned-one',
+        has_state: true,
+        near_quota: true,
+        utilization_5h: 0.99,
+        status: 'allowed_warning',
+      }),
+    );
+    expect(stateOf('warned-one')).toBe('near quota');
+  });
+
+  /** A rejection only the Fable window explains leaves every other model served. */
+  it('does not call a fable-only rejection exhausted', async () => {
+    await renderDashboard(
+      poolWith({
+        name: 'fable-out',
+        has_state: true,
+        status: 'rejected',
+        utilization_5h: 0.2,
+        utilization_7d: 0.4,
+        utilization_7d_oi: 1,
+        capped_fable: true,
+      }),
+    );
+    expect(stateOf('fable-out')).toBe('capped (fable)');
+  });
+
   it('keeps near quota above a fable-only cap', async () => {
     await renderDashboard(
       poolWith({ name: 'both', has_state: true, capped_fable: true, near_quota: true }),

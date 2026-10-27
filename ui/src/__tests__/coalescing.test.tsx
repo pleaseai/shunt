@@ -258,6 +258,7 @@ describe('folding managed accounts and local observations into one row', () => {
     ['needs_relogin', { needs_relogin: true }, 'Needs re-login'],
     ['capped', { capped: true }, 'Capped'],
     ['capped_fable', { capped_fable: true }, 'Capped (Fable)'],
+    ['exhausted', { utilization_7d: 1, near_quota: true }, 'Exhausted'],
     ['cooling', { cooldown_secs_remaining: 600 }, 'Cooling'],
     ['near_quota', { near_quota: true }, 'Near quota'],
     ['fable cooldown', { cooldown_fable_secs_remaining: 600 }, 'Cooling (Fable)'],
@@ -271,6 +272,30 @@ describe('folding managed accounts and local observations into one row', () => {
     const status = statusOf('pool-a');
     expect(status).toHaveTextContent(expected);
     expect(status).not.toHaveTextContent('Needs login');
+  });
+
+  /**
+   * A used-up window is not "near" anything: the account cannot serve until the
+   * window resets, so it gets its own label and says when it comes back.
+   */
+  it('labels a used-up account exhausted, with when it clears', async () => {
+    await renderDashboard({
+      accounts: [],
+      pool: poolWith('claude_oauth', 'anthropic', {
+        near_quota: true,
+        status: 'rejected',
+        utilization_5h: 0,
+        utilization_7d: 1,
+      }),
+    });
+
+    const status = statusOf('pool-a');
+    expect(status).toHaveAttribute('data-state', 'exhausted');
+    expect(status).toHaveTextContent('Exhausted');
+    expect(status).not.toHaveTextContent('Near quota');
+    expect(
+      within(status).getByText('Quota used up · clears when the window resets'),
+    ).toBeInTheDocument();
   });
 
   /**
