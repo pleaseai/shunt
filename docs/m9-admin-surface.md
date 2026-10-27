@@ -419,6 +419,24 @@ traffic and raw inbound Responses attach the default CLI account id to
 `x-codex-*` quota capture without importing the credential into the managed
 store. Before such traffic its row explicitly says it is waiting for traffic.
 
+The **Accounts and usage** heading carries a refresh bar: when the table last
+finished loading, the countdown to the next usage-poller pass (from the pool
+response's `usage_poll`; hidden while the poller is off), and a **Reload** button.
+While the tab is visible the page re-reads shunt's own state every 30 seconds:
+`GET /admin/api/pool` and the account stores, with the usage table rebuilt from
+the observations it already has. It never calls `GET /admin/api/observed` on that
+timer, because that endpoint asks each provider's usage API about every login on
+the host, uncached. On those timed reloads, a row that is both a pool account and
+a host login keeps the numbers the last full load drew, except where the pool's
+own window has changed since that load: the pool has then learned something the
+observation predates. A cached `waiting-for-traffic` is dropped the same way once
+the pool has seen the account's traffic. One timed reload runs at a time, so a
+backend slower than the interval still lands its answers. A hidden tab skips the timer and catches up once when it is
+shown again. When the last observation failed the timer leaves the error showing
+instead of repainting the table without the logins. **Reload** repeats the full
+page load, observations included. It is not the per-account **Refresh**, which
+exercises that account's refresh grant, and neither starts a usage-poller pass early.
+
 The usage table groups by provider: the provider is named once and its accounts
 nest beneath it, folding managed pool accounts in alongside the read-only
 observations rather than stranding them in the advanced section. An observation

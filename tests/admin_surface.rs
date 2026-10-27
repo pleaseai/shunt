@@ -570,6 +570,47 @@ async fn admin_routes_are_absent_without_the_block() {
     }
 }
 
+/// `GET /admin/api/pool` reports the usage poller's cadence for the dashboard's
+/// next-check countdown: `null` before any pass has run (or with the poller
+/// off), then the interval, when the latest pass began, and when the next is due.
+#[tokio::test]
+async fn admin_pool_reports_the_usage_poll_schedule() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_POLL_SCHEDULE", "ops:poll-secret");
+    let mut config = admin_config("SHUNT_TEST_ADMIN_POLL_SCHEDULE");
+    // An explicit, never-existing credentials path keeps the request off the
+    // real on-disk store (see the `admin_config` doc comment).
+    config.providers.get_mut("anthropic").unwrap().accounts = vec![AccountConfig {
+        name: "poll-schedule".to_string(),
+        credentials: Some(nonexistent_credentials_path()),
+        uuid: Some("poll-schedule-uuid".to_string()),
+        ..Default::default()
+    }];
+    let (gateway, state) = start_with_state(config).await;
+    let client = reqwest::Client::new();
+    let pool = || async {
+        let response = client
+            .get(format!("{}/admin/api/pool", gateway.base_url))
+            .header("x-shunt-admin-token", "poll-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        response.json::<serde_json::Value>().await.unwrap()
+    };
+
+    assert_eq!(pool().await["usage_poll"], serde_json::Value::Null);
+
+    state.accounts.note_usage_poll_started(300, 1_800_000_000);
+    let body = pool().await;
+    assert_eq!(body["usage_poll"]["interval_seconds"], 300);
+    assert_eq!(body["usage_poll"]["last_started_at"], 1_800_000_000u64);
+    assert_eq!(body["usage_poll"]["next_at"], 1_800_000_300u64);
+}
+
 #[tokio::test]
 async fn admin_pool_repeats_shared_physical_state_per_upstream() {
     if !can_bind_loopback() {

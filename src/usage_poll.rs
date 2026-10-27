@@ -37,7 +37,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::Value;
@@ -91,6 +91,11 @@ pub fn spawn_usage_poller(state: AppState) {
         // startup and then refreshed every `interval` seconds.
         loop {
             ticker.tick().await;
+            let started_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            state.accounts.note_usage_poll_started(interval, started_at);
             poll_all(&state).await;
         }
     });
