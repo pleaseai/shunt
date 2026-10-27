@@ -1,0 +1,39 @@
+site/src/content/docs/ko/guides/shared-gateway.mdx
+  s_cbe1c4ca81e9ea::t_db2fca014de909 81
+  s_cbe1c4ca81e9ea::t_99a61a12fb7540 82-83
+site/src/content/docs/zh-cn/guides/shared-gateway.mdx
+  s_cbe1c4ca81e9ea::t_db2fca014de909 81
+  s_cbe1c4ca81e9ea::t_fe20496037ace2 82-83
+site/src/content/docs/ja/guides/shared-gateway.mdx
+  s_cbe1c4ca81e9ea::t_db2fca014de909 81
+  s_cbe1c4ca81e9ea::t_c2fec36814afef 82-83
+site/src/content/docs/guides/shared-gateway.mdx
+  s_cbe1c4ca81e9ea::t_db2fca014de909 81
+  s_cbe1c4ca81e9ea::t_320ddd43dbcff2 82-83
+site/src/content/docs/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_07eecc487d55d9 1-225
+site/src/content/docs/ja/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_ac899ae92231dc 1-225
+site/src/content/docs/ko/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_277aebf8219799 1-225
+site/src/content/docs/zh-cn/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_141b28768dee1c 1-225
+site/src/lib/i18n.ts
+  s_cbe1c4ca81e9ea::t_c70b11e084a683 91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bc813e15fbc6647f65ca88eb3b244118d71ea97a",
+  "prompts": {},
+  "sessions": {
+    "s_cbe1c4ca81e9ea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fd6c44-81ff-45a5-b372-e829147fb9d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
