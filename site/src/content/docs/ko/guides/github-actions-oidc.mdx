@@ -20,7 +20,7 @@ GitHub Actions OIDC 토큰에는 `email` 클레임이 없습니다. 여기서 �
 | `repository_owner`, `repository_owner_id` | 조직 또는 사용자와 그 숫자 id |
 | `ref`, `environment`, `job_workflow_ref` | 브랜치 또는 태그 ref, 환경 이름, 재사용 워크플로 경로 |
 
-`sub` 형식은 저장소마다 같지 않습니다. 2026년 7월 15일 이후에 만들어진 저장소는 `repo:OWNER@OWNER-ID/REPO@REPO-ID:...` 형식을 쓰고, 이전 저장소는 옵트인하지 않는 한 `repo:OWNER/REPO:...`를 유지하며, 조직이나 저장소 관리자는 `sub`를 완전히 바꿀 수도 있습니다(예: `repository_owner:my-org`). 아래 설정이 `sub`가 아니라 숫자 id 클레임으로 인가하는 이유입니다.
+`sub` 형식은 저장소마다 같지 않습니다. 2026년 7월 15일 이후에 만들어진 저장소와 그 이후 이름이 바뀌거나 이전된 저장소는 `repo:OWNER@OWNER-ID/REPO@REPO-ID:...` 형식을 쓰고, 그 밖의 이전 저장소는 옵트인하지 않는 한 `repo:OWNER/REPO:...`를 유지하며, 조직이나 저장소 관리자는 `sub`를 완전히 바꿀 수도 있습니다(예: `repository_owner:my-org`). 아래 설정이 `sub`가 아니라 숫자 id 클레임으로 인가하는 이유입니다.
 
 ## shunt 설정
 
@@ -91,19 +91,17 @@ jobs:
             -H "Authorization: Bearer $SHUNT_TOKEN" | head -c 400
 
       - name: Run Claude Code
-        env:
-          ANTHROPIC_BASE_URL: ${{ env.SHUNT_URL }}
-          ANTHROPIC_AUTH_TOKEN: ${{ env.SHUNT_TOKEN }}
         run: |
           npm install -g @anthropic-ai/claude-code
-          claude -p "Summarize the last commit."
+          ANTHROPIC_BASE_URL="$SHUNT_URL" ANTHROPIC_AUTH_TOKEN="$SHUNT_TOKEN" \
+            claude -p "Summarize the last commit."
 ```
 
 `audience`는 shunt 항목의 `audience`와 같아야 합니다. `::add-mask::`는 토큰을 저장하기 전에 secret으로 등록하므로 로그에 나와도 가려집니다. 그래도 `echo`하거나 `set -x`로 실행하지 마세요. 포크에서 온 pull request는 토큰에 쓰기 권한을 받지 못하므로(GitHub이 읽기로 낮춥니다) 포크 pull request로 트리거된 잡은 대개 OIDC 토큰을 요청할 수 없습니다. `pull_request` 워크플로에서는 이 점을 염두에 두세요.
 
 ## 토큰 수명
 
-OIDC 토큰은 bearer입니다. 만료될 때까지 사용할 수 있고 shunt는 폐기 상태를 보관하지 않습니다. GitHub 문서는 `exp`와 `iat`를 클레임으로 나열하지만 수명을 명시하지는 않습니다. GitHub 자체 엔터프라이즈 예시의 토큰은 `exp - iat`가 300초입니다. shunt는 `exp - iat`가 `max_token_age_seconds`(기본 `3600`)를 *초과*할 때만 거부하므로 기본값으로 받아들입니다. 긴 잡은 하나의 토큰을 잡 전체에서 들고 있지 말고, shunt를 호출하는 단계 전에 위와 같은 단계로 새 토큰을 요청하세요. Claude Code 세션 하나처럼 단일 프로세스는 시작할 때 받은 토큰을 계속 사용합니다.
+OIDC 토큰은 bearer입니다. 만료될 때까지 사용할 수 있고 shunt는 폐기 상태를 보관하지 않습니다. GitHub 문서는 `exp`와 `iat`를 클레임으로 나열하지만 수명을 명시하지는 않습니다. GitHub 자체 엔터프라이즈 예시의 토큰은 `exp - iat`가 300초입니다. shunt는 `exp - iat`가 `max_token_age_seconds`(기본 `3600`)를 *초과*할 때만 거부하므로 기본값으로 받아들입니다. 긴 잡은 하나의 토큰을 잡 전체에서 들고 있지 말고, shunt를 호출하는 단계 전에 위와 같은 단계로 새 토큰을 요청하세요. Claude Code 세션 하나처럼 단일 프로세스는 시작할 때 받은 토큰을 계속 사용하며, 그 토큰이 만료되면 `401`을 받습니다. 토큰보다 오래 실행되는 세션에는 같은 방식으로 새 토큰을 요청하는 스크립트를 Claude Code의 `apiKeyHelper`로 설정하세요(요청 변수는 `id-token: write`가 있는 잡의 모든 단계에 설정됩니다). 이때 Claude Code는 `ANTHROPIC_AUTH_TOKEN` 없이 실행하세요. `ANTHROPIC_AUTH_TOKEN`이 설정되어 있으면 `apiKeyHelper`보다 우선하므로 세션이 만료된 토큰을 계속 씁니다.
 
 ## 문제 해결
 

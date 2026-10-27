@@ -178,7 +178,7 @@ shunt は Codex CLI のディスカバリー要求に対して有効なフォー
 
 [`[server.spend]`](/ja/reference/configuration/#serverspendオプション)を設定すると、このエンドポイントも `/v1/messages` と同じプリンシパル単位の上限をチェックし、計測します。設定しない場合、以下は適用されません。完全な動作は [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)（英語）を参照してください。
 
-- **チェックの時点。** すべてのターンは、アップストリームを呼ぶ前にチェックされます。3 つの Responses パスの HTTP `POST` と Responses WebSocket の両方が対象です。プリンシパルは静的な `[server.auth]` トークン名、検証済み JWT のメール、または `[server.auth]` がオフのときの匿名プリンシパルです。このエンドポイントは gateway ログインセッションを受け付けません。
+- **チェックの時点。** すべてのターンは、アップストリームを呼ぶ前にチェックされます。3 つの Responses パスの HTTP `POST` と Responses WebSocket の両方が対象です。プリンシパルは静的な `[server.auth]` トークン名、検証済み JWT の identity（`identity_claim`、既定はメール）、または `[server.auth]` がオフのときの匿名プリンシパルです。このエンドポイントは gateway ログインセッションを受け付けません。
 - **拒否レスポンス。** 上限を超えたターンには `429` と `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<エポック秒>}}` が返り、`retry-after`、`x-should-retry: false`、`x-codex-promo-message: <blocked_message>` ヘッダーが付きます。promo ヘッダーは `blocked_message` が純粋な ASCII の場合にのみ送られ、テキストは常にメッセージにも含まれます。名前が挙がる上限は、到達した上限のうち最後にリセットされるものです。`fail_closed_on_error` が有効なとき、支出状態を確認できない上限付きプリンシパルは同じ type で拒否され、`resets_at` と `retry-after` はありません。
 - **Codex CLI の表示。** 固定バージョン `rust-v0.159.3` では、Codex CLI はこのエラーを再試行しません。`resets_at` から独自の文面（"You've hit your usage limit … Try again at"）を表示し、ヘッダーがあれば promo メッセージも表示して、サーバーのメッセージは無視します。これは Codex CLI の動作であり、他のバージョンでは異なる可能性があります。
 - **WebSocket。** 拒否された `response.create` には、同じエラーと `retry-after`、`x-codex-promo-message` を載せた `{"type":"error","status":429,"error":{…},"headers":{…}}` フレームが 1 つ返ります。ソケットは開いたままで、以降の各ターンは改めてチェックされ、`generate: false` のウォームアップはチェックされません。

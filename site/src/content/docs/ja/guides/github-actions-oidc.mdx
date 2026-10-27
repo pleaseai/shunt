@@ -20,7 +20,7 @@ GitHub Actions の OIDC トークンには `email` クレームがありませ�
 | `repository_owner`、`repository_owner_id` | 組織またはユーザーとその数値 id |
 | `ref`、`environment`、`job_workflow_ref` | ブランチまたはタグの ref、環境名、再利用ワークフローのパス |
 
-`sub` の形式はリポジトリによって一定ではありません。2026 年 7 月 15 日以降に作成されたリポジトリは `repo:OWNER@OWNER-ID/REPO@REPO-ID:...` を使い、それ以前のリポジトリはオプトインしない限り `repo:OWNER/REPO:...` のままで、さらに組織やリポジトリの管理者は `sub` を完全にカスタマイズできます (例: `repository_owner:my-org`)。以下の設定が `sub` ではなく数値 id クレームで認可するのはそのためです。
+`sub` の形式はリポジトリによって一定ではありません。2026 年 7 月 15 日以降に作成されたリポジトリと、その日以降に名前変更・移管されたリポジトリは `repo:OWNER@OWNER-ID/REPO@REPO-ID:...` を使い、それ以外の古いリポジトリはオプトインしない限り `repo:OWNER/REPO:...` のままで、さらに組織やリポジトリの管理者は `sub` を完全にカスタマイズできます (例: `repository_owner:my-org`)。以下の設定が `sub` ではなく数値 id クレームで認可するのはそのためです。
 
 ## shunt の設定
 
@@ -91,19 +91,17 @@ jobs:
             -H "Authorization: Bearer $SHUNT_TOKEN" | head -c 400
 
       - name: Run Claude Code
-        env:
-          ANTHROPIC_BASE_URL: ${{ env.SHUNT_URL }}
-          ANTHROPIC_AUTH_TOKEN: ${{ env.SHUNT_TOKEN }}
         run: |
           npm install -g @anthropic-ai/claude-code
-          claude -p "Summarize the last commit."
+          ANTHROPIC_BASE_URL="$SHUNT_URL" ANTHROPIC_AUTH_TOKEN="$SHUNT_TOKEN" \
+            claude -p "Summarize the last commit."
 ```
 
 `audience` は shunt エントリの `audience` と一致させてください。`::add-mask::` はトークンを保存する前に secret として登録するので、ログに出ても伏せられます。それでも `echo` したり `set -x` で実行したりしないでください。フォークからの pull request ではトークンに書き込み権限が付与されない (GitHub が読み取りに下げる) ため、フォークの pull request で起動されたジョブは通常 OIDC トークンを要求できません。`pull_request` ワークフローでは、この点に留意してください。
 
 ## トークンの有効期間
 
-OIDC トークンは bearer です。期限が切れるまで使え、shunt は失効状態を保持しません。GitHub のドキュメントは `exp` と `iat` をクレームとして挙げていますが、有効期間は明記していません。GitHub 自身のエンタープライズ向け例のトークンでは `exp - iat` が 300 秒です。shunt は `exp - iat` が `max_token_age_seconds` (既定 `3600`) を*超える*場合にのみ拒否するので、既定値で受け付けられます。長いジョブでは、1 つのトークンをジョブ全体で保持せず、shunt を呼び出すステージの前に上記と同じステップで新しいトークンを要求してください。Claude Code セッションのような単一のプロセスは、起動時に受け取ったトークンを使い続けます。
+OIDC トークンは bearer です。期限が切れるまで使え、shunt は失効状態を保持しません。GitHub のドキュメントは `exp` と `iat` をクレームとして挙げていますが、有効期間は明記していません。GitHub 自身のエンタープライズ向け例のトークンでは `exp - iat` が 300 秒です。shunt は `exp - iat` が `max_token_age_seconds` (既定 `3600`) を*超える*場合にのみ拒否するので、既定値で受け付けられます。長いジョブでは、1 つのトークンをジョブ全体で保持せず、shunt を呼び出すステージの前に上記と同じステップで新しいトークンを要求してください。Claude Code セッションのような単一のプロセスは、起動時に受け取ったトークンを使い続け、そのトークンが期限切れになると `401` を受け取ります。トークンより長く動くセッションには、同じ方法で新しいトークンを要求するスクリプトを Claude Code の `apiKeyHelper` に設定してください（要求用の変数は `id-token: write` を持つジョブのすべてのステップに設定されます）。その際は `ANTHROPIC_AUTH_TOKEN` を設定せずに Claude Code を起動してください。`ANTHROPIC_AUTH_TOKEN` が設定されていると `apiKeyHelper` より優先されるため、セッションは期限切れのトークンを使い続けます。
 
 ## トラブルシューティング
 

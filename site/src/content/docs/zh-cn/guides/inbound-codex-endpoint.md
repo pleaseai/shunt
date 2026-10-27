@@ -178,7 +178,7 @@ shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，�
 
 配置 [`[server.spend]`](/zh-cn/reference/configuration/#serverspend可选)后,该端点会按与 `/v1/messages` 相同的主体上限进行检查和计量;未配置时下列内容均不适用。完整行为见 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(英文)。
 
-- **检查时机。** 每个回合在调用任何上游之前检查,覆盖三条 Responses 路径的 HTTP `POST` 和 Responses WebSocket。主体是静态 `[server.auth]` 令牌名、已验证的 JWT 邮箱,或 `[server.auth]` 关闭时的匿名主体。该端点不接受 gateway 登录会话。
+- **检查时机。** 每个回合在调用任何上游之前检查,覆盖三条 Responses 路径的 HTTP `POST` 和 Responses WebSocket。主体是静态 `[server.auth]` 令牌名、已验证的 JWT 身份(`identity_claim`,默认为邮箱),或 `[server.auth]` 关闭时的匿名主体。该端点不接受 gateway 登录会话。
 - **拒绝响应。** 超限的回合收到 `429` 和 `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<纪元秒>}}`,并带有 `retry-after`、`x-should-retry: false` 和 `x-codex-promo-message: <blocked_message>` 头部。仅当 `blocked_message` 为纯 ASCII 时才发送 promo 头部,文本始终也在 message 中。被点名的上限是已达上限中最晚重置的一个。启用 `fail_closed_on_error` 时,支出状态不可用的有上限主体会以相同的 type 被拒绝,且没有 `resets_at` 和 `retry-after`。
 - **Codex CLI 的显示。** 在固定版本 `rust-v0.159.3` 上,Codex CLI 不会重试该错误。它根据 `resets_at` 显示自己的文案("You've hit your usage limit … Try again at"),头部存在时一并显示 promo 消息,并忽略服务器消息。这是 Codex CLI 的行为,其他版本可能不同。
 - **WebSocket。** 被拒绝的 `response.create` 会收到一个 `{"type":"error","status":429,"error":{…},"headers":{…}}` 帧,其中包含相同的错误以及 `retry-after` 和 `x-codex-promo-message`。套接字保持打开,之后每个回合都会重新检查,`generate: false` 的预热不检查。

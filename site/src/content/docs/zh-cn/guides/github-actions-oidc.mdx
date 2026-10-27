@@ -20,7 +20,7 @@ GitHub Actions 的 OIDC token 没有 `email` claim。这里重要的 claim 如�
 | `repository_owner`、`repository_owner_id` | 组织或用户及其数字 id |
 | `ref`、`environment`、`job_workflow_ref` | 分支或标签 ref、环境名称、可复用 workflow 的路径 |
 
-`sub` 的格式并不是在所有仓库中都一致。2026 年 7 月 15 日之后创建的仓库使用 `repo:OWNER@OWNER-ID/REPO@REPO-ID:...`,更早的仓库除非选择加入否则保持 `repo:OWNER/REPO:...`,并且组织或仓库管理员还可以完全自定义 `sub`(例如 `repository_owner:my-org`)。这就是下面的配置依据数字 id claim 而不是 `sub` 授权的原因。
+`sub` 的格式并不是在所有仓库中都一致。2026 年 7 月 15 日之后创建的仓库,以及在该日期之后改名或转移的仓库,使用 `repo:OWNER@OWNER-ID/REPO@REPO-ID:...`,其他更早的仓库除非选择加入否则保持 `repo:OWNER/REPO:...`,并且组织或仓库管理员还可以完全自定义 `sub`(例如 `repository_owner:my-org`)。这就是下面的配置依据数字 id claim 而不是 `sub` 授权的原因。
 
 ## shunt 配置
 
@@ -91,19 +91,17 @@ jobs:
             -H "Authorization: Bearer $SHUNT_TOKEN" | head -c 400
 
       - name: Run Claude Code
-        env:
-          ANTHROPIC_BASE_URL: ${{ env.SHUNT_URL }}
-          ANTHROPIC_AUTH_TOKEN: ${{ env.SHUNT_TOKEN }}
         run: |
           npm install -g @anthropic-ai/claude-code
-          claude -p "Summarize the last commit."
+          ANTHROPIC_BASE_URL="$SHUNT_URL" ANTHROPIC_AUTH_TOKEN="$SHUNT_TOKEN" \
+            claude -p "Summarize the last commit."
 ```
 
 `audience` 必须与 shunt 条目中的 `audience` 相同。`::add-mask::` 会在保存 token 之前把它注册为 secret,因此即使进入日志也会被遮盖;但仍然不要 `echo` 它,也不要用 `set -x` 运行。来自 fork 的 pull request 的 token 不会获得写权限(GitHub 会把它降为只读),所以由 fork 的 pull request 触发的 job 通常无法请求 OIDC token。编写 `pull_request` workflow 时请记住这一点。
 
 ## Token 有效期
 
-OIDC token 是 bearer:到期之前一直有效,而 shunt 不保存吊销状态。GitHub 文档把 `exp` 和 `iat` 列为 claim,但没有说明有效期;GitHub 自己的企业示例中的 token,其 `exp - iat` 为 300 秒。shunt 只在 `exp - iat` *超过* `max_token_age_seconds`(默认 `3600`)时才拒绝,所以默认值可以接受它。较长的 job 应在每个调用 shunt 的阶段之前,用与上面相同的步骤重新请求新 token,而不是在整个 job 中持有同一个。单个进程(例如一个 Claude Code 会话)会一直使用启动时拿到的 token。
+OIDC token 是 bearer:到期之前一直有效,而 shunt 不保存吊销状态。GitHub 文档把 `exp` 和 `iat` 列为 claim,但没有说明有效期;GitHub 自己的企业示例中的 token,其 `exp - iat` 为 300 秒。shunt 只在 `exp - iat` *超过* `max_token_age_seconds`(默认 `3600`)时才拒绝,所以默认值可以接受它。较长的 job 应在每个调用 shunt 的阶段之前,用与上面相同的步骤重新请求新 token,而不是在整个 job 中持有同一个。单个进程(例如一个 Claude Code 会话)会一直使用启动时拿到的 token,token 过期后会收到 `401`。对于运行时间超过 token 有效期的会话,请把一个用同样方式请求新 token 的脚本配置为 Claude Code 的 `apiKeyHelper`(请求所需的变量在带有 `id-token: write` 的 job 的每个步骤中都会设置),并且启动 Claude Code 时不要设置 `ANTHROPIC_AUTH_TOKEN`:已设置的 `ANTHROPIC_AUTH_TOKEN` 优先于 `apiKeyHelper`,会话会一直使用过期的 token。
 
 ## 故障排查
 

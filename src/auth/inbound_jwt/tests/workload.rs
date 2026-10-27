@@ -192,3 +192,25 @@ async fn azp_is_readable_as_the_identity_claim() {
     .await;
     assert!(matches!(result, JwtOutcome::Verified { identity, .. } if identity == "ci-client"));
 }
+
+#[tokio::test]
+async fn every_required_claim_must_match_and_any_listed_value_satisfies_one() {
+    let configure = |e: &mut InboundJwtConfig| {
+        e.require = [
+            (
+                "repository_owner".to_string(),
+                StringList::Many(vec!["other-org".to_string(), "pleaseai".to_string()]),
+            ),
+            (
+                "repository".to_string(),
+                StringList::One("pleaseai/shunt".to_string()),
+            ),
+        ]
+        .into();
+    };
+    let both_match = outcome(configure, |_| {}).await;
+    let one_mismatched = outcome(configure, |c| c["repository"] = json!("pleaseai/other")).await;
+
+    assert!(matches!(both_match, JwtOutcome::Verified { .. }));
+    assert_eq!(one_mismatched, JwtOutcome::Rejected);
+}

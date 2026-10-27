@@ -69,8 +69,9 @@ Validation, all at startup:
 1. `tokens_env` may resolve empty **only** when at least one entry exists. With neither a
    resolvable token list nor an entry, `[server.auth]` still fails closed.
 2. Each entry needs `issuer`, `audience`, and at least one authorization rule: an
-   `email_domains` / `allowed_emails` value, a non-empty `require`, or a non-empty
-   `subject_prefix`. `audience` alone is not an authorization rule.
+   `email_domains` / `allowed_emails` value, a `require` naming a claim other than `aud` or
+   `iss`, or a non-empty `subject_prefix`. `audience` alone is not an authorization rule, and
+   neither is `require` on `aud` or `iss`, which only repeats the audience and issuer checks.
 3. `algorithms` must be non-empty and must not name a symmetric algorithm (`HS256`, `HS384`,
    `HS512`).
 4. An entry's `issuer` may not equal `[server.gateway] public_url`.
@@ -87,6 +88,10 @@ authorization decision at all: a GitHub Actions workflow chooses its own `aud`, 
 repository on GitHub can mint a token carrying a given audience. `require` and
 `subject_prefix` are the operators that authorize such issuers.
 
+Rule 4 keeps the two JWT paths unambiguous. `[server.gateway]` mints session tokens whose
+`iss` is its own `public_url`, and both verifiers read the same `Authorization: Bearer`
+slot, so a shared issuer would make ownership of a token depend on evaluation order.
+
 ### Workload identity (GitHub Actions)
 
 A GitHub Actions OIDC token has no `email`; the entry above authorizes on repository claims
@@ -97,8 +102,8 @@ and names `repository` as the identity. Security notes:
 - **End a `subject_prefix` at a delimiter.** `repo:pleaseai/`, not `repo:pleaseai`, which
   also matches `repo:pleaseai-evil/...`.
 - **Don't rely on `sub`'s shape.** GitHub repositories created after July 15, 2026 use an
-  immutable `repo:OWNER@OWNER-ID/REPO@REPO-ID:...` subject, older ones keep
-  `repo:OWNER/REPO:...` unless they opt in, and admins can customize `sub` entirely. A
+  immutable `repo:OWNER@OWNER-ID/REPO@REPO-ID:...` subject, and so does any repository renamed or
+  transferred after that date; other older ones keep `repo:OWNER/REPO:...` unless they opt in, and admins can customize `sub` entirely. A
   name-based `subject_prefix` therefore rejects new repositories; authorize on the id claims
   in `require` and treat `subject_prefix` as an optional extra restriction.
 - **Prefer immutable ids** (`repository_owner_id`, `repository_id`) in `require`: org and
@@ -111,15 +116,12 @@ and names `repository` as the identity. Security notes:
   entry's identities. Equal strings become one caller for usage attribution, spend
   accounting, and the Codex endpoint's sticky key. This is not an authorization bypass, but
   choose an identity claim whose values cannot equal a static client name or another
-  issuer's identities: `repository` (`org/repo`) is safe next to email addresses, while a
-  bare username claim such as `actor` is not.
+  issuer's identities. `repository` (`org/repo`) cannot equal an email address, but a static
+  client name may contain `/`, so do not give static clients `org/repo`-style names; a bare
+  username claim such as `actor` is riskier still.
 - **`require` matches top-level string claims only.** A number, boolean, array, object, or
   null never matches, even if its text would. GitHub carries its numeric ids as strings
   (`"repository_id": "74"` in its example token), so quote them in config.
-
-Rule 4 keeps the two JWT paths unambiguous. `[server.gateway]` mints session tokens whose
-`iss` is its own `public_url`, and both verifiers read the same `Authorization: Bearer`
-slot, so a shared issuer would make ownership of a token depend on evaluation order.
 
 ## 2. Verification
 

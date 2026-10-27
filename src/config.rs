@@ -614,9 +614,12 @@ impl InboundJwtConfig {
         // GitHub Actions workflow picks its own `aud`, so any repository could
         // mint a token carrying it.
         let has_email_rule = !allowed_domains.is_empty() || !allowed_emails.is_empty();
-        if !has_email_rule && require.is_empty() && subject_prefixes.is_empty() {
+        let has_claim_rule = require
+            .keys()
+            .any(|claim| !matches!(claim.as_str(), "aud" | "iss"));
+        if !has_email_rule && !has_claim_rule && subject_prefixes.is_empty() {
             return Err(invalid(
-                "requires at least one email_domains or allowed_emails entry, a require table, or a subject_prefix: audience alone is not an authorization rule".to_string(),
+                "requires at least one email_domains or allowed_emails entry, a require table naming a claim other than aud or iss, or a subject_prefix: audience alone is not an authorization rule".to_string(),
             ));
         }
         let identity_claim = self
@@ -14297,6 +14300,25 @@ routes:
                     ConfigError::InvalidInboundJwt { index: 0, .. }
                 ),
                 "{require:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_require_on_aud_or_iss_is_not_an_authorization_rule() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("REQUIRE_AUD");
+        for claim in ["aud", "iss"] {
+            let mut entry = jwt_entry();
+            entry.email_domains = Vec::new();
+            entry.identity_claim = Some("repository".to_string());
+            entry.require =
+                BTreeMap::from([(claim.to_string(), super::StringList::One("shunt-ci".into()))]);
+            let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+            assert!(
+                matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                    if message.contains("other than aud or iss")),
+                "{claim}: {error}"
             );
         }
     }

@@ -20,7 +20,7 @@ A GitHub Actions OIDC token has no `email` claim. The claims that matter here (s
 | `repository_owner`, `repository_owner_id` | The organization or user and its numeric id |
 | `ref`, `environment`, `job_workflow_ref` | Branch or tag ref, environment name, reusable workflow path |
 
-The `sub` format is not stable across repositories. Repositories created after July 15, 2026 use `repo:OWNER@OWNER-ID/REPO@REPO-ID:...`, older repositories keep `repo:OWNER/REPO:...` unless they opt in, and organization or repository admins can customize `sub` entirely (for example to `repository_owner:my-org`). That is why the configuration below authorizes on the numeric id claims rather than on `sub`.
+The `sub` format is not stable across repositories. Repositories created after July 15, 2026 use `repo:OWNER@OWNER-ID/REPO@REPO-ID:...`, as do repositories renamed or transferred after that date; other older repositories keep `repo:OWNER/REPO:...` unless they opt in, and organization or repository admins can customize `sub` entirely (for example to `repository_owner:my-org`). That is why the configuration below authorizes on the numeric id claims rather than on `sub`.
 
 ## shunt configuration
 
@@ -91,19 +91,17 @@ jobs:
             -H "Authorization: Bearer $SHUNT_TOKEN" | head -c 400
 
       - name: Run Claude Code
-        env:
-          ANTHROPIC_BASE_URL: ${{ env.SHUNT_URL }}
-          ANTHROPIC_AUTH_TOKEN: ${{ env.SHUNT_TOKEN }}
         run: |
           npm install -g @anthropic-ai/claude-code
-          claude -p "Summarize the last commit."
+          ANTHROPIC_BASE_URL="$SHUNT_URL" ANTHROPIC_AUTH_TOKEN="$SHUNT_TOKEN" \
+            claude -p "Summarize the last commit."
 ```
 
 `audience` must equal the `audience` in the shunt entry. `::add-mask::` registers the token as a secret before it is stored, so it is redacted if it reaches the log; still, never `echo` it or run with `set -x`. Pull requests from forks do not get write permissions on their token (GitHub downgrades them to read), so a job triggered by a fork pull request generally cannot request the OIDC token. Keep that in mind for `pull_request` workflows.
 
 ## Token lifetime
 
-The OIDC token is a bearer: it works until it expires, and shunt keeps no revocation state. GitHub's documentation lists `exp` and `iat` as claims but states no lifetime; the token in GitHub's own enterprise example has `exp - iat` of 300 seconds. shunt rejects a token only when `exp - iat` *exceeds* `max_token_age_seconds` (default `3600`), so the default accepts it. A long job should request a fresh token before each stage that calls shunt, using the same step as above, rather than hold one for the whole job. A single process, such as one Claude Code session, keeps the token it started with.
+The OIDC token is a bearer: it works until it expires, and shunt keeps no revocation state. GitHub's documentation lists `exp` and `iat` as claims but states no lifetime; the token in GitHub's own enterprise example has `exp - iat` of 300 seconds. shunt rejects a token only when `exp - iat` *exceeds* `max_token_age_seconds` (default `3600`), so the default accepts it. A long job should request a fresh token before each stage that calls shunt, using the same step as above, rather than hold one for the whole job. A single process, such as one Claude Code session, keeps the token it started with and gets `401` once that token expires. For a session that outlives the token, configure Claude Code's `apiKeyHelper` with a script that requests a fresh token the same way (the request variables are set for every step of a job that has `id-token: write`), and launch Claude Code without `ANTHROPIC_AUTH_TOKEN`: an exported `ANTHROPIC_AUTH_TOKEN` takes precedence over `apiKeyHelper`, so the session would keep the expired token.
 
 ## Troubleshooting
 

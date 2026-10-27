@@ -178,7 +178,7 @@ shunt는 Codex CLI 디스커버리 요청에 유효한 폴백인 `{"models":[]}`
 
 [`[server.spend]`](/ko/reference/configuration/#serverspend-선택)를 구성하면 이 엔드포인트도 `/v1/messages`와 같은 주체별 상한을 검사하고 계측합니다. 구성하지 않으면 아래 내용은 적용되지 않습니다. 전체 동작은 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(영문)를 참고하세요.
 
-- **검사 시점.** 모든 턴은 업스트림을 호출하기 전에 검사합니다. 세 Responses 경로의 HTTP `POST`와 Responses WebSocket이 모두 대상입니다. 주체는 정적 `[server.auth]` 토큰 이름, 검증된 JWT 이메일, 또는 `[server.auth]`가 꺼져 있을 때의 익명 주체입니다. 이 엔드포인트는 gateway 로그인 세션을 받지 않습니다.
+- **검사 시점.** 모든 턴은 업스트림을 호출하기 전에 검사합니다. 세 Responses 경로의 HTTP `POST`와 Responses WebSocket이 모두 대상입니다. 주체는 정적 `[server.auth]` 토큰 이름, 검증된 JWT 신원(`identity_claim`, 기본값은 이메일), 또는 `[server.auth]`가 꺼져 있을 때의 익명 주체입니다. 이 엔드포인트는 gateway 로그인 세션을 받지 않습니다.
 - **거부 응답.** 상한을 넘은 턴은 `429`와 `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<에포크 초>}}`를 받고, `retry-after`, `x-should-retry: false`, `x-codex-promo-message: <blocked_message>` 헤더가 붙습니다. promo 헤더는 `blocked_message`가 순수 ASCII일 때만 보내며, 텍스트는 항상 메시지에도 들어갑니다. 이름이 붙는 상한은 도달한 상한 중 가장 늦게 리셋되는 것입니다. `fail_closed_on_error`가 켜져 있으면, 지출 상태를 확인할 수 없는 상한 보유 주체를 같은 type으로 거부하며 `resets_at`과 `retry-after`는 없습니다.
 - **Codex CLI가 보여 주는 것.** 고정된 버전 `rust-v0.159.3`에서 Codex CLI는 이 오류를 재시도하지 않습니다. `resets_at`으로 만든 자체 문구("You've hit your usage limit … Try again at")를 표시하고, 헤더가 있으면 promo 메시지를 함께 보여 주며, 서버 메시지는 무시합니다. 이는 Codex CLI의 동작이므로 다른 버전에서는 다를 수 있습니다.
 - **WebSocket.** 거부된 `response.create`에는 같은 오류와 `retry-after`, `x-codex-promo-message`를 담은 `{"type":"error","status":429,"error":{…},"headers":{…}}` 프레임 하나가 갑니다. 소켓은 열린 채로 유지되고, 이후 각 턴을 새로 검사하며, `generate: false` 워밍업은 검사하지 않습니다.
