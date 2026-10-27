@@ -598,6 +598,11 @@ impl InboundJwtConfig {
             if claim.is_empty() {
                 return Err(invalid("require claim names must not be empty".to_string()));
             }
+            if is_numeric_claim(claim) {
+                return Err(invalid(format!(
+                    "require.{claim} names a numeric claim, which never matches a string value"
+                )));
+            }
             let values = values.resolve();
             if values.is_empty() {
                 return Err(invalid(format!(
@@ -628,6 +633,11 @@ impl InboundJwtConfig {
             .map(str::trim)
             .filter(|claim| !claim.is_empty());
         let identity_claim = match identity_claim {
+            Some(claim) if is_numeric_claim(claim) => {
+                return Err(invalid(format!(
+                    "identity_claim {claim:?} names a numeric claim; the identity must be a string claim"
+                )))
+            }
             Some(claim) => claim.to_string(),
             None if has_email_rule => "email".to_string(),
             None => {
@@ -711,6 +721,12 @@ impl InboundJwtConfig {
             max_token_age_seconds: self.max_token_age_seconds,
         })
     }
+}
+
+/// Registered JWT claims that are always numbers (RFC 7519 §4.1), so neither a
+/// `require` value nor an identity can ever match them.
+fn is_numeric_claim(claim: &str) -> bool {
+    matches!(claim, "exp" | "iat" | "nbf")
 }
 
 /// `[server.admin]` — opt-in admin web surface (M9). A **separate** credential
@@ -14320,6 +14336,27 @@ routes:
                     if message.contains("other than aud or iss")),
                 "{claim}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_numeric_claims_in_require_and_identity_claim() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("NUMERIC_CLAIM");
+        for claim in ["exp", "iat", "nbf"] {
+            let mut required = jwt_entry();
+            required.require =
+                BTreeMap::from([(claim.to_string(), super::StringList::One("1".into()))]);
+            let mut identity = jwt_entry();
+            identity.identity_claim = Some(claim.to_string());
+            for entry in [required, identity] {
+                let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+                assert!(
+                    matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                        if message.contains("numeric claim")),
+                    "{claim}: {error}"
+                );
+            }
         }
     }
 

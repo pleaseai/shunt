@@ -82,6 +82,8 @@ Validation, all at startup:
    strings dropped) must leave a non-empty list — an empty list is an error, not a silent
    deny-all. `subject_prefix` drops empty strings: an empty prefix would match every `sub`,
    so it never counts as a rule.
+8. Neither `require` nor `identity_claim` may name `exp`, `iat`, or `nbf`. Those registered
+   claims are always numbers, so naming one would reject every token at runtime.
 
 Rule 2 is enforced rather than documented because for some issuers `audience` is not an
 authorization decision at all: a GitHub Actions workflow chooses its own `aud`, so any
