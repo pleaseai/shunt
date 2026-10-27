@@ -1,0 +1,28 @@
+src/config.rs
+  s_cbe1c4ca81e9ea::t_3ee392d2ef1f4a 607-609,14304-14322
+  s_cbe1c4ca81e9ea::t_09dc5894f767c8 14323-14324
+site/src/content/docs/ja/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_63c4cddc8e7caf 78,202
+site/src/content/docs/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_63c4cddc8e7caf 78,202
+site/src/content/docs/ko/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_63c4cddc8e7caf 78,202
+site/src/content/docs/zh-cn/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_63c4cddc8e7caf 78,202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e3f495f9620f9c423c481c9f8e64dd1b1c4072c6",
+  "prompts": {},
+  "sessions": {
+    "s_cbe1c4ca81e9ea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fd6c44-81ff-45a5-b372-e829147fb9d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
