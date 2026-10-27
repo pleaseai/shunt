@@ -97,9 +97,11 @@ describe('the usage table refreshes itself', () => {
 
     await act(() => vi.advanceTimersByTimeAsync(AUTO_REFRESH_MS));
 
-    // The pool table still refreshes; the failed usage table is left showing
-    // its error rather than repainted, and nothing asks to observe again.
+    // The pool table and the store sections still refresh; the failed usage
+    // table is left showing its error rather than repainted, and nothing asks
+    // to observe again.
     await waitFor(() => expect(api.callsTo('GET', POOL).length).toBeGreaterThan(pool));
+    await waitFor(() => expect(api.callsTo('GET', '/admin/api/accounts/antigravity')).toHaveLength(2));
     expect(api.callsTo('GET', OBSERVED)).toHaveLength(1);
     expect(screen.getByText('Failed to observe local accounts')).toBeInTheDocument();
   });

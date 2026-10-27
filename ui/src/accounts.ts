@@ -170,7 +170,7 @@ function windowMoved(
   baseline: PoolAccount | undefined,
   window: (typeof WINDOWS)[number],
 ): boolean {
-  if (!baseline) return row[window[0]] !== null && row[window[0]] !== undefined;
+  if (!baseline) return window.some((key) => row[key] !== null && row[key] !== undefined);
   return window.some((key) => (row[key] ?? null) !== (baseline[key] ?? null));
 }
 

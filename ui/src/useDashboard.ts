@@ -280,7 +280,14 @@ export function useDashboard(): Dashboard {
       // backend slower than the interval a new tick would discard every answer
       // before it landed and the table would never update.
       if (quietInFlight.current) return;
-      const reloads = [reloadPool()];
+      // The pool and the store sections are shunt-local reads, so they reload
+      // whatever happened to the last observation.
+      const reloads = [
+        reloadPool(),
+        reloadAccounts(),
+        reloadCodexAccounts(),
+        reloadAntigravityAccounts(),
+      ];
       // A full load in flight is about to draw fresh observations; a quiet
       // reload issued now would win the sequence with the older ones.
       // With no observations to reuse (the last one failed), a quiet reload
@@ -305,7 +312,14 @@ export function useDashboard(): Dashboard {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [hideObserved, reloadObserved, reloadPool]);
+  }, [
+    hideObserved,
+    reloadObserved,
+    reloadPool,
+    reloadAccounts,
+    reloadCodexAccounts,
+    reloadAntigravityAccounts,
+  ]);
 
   return {
     observed,

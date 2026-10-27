@@ -55,7 +55,7 @@ export function RefreshBar({ updatedAt, usagePoll, onRefresh }: RefreshBarProps)
         type="button"
         className="secondary"
         onClick={onRefresh}
-        title="Re-read this page's data now. Does not ask the providers for usage early."
+        title="Repeat this page's load now, this host's logins included. The pool's usage poll still runs on its own schedule."
       >
         Reload
       </button>

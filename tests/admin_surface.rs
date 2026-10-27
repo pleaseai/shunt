@@ -580,6 +580,12 @@ async fn admin_pool_reports_the_usage_poll_schedule() {
     }
     let mut vars = common::env_lock().await;
     vars.set("SHUNT_TEST_ADMIN_POLL_SCHEDULE", "ops:poll-secret");
+    // The default `antigravity` and `grok` providers pool with empty account
+    // lists, so `/admin/api/pool` would scan their real stores; point both at
+    // an empty directory.
+    let empty_store = unique_dir();
+    vars.set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &empty_store);
+    vars.set("SHUNT_XAI_ACCOUNTS_DIR", &empty_store);
     let mut config = admin_config("SHUNT_TEST_ADMIN_POLL_SCHEDULE");
     // An explicit, never-existing credentials path keeps the request off the
     // real on-disk store (see the `admin_config` doc comment).
@@ -609,6 +615,7 @@ async fn admin_pool_reports_the_usage_poll_schedule() {
     assert_eq!(body["usage_poll"]["interval_seconds"], 300);
     assert_eq!(body["usage_poll"]["last_started_at"], 1_800_000_000u64);
     assert_eq!(body["usage_poll"]["next_at"], 1_800_000_300u64);
+    let _ = std::fs::remove_dir_all(&empty_store);
 }
 
 #[tokio::test]
