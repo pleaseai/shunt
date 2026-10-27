@@ -1,0 +1,20 @@
+src/auth/inbound_jwt.rs
+  s_cbe1c4ca81e9ea::t_bd4d4081bf713c 167,171,190,215-216,250
+  s_cbe1c4ca81e9ea::t_d9d5c10bf3237d 187-189
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "506a0223b5850e757d47d2fecd80e231ab294214",
+  "prompts": {},
+  "sessions": {
+    "s_cbe1c4ca81e9ea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fd6c44-81ff-45a5-b372-e829147fb9d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
