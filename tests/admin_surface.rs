@@ -2571,9 +2571,13 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
 }
 
 /// An account can be named after its login's email address. The store scan
-/// lists it, the pool reports it, and the account routes resolve it from a
-/// percent-encoded path segment, the way the dashboard sends it. A file whose
-/// stem starts with a dot is still not an account.
+/// lists it, and the account routes resolve it from a percent-encoded path
+/// segment, the way the dashboard sends it. A file whose stem starts with a dot
+/// is still not an account.
+///
+/// No route here reaches a provider: `/admin/api/pool` is left out on purpose,
+/// since a live-looking fixture token would make it eligible for a real
+/// profile lookup.
 #[tokio::test]
 async fn an_email_named_store_account_works_through_the_admin_routes() {
     if !can_bind_loopback() {
@@ -2587,8 +2591,8 @@ async fn an_email_named_store_account_works_through_the_admin_routes() {
         "ops:secret-email-name",
     );
     // The default `antigravity` and `grok` providers pool with empty account
-    // lists, so `/admin/api/pool` would scan their real stores; point both at
-    // an empty directory.
+    // lists; keep anything that resolves pool accounts off the machine's real
+    // stores.
     let empty_store = unique_dir();
     vars.set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &empty_store);
     vars.set("SHUNT_XAI_ACCOUNTS_DIR", &empty_store);
@@ -2637,24 +2641,6 @@ async fn an_email_named_store_account_works_through_the_admin_routes() {
         .filter_map(|account| account["name"].as_str())
         .collect();
     assert_eq!(names, ["first.last+work@example.com"]);
-
-    let pool: serde_json::Value = auth(client.get(format!("{base_url}/admin/api/pool")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let anthropic = pool["providers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|provider| provider["provider"] == "anthropic")
-        .expect("the anthropic pool is reported");
-    assert_eq!(
-        anthropic["accounts"][0]["name"],
-        "first.last+work@example.com"
-    );
 
     // The dashboard sends the name through encodeURIComponent.
     let response = auth(client.delete(format!(
