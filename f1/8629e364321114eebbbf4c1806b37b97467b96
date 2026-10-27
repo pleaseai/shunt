@@ -1,0 +1,74 @@
+site/src/content/docs/ja/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 23
+  s_cbe1c4ca81e9ea::t_517f2e9ab7be1f 96-97
+  s_cbe1c4ca81e9ea::t_929b0e1467a26b 104
+README.ja.md
+  s_cbe1c4ca81e9ea::t_517f2e9ab7be1f 203
+src/config.rs
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 617-620
+  s_cbe1c4ca81e9ea::t_446faccf5d4104 14308-14319,14321-14325
+  s_cbe1c4ca81e9ea::t_3c1b54ad5cd42b 622,14320
+  s_cbe1c4ca81e9ea::t_b72cdbf79c63ca 14307
+site/src/content/docs/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 258,260
+  s_cbe1c4ca81e9ea::t_420f9206869076 123
+src/auth/inbound_jwt/tests/workload.rs
+  s_cbe1c4ca81e9ea::t_517f2e9ab7be1f 195-216
+site/src/content/docs/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 23
+  s_cbe1c4ca81e9ea::t_517f2e9ab7be1f 96-97
+  s_cbe1c4ca81e9ea::t_929b0e1467a26b 104
+site/src/content/docs/ja/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_420f9206869076 87
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 197,199
+README.zh-CN.md
+  s_cbe1c4ca81e9ea::t_517f2e9ab7be1f 201
+site/src/content/docs/ko/guides/inbound-codex-endpoint.md
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 181
+site/src/content/docs/ja/guides/inbound-codex-endpoint.md
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 181
+docs/m11-inbound-codex-endpoint.md
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 387
+site/src/content/docs/zh-cn/guides/inbound-codex-endpoint.md
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 181
+README.ko.md
+  s_cbe1c4ca81e9ea::t_517f2e9ab7be1f 204
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 197,199
+  s_cbe1c4ca81e9ea::t_420f9206869076 87
+site/src/content/docs/ko/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 197,199
+  s_cbe1c4ca81e9ea::t_420f9206869076 87
+site/src/content/docs/ko/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_517f2e9ab7be1f 96-97
+  s_cbe1c4ca81e9ea::t_929b0e1467a26b 104
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 23
+docs/gateway-spend-limits.md
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 113
+site/src/content/docs/zh-cn/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_517f2e9ab7be1f 96-97
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 23
+  s_cbe1c4ca81e9ea::t_929b0e1467a26b 104
+site/src/content/docs/guides/inbound-codex-endpoint.md
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 181
+docs/inbound-jwt-auth.md
+  s_cbe1c4ca81e9ea::t_446faccf5d4104 72-74
+  s_cbe1c4ca81e9ea::t_5290077b4e9791 105-106,119-121
+  s_cbe1c4ca81e9ea::t_517f2e9ab7be1f 91-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f18629e364321114eebbbf4c1806b37b97467b96",
+  "prompts": {},
+  "sessions": {
+    "s_cbe1c4ca81e9ea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fd6c44-81ff-45a5-b372-e829147fb9d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
