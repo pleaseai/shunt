@@ -1,0 +1,72 @@
+site/src/content/docs/ko/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_6477860a59f932 63-67,69
+  s_cbe1c4ca81e9ea::t_bf2aa2a2a9150b 68
+  s_cbe1c4ca81e9ea::t_bdc68fd6cc8451 79
+  s_cbe1c4ca81e9ea::t_342a5ee49a51b6 91
+  s_cbe1c4ca81e9ea::t_4532050910fa3a 87
+  s_cbe1c4ca81e9ea::t_db2fca014de909 78,80
+src/discovery/upstream/tests.rs
+  s_cbe1c4ca81e9ea::t_9fbdcf8bdcb4d3 288-290
+src/auth/inbound_jwt/tests/workload.rs
+  s_cbe1c4ca81e9ea::t_32073959ee7747 1-194
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_6477860a59f932 63-67,69
+  s_cbe1c4ca81e9ea::t_4532050910fa3a 87
+  s_cbe1c4ca81e9ea::t_bf2aa2a2a9150b 68
+  s_cbe1c4ca81e9ea::t_db2fca014de909 78,80
+  s_cbe1c4ca81e9ea::t_bdc68fd6cc8451 79
+  s_cbe1c4ca81e9ea::t_342a5ee49a51b6 91
+src/proxy/failover/tests.rs
+  s_cbe1c4ca81e9ea::t_9fbdcf8bdcb4d3 1046-1048
+site/src/content/docs/ja/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_bf2aa2a2a9150b 68
+  s_cbe1c4ca81e9ea::t_4532050910fa3a 87
+  s_cbe1c4ca81e9ea::t_6477860a59f932 63-67,69
+  s_cbe1c4ca81e9ea::t_db2fca014de909 78,80
+  s_cbe1c4ca81e9ea::t_bdc68fd6cc8451 79
+  s_cbe1c4ca81e9ea::t_342a5ee49a51b6 91
+README.ja.md
+  s_cbe1c4ca81e9ea::t_db2fca014de909 203
+README.ko.md
+  s_cbe1c4ca81e9ea::t_db2fca014de909 204
+docs/inbound-jwt-auth.md
+  s_cbe1c4ca81e9ea::t_4532050910fa3a 139-141
+  s_cbe1c4ca81e9ea::t_6477860a59f932 3,43-47,49,58-60,71-73,78-83,87-96,98,104-109,136-138,143-149,244
+  s_cbe1c4ca81e9ea::t_67075c3ce18413 97
+  s_cbe1c4ca81e9ea::t_bf2aa2a2a9150b 48,99-103,110-111
+src/config.rs
+  s_cbe1c4ca81e9ea::t_32073959ee7747 14243-14331
+  s_cbe1c4ca81e9ea::t_9fbdcf8bdcb4d3 438-439,441-451,594-612,614-615,617,620-633,702-704,14172-14174
+  s_cbe1c4ca81e9ea::t_846f36b2450f9a 440,613
+src/auth/inbound_jwt/tests.rs
+  s_cbe1c4ca81e9ea::t_9fbdcf8bdcb4d3 26-27,151-153
+README.md
+  s_cbe1c4ca81e9ea::t_db2fca014de909 203
+site/src/content/docs/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_342a5ee49a51b6 127
+  s_cbe1c4ca81e9ea::t_db2fca014de909 99-103,105,114,116
+  s_cbe1c4ca81e9ea::t_bf2aa2a2a9150b 104,115
+  s_cbe1c4ca81e9ea::t_4532050910fa3a 123
+README.zh-CN.md
+  s_cbe1c4ca81e9ea::t_db2fca014de909 201
+src/auth/inbound_jwt.rs
+  s_cbe1c4ca81e9ea::t_3f2ff2c62ac3b7 119-125,218-222,230,250,254-268
+  s_cbe1c4ca81e9ea::t_00ba0b713fe2b5 23,58-65,112-118,126,170-172,174,226-227,233-238,241-249
+  s_cbe1c4ca81e9ea::t_47c7e1e5db0515 269-270
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8709a254beba77ebcce9e447785c10d465b28e74",
+  "prompts": {},
+  "sessions": {
+    "s_cbe1c4ca81e9ea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fd6c44-81ff-45a5-b372-e829147fb9d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
