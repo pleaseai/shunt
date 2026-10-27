@@ -215,7 +215,7 @@ fn validate_claims(rule: &JwtIssuerRule, token: &str, key: &DecodingKey) -> Opti
     }
     // `azp` names the party the token was issued *to*. Checked only when
     // present, per OIDC Core, but never ignored when it is.
-    if let Some(azp) = claims.rest.get("azp") {
+    if let Some(azp) = claims.rest.get("azp").filter(|azp| !azp.is_null()) {
         let authorized = azp
             .as_str()
             .is_some_and(|azp| rule.authorized_parties.iter().any(|party| party == azp));

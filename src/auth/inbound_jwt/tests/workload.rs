@@ -214,3 +214,12 @@ async fn every_required_claim_must_match_and_any_listed_value_satisfies_one() {
     assert!(matches!(both_match, JwtOutcome::Verified { .. }));
     assert_eq!(one_mismatched, JwtOutcome::Rejected);
 }
+
+#[tokio::test]
+async fn a_null_azp_is_absent_but_a_non_string_azp_rejects() {
+    let null = outcome(|_| {}, |c| c["azp"] = Value::Null).await;
+    let numeric = outcome(|_| {}, |c| c["azp"] = json!(42)).await;
+
+    assert!(matches!(null, JwtOutcome::Verified { .. }));
+    assert_eq!(numeric, JwtOutcome::Rejected);
+}
