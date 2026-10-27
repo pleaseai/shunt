@@ -60,6 +60,13 @@ tokens_env = "SHUNT_CLIENT_TOKENS"   # JWT issuer가 구성되면 선택
 issuer = "https://accounts.google.com"
 audience = ["<shunt 전용 client id>"]
 email_domains = ["example.com"]
+
+# 워크로드 ID: GitHub Actions OIDC 토큰에는 email이 없습니다
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
 ```
 
 | 키 | 기본값 | 의미 |
@@ -68,17 +75,20 @@ email_domains = ["example.com"]
 | `audience` | 필수 | 허용되는 `aud` 값. 문자열 또는 배열 |
 | `email_domains` | `[]` | 대소문자 무시 도메인. 마지막 `@` 뒤 부분과 **정확히** 일치해야 하며 접미사 매칭이 아님 |
 | `allowed_emails` | `[]` | 대소문자 무시 전체 이메일 주소 |
+| `require` | `{}` | 클레임 이름 → 문자열 또는 문자열 배열 테이블. 나열된 각 클레임은 최상위 JSON **문자열**이어야 하며 값 중 하나와 정확히(대소문자 구분) 일치해야 함. 클레임 간에는 AND. `email`이 없는 워크로드 issuer용 |
+| `subject_prefix` | `[]` | 문자열 또는 배열. 설정하면 `sub`가 이 중 하나로 시작해야 함(대소문자 구분). 구분자에서 끝내세요 — 예: `repo:pleaseai/` (`repo:pleaseai`는 `pleaseai-evil`도 일치). GitHub의 `sub` 형식은 저장소 생성 시점과 관리자 설정에 따라 달라지므로 ID 클레임에 대한 `require`를 우선 사용하세요 |
+| `identity_claim` | `email` | 문자열 값(비어 있지 않고 256바이트 이하)이 호출자 신원이 되는 클레임. 항목에 `email_domains`/`allowed_emails`가 없으면 필수. `sub`가 아니라 `repository` 같은 길이가 제한된 클레임을 선택 |
 | `algorithms` | `["RS256"]` | 허용되는 서명 알고리즘. 비대칭만 가능 |
 | `authorized_parties` | `audience` | `azp` 클레임이 있을 때 허용되는 값 |
 | `clock_skew_seconds` | `0` | `exp`와 `nbf`에 적용되는 허용 오차 |
 | `max_token_age_seconds` | `3600` | `exp - iat`가 이 값을 넘으면 거부 |
 | `jwks_url` | discovery | discovery 문서를 제공하지 않는 issuer용 명시적 JWKS 엔드포인트 |
 
-각 항목에는 `issuer`, `audience`, 그리고 `email_domains` 또는 `allowed_emails` 값이 최소 하나 필요합니다. `audience`만으로는 인가 규칙이 되지 않습니다 — issuer에 따라서는 호출자가 audience를 스스로 정하기 때문입니다. `algorithms`에 대칭 알고리즘이나 알 수 없는 값이 있어도, `issuer`가 `[server.gateway]`의 `public_url`과 같아도 시작은 닫힌 채로 실패합니다. 두 검증기가 같은 bearer 슬롯을 읽으므로, issuer가 겹치면 토큰의 소유권이 평가 순서에 좌우됩니다.
+각 항목에는 `issuer`, `audience`, 그리고 인가 규칙이 최소 하나 필요합니다: `email_domains`/`allowed_emails` 값, `require` 테이블, 또는 `subject_prefix`. `audience`만으로는 인가 규칙이 되지 않습니다 — issuer에 따라서는 호출자가 audience를 스스로 정하기 때문입니다(어떤 GitHub 저장소든 임의의 `aud`로 토큰을 발급할 수 있습니다). 이메일 규칙이 없는 항목은 `identity_claim`도 설정해야 합니다. 구성된 모든 그룹(이메일 규칙, `require`, `subject_prefix`)을 통과해야 합니다. `email_verified = true`는 항목에 이메일 규칙이 있거나, 신원 클레임이 `email`이거나, `require`가 `email`을 지정할 때 강제되며, 그 밖의 항목은 `email`을 읽지 않습니다. `algorithms`에 대칭 알고리즘이나 알 수 없는 값이 있어도, `issuer`가 `[server.gateway]`의 `public_url`과 같아도 시작은 닫힌 채로 실패합니다. 두 검증기가 같은 bearer 슬롯을 읽으므로, issuer가 겹치면 토큰의 소유권이 평가 순서에 좌우됩니다.
 
 항목이 하나라도 있으면 `tokens_env`는 비어 있어도 됩니다 — 인증을 전부 IdP로 하는 배포에는 설정할 정적 토큰이 없습니다. 토큰 목록도 항목도 없으면 `[server.auth]`는 여전히 시작에 실패합니다.
 
-JWT는 **오직** `Authorization: Bearer`로만 받습니다 — 구성된 `header`도, `x-api-key`도 아닙니다. Claude Code가 이미 `ANTHROPIC_AUTH_TOKEN`을 보내는 슬롯입니다. 게이팅되는 라우트에서는 정적 토큰을 먼저 확인하고, 그 라우트가 받는 경우 gateway JWT를, 그다음 `iss`로 JWT 항목을 확인합니다. 검증은 알고리즘을 config에서 고정하고(토큰 헤더의 `alg`는 절대 선택하지 않습니다) `kid`를 요구하며, `exp`/`nbf`, `aud`, `azp`, `exp - iat`, `email_verified = true`, 이메일 허용 목록을 확인합니다. 검증된 이메일이 로그와 사용량 귀속에서 호출자 신원이 되며, 256바이트를 넘는 주소는 잘라내지 않고 거부합니다. 게이팅되는 라우트는 `[server.auth]`가 이미 보호하는 라우트입니다: 자격 증명을 주입하는 `/v1/messages`와 `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage`(loopback이 아닐 때만), 그리고 인바운드 Codex 엔드포인트(HTTP, WebSocket, analytics).
+JWT는 **오직** `Authorization: Bearer`로만 받습니다 — 구성된 `header`도, `x-api-key`도 아닙니다. Claude Code가 이미 `ANTHROPIC_AUTH_TOKEN`을 보내는 슬롯입니다. 게이팅되는 라우트에서는 정적 토큰을 먼저 확인하고, 그 라우트가 받는 경우 gateway JWT를, 그다음 `iss`로 JWT 항목을 확인합니다. 검증은 알고리즘을 config에서 고정하고(토큰 헤더의 `alg`는 절대 선택하지 않습니다) `kid`를 요구하며, `exp`/`nbf`, `aud`, `azp`, `exp - iat`, 구성된 `require`/`subject_prefix` 연산자, 이메일 허용 목록, 그리고 항목이 `email`을 읽는 경우 `email_verified = true`를 확인합니다. 검증된 신원 클레임(기본값은 이메일)이 로그와 사용량 귀속에서 호출자 신원이 되며, 256바이트를 넘는 값은 잘라내지 않고 거부합니다. 게이팅되는 라우트는 `[server.auth]`가 이미 보호하는 라우트입니다: 자격 증명을 주입하는 `/v1/messages`와 `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage`(loopback이 아닐 때만), 그리고 인바운드 Codex 엔드포인트(HTTP, WebSocket, analytics).
 
 key set은 issuer별로 최초 사용 시점에 lazy하게 가져오므로 IdP에 접근할 수 없어도 시작을 막지 않습니다. 캐시된 key set은 최대 5분 동안만 신뢰하고, 그 뒤에는 다음 요청이 재조회를 시도합니다(60초 재조회 하한 적용). 재조회에 성공하면 key set을 통째로 교체하므로 issuer가 철회한 키는 약 5분 안에 검증에서 빠집니다. 재조회에 실패하면 IdP 장애가 전면 장애로 번지지 않도록 만료된 key set을 계속 쓰고, discovery 자체가 실패하면 마지막으로 발견한 `jwks_uri`를 대신 시도합니다. config reload는 항목의 `issuer`와 `jwks_url`이 모두 그대로일 때만 캐시된 키를 유지합니다. 알 수 없는 `kid`는 key set당 60초 창에서 최대 한 번만 재조회를 유발합니다. 어떤 항목으로도 검증되지 않은 토큰은 `401`이고, 검증된 항목이 없으면서 토큰의 issuer와 일치하는 항목 중 캐시된 key set이 없는데 가져오기도 실패한 것이 있으면 **`503`**입니다 — IdP 장애가 잘못된 자격 증명으로 보고되지 않습니다.
 

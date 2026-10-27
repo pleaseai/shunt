@@ -96,6 +96,13 @@ tokens_env = "SHUNT_CLIENT_TOKENS"   # optional once a JWT issuer is configured
 issuer = "https://accounts.google.com"
 audience = ["<client id dedicated to shunt>"]
 email_domains = ["example.com"]
+
+# Workload identity: a GitHub Actions OIDC token carries no email
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
 ```
 
 | Key | Default | Meaning |
@@ -104,17 +111,20 @@ email_domains = ["example.com"]
 | `audience` | required | Accepted `aud` values, as a string or an array |
 | `email_domains` | `[]` | Case-insensitive domains, matched **exactly** against the part after the final `@` — never as a suffix |
 | `allowed_emails` | `[]` | Case-insensitive full email addresses |
+| `require` | `{}` | Table of claim name → string or array of strings. Each listed claim must be a top-level JSON **string** equal (exact, case-sensitive) to one of its values; AND across claims. For workload issuers whose tokens carry no `email` |
+| `subject_prefix` | `[]` | String or array. When set, `sub` must start with one of these (case-sensitive). End each at a delimiter, such as `repo:pleaseai/` — `repo:pleaseai` also matches `pleaseai-evil`. GitHub's `sub` format varies by repository age and admin customization, so prefer `require` on id claims |
+| `identity_claim` | `email` | Claim whose string value (non-empty, at most 256 bytes) becomes the caller identity. Required when the entry has no `email_domains`/`allowed_emails`. Pick a bounded claim such as `repository`, not `sub` |
 | `algorithms` | `["RS256"]` | Accepted signing algorithms. Asymmetric only |
 | `authorized_parties` | `audience` | Accepted `azp` values, checked when the claim is present |
 | `clock_skew_seconds` | `0` | Tolerance applied to `exp` and `nbf` |
 | `max_token_age_seconds` | `3600` | Reject when `exp - iat` exceeds this |
 | `jwks_url` | discovery | Explicit JWKS endpoint, for issuers serving no discovery document |
 
-Each entry needs `issuer`, `audience`, and at least one `email_domains` or `allowed_emails` value; `audience` alone is not an authorization rule, because for some issuers the caller chooses their own audience. Startup also fails closed for a symmetric or unknown `algorithms` entry, and for an entry whose `issuer` equals `[server.gateway]`'s `public_url` — both verifiers read the same bearer slot, so a shared issuer would make ownership of a token depend on evaluation order.
+Each entry needs `issuer`, `audience`, and at least one authorization rule: an `email_domains`/`allowed_emails` value, a `require` table, or a `subject_prefix`. `audience` alone is not an authorization rule, because for some issuers the caller chooses their own audience — any GitHub repository can mint a token with any `aud`. An entry without an email rule must also set `identity_claim`. Every configured group must pass (email rule, `require`, `subject_prefix`). `email_verified = true` is enforced whenever the entry has an email rule, its identity claim is `email`, or `require` names `email`; other entries never read `email`. Startup also fails closed for a symmetric or unknown `algorithms` entry, and for an entry whose `issuer` equals `[server.gateway]`'s `public_url` — both verifiers read the same bearer slot, so a shared issuer would make ownership of a token depend on evaluation order.
 
 Once at least one entry exists, `tokens_env` may resolve empty: a deployment authenticating entirely through an IdP has no static tokens to set. With neither a resolvable token list nor an entry, `[server.auth]` still fails startup.
 
-A JWT is accepted **only** in `Authorization: Bearer` — not in the configured `header` and not in `x-api-key` — which is the slot Claude Code already sends `ANTHROPIC_AUTH_TOKEN` in. On a gated route the static token is checked first, then the gateway JWT where that route accepts it, then JWT entries by `iss`. Verification pins the algorithm from config (the token header's `alg` never selects it), requires `kid`, and checks `exp`/`nbf`, `aud`, `azp`, `exp - iat`, `email_verified = true`, and the email allowlist. The verified email becomes the caller identity in logs and usage attribution; an address longer than 256 bytes is rejected rather than truncated. Gated routes are the ones `[server.auth]` already guards: credential-injecting `/v1/messages` and `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage` (off loopback only), and the inbound Codex endpoint (HTTP, WebSocket, and analytics).
+A JWT is accepted **only** in `Authorization: Bearer` — not in the configured `header` and not in `x-api-key` — which is the slot Claude Code already sends `ANTHROPIC_AUTH_TOKEN` in. On a gated route the static token is checked first, then the gateway JWT where that route accepts it, then JWT entries by `iss`. Verification pins the algorithm from config (the token header's `alg` never selects it), requires `kid`, and checks `exp`/`nbf`, `aud`, `azp`, `exp - iat`, the configured `require`/`subject_prefix` operators, the email allowlist, and `email_verified = true` whenever the entry reads `email`. The verified identity claim (the email by default) becomes the caller identity in logs and usage attribution; a value longer than 256 bytes is rejected rather than truncated. Gated routes are the ones `[server.auth]` already guards: credential-injecting `/v1/messages` and `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage` (off loopback only), and the inbound Codex endpoint (HTTP, WebSocket, and analytics).
 
 Key sets are fetched lazily on first use per issuer, so an unreachable IdP does not block startup. A cached key set is trusted for at most 5 minutes; after that the next request attempts a refresh (subject to the 60-second refetch floor), and a successful refresh replaces the set, so a key the issuer withdraws stops verifying within about 5 minutes. If the refresh fails, the expired set keeps serving rather than turning an IdP outage into a total one; when discovery itself fails, the last discovered `jwks_uri` is tried instead. A config reload keeps cached keys only while an entry's `issuer` and `jwks_url` are both unchanged. An unknown `kid` triggers at most one refetch per 60-second window per key set. A token that verifies against no entry is `401`; a matching entry that has no cached key set and cannot fetch one is **`503`**, so an IdP outage is not reported as a bad credential.
 

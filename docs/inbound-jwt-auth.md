@@ -1,6 +1,6 @@
 # Inbound JWT authentication (verify-only)
 
-Issue [#344](https://github.com/pleaseai/shunt/issues/344), phase 1.
+Issue [#344](https://github.com/pleaseai/shunt/issues/344), phases 1 and 2 (workload identity).
 
 ## 0. Problem
 
@@ -40,6 +40,13 @@ tokens_env = "SHUNT_CLIENT_TOKENS"
 issuer = "https://accounts.google.com"
 audience = ["<client id dedicated to shunt>"]
 email_domains = ["example.com"]
+
+# Workload identity: a GitHub Actions OIDC token carries no `email`.
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
 ```
 
 | Key | Required | Default | Meaning |
@@ -48,6 +55,9 @@ email_domains = ["example.com"]
 | `audience` | yes | — | Accepted `aud` values; a string or an array, so a client-id rotation is not a flag day |
 | `email_domains` | — | `[]` | Case-insensitive **exact** match on the part after the final `@` — never a suffix match |
 | `allowed_emails` | — | `[]` | Case-insensitive full-address match |
+| `require` | — | `{}` | Table of claim name → string or array. Every listed claim must be present in the verified payload as a JSON **string** equal (exact, case-sensitive) to one of its values. AND across claims, any-of within one claim |
+| `subject_prefix` | — | `[]` | String or array. When non-empty, `sub` must be a string starting with at least one prefix (case-sensitive) |
+| `identity_claim` | when no email rule | `email` | Claim whose value becomes the caller identity. Required when the entry has no `email_domains` / `allowed_emails` |
 | `algorithms` | — | `["RS256"]` | Accepted signing algorithms. Asymmetric only |
 | `authorized_parties` | — | `audience` | Accepted `azp` values when the claim is present |
 | `clock_skew_seconds` | — | `0` | Tolerance on `exp` and `nbf` |
@@ -58,18 +68,47 @@ Validation, all at startup:
 
 1. `tokens_env` may resolve empty **only** when at least one entry exists. With neither a
    resolvable token list nor an entry, `[server.auth]` still fails closed.
-2. Each entry needs `issuer`, `audience`, and at least one `email_domains` /
-   `allowed_emails` value.
+2. Each entry needs `issuer`, `audience`, and at least one authorization rule: an
+   `email_domains` / `allowed_emails` value, a non-empty `require`, or a non-empty
+   `subject_prefix`. `audience` alone is not an authorization rule.
 3. `algorithms` must be non-empty and must not name a symmetric algorithm (`HS256`, `HS384`,
    `HS512`).
 4. An entry's `issuer` may not equal `[server.gateway] public_url`.
 5. `max_token_age_seconds` must be greater than zero.
+6. `identity_claim` (trimmed; empty means absent) is required when the entry has no email
+   rule.
+7. `require` claim names are trimmed and non-empty, and each claim's values (trimmed, empty
+   strings dropped) must leave a non-empty list — an empty list is an error, not a silent
+   deny-all. `subject_prefix` drops empty strings: an empty prefix would match every `sub`,
+   so it never counts as a rule.
 
 Rule 2 is enforced rather than documented because for some issuers `audience` is not an
 authorization decision at all: a GitHub Actions workflow chooses its own `aud`, so any
-repository on GitHub can mint a token carrying a given audience. Phase 2 adds the operators
-(`require`, `subject_prefix`) that authorize such issuers; phase 1 offers only the email
-ones, which is why an email rule is currently mandatory.
+repository on GitHub can mint a token carrying a given audience. `require` and
+`subject_prefix` are the operators that authorize such issuers.
+
+### Workload identity (GitHub Actions)
+
+A GitHub Actions OIDC token has no `email`; the entry above authorizes on repository claims
+and names `repository` as the identity. Security notes:
+
+- **`require` / `subject_prefix` are what authorize.** Any GitHub repository can mint a token
+  with any `aud`, so a matching audience proves nothing.
+- **End a `subject_prefix` at a delimiter.** `repo:pleaseai/`, not `repo:pleaseai`, which
+  also matches `repo:pleaseai-evil/...`.
+- **Don't rely on `sub`'s shape.** GitHub repositories created after July 15, 2026 use an
+  immutable `repo:OWNER@OWNER-ID/REPO@REPO-ID:...` subject, older ones keep
+  `repo:OWNER/REPO:...` unless they opt in, and admins can customize `sub` entirely. A
+  name-based `subject_prefix` therefore rejects new repositories; authorize on the id claims
+  in `require` and treat `subject_prefix` as an optional extra restriction.
+- **Prefer immutable ids** (`repository_owner_id`, `repository_id`) in `require`: org and
+  repository names can be renamed and re-registered by someone else.
+- **Pick a bounded `identity_claim`** such as `repository`, not `sub`. The branch segment of
+  `sub` is caller-controlled, and the identity namespaces the Codex endpoint's sticky key and
+  appears in logs.
+- **`require` matches top-level string claims only.** A number, boolean, array, object, or
+  null never matches, even if its text would. GitHub carries its numeric ids as strings
+  (`"repository_id": "74"` in its example token), so quote them in config.
 
 Rule 4 keeps the two JWT paths unambiguous. `[server.gateway]` mints session tokens whose
 `iss` is its own `public_url`, and both verifiers read the same `Authorization: Bearer`
@@ -94,15 +133,20 @@ replayed as an HMAC secret.
 
 **Claims.** `exp` and `nbf` with `clock_skew_seconds`; `aud` against the configured set;
 `azp` against `authorized_parties` when the claim is present; `exp - iat` against
-`max_token_age_seconds`; `email_verified` must be `true`; the address must match an email
-rule.
+`max_token_age_seconds`. Then every configured operator group must pass (AND): the email
+group (`email_domains` OR `allowed_emails`), `require`, and `subject_prefix`.
 
-**Identity.** The verified `email` becomes the caller identity, in place of the `name` from
-a `name:token` pair. An address over 256 bytes is rejected (`401`), never truncated: the
-identity namespaces the account pool's sticky key on the inbound Codex endpoint, so an
-unbounded caller-controlled string there would be the failure mode issue #296 records for
-the Codex `model` label, and truncation would fold two addresses that share a prefix into
-one identity — and so into one sticky key.
+`email_verified` must be `true`, and `email` present, **iff** the entry has an email rule, its
+identity claim is `email`, or `require` names `email` — so an unverified address can never
+become an identity or satisfy a rule. An entry with none of these does not read `email` at all.
+
+**Identity.** The value of `identity_claim` (default `email`) becomes the caller identity, in
+place of the `name` from a `name:token` pair. It must be present as a non-empty JSON string.
+A value over 256 bytes is rejected (`401`), never truncated: the identity namespaces the
+account pool's sticky key on the inbound Codex endpoint, so an unbounded caller-controlled
+string there would be the failure mode issue #296 records for the Codex `model` label, and
+truncation would fold two values that share a prefix into one identity — and so into one
+sticky key.
 
 ### Key sets
 
@@ -197,13 +241,8 @@ allowlist on every request, so removing a domain or address takes effect immedia
 token already minted for a still-allowed address keeps working until it expires, whatever
 the IdP does to the account behind it.
 
-## 5. Not in phase 1
+## 5. Not implemented
 
-- `require` (claim → allowed values) and `subject_prefix`, the operators workload issuers
-  need.
-- `identity_claim`, and therefore any issuer whose tokens carry no `email`.
-- Per-entry `email_verified`; it is currently unconditional, which is correct while email is
-  the only authorization operator.
 - Groups. See issue #347.
 
 ## 6. Not in scope at all

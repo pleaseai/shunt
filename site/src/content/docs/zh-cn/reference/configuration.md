@@ -60,6 +60,13 @@ tokens_env = "SHUNT_CLIENT_TOKENS"   # 配置了 JWT issuer 后即为可选
 issuer = "https://accounts.google.com"
 audience = ["<专供 shunt 使用的 client id>"]
 email_domains = ["example.com"]
+
+# 工作负载身份:GitHub Actions 的 OIDC token 不带 email
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
 ```
 
 | 键 | 默认值 | 含义 |
@@ -68,17 +75,20 @@ email_domains = ["example.com"]
 | `audience` | 必填 | 接受的 `aud` 值,字符串或数组 |
 | `email_domains` | `[]` | 不区分大小写的域名,与最后一个 `@` 之后的部分**精确**匹配,不是后缀匹配 |
 | `allowed_emails` | `[]` | 不区分大小写的完整邮箱地址 |
+| `require` | `{}` | 声明名 → 字符串或字符串数组的表。列出的每个声明都必须是顶层 JSON **字符串**,并与其某个值精确相等(区分大小写);不同声明之间为 AND。用于不带 `email` 的工作负载 issuer |
+| `subject_prefix` | `[]` | 字符串或数组。设置后,`sub` 必须以其中之一开头(区分大小写)。前缀应止于分隔符,例如 `repo:pleaseai/`(`repo:pleaseai` 也会匹配 `pleaseai-evil`)。GitHub 的 `sub` 格式因仓库创建时间和管理员自定义而异,应优先对 ID 声明使用 `require` |
+| `identity_claim` | `email` | 其字符串值(非空,不超过 256 字节)成为调用方身份的声明。条目没有 `email_domains`/`allowed_emails` 时必填。应选择 `repository` 这类长度受限的声明,而不是 `sub` |
 | `algorithms` | `["RS256"]` | 接受的签名算法,仅限非对称算法 |
 | `authorized_parties` | `audience` | `azp` claim 存在时接受的值 |
 | `clock_skew_seconds` | `0` | 应用于 `exp` 和 `nbf` 的容差 |
 | `max_token_age_seconds` | `3600` | `exp - iat` 超过该值时拒绝 |
 | `jwks_url` | discovery | 为不提供 discovery 文档的 issuer 显式指定 JWKS 端点 |
 
-每个条目都需要 `issuer`、`audience`,以及至少一个 `email_domains` 或 `allowed_emails` 值。仅有 `audience` 不构成授权规则 —— 对某些 issuer 来说,调用方可以自行选择 audience。如果 `algorithms` 含有对称算法或未知值,或者 `issuer` 与 `[server.gateway]` 的 `public_url` 相同,启动同样会 fail closed:两个验证器读取同一个 bearer 槽位,issuer 相同会让 token 的归属取决于求值顺序。
+每个条目都需要 `issuer`、`audience`,以及至少一条授权规则:`email_domains`/`allowed_emails` 值、`require` 表或 `subject_prefix`。仅有 `audience` 不构成授权规则 —— 对某些 issuer 来说,调用方可以自行选择 audience(任何 GitHub 仓库都可以签发带有任意 `aud` 的 token)。没有邮箱规则的条目还必须设置 `identity_claim`。所有已配置的组(邮箱规则、`require`、`subject_prefix`)都必须通过。条目有邮箱规则、身份声明为 `email`,或 `require` 指定了 `email` 时,会强制 `email_verified = true`;其他条目不会读取 `email`。如果 `algorithms` 含有对称算法或未知值,或者 `issuer` 与 `[server.gateway]` 的 `public_url` 相同,启动同样会 fail closed:两个验证器读取同一个 bearer 槽位,issuer 相同会让 token 的归属取决于求值顺序。
 
 只要存在至少一个条目,`tokens_env` 就可以解析为空 —— 完全通过 IdP 认证的部署没有静态 token 需要设置。既没有可解析的 token 列表也没有条目时,`[server.auth]` 仍然启动失败。
 
-JWT **只**通过 `Authorization: Bearer` 接受 —— 不接受配置的 `header`,也不接受 `x-api-key`。这正是 Claude Code 已经发送 `ANTHROPIC_AUTH_TOKEN` 的槽位。在受控路由上先检查静态 token,该路由接受时再检查 gateway JWT,然后按 `iss` 检查 JWT 条目。验证会从 config 固定算法(token header 里的 `alg` 永远不参与选择)、要求 `kid`,并检查 `exp`/`nbf`、`aud`、`azp`、`exp - iat`、`email_verified = true` 和邮箱允许列表。验证通过的邮箱成为日志和用量归属中的调用方身份;超过 256 字节的地址会被拒绝,而不是截断。受控路由就是 `[server.auth]` 已经保护的那些路由:注入凭据的 `/v1/messages` 和 `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`(仅在非 loopback 监听时),以及入站 Codex 端点(HTTP、WebSocket 和 analytics)。
+JWT **只**通过 `Authorization: Bearer` 接受 —— 不接受配置的 `header`,也不接受 `x-api-key`。这正是 Claude Code 已经发送 `ANTHROPIC_AUTH_TOKEN` 的槽位。在受控路由上先检查静态 token,该路由接受时再检查 gateway JWT,然后按 `iss` 检查 JWT 条目。验证会从 config 固定算法(token header 里的 `alg` 永远不参与选择)、要求 `kid`,并检查 `exp`/`nbf`、`aud`、`azp`、`exp - iat`、已配置的 `require`/`subject_prefix` 运算符,邮箱允许列表,以及(条目读取 `email` 时)`email_verified = true`。验证通过的身份声明(默认是邮箱)成为日志和用量归属中的调用方身份;超过 256 字节的值会被拒绝,而不是截断。受控路由就是 `[server.auth]` 已经保护的那些路由:注入凭据的 `/v1/messages` 和 `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`(仅在非 loopback 监听时),以及入站 Codex 端点(HTTP、WebSocket 和 analytics)。
 
 key set 按 issuer 在首次使用时惰性拉取,因此 IdP 不可达不会阻塞启动。缓存的 key set 最多信任 5 分钟,之后由下一个请求尝试重新拉取(受 60 秒重新拉取下限约束);拉取成功会整体替换 key set,因此 issuer 撤下的密钥大约 5 分钟内就不再参与验证。拉取失败时会继续使用已过期的 key set,以免 IdP 故障变成全面故障;discovery 本身失败时则改为尝试上次发现的 `jwks_uri`。只有条目的 `issuer` 和 `jwks_url` 都未变化时,config reload 才会保留已缓存的密钥。未知的 `kid` 在每个 key set 的 60 秒窗口内最多触发一次重新拉取。没有任何条目能验证的 token 返回 `401`;没有任何条目验证通过、且与 token 的 issuer 匹配的条目中存在既无缓存 key set 又拉取失败的条目时,返回 **`503`**,这样 IdP 故障就不会被报告成凭据错误。
 

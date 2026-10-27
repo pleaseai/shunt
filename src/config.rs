@@ -435,6 +435,20 @@ pub struct InboundJwtConfig {
     /// Individual verified addresses that are accepted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_emails: Vec<String>,
+    /// Workload-identity operator: claim name → accepted values. Every listed
+    /// claim must be a top-level JSON string equal to one of its values (AND
+    /// across claims, any-of within one).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub require: BTreeMap<String, StringList>,
+    /// Accepted `sub` prefixes. When non-empty, `sub` must be a string starting
+    /// with one of them. End a prefix at a delimiter (`repo:org/`), or it also
+    /// matches sibling names.
+    #[serde(default)]
+    pub subject_prefix: StringList,
+    /// Claim whose string value becomes the caller identity. Defaults to
+    /// `email`; required when the entry has no email rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_claim: Option<String>,
     /// Accepted signing algorithms. The token header's `alg` never selects the
     /// algorithm; this list does.
     #[serde(default = "default_jwt_algorithms")]
@@ -577,16 +591,46 @@ impl InboundJwtConfig {
             .map(|email| email.trim().to_ascii_lowercase())
             .filter(|email| !email.is_empty())
             .collect();
-        // Every entry must carry an authorization rule beyond `audience`.
-        // Phase 1 offers only the email operators; the rule is enforced here
-        // rather than documented because for some issuers `audience` is not an
-        // authorization decision at all — a GitHub Actions workflow picks its
-        // own `aud`, so any repository could mint a token carrying it.
-        if allowed_domains.is_empty() && allowed_emails.is_empty() {
+        let subject_prefixes = self.subject_prefix.resolve();
+        let mut require: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (claim, values) in &self.require {
+            let claim = claim.trim();
+            if claim.is_empty() {
+                return Err(invalid("require claim names must not be empty".to_string()));
+            }
+            let values = values.resolve();
+            if values.is_empty() {
+                return Err(invalid(format!(
+                    "require.{claim} must list at least one non-empty value"
+                )));
+            }
+            require.entry(claim.to_string()).or_default().extend(values);
+        }
+        // Every entry must carry an authorization rule beyond `audience`; the
+        // rule is enforced here rather than documented because for some
+        // issuers `audience` is not an authorization decision at all — a
+        // GitHub Actions workflow picks its own `aud`, so any repository could
+        // mint a token carrying it.
+        let has_email_rule = !allowed_domains.is_empty() || !allowed_emails.is_empty();
+        if !has_email_rule && require.is_empty() && subject_prefixes.is_empty() {
             return Err(invalid(
-                "requires at least one email_domains or allowed_emails entry: audience alone is not an authorization rule".to_string(),
+                "requires at least one email_domains or allowed_emails entry, a require table, or a subject_prefix: audience alone is not an authorization rule".to_string(),
             ));
         }
+        let identity_claim = self
+            .identity_claim
+            .as_deref()
+            .map(str::trim)
+            .filter(|claim| !claim.is_empty());
+        let identity_claim = match identity_claim {
+            Some(claim) => claim.to_string(),
+            None if has_email_rule => "email".to_string(),
+            None => {
+                return Err(invalid(
+                    "identity_claim is required when the entry has no email_domains or allowed_emails (a workload token carries no email)".to_string(),
+                ))
+            }
+        };
 
         let mut algorithms = Vec::new();
         for raw in &self.algorithms {
@@ -655,6 +699,9 @@ impl InboundJwtConfig {
             authorized_parties,
             allowed_domains,
             allowed_emails,
+            require: require.into_iter().collect(),
+            subject_prefixes,
+            identity_claim,
             clock_skew_seconds: self.clock_skew_seconds,
             max_token_age_seconds: self.max_token_age_seconds,
         })
@@ -14122,6 +14169,9 @@ routes:
             audience: super::StringList::One("shunt-clients".to_string()),
             email_domains: vec!["example.com".to_string()],
             allowed_emails: Vec::new(),
+            require: BTreeMap::new(),
+            subject_prefix: super::StringList::default(),
+            identity_claim: None,
             algorithms: vec!["RS256".to_string()],
             authorized_parties: Vec::new(),
             clock_skew_seconds: 0,
@@ -14188,6 +14238,95 @@ routes:
                 if message.contains("email_domains")),
             "{error}"
         );
+    }
+
+    #[test]
+    fn inbound_jwt_workload_entry_needs_an_identity_claim() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("NO_IDENTITY");
+        let mut require_only = jwt_entry();
+        require_only.email_domains = Vec::new();
+        require_only.require = BTreeMap::from([(
+            "repository_owner".to_string(),
+            super::StringList::One("o".into()),
+        )]);
+        let mut subject_only = jwt_entry();
+        subject_only.email_domains = Vec::new();
+        subject_only.subject_prefix = super::StringList::One("repo:o/".to_string());
+        let mut empty_prefix = jwt_entry();
+        empty_prefix.email_domains = Vec::new();
+        empty_prefix.subject_prefix = super::StringList::One("  ".to_string());
+        empty_prefix.identity_claim = Some("repository".to_string());
+
+        for (entry, needle) in [
+            (require_only, "identity_claim"),
+            (subject_only, "identity_claim"),
+            (empty_prefix, "authorization rule"),
+        ] {
+            let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+            assert!(
+                matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                    if message.contains(needle)),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_an_empty_require_claim_name_or_value_list() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("REQUIRE_SHAPE");
+        for require in [
+            BTreeMap::from([(
+                "repository_owner".to_string(),
+                super::StringList::Many(vec![" ".into()]),
+            )]),
+            BTreeMap::from([(
+                "repository_owner".to_string(),
+                super::StringList::Many(Vec::new()),
+            )]),
+            BTreeMap::from([(" ".to_string(), super::StringList::One("o".into()))]),
+        ] {
+            let mut entry = jwt_entry();
+            entry.require = require.clone();
+            assert!(
+                matches!(
+                    auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+                    ConfigError::InvalidInboundJwt { index: 0, .. }
+                ),
+                "{require:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_workload_entry_resolves_from_toml() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("WORKLOAD");
+        for require in [
+            r#"{ repository_owner = ["pleaseai"] }"#,
+            r#"{ repository_owner = "pleaseai" }"#,
+        ] {
+            let entry: InboundJwtConfig = toml::from_str(&format!(
+                r#"
+                issuer = "https://issuer.example"
+                audience = "shunt-clients"
+                require = {require}
+                subject_prefix = "repo:pleaseai/"
+                identity_claim = " repository "
+                "#
+            ))
+            .expect("workload entry parses");
+
+            let resolved = auth_with_jwt(vec![entry], &env).resolve().unwrap();
+            let rule = &resolved.jwt()[0];
+            assert_eq!(
+                rule.require,
+                vec![("repository_owner".to_string(), vec!["pleaseai".to_string()])]
+            );
+            assert_eq!(rule.subject_prefixes, vec!["repo:pleaseai/".to_string()]);
+            assert_eq!(rule.identity_claim, "repository");
+        }
     }
 
     #[test]

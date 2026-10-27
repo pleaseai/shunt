@@ -23,6 +23,8 @@ use crate::config::{InboundAuthConfig, InboundJwtConfig, StringList};
 
 use super::{JwksCache, JwtOutcome};
 
+mod workload;
+
 const KID_ONE: &str = "key-one";
 const KID_TWO: &str = "key-two";
 
@@ -146,6 +148,9 @@ fn entry(issuer: &str, jwks_url: &str) -> InboundJwtConfig {
         audience: StringList::One("shunt-clients".to_string()),
         email_domains: vec!["example.com".to_string()],
         allowed_emails: Vec::new(),
+        require: Default::default(),
+        subject_prefix: StringList::default(),
+        identity_claim: None,
         algorithms: vec!["RS256".to_string()],
         authorized_parties: Vec::new(),
         clock_skew_seconds: 0,
