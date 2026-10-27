@@ -357,8 +357,7 @@ backend breadth) by design. It now provides a narrow Anthropic OAuth account poo
 with model-aware proactive quota scheduling plus reactive failover, and a mirrored
 ChatGPT/Codex pool with the same proactive-plus-reactive machinery fed by the
 backend's `x-codex-*` rate-limit headers (issue #195), and opt-in sequential
-draining by soonest weekly reset; per-account visibility for Codex is the remaining
-gap (§6, item H).
+draining by soonest weekly reset (§6, item G).
 The highest-value in-scope work is finishing the tool-search
 context savings ([#43]) — largely addressed by the native `tool_search`
 path, auto-enabled by default for known hosts (the ChatGPT/Codex backend and

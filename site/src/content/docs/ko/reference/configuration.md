@@ -326,7 +326,7 @@ headers = { "x-api-key" = "..." }
 | `default_max_utilization_fable` | 미설정 | fable 전용 주간(`7d_oi`) 창의 하드 캡 기본값; Fable 모델 요청에만 적용됨 |
 | `burn_rate_avoidance` | `false` | 창이 리셋되기 전에 소프트 임계값을 소진할 것으로 예측되는 계정도 함께 회피 |
 | `sort_by_reset` | `false` | 번-레이트 헤드룸 대신 사용 가능한 계정을 쿼터 리셋이 가장 빠른 순(오름차순; 알 수 없는 리셋은 맨 뒤)으로 정렬. `shunt.toml`을 편집하지 않고 관리자 대시보드나 `PATCH /admin/api/pool`로 런타임에 토글 가능 — [풀 계정 제어](/ko/guides/pool-account-controls/) 참고 |
-| `selection` | `"spread"` | 정상 계정 중 요청이 계정을 고르는 방식. `"spread"`는 각 세션을 세션 ID 해시로 정해진 계정에 고정해 세션을 풀 전체에 분산합니다. `"soonest_weekly_reset"`는 모든 요청을 주간 창이 가장 먼저 리셋되는 정상 계정(`priority` 다음 기준; 알 수 없는 리셋은 맨 뒤)으로 보내고, 그 계정이 임계값에 가까워지거나 상한에 걸리거나 쿨다운될 때만 다음 계정으로 넘어가므로 먼저 만료되는 주간 쿼터를 먼저 씁니다. 각 계정의 리셋 시각을 알 수 있도록 `usage_refresh_seconds`와 함께 쓰는 것이 좋습니다 |
+| `selection` | `"spread"` | 정상 계정 중 요청이 계정을 고르는 방식. `"spread"`는 각 세션을 세션 ID 해시로 정해진 계정에 고정해 세션을 풀 전체에 분산합니다. `"soonest_weekly_reset"`는 모든 요청을 주간 창이 가장 먼저 리셋되는 정상 계정(`priority` 다음 기준; 알 수 없는 리셋은 맨 뒤)으로 보내고, 그 계정이 임계값에 가까워지거나 상한에 걸리거나 쿨다운되면 다음 계정으로 넘어가므로, 같은 우선순위 안에서는 먼저 만료되는 주간 쿼터를 먼저 씁니다. 동시 트래픽이 한 계정에 몰리므로 바쁜 공유 게이트웨이는 `"spread"`를 유지하거나 `ramp_initial_concurrency`를 설정하세요. 이 설정은 막 전환된 계정의 허용치를 넘는 요청을 다음 계정으로 보냅니다. 각 계정의 리셋 시각을 알 수 있도록 `usage_refresh_seconds`와 함께 쓰는 것이 좋습니다 |
 | `usage_refresh_seconds` | 비활성(`0`/미설정) | Claude `GET /api/oauth/usage`, Codex `GET /wham/usage`, Antigravity `POST :retrieveUserQuotaSummary`, 풀에 등록된 xAI(Grok) 계정의 `GET /billing` 폴링 간격(초); 60 미만의 양수 값은 60초 하한으로 올림 |
 | `state_path` | 미설정 | 풀의 계정별 쿼터 상태를 저장할 파일; 재시작 시 빈 풀 대신 마지막으로 관측된 사용률에서 워밍업. 미설정이면 영속화 비활성(기본값). [`[store]`](#store-선택)를 설정하면 저장소가 쿼터를 보관하고 이 파일은 가져오기 원본으로만 쓰입니다 |
 | `ramp_initial_concurrency` | 비활성(`0`/미설정) | 폭주 제어: 방금 트래픽을 받기 시작한 계정 아이덴티티의 초기 동시 허용치. `0` 또는 미설정이면 허용 게이팅 비활성 |
