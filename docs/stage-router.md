@@ -175,8 +175,8 @@ as well.
 ## 4. Hysteresis
 
 `StageRouterStore` keys on `(advertised model id, SHA-256 prefix of the session
-id, SHA-256 prefix of the agent id)` — both ids are hashed and never stored, at
-the sixteen-byte width `accounts::stable_session_index` keeps. The third element
+id, SHA-256 prefix of the agent id)` — both ids are hashed to a sixteen-byte
+SHA-256 prefix and never stored. The third element
 is all zeros for the session's own thread, so a parent and its children never
 share an entry: a `Task` child sends the parent's session id with its own
 `x-claude-code-agent-id`, and reads and writes a pin of its own. Before that

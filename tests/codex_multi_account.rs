@@ -37,7 +37,6 @@ use std::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use shunt::{
     config::{AccountConfig, Config, PoolConfig, RouteConfig},
     server,
@@ -288,19 +287,42 @@ fn can_bind_loopback() -> bool {
     }
 }
 
-/// Brute-force a session id that maps to `index` under the SAME bucket
-/// assignment production uses (`accounts::stable_session_index`): the first 8
-/// bytes of `SHA-256(session_id)` as a big-endian u64, mod the account count.
-/// Hashing with `DefaultHasher` here would pick an id that lands on a different
-/// account under the real SHA-256 algorithm, so the per-test "hashes to
-/// account-a" comments would not actually hold.
-fn session_id_for_account(index: usize, account_count: usize) -> String {
+/// Brute-force a session id whose sticky account is `identities[index]`.
+/// Production ranks a session's accounts by `shunt::accounts::session_score`
+/// of each identity, highest first. A Codex account's identity is the
+/// `chatgpt_account_id` its token carries when shunt can read one, else its
+/// `name`, so each test passes the account ids of its own tokens.
+fn session_id_for_account(index: usize, identities: &[&str]) -> String {
+    let identities = identities
+        .iter()
+        .map(std::slice::from_ref)
+        .collect::<Vec<_>>();
+    session_id_for_any_identity(index, &identities)
+}
+
+/// [`session_id_for_account`] for a pool whose identities the test does not
+/// fully fix: each account lists every identity it may resolve to, and the
+/// session ranks `identities[index]` first under all of them. A `token_env`
+/// account whose variable this test leaves unset is one: it falls back to its
+/// name unless an earlier test in this process already cached the identity of
+/// the token under that variable.
+fn session_id_for_any_identity(index: usize, identities: &[&[&str]]) -> String {
+    use shunt::accounts::session_score as score;
+
     (0..1000)
         .map(|candidate| format!("session-{candidate}"))
         .find(|session_id| {
-            let digest = Sha256::digest(session_id.as_bytes());
-            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
-            (prefix % account_count as u64) as usize == index
+            let target = identities[index]
+                .iter()
+                .map(|identity| score(session_id, identity))
+                .min()
+                .expect("the target account has an identity");
+            identities
+                .iter()
+                .enumerate()
+                .filter(|&(slot, _)| slot != index)
+                .flat_map(|(_, alternatives)| alternatives.iter())
+                .all(|identity| score(session_id, identity) < target)
         })
         .expect("a session id should map to the requested account")
 }
@@ -403,7 +425,7 @@ async fn token_env_401_cools_down_and_rotates_without_refresh() {
 
     // A session that hashes to account-a still lands on account-b because
     // account-a is now cooled down (so the upstream never sees a second call).
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-unauth-a", "acct-unauth-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -961,7 +983,7 @@ async fn server_error_rotates_and_cools_down_the_failing_account() {
 
     // A session that hashes to account-a still lands on account-b because
     // account-a is cooled down (the upstream never sees a second a call).
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-server-a", "acct-server-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1022,7 +1044,7 @@ async fn a_429_always_rotates_unlike_the_anthropic_pause_same_case() {
 
     // Even a session that sticks to account-a lands on account-b, because a
     // Codex 429 always rotates rather than pausing and retrying in place.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-throttle-a", "acct-throttle-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1377,7 +1399,7 @@ async fn codex_quota_headers_drive_proactive_rotation() {
 
     // Both requests carry a session id that hashes to account-a, so absent the
     // quota signal the pool would stay sticky on account-a for both.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-quota-a", "acct-quota-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1530,7 +1552,7 @@ async fn storm_control_spills_concurrent_request_to_next_account() {
     });
     let gateway = start_gateway_with(config).await;
 
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-storm-a", "acct-storm-b"]);
     let first = {
         let gateway_url = gateway.base_url.clone();
         let session_id = session_id.clone();
@@ -1688,7 +1710,7 @@ async fn codex_quota_rotation_with_empty_reset_header() {
 
     // Both requests carry a session id that hashes to account-a, so absent the
     // quota signal the pool would stay sticky on account-a for both.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-quota-noreset-a", "acct-quota-noreset-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1751,7 +1773,7 @@ async fn restored_stale_quota_reprobes_once_then_uses_healthy_account() {
         state_path,
     ))
     .await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-restored-a", "acct-restored-b"]);
     let logs = Arc::new(Mutex::new(Vec::new()));
     let subscriber = reprobe_log_subscriber(&logs);
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
@@ -1824,7 +1846,8 @@ async fn missing_stale_probe_token_cancels_before_healthy_fallback() {
         state_path,
     ))
     .await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id =
+        session_id_for_account(0, &["acct-missing-fallback-a", "acct-missing-fallback-b"]);
     let logs = Arc::new(Mutex::new(Vec::new()));
     let subscriber = reprobe_log_subscriber(&logs);
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
@@ -1929,7 +1952,7 @@ async fn streaming_relays_synthetic_start_and_upstream_events() {
         account("stream-b", "SHUNT_CODEX_STREAM_B"),
     );
     let gateway = start_gateway_with(config).await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-a", "acct-b"]);
     let response = post_streaming_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
@@ -1978,7 +2001,7 @@ async fn streaming_429_rotates_to_second_account() {
         account("stream-b", "SHUNT_CODEX_STREAM_B"),
     );
     let gateway = start_gateway_with(config).await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-a", "acct-b"]);
     let response = post_streaming_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
@@ -2074,7 +2097,7 @@ async fn streaming_non_failover_4xx_emits_error_envelope() {
         account("stream-b", "SHUNT_CODEX_STREAM_B"),
     );
     let gateway = start_gateway_with(config).await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-a", "acct-b"]);
     let response = post_streaming_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
@@ -2103,7 +2126,7 @@ async fn streaming_admission_failure_moves_to_next_account() {
         account("stream-b", "SHUNT_CODEX_STREAM_B"),
     );
     let gateway = start_gateway_with(config).await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_any_identity(0, &[&["acct-a", "stream-a"], &["acct-b"]]);
     let response = post_streaming_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
@@ -2151,7 +2174,7 @@ async fn streaming_failed_refresh_cools_down_and_moves_on() {
         store_account("stream-refresh-b"),
     );
     let gateway = start_gateway_with(config).await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-a", "acct-b"]);
     let response = post_streaming_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
@@ -2193,7 +2216,7 @@ async fn streaming_ttfb_timeout_emits_error_envelope() {
     config.server.timeouts.upstream_ttfb_ms = 500;
     config.providers.get_mut("codex").unwrap().retry.max_retries = 0;
     let gateway = start_gateway_with(config).await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-a", "acct-b"]);
     let response = post_streaming_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();

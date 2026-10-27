@@ -236,18 +236,17 @@ fn can_bind_loopback() -> bool {
     }
 }
 
-/// A session id that maps to `index` under the real bucket assignment
-/// (`accounts::stable_session_index`: first 8 bytes of SHA-256, big-endian,
-/// mod count).
-fn session_id_for_account(index: usize, account_count: usize) -> String {
-    use sha2::{Digest, Sha256};
+/// A session id whose sticky account is `identities[index]`: production ranks
+/// a session's accounts by `shunt::accounts::session_score` of each identity
+/// (the `uuid`, else the `name`), highest first.
+fn session_id_for_account(index: usize, identities: &[&str]) -> String {
+    use shunt::accounts::session_score as score;
 
     (0..1000)
         .map(|candidate| format!("session-{candidate}"))
         .find(|session_id| {
-            let digest = Sha256::digest(session_id.as_bytes());
-            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
-            prefix % account_count as u64 == index as u64
+            (0..identities.len()).max_by_key(|&slot| score(session_id, identities[slot]))
+                == Some(index)
         })
         .expect("a session id should map to the requested account")
 }
@@ -596,7 +595,7 @@ async fn quota_429_rotates_and_cools_down_the_rejected_account() {
         "account-b"
     );
 
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-a", "uuid-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -655,7 +654,7 @@ async fn unauthorized_static_account_cools_down_and_rotates() {
 
     // A session that hashes to account-a still lands on account-b because
     // account-a is now cooled down (so the upstream never sees a second a call).
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-a", "uuid-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -887,7 +886,7 @@ async fn repeated_transport_failure_cools_down_and_rotates() {
 
     // A session that hashes to account-a lands on account-b because account-a
     // is cooled down; the upstream sees no third account-a send.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-a", "uuid-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1364,7 +1363,7 @@ async fn server_error_rotates_and_cools_down_the_failing_account() {
 
     // A session that hashes to account-a still lands on account-b because
     // account-a is cooled down (the upstream never sees a second a call).
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-a", "uuid-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1755,7 +1754,7 @@ async fn storm_control_spills_concurrent_request_to_next_account() {
     let gateway = start_gateway_with(config).await;
 
     // Both requests carry a session id that maps to account-a.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-storm-a", "uuid-storm-b"]);
 
     let first = {
         let gateway_url = gateway.base_url.clone();
@@ -2901,7 +2900,7 @@ async fn an_account_refusal_rotates_and_cools_the_refusing_account() {
     assert_cooled_for_the_default_refusal_window(&state, &account_a);
 
     // A session that maps to account A still lands on B while A cools.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-a", "uuid-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_served_by(&response, "account-b");
     upstream.verify().await;
