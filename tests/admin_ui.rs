@@ -152,7 +152,12 @@ async fn the_favicon_is_embedded_and_served_as_an_image() {
     let response = get(&router, icon).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(content_type(&response), "image/png");
-    assert!(body_bytes(response).await.starts_with(b"\x89PNG"));
+    // Vite emits the icon as a hashed copy of the source file, so the served
+    // bytes are the source asset's: a wrong or truncated image fails here.
+    assert_eq!(
+        body_bytes(response).await,
+        include_bytes!("../ui/src/assets/favicon.png")
+    );
 }
 
 /// The shell is an admin HTML response, so it carries the same defense-in-depth
