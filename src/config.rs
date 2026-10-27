@@ -604,7 +604,9 @@ impl InboundJwtConfig {
                     "require.{claim} must list at least one non-empty value"
                 )));
             }
-            require.entry(claim.to_string()).or_default().extend(values);
+            if require.insert(claim.to_string(), values).is_some() {
+                return Err(invalid(format!("duplicate require claim name: {claim}")));
+            }
         }
         // Every entry must carry an authorization rule beyond `audience`; the
         // rule is enforced here rather than documented because for some
@@ -14297,6 +14299,27 @@ routes:
                 "{require:?}"
             );
         }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_duplicate_require_claim_names_after_trimming() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("REQUIRE_DUP");
+        let mut entry = jwt_entry();
+        entry.require = BTreeMap::from([
+            (
+                "repository_id".to_string(),
+                super::StringList::One("7654321".into()),
+            ),
+            (
+                " repository_id ".to_string(),
+                super::StringList::One("7654322".into()),
+            ),
+        ]);
+        assert!(matches!(
+            auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+            ConfigError::InvalidInboundJwt { index: 0, .. }
+        ));
     }
 
     #[test]
