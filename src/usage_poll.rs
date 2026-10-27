@@ -1970,6 +1970,43 @@ mod tests {
         spawn_usage_poller(state);
     }
 
+    /// Each pass records when it began, which `GET /admin/api/pool` reports for
+    /// the dashboard's next-check countdown. Only the passthrough `anthropic`
+    /// provider is kept, so the pass itself polls nothing and the test reaches
+    /// no usage API or account store.
+    #[tokio::test]
+    async fn spawn_usage_poller_records_when_each_pass_starts() {
+        let mut config = crate::config::Config::default();
+        config.providers.retain(|name, _| name == "anthropic");
+        config.server.pool = Some(crate::config::PoolConfig {
+            usage_refresh_seconds: Some(60),
+            ..Default::default()
+        });
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        assert!(state.accounts.usage_poll_schedule().is_none());
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        spawn_usage_poller(state.clone());
+
+        // The ticker's first tick fires at once.
+        let schedule = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(schedule) = state.accounts.usage_poll_schedule() {
+                    break schedule;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the first pass starts at once");
+        assert_eq!(schedule.interval_seconds, 60);
+        assert!(schedule.last_started_at >= before);
+        assert_eq!(schedule.next_at(), schedule.last_started_at + 60);
+    }
+
     fn codex_account_with_credentials(path: &Path) -> AccountConfig {
         AccountConfig {
             name: "codex-acct".to_string(),
