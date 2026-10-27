@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.60.0](https://github.com/pleaseai/shunt/compare/v0.59.1...v0.60.0) (2026-10-27)
+
+
+### Features
+
+* **accounts:** allow . _ @ + in account names, so a name can be the login's email ([#847](https://github.com/pleaseai/shunt/issues/847)) ([66c2c0b](https://github.com/pleaseai/shunt/commit/66c2c0bfd712003b4e7ae6179c4f493518b08e8d))
+* **auth:** inbound JWT phase 2 workload identity (require, subject_prefix, identity_claim) ([#854](https://github.com/pleaseai/shunt/issues/854)) ([83ef44b](https://github.com/pleaseai/shunt/commit/83ef44b4ae1c1cc6267fe6e7fa32d493fb500cf5))
+
+
+### Bug Fixes
+
+* **admin:** redeem the OIDC callback state before spending the login budget ([#838](https://github.com/pleaseai/shunt/issues/838)) ([b3fe834](https://github.com/pleaseai/shunt/commit/b3fe834d3808b5d5068c0ccfcc7fbee204a271b2))
+* **auth:** keep refresh tokens and auth codes on their own host ([#839](https://github.com/pleaseai/shunt/issues/839)) ([a66b87c](https://github.com/pleaseai/shunt/commit/a66b87c9462594e99b42d1b76fd21dc1e23b5e5e))
+* **deps:** bump crates past published RustSec advisories ([#835](https://github.com/pleaseai/shunt/issues/835)) ([3dfdf1f](https://github.com/pleaseai/shunt/commit/3dfdf1f634a1f17f80a1ecc76cb8d9eed826df04))
+
 ## [0.59.1](https://github.com/pleaseai/shunt/compare/v0.59.0...v0.59.1) (2026-10-25)
 
 
