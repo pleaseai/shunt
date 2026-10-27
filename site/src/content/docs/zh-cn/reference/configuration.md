@@ -77,7 +77,7 @@ identity_claim = "repository"
 | `allowed_emails` | `[]` | 不区分大小写的完整邮箱地址 |
 | `require` | `{}` | 声明名 → 字符串或字符串数组的表。列出的每个声明都必须是顶层 JSON **字符串**,并与其某个值精确相等(区分大小写);不同声明之间为 AND。用于不带 `email` 的工作负载 issuer |
 | `subject_prefix` | `[]` | 字符串或数组。设置后,`sub` 必须以其中之一开头(区分大小写)。前缀应止于分隔符,例如 `repo:pleaseai/`(`repo:pleaseai` 也会匹配 `pleaseai-evil`)。GitHub 的 `sub` 格式因仓库创建时间和管理员自定义而异,应优先对 ID 声明使用 `require` |
-| `identity_claim` | `email` | 其字符串值(非空,不超过 256 字节)成为调用方身份的声明。条目没有 `email_domains`/`allowed_emails` 时必填。应选择 `repository` 这类长度受限的声明,而不是 `sub` |
+| `identity_claim` | `email` | 其字符串值(非空,不超过 256 字节)成为调用方身份的声明。条目没有 `email_domains`/`allowed_emails` 时必填。应选择 `repository` 这类长度受限的声明,而不是 `sub`。身份不带 issuer 前缀,与静态客户端名称或其他条目的身份值相同时,在用量和 spend 中会被视为同一调用方,因此应避免 `actor` 这类单纯的用户名声明 |
 | `algorithms` | `["RS256"]` | 接受的签名算法,仅限非对称算法 |
 | `authorized_parties` | `audience` | `azp` claim 存在时接受的值 |
 | `clock_skew_seconds` | `0` | 应用于 `exp` 和 `nbf` 的容差 |

@@ -77,7 +77,7 @@ identity_claim = "repository"
 | `allowed_emails` | `[]` | 大文字小文字を区別しない完全なメールアドレス |
 | `require` | `{}` | クレーム名 → 文字列または文字列配列のテーブル。列挙した各クレームはトップレベルの JSON **文字列**で、いずれかの値と完全一致（大文字小文字を区別）する必要がある。クレーム間は AND。`email` を持たないワークロード issuer 向け |
 | `subject_prefix` | `[]` | 文字列または配列。設定すると `sub` がいずれかで始まる必要がある（大文字小文字を区別）。区切り文字で終えること — 例: `repo:pleaseai/`（`repo:pleaseai` は `pleaseai-evil` にも一致する）。GitHub の `sub` 形式はリポジトリの作成時期と管理者の設定によって変わるため、ID クレームに対する `require` を優先すること |
-| `identity_claim` | `email` | 文字列値（空でなく 256 バイト以下）が呼び出し元 identity になるクレーム。エントリに `email_domains`/`allowed_emails` がない場合は必須。`sub` ではなく `repository` のように長さが限られたクレームを選ぶ |
+| `identity_claim` | `email` | 文字列値（空でなく 256 バイト以下）が呼び出し元 identity になるクレーム。エントリに `email_domains`/`allowed_emails` がない場合は必須。`sub` ではなく `repository` のように長さが限られたクレームを選ぶ。identity には issuer の接頭辞が付かないため、静的クライアント名や他のエントリの identity と値が同じだと、使用量と spend で同じ呼び出し元として扱われる。`actor` のような単純なユーザー名クレームは避けること |
 | `algorithms` | `["RS256"]` | 受け入れる署名アルゴリズム。非対称のみ |
 | `authorized_parties` | `audience` | `azp` クレームが存在する場合に受け入れる値 |
 | `clock_skew_seconds` | `0` | `exp` と `nbf` に適用する許容誤差 |

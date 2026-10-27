@@ -106,6 +106,13 @@ and names `repository` as the identity. Security notes:
 - **Pick a bounded `identity_claim`** such as `repository`, not `sub`. The branch segment of
   `sub` is caller-controlled, and the identity namespaces the Codex endpoint's sticky key and
   appears in logs.
+- **Identities share one namespace.** The identity is not prefixed with its issuer, so it is
+  compared as a bare string with static `name:token` client names and with every other
+  entry's identities. Equal strings become one caller for usage attribution, spend
+  accounting, and the Codex endpoint's sticky key. This is not an authorization bypass, but
+  choose an identity claim whose values cannot equal a static client name or another
+  issuer's identities: `repository` (`org/repo`) is safe next to email addresses, while a
+  bare username claim such as `actor` is not.
 - **`require` matches top-level string claims only.** A number, boolean, array, object, or
   null never matches, even if its text would. GitHub carries its numeric ids as strings
   (`"repository_id": "74"` in its example token), so quote them in config.

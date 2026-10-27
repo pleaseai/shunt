@@ -77,7 +77,7 @@ identity_claim = "repository"
 | `allowed_emails` | `[]` | 대소문자 무시 전체 이메일 주소 |
 | `require` | `{}` | 클레임 이름 → 문자열 또는 문자열 배열 테이블. 나열된 각 클레임은 최상위 JSON **문자열**이어야 하며 값 중 하나와 정확히(대소문자 구분) 일치해야 함. 클레임 간에는 AND. `email`이 없는 워크로드 issuer용 |
 | `subject_prefix` | `[]` | 문자열 또는 배열. 설정하면 `sub`가 이 중 하나로 시작해야 함(대소문자 구분). 구분자에서 끝내세요 — 예: `repo:pleaseai/` (`repo:pleaseai`는 `pleaseai-evil`도 일치). GitHub의 `sub` 형식은 저장소 생성 시점과 관리자 설정에 따라 달라지므로 ID 클레임에 대한 `require`를 우선 사용하세요 |
-| `identity_claim` | `email` | 문자열 값(비어 있지 않고 256바이트 이하)이 호출자 신원이 되는 클레임. 항목에 `email_domains`/`allowed_emails`가 없으면 필수. `sub`가 아니라 `repository` 같은 길이가 제한된 클레임을 선택 |
+| `identity_claim` | `email` | 문자열 값(비어 있지 않고 256바이트 이하)이 호출자 신원이 되는 클레임. 항목에 `email_domains`/`allowed_emails`가 없으면 필수. `sub`가 아니라 `repository` 같은 길이가 제한된 클레임을 선택. 신원에는 issuer 접두사가 붙지 않으므로, 정적 클라이언트 이름이나 다른 항목의 신원과 값이 같으면 사용량·spend에서 같은 호출자로 취급됨. `actor` 같은 단순 사용자 이름 클레임은 피할 것 |
 | `algorithms` | `["RS256"]` | 허용되는 서명 알고리즘. 비대칭만 가능 |
 | `authorized_parties` | `audience` | `azp` 클레임이 있을 때 허용되는 값 |
 | `clock_skew_seconds` | `0` | `exp`와 `nbf`에 적용되는 허용 오차 |

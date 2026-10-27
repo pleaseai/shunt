@@ -113,7 +113,7 @@ identity_claim = "repository"
 | `allowed_emails` | `[]` | Case-insensitive full email addresses |
 | `require` | `{}` | Table of claim name → string or array of strings. Each listed claim must be a top-level JSON **string** equal (exact, case-sensitive) to one of its values; AND across claims. For workload issuers whose tokens carry no `email` |
 | `subject_prefix` | `[]` | String or array. When set, `sub` must start with one of these (case-sensitive). End each at a delimiter, such as `repo:pleaseai/` — `repo:pleaseai` also matches `pleaseai-evil`. GitHub's `sub` format varies by repository age and admin customization, so prefer `require` on id claims |
-| `identity_claim` | `email` | Claim whose string value (non-empty, at most 256 bytes) becomes the caller identity. Required when the entry has no `email_domains`/`allowed_emails`. Pick a bounded claim such as `repository`, not `sub` |
+| `identity_claim` | `email` | Claim whose string value (non-empty, at most 256 bytes) becomes the caller identity. Required when the entry has no `email_domains`/`allowed_emails`. Pick a bounded claim such as `repository`, not `sub`. Identities are not prefixed with their issuer: a value equal to a static client name or another entry's identity is treated as the same caller for usage and spend, so avoid bare usernames such as `actor` |
 | `algorithms` | `["RS256"]` | Accepted signing algorithms. Asymmetric only |
 | `authorized_parties` | `audience` | Accepted `azp` values, checked when the claim is present |
 | `clock_skew_seconds` | `0` | Tolerance applied to `exp` and `nbf` |
