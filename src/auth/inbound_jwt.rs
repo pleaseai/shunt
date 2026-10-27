@@ -164,14 +164,11 @@ pub async fn verify(rules: &[JwtIssuerRule], cache: &JwksCache, token: &str) -> 
         let Ok(key) = DecodingKey::from_jwk(&jwk) else {
             continue;
         };
-        let Some(claims) = validate_claims(rule, token, &key) else {
-            continue;
-        };
-        let Some(identity) = claims.string(&rule.identity_claim) else {
+        let Some(identity) = validate_claims(rule, token, &key) else {
             continue;
         };
         return JwtOutcome::Verified {
-            identity: identity.to_string(),
+            identity,
             issuer: rule.issuer.clone(),
         };
     }
@@ -187,9 +184,10 @@ pub async fn verify(rules: &[JwtIssuerRule], cache: &JwksCache, token: &str) -> 
     }
 }
 
-/// Signature and claim checks for one entry. `None` on any failure — the caller
-/// collapses every rejection into one `401`, so no reason is returned.
-fn validate_claims(rule: &JwtIssuerRule, token: &str, key: &DecodingKey) -> Option<VerifiedClaims> {
+/// Signature and claim checks for one entry, returning the validated caller
+/// identity. `None` on any failure — the caller collapses every rejection into
+/// one `401`, so no reason is returned.
+fn validate_claims(rule: &JwtIssuerRule, token: &str, key: &DecodingKey) -> Option<String> {
     // `Validation::algorithms` is the pin: jsonwebtoken rejects a token whose
     // header `alg` is not in this list, so the header can never select the
     // algorithm. Config validation additionally refuses HMAC entries, which is
@@ -214,7 +212,8 @@ fn validate_claims(rule: &JwtIssuerRule, token: &str, key: &DecodingKey) -> Opti
         return None;
     }
     // `azp` names the party the token was issued *to*. Checked only when
-    // present, per OIDC Core, but never ignored when it is.
+    // present, per OIDC Core, but never ignored when it is. A JSON `null` counts
+    // as absent, as it did when `azp` deserialized into `Option<String>`.
     if let Some(azp) = claims.rest.get("azp").filter(|azp| !azp.is_null()) {
         let authorized = azp
             .as_str()
@@ -248,7 +247,7 @@ fn validate_claims(rule: &JwtIssuerRule, token: &str, key: &DecodingKey) -> Opti
             return None;
         }
     }
-    Some(claims)
+    Some(identity.to_string())
 }
 
 /// Whether the entry's email-dependent checks pass. Any entry that reads
