@@ -58,6 +58,8 @@ export const AUTO_REFRESH_MS = 30_000;
 interface ReusedObservations {
   observations: ObservedAccount[];
   pool: { providers?: PoolProvider[] } | null;
+  /** Windows the pool has superseded since that load; see `accountGroups`. */
+  superseded: Map<string, Set<number>>;
 }
 
 export interface Dashboard {
@@ -146,7 +148,7 @@ export function useDashboard(): Dashboard {
         ]);
         const poolData = pool.ok ? pool.data : null;
         if (full && generation === observeGeneration.current) {
-          lastObservations.current = { observations, pool: poolData };
+          lastObservations.current = { observations, pool: poolData, superseded: new Map() };
         }
 
         return {
@@ -157,7 +159,7 @@ export function useDashboard(): Dashboard {
             accounts.ok ? accounts.data : null,
             codexAccounts.ok ? codexAccounts.data : null,
             xaiAccounts.ok ? xaiAccounts.data : null,
-            reused ? { reused: { pool: reused.pool } } : {},
+            reused ? { reused: { pool: reused.pool, superseded: reused.superseded } } : {},
           ),
         };
       } finally {

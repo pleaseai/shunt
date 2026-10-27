@@ -162,6 +162,12 @@ function observedRow(observation: ObservedAccount): AccountRow {
  */
 interface Reuse {
   baseline: PoolAccount | undefined;
+  /**
+   * The windows the pool has already superseded since that load, by index into
+   * `WINDOWS`. Kept across automatic reloads (see `accountGroups`), so a
+   * window that moved and then cleared on reset does not read as unmoved.
+   */
+  superseded: Set<number>;
 }
 
 /** Whether the pool's numbers for one window changed since the reuse baseline. */
@@ -200,7 +206,15 @@ function foldObservation(
   // (the pool has seen traffic since). The pool's window wins only where it
   // changed since that load: then the pool has learned something the
   // observation predates. Otherwise the row reads as that load drew it.
-  const moved = reuse ? WINDOWS.map((window) => windowMoved(row, reuse.baseline, window)) : [];
+  const moved = reuse
+    ? WINDOWS.map((window, index) => {
+        if (reuse.superseded.has(index) || windowMoved(row, reuse.baseline, window)) {
+          reuse.superseded.add(index);
+          return true;
+        }
+        return false;
+      })
+    : [];
   WINDOWS.forEach((window, index) => {
     if (moved[index]) return;
     for (const key of window) {
@@ -305,7 +319,15 @@ export function accountGroups(
      * The observations are a reused earlier full load's, made alongside this
      * pool state; set by automatic reloads (`useDashboard`).
      */
-    reused?: { pool: { providers?: PoolProvider[] } | null };
+    reused?: {
+      pool: { providers?: PoolProvider[] } | null;
+      /**
+       * Windows already superseded by the pool, per account, carried from one
+       * automatic reload to the next; `accountGroups` adds to it. Cleared by
+       * starting a new full load.
+       */
+      superseded: Map<string, Set<number>>;
+    };
   } = {},
 ): Map<string, AccountRow[]> {
   const uuidByName = uuidsByAccountName(accounts);
@@ -324,6 +346,16 @@ export function accountGroups(
   // Each managed row's account as the reused full load saw it, matched on the
   // provider table and the account's own ref.
   const baselineFor = new Map<AccountRow, PoolAccount>();
+  const rowKeys = new Map<AccountRow, string>();
+  const reuseFor = (superseded: Map<string, Set<number>>, row: AccountRow): Reuse => {
+    const key = rowKeys.get(row) ?? '';
+    let windows = superseded.get(key);
+    if (!windows) {
+      windows = new Set();
+      superseded.set(key, windows);
+    }
+    return { baseline: baselineFor.get(row), superseded: windows };
+  };
   const baselineAccounts = new Map<string, PoolAccount>();
   const accountKey = (provider: string, account: PoolAccount) =>
     `${provider}\u0000${account.account_ref ?? account.name}`;
@@ -338,7 +370,9 @@ export function accountGroups(
     for (const account of table.accounts ?? []) {
       const row = managedRow(provider, account);
       groupFor(provider).push(row);
-      const baseline = baselineAccounts.get(accountKey(table.provider, account));
+      const key = accountKey(table.provider, account);
+      rowKeys.set(row, key);
+      const baseline = baselineAccounts.get(key);
       if (baseline) baselineFor.set(row, baseline);
       // Each identity table is sourced from one account store, so it may only
       // be matched against accounts of that store's auth kind. Gate on the
@@ -368,7 +402,7 @@ export function accountGroups(
       foldObservation(
         match,
         observation,
-        options.reused ? { baseline: baselineFor.get(match) } : null,
+        options.reused ? reuseFor(options.reused.superseded, match) : null,
       );
       continue;
     }
