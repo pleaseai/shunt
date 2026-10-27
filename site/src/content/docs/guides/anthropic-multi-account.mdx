@@ -283,7 +283,7 @@ Pooled responses identify the account:
 x-shunt-account: backup
 ```
 
-Use neutral account names on a shared gateway. This header exposes the configured label to every authorized client that receives the response. The final last-upstream-response relay after pool exhaustion omits `x-shunt-account`.
+Use neutral account names on a shared gateway. This header exposes the configured label to every authorized client that receives the response. The final last-upstream-response relay after pool exhaustion omits `x-shunt-account`. If the upstream sends its own `x-shunt-account` (a chained shunt, say), the pool's label replaces it. shunt's `proxied request` log line records the same label as an `account` field, so the log shows which account served each request and, with the line's `session_id`, when a session moved to another account.
 
 ### `account_uuid`
 

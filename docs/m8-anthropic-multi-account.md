@@ -197,7 +197,7 @@ A pooled upstream response includes:
 x-shunt-account: backup
 ```
 
-This is useful for observing selection and failover. On a shared gateway it also exposes configured account names to clients, so use neutral labels such as `primary`, `backup-1`, or `pool-a`, not names or email addresses. The final last-upstream-response relay after pool exhaustion does not include `x-shunt-account`.
+This is useful for observing selection and failover. On a shared gateway it also exposes configured account names to clients, so use neutral labels such as `primary`, `backup-1`, or `pool-a`, not names or email addresses. The final last-upstream-response relay after pool exhaustion does not include `x-shunt-account`. When the upstream itself sends an `x-shunt-account` (a chained shunt, say), the pool's label replaces it, so the header names the local account alone. The INFO `proxied request` log line records the same label as its `account` field.
 
 ## `account_uuid` rewrite
 

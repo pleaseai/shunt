@@ -3135,3 +3135,50 @@ async fn a_validation_400_is_relayed_without_rotating_or_cooling() {
     assert_eq!(snapshot.cooldown_secs_remaining, None);
     upstream.verify().await;
 }
+
+/// A pool response names the account that served it, once. A label the
+/// upstream sent itself (a chained shunt, say) must not ride ahead of it, where
+/// a reader of the first value, shunt's own `proxied request` log line among
+/// them, would name the wrong account.
+#[tokio::test]
+async fn the_pool_label_replaces_an_upstream_account_header() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "label-a"].concat();
+    let token_b = ["fake-oauth-", "label-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_LABEL_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_LABEL_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-shunt-account", "remote-primary")
+                .set_body_string(r#"{"account":"a"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", "SHUNT_TEST_MULTI_LABEL_A", "uuid-label-a"),
+        account("account-b", "SHUNT_TEST_MULTI_LABEL_B", "uuid-label-b"),
+    ))
+    .await;
+
+    // The first session-less request starts at the first account.
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let labels = response
+        .headers()
+        .get_all("x-shunt-account")
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(labels, ["account-a"]);
+    upstream.verify().await;
+}
