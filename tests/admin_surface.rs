@@ -2571,13 +2571,12 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
 }
 
 /// An account can be named after its login's email address. The store scan
-/// lists it, and the account routes resolve it from a percent-encoded path
-/// segment, the way the dashboard sends it. A file whose stem starts with a dot
-/// is still not an account.
+/// lists it, the pool reports it, and the account routes resolve it from a
+/// percent-encoded path segment, the way the dashboard sends it. A file whose
+/// stem starts with a dot is still not an account.
 ///
-/// No route here reaches a provider: `/admin/api/pool` is left out on purpose,
-/// since a live-looking fixture token would make it eligible for a real
-/// profile lookup.
+/// The provider points at a local mock, so the pool's profile lookup for the
+/// live-looking fixture token never leaves the machine.
 #[tokio::test]
 async fn an_email_named_store_account_works_through_the_admin_routes() {
     if !can_bind_loopback() {
@@ -2591,8 +2590,8 @@ async fn an_email_named_store_account_works_through_the_admin_routes() {
         "ops:secret-email-name",
     );
     // The default `antigravity` and `grok` providers pool with empty account
-    // lists; keep anything that resolves pool accounts off the machine's real
-    // stores.
+    // lists, so `/admin/api/pool` would scan their real stores; point both at
+    // an empty directory.
     let empty_store = unique_dir();
     vars.set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &empty_store);
     vars.set("SHUNT_XAI_ACCOUNTS_DIR", &empty_store);
@@ -2611,7 +2610,17 @@ async fn an_email_named_store_account_works_through_the_admin_routes() {
         .unwrap();
     }
 
+    let profile_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "organization": {"organization_type": "claude_max"}
+        })))
+        .mount(&profile_server)
+        .await;
+
     let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_EMAIL_NAME");
+    config.providers.get_mut("anthropic").unwrap().base_url = profile_server.uri();
     config.server.bind = "127.0.0.1:0".to_string();
     let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
         .await
@@ -2641,6 +2650,27 @@ async fn an_email_named_store_account_works_through_the_admin_routes() {
         .filter_map(|account| account["name"].as_str())
         .collect();
     assert_eq!(names, ["first.last+work@example.com"]);
+
+    let pool: serde_json::Value = auth(client.get(format!("{base_url}/admin/api/pool")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let anthropic = pool["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["provider"] == "anthropic")
+        .expect("the anthropic pool is reported");
+    let pooled: Vec<&str> = anthropic["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|account| account["name"].as_str())
+        .collect();
+    assert_eq!(pooled, ["first.last+work@example.com"]);
 
     // The dashboard sends the name through encodeURIComponent.
     let response = auth(client.delete(format!(
