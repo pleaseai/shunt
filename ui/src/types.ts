@@ -64,10 +64,12 @@ export interface PoolAccount {
   has_state?: boolean;
   near_quota?: boolean;
   /**
-   * A shared window (5h or 7d) is used up: the provider rejected it, or its
-   * utilization reached 100%. `near_quota` is also set at the switch threshold
-   * while the account can still serve; this is set only when it cannot. A
-   * Fable-only (`7d_oi`) rejection does not set it.
+   * A shared window (5h or 7d) is used up: the provider rejected it (or, with no
+   * per-window status recorded, the aggregate `status` is `rejected`), or its
+   * utilization reached 100%. `near_quota` is also set at the switch threshold;
+   * this is set only once a shared window is spent, though selection still
+   * keeps the account as a last resort. A Fable-only (`7d_oi`) rejection does
+   * not set it.
    */
   exhausted?: boolean;
   /** A 5h or 7d `max_utilization` hard cap excludes the account from every request. */

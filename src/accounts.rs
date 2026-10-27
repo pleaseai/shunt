@@ -454,10 +454,11 @@ pub struct AccountSnapshot {
     /// Fable `model`).
     pub available: bool,
     pub near_quota: bool,
-    /// A shared window (5h or 7d) is used up: the provider rejected it, or its
-    /// observed utilization reached 100%. Unlike `near_quota`, which is also set
-    /// at the switch threshold while the account can still serve, this says the
-    /// account cannot serve until a window resets. See
+    /// A shared window (5h or 7d) is used up: the provider rejected it (or, with
+    /// no per-window status recorded, the aggregate status says `rejected`), or
+    /// its observed utilization reached 100%. Unlike `near_quota`, which is also
+    /// set at the switch threshold, this is only set once the window itself is
+    /// spent. Selection still keeps such an account as a last resort. See
     /// [`shared_window_exhausted`].
     pub exhausted: bool,
     /// A shared-window (5h or 7d) `max_utilization` cap excludes the account
