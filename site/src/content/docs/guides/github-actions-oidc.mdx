@@ -1,0 +1,225 @@
+---
+title: GitHub Actions (OIDC)
+description: Let a GitHub Actions workflow call a shared shunt gateway with no static secret, by presenting the job's own GitHub OIDC token to a [[server.auth.jwt]] entry.
+---
+
+A workflow that needs to call a shared gateway normally stores a client token in GitHub secrets. This guide removes that secret: every Actions job can request an OIDC token from GitHub, and shunt's [`[[server.auth.jwt]]`](/guides/shared-gateway/#verifying-jwts-from-your-own-identity-provider) verifier can accept it directly. Nothing new runs on the gateway and nothing long-lived is stored in GitHub.
+
+shunt verifies the token's signature against GitHub's published keys, then authorizes on its **claims**: which organization and repository the job runs in. If you already run Google Cloud and would rather have an email-shaped identity, see [the Google service-account alternative](#alternative-a-google-service-account) at the end.
+
+## What GitHub puts in the token
+
+A GitHub Actions OIDC token has no `email` claim. The claims that matter here (see GitHub's [OIDC reference](https://docs.github.com/en/actions/reference/security/oidc)):
+
+| Claim | Value |
+| :-- | :-- |
+| `iss` | `https://token.actions.githubusercontent.com` |
+| `aud` | The URL of the repository owner by default; the job can request any string |
+| `sub` | Starts with `repo:`. For example `repo:my-org/my-repo:ref:refs/heads/main`, `...:pull_request`, `...:environment:prod`, `...:ref:refs/tags/v1` |
+| `repository`, `repository_id` | `my-org/my-repo` and its numeric id |
+| `repository_owner`, `repository_owner_id` | The organization or user and its numeric id |
+| `ref`, `environment`, `job_workflow_ref` | Branch or tag ref, environment name, reusable workflow path |
+
+The `sub` format is not stable across repositories. Repositories created after July 15, 2026 use `repo:OWNER@OWNER-ID/REPO@REPO-ID:...`, older repositories keep `repo:OWNER/REPO:...` unless they opt in, and organization or repository admins can customize `sub` entirely (for example to `repository_owner:my-org`). That is why the configuration below authorizes on the numeric id claims rather than on `sub`.
+
+## shunt configuration
+
+```toml
+[server.auth]
+# No static tokens needed once a JWT issuer is configured.
+tokens_env = "SHUNT_CLIENT_TOKENS"
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]                 # a string dedicated to shunt; the workflow requests the same one
+require = { repository_owner_id = "1234567", repository_id = ["7654321", "7654322"] }
+identity_claim = "repository"
+```
+
+Get the ids with the GitHub CLI:
+
+```bash
+gh api orgs/my-org --jq .id              # repository_owner_id (users/<name> for a personal account)
+gh api repos/my-org/my-repo --jq .id     # repository_id
+```
+
+How to read the entry:
+
+- **`require` is what authorizes.** Any GitHub repository can request a token with any `aud`, so a matching `audience` proves nothing; it only keeps tokens minted for other services from being replayed here. `require` maps claim names to a string or an array. Every listed claim must be present as a JSON string equal to one of its values (exact, case-sensitive): AND across claims, any-of within one. The ids are strings in GitHub's tokens, so quote them.
+- **Use the numeric ids, not names.** Organization and repository names can be renamed, deleted, and re-registered by someone else; the ids cannot. Listing several `repository_id` values is how you admit several repositories.
+- **`identity_claim = "repository"`** makes the caller identity `my-org/my-repo`, which is what appears in logs and usage attribution. It is a label, not the authorization (the ids are). It is required here because the entry has no email rule, and the value must be a non-empty string of at most 256 bytes. Do not use `sub` as the identity: its branch segment is caller-controlled.
+- **No `email_verified` check applies**, because the entry has no email rule, its identity claim is not `email`, and `require` does not name `email`.
+
+To narrow further, add exact claims to `require`, for instance `ref = "refs/heads/main"` or `environment = "production"`. Unlike a prefix match these cannot be satisfied by a longer name such as `refs/heads/main-evil`, and they do not depend on the `sub` format.
+
+`subject_prefix` is available too (a string or array; `sub` must start with one of them), but be careful with it. End the prefix at a delimiter: `repo:my-org/`, not `repo:my-org`, which also matches `repo:my-org-evil/...`. And because of the two `sub` formats above, a name-based prefix such as `repo:my-org/my-repo:` will not match repositories that use the immutable format. Treat it as an extra restriction on top of `require`, never as the only rule.
+
+A JWT is accepted only in `Authorization: Bearer` and is never forwarded upstream. On the routes `[server.auth]` already gates (credential-injecting `/v1/messages`, `GET /v1/models`, and the other [gated routes](/reference/configuration/#serverauthjwt-optional)) the identity is attributed in logs and usage. Passthrough inference is not checked, because the caller pays with their own credential.
+
+## Workflow
+
+The job needs `id-token: write`, which only allows requesting the OIDC token and grants no other access. The token comes from the runner's own endpoint, so no third-party action is involved.
+
+```yaml
+name: ask-claude
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write          # lets the job request a GitHub OIDC token
+
+jobs:
+  ask:
+    runs-on: ubuntu-latest
+    env:
+      SHUNT_URL: https://shunt.example.com
+    steps:
+      - name: Get a GitHub OIDC token for shunt
+        run: |
+          token="$(curl -fsS -G \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            --data-urlencode "audience=$SHUNT_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r .value)"
+          echo "::add-mask::$token"
+          echo "SHUNT_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: Smoke test
+        run: |
+          curl -fsS "$SHUNT_URL/v1/models" \
+            -H "Authorization: Bearer $SHUNT_TOKEN" | head -c 400
+
+      - name: Run Claude Code
+        env:
+          ANTHROPIC_BASE_URL: ${{ env.SHUNT_URL }}
+          ANTHROPIC_AUTH_TOKEN: ${{ env.SHUNT_TOKEN }}
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude -p "Summarize the last commit."
+```
+
+`audience` must equal the `audience` in the shunt entry. `::add-mask::` registers the token as a secret before it is stored, so it is redacted if it reaches the log; still, never `echo` it or run with `set -x`. Pull requests from forks do not get write permissions on their token (GitHub downgrades them to read), so a job triggered by a fork pull request generally cannot request the OIDC token. Keep that in mind for `pull_request` workflows.
+
+## Token lifetime
+
+The OIDC token is a bearer: it works until it expires, and shunt keeps no revocation state. GitHub's documentation lists `exp` and `iat` as claims but states no lifetime; the token in GitHub's own enterprise example has `exp - iat` of 300 seconds. shunt rejects a token only when `exp - iat` *exceeds* `max_token_age_seconds` (default `3600`), so the default accepts it. A long job should request a fresh token before each stage that calls shunt, using the same step as above, rather than hold one for the whole job. A single process, such as one Claude Code session, keeps the token it started with.
+
+## Troubleshooting
+
+**`401 authentication_error`.** shunt gives one response for every failed check, so compare the decoded token against the entry:
+
+| Check | Fix |
+| :-- | :-- |
+| `aud` is not in `audience` | The `audience` query parameter and the config value must match exactly |
+| A `require` claim is missing or different | Compare `repository_owner_id` and `repository_id` with the payload; they must be strings and the repository must be in your list |
+| `sub` does not start with a `subject_prefix` | Check the `sub` format (name-based, immutable, or customized) and drop or fix the prefix |
+| `repository` (the identity claim) is missing, empty, or over 256 bytes | The claim must be a non-empty string; check `identity_claim` spelling |
+| `iss` is not the configured `issuer` | GitHub Enterprise Cloud enterprises can opt into a unique issuer, `https://token.actions.githubusercontent.com/<enterprise-slug>`; set `issuer` to what the token carries |
+| `exp - iat` is above `max_token_age_seconds` | Only if you lowered it below the token's lifetime |
+
+**`503` with an `api_error` body.** shunt could not fetch GitHub's key set. The credential is fine; check that the gateway can reach `https://token.actions.githubusercontent.com`. Key sets are fetched on first use, so the failure shows up on the first request rather than at startup. This is different from the `overloaded_error` that the [concurrency limit](/guides/shared-gateway/#inbound-concurrency-limit) returns.
+
+**`ACTIONS_ID_TOKEN_REQUEST_URL` is empty.** The job lacks `id-token: write`, or it runs from a fork.
+
+**Inspect the payload.** Decode only the claims (the middle segment), and never paste the whole token anywhere:
+
+```bash
+python3 -c 'import sys,json,base64; p=sys.stdin.read().strip().split(".")[1]; print(json.dumps(json.loads(base64.urlsafe_b64decode(p+"="*(-len(p)%4))),indent=2))' <<< "$SHUNT_TOKEN"
+```
+
+Run it in a throwaway debug step. The payload holds no secret, but it is the quickest way to see which claim a check disagrees with. Full key list: [configuration reference](/reference/configuration/#serverauthjwt-optional).
+
+## Alternative: a Google service account
+
+Use this route if you already run Google Cloud, or want an identity shaped like an email address. The job proves itself to Google Cloud with its GitHub OIDC token, Google mints a short-lived ID token for a service account, and shunt accepts that ID token with an email rule such as `allowed_emails`. Which repositories may become the service account is decided in Google Cloud, by the Workload Identity Federation attribute condition and IAM binding, not in shunt.
+
+You need a project with the IAM, Resource Manager, Service Account Credentials, and Security Token Service APIs enabled.
+
+```bash
+PROJECT_ID="my-project"
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+GITHUB_ORG="my-org"
+GITHUB_REPO="my-org/my-repo"
+SA_EMAIL="shunt-ci@${PROJECT_ID}.iam.gserviceaccount.com"
+
+gcloud iam service-accounts create shunt-ci --project="$PROJECT_ID"   # needs no project roles
+
+OWNER_ID="$(gh api "orgs/${GITHUB_ORG}" --jq .id)"
+REPO_ID="$(gh api "repos/${GITHUB_REPO}" --jq .id)"
+
+gcloud iam workload-identity-pools create github \
+  --project="$PROJECT_ID" --location=global \
+  --display-name="GitHub Actions"
+
+gcloud iam workload-identity-pools providers create-oidc shunt \
+  --project="$PROJECT_ID" --location=global \
+  --workload-identity-pool=github \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id" \
+  --attribute-condition="assertion.repository_owner_id == '${OWNER_ID}'"
+
+gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
+  --project="$PROJECT_ID" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/attribute.repository_id/${REPO_ID}"
+
+gcloud iam workload-identity-pools providers describe shunt \
+  --project="$PROJECT_ID" --location=global --workload-identity-pool=github \
+  --format='value(name)'                                              # -> workload_identity_provider
+
+gcloud iam service-accounts describe "$SA_EMAIL" \
+  --project="$PROJECT_ID" --format='value(uniqueId)'                  # -> authorized_parties
+```
+
+<Aside type="caution">
+
+GitHub uses one issuer URL for every organization, so the `--attribute-condition` is what keeps other organizations out of your pool. Never create the provider without it: any GitHub repository could otherwise present a token to your pool. Google recommends the numeric `*_id` claims over names. The IAM binding then narrows the organization to one repository; widening the `principalSet` member to `attribute.repository_owner_id/...` lets every repository in the organization call your gateway. `roles/iam.workloadIdentityUser` is enough for the action to mint ID tokens, because it includes `iam.serviceAccounts.getOpenIdToken`; `roles/iam.serviceAccountOpenIdTokenCreator` also works.
+
+</Aside>
+
+```toml
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["shunt-ci"]                                        # any string; the workflow asks for the same one
+allowed_emails = ["shunt-ci@my-project.iam.gserviceaccount.com"]
+authorized_parties = ["112010400000000710080"]                 # the service account's uniqueId
+```
+
+- **`allowed_emails`**: prefer the exact address over `email_domains = ["my-project.iam.gserviceaccount.com"]`, which would accept an ID token from any service account in the project. The caller identity is this email.
+- **`authorized_parties` is required.** Google puts the service account's numeric unique ID in `azp` (and `sub`), while `aud` is your audience string. shunt checks `azp` whenever it is present and defaults the allowed set to `audience`, so without this key every token is rejected with a `401`.
+- The token has `email_verified = true` only when minted with the email included, so the workflow must set `id_token_include_email: true`.
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  ask:
+    runs-on: ubuntu-latest
+    steps:
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/github/providers/shunt
+          service_account: shunt-ci@my-project.iam.gserviceaccount.com
+          create_credentials_file: false
+          token_format: id_token
+          id_token_audience: shunt-ci          # must equal `audience` in shunt
+          id_token_include_email: true         # adds the email and email_verified claims
+
+      - name: Run Claude Code
+        env:
+          ANTHROPIC_BASE_URL: https://shunt.example.com
+          ANTHROPIC_AUTH_TOKEN: ${{ steps.auth.outputs.id_token }}
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude -p "Summarize the last commit."
+```
+
+The action registers the ID token as a masked secret. Lifetime: Google documents service-account ID tokens as valid for one hour, while the action's README states a maximum of 10 minutes that cannot be changed. Either passes the default `max_token_age_seconds`, but plan for the shorter one and re-run the auth step before long stages. On a `401`, the same decode snippet applies: expect `iss`, `aud`, `azp` (= `sub` = the unique ID), `email`, and `email_verified: true`, and check `aud` against `audience`, `azp` against `authorized_parties`, and `email` against `allowed_emails`. To get a comparable token on your own machine, impersonate the service account (your user needs `roles/iam.serviceAccountOpenIdTokenCreator` on it):
+
+```bash
+SHUNT_TOKEN="$(gcloud auth print-identity-token \
+  --impersonate-service-account="$SA_EMAIL" --audiences=shunt-ci --include-email)"
+```

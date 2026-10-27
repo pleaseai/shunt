@@ -1,0 +1,225 @@
+---
+title: GitHub Actions (OIDC)
+description: 无需静态 secret,让 GitHub Actions workflow 把 job 自身的 GitHub OIDC token 出示给 [[server.auth.jwt]] 条目,以调用共享的 shunt 网关。
+---
+
+需要调用共享网关的 workflow 通常把客户端 token 存放在 GitHub secrets 中。本指南去掉这个 secret:每个 Actions job 都可以向 GitHub 请求 OIDC token,而 shunt 的 [`[[server.auth.jwt]]`](/zh-cn/guides/shared-gateway/#验证自有-identity-provider-签发的-jwt) 验证器可以直接接受它。网关侧不需要新增任何组件,GitHub 中也不保存任何长期凭据。
+
+shunt 用 GitHub 公布的密钥验证 token 签名,然后依据其 **claim** 授权:也就是 job 运行在哪个组织和仓库中。如果你已经在使用 Google Cloud,并且希望得到邮箱形式的身份,请参见末尾的 [Google 服务账号替代方案](#替代方案google-服务账号)。
+
+## GitHub 放进 token 的内容
+
+GitHub Actions 的 OIDC token 没有 `email` claim。这里重要的 claim 如下(参见 GitHub 的 [OIDC 参考](https://docs.github.com/en/actions/reference/security/oidc)):
+
+| Claim | 值 |
+| :-- | :-- |
+| `iss` | `https://token.actions.githubusercontent.com` |
+| `aud` | 默认是仓库所有者的 URL;job 可以请求任意字符串 |
+| `sub` | 以 `repo:` 开头。例如 `repo:my-org/my-repo:ref:refs/heads/main`、`...:pull_request`、`...:environment:prod`、`...:ref:refs/tags/v1` |
+| `repository`、`repository_id` | `my-org/my-repo` 及其数字 id |
+| `repository_owner`、`repository_owner_id` | 组织或用户及其数字 id |
+| `ref`、`environment`、`job_workflow_ref` | 分支或标签 ref、环境名称、可复用 workflow 的路径 |
+
+`sub` 的格式并不是在所有仓库中都一致。2026 年 7 月 15 日之后创建的仓库使用 `repo:OWNER@OWNER-ID/REPO@REPO-ID:...`,更早的仓库除非选择加入否则保持 `repo:OWNER/REPO:...`,并且组织或仓库管理员还可以完全自定义 `sub`(例如 `repository_owner:my-org`)。这就是下面的配置依据数字 id claim 而不是 `sub` 授权的原因。
+
+## shunt 配置
+
+```toml
+[server.auth]
+# No static tokens needed once a JWT issuer is configured.
+tokens_env = "SHUNT_CLIENT_TOKENS"
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]                 # a string dedicated to shunt; the workflow requests the same one
+require = { repository_owner_id = "1234567", repository_id = ["7654321", "7654322"] }
+identity_claim = "repository"
+```
+
+用 GitHub CLI 获取 id:
+
+```bash
+gh api orgs/my-org --jq .id              # repository_owner_id (users/<name> for a personal account)
+gh api repos/my-org/my-repo --jq .id     # repository_id
+```
+
+这个条目的含义如下:
+
+- **真正授权的是 `require`。** 任何 GitHub 仓库都可以用任意 `aud` 请求 token,所以 `audience` 匹配并不能证明什么;它只是防止为其他服务签发的 token 在这里被重放。`require` 把 claim 名称映射到字符串或数组。列出的每个 claim 都必须以 JSON 字符串形式存在,并且与其某个值完全相等(精确、区分大小写):不同 claim 之间是 AND,同一 claim 内的多个值是 any-of。在 GitHub 的 token 中 id 是字符串,所以要加引号。
+- **使用数字 id,而不是名称。** 组织和仓库名称可能被重命名、删除后由别人重新注册,而 id 不会。要允许多个仓库,就列出多个 `repository_id`。
+- **`identity_claim = "repository"`** 使调用方身份成为 `my-org/my-repo`,它会出现在日志和用量归属中。它只是标签,不是授权依据(授权依据是 id)。由于条目没有邮箱规则,这里必须设置,且值必须是非空且不超过 256 字节的字符串。不要把 `sub` 用作身份:其中的分支部分由调用方控制。
+- **不会进行 `email_verified` 检查**,因为条目没有邮箱规则,其身份 claim 不是 `email`,并且 `require` 也没有指定 `email`。
+
+要进一步收窄,可以向 `require` 添加精确匹配的 claim,例如 `ref = "refs/heads/main"` 或 `environment = "production"`。与前缀匹配不同,较长的名称(如 `refs/heads/main-evil`)无法满足它们,并且它们不依赖 `sub` 的格式。
+
+`subject_prefix` 也可以使用(字符串或数组;`sub` 必须以其中之一开头),但要小心。前缀要在分隔符处结束:用 `repo:my-org/`,而不是 `repo:my-org`,后者也会匹配 `repo:my-org-evil/...`。另外,由于上述两种 `sub` 格式,像 `repo:my-org/my-repo:` 这样基于名称的前缀不会匹配使用 immutable 格式的仓库。把它当作叠加在 `require` 之上的额外限制,绝不要把它作为唯一的规则。
+
+JWT 只通过 `Authorization: Bearer` 接受,并且绝不会转发到上游。在 `[server.auth]` 已经保护的路由上(注入凭据的 `/v1/messages`、`GET /v1/models` 等[受控路由](/zh-cn/reference/configuration/#serverauthjwt可选)),该身份会被记入日志和用量归属。透传推理不受检查,因为调用方用自己的凭据付费。
+
+## Workflow
+
+job 需要 `id-token: write`,它只允许请求 OIDC token,不授予其他任何访问权限。token 来自 runner 自己的端点,因此不涉及任何第三方 action。
+
+```yaml
+name: ask-claude
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write          # lets the job request a GitHub OIDC token
+
+jobs:
+  ask:
+    runs-on: ubuntu-latest
+    env:
+      SHUNT_URL: https://shunt.example.com
+    steps:
+      - name: Get a GitHub OIDC token for shunt
+        run: |
+          token="$(curl -fsS -G \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            --data-urlencode "audience=$SHUNT_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r .value)"
+          echo "::add-mask::$token"
+          echo "SHUNT_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: Smoke test
+        run: |
+          curl -fsS "$SHUNT_URL/v1/models" \
+            -H "Authorization: Bearer $SHUNT_TOKEN" | head -c 400
+
+      - name: Run Claude Code
+        env:
+          ANTHROPIC_BASE_URL: ${{ env.SHUNT_URL }}
+          ANTHROPIC_AUTH_TOKEN: ${{ env.SHUNT_TOKEN }}
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude -p "Summarize the last commit."
+```
+
+`audience` 必须与 shunt 条目中的 `audience` 相同。`::add-mask::` 会在保存 token 之前把它注册为 secret,因此即使进入日志也会被遮盖;但仍然不要 `echo` 它,也不要用 `set -x` 运行。来自 fork 的 pull request 的 token 不会获得写权限(GitHub 会把它降为只读),所以由 fork 的 pull request 触发的 job 通常无法请求 OIDC token。编写 `pull_request` workflow 时请记住这一点。
+
+## Token 有效期
+
+OIDC token 是 bearer:到期之前一直有效,而 shunt 不保存吊销状态。GitHub 文档把 `exp` 和 `iat` 列为 claim,但没有说明有效期;GitHub 自己的企业示例中的 token,其 `exp - iat` 为 300 秒。shunt 只在 `exp - iat` *超过* `max_token_age_seconds`(默认 `3600`)时才拒绝,所以默认值可以接受它。较长的 job 应在每个调用 shunt 的阶段之前,用与上面相同的步骤重新请求新 token,而不是在整个 job 中持有同一个。单个进程(例如一个 Claude Code 会话)会一直使用启动时拿到的 token。
+
+## 故障排查
+
+**`401 authentication_error`。** shunt 对所有失败的检查返回同一个响应,所以请把解码后的 token 与条目逐项对照:
+
+| 检查 | 处理 |
+| :-- | :-- |
+| `aud` 不在 `audience` 中 | `audience` 查询参数与配置值必须完全一致 |
+| `require` 的 claim 缺失或不同 | 与 payload 中的 `repository_owner_id` 和 `repository_id` 对比;它们必须是字符串,且仓库必须在你的列表中 |
+| `sub` 不以 `subject_prefix` 开头 | 检查 `sub` 的格式(基于名称、immutable 或自定义),去掉或修正前缀 |
+| `repository`(身份 claim)缺失、为空或超过 256 字节 | 该 claim 必须是非空字符串;检查 `identity_claim` 的拼写 |
+| `iss` 不是配置的 `issuer` | GitHub Enterprise Cloud 的企业可以选择唯一 issuer `https://token.actions.githubusercontent.com/<enterprise-slug>`;把 `issuer` 设置为 token 实际携带的值 |
+| `exp - iat` 超过 `max_token_age_seconds` | 仅当你把它调得低于 token 的有效期时才会出现 |
+
+**带有 `api_error` 正文的 `503`。** shunt 无法获取 GitHub 的密钥集。凭据本身没有问题;请检查网关能否访问 `https://token.actions.githubusercontent.com`。密钥集在首次使用时才拉取,因此失败会出现在第一个请求上,而不是启动时。这与[并发上限](/zh-cn/guides/shared-gateway/#入站并发上限)返回的 `overloaded_error` 不同。
+
+**`ACTIONS_ID_TOKEN_REQUEST_URL` 为空。** job 缺少 `id-token: write`,或者是从 fork 运行。
+
+**查看 payload。** 只解码 claim(中间那一段),不要把整个 token 粘贴到任何地方:
+
+```bash
+python3 -c 'import sys,json,base64; p=sys.stdin.read().strip().split(".")[1]; print(json.dumps(json.loads(base64.urlsafe_b64decode(p+"="*(-len(p)%4))),indent=2))' <<< "$SHUNT_TOKEN"
+```
+
+请在一次性的调试步骤中运行。payload 不含 secret,但这是看出哪个 claim 与检查不符的最快方式。完整的键列表见[配置参考](/zh-cn/reference/configuration/#serverauthjwt可选)。
+
+## 替代方案:Google 服务账号
+
+如果你已经在使用 Google Cloud,或者想要邮箱形式的身份,可以走这条路径。job 用 GitHub OIDC token 向 Google Cloud 证明自己,Google 为服务账号签发短期 ID token,shunt 用 `allowed_emails` 之类的邮箱规则接受这个 ID token。哪些仓库可以成为该服务账号,由 Google Cloud 中的 Workload Identity Federation 属性条件(attribute condition)和 IAM 绑定决定,而不是由 shunt 决定。
+
+你需要一个已启用 IAM、Resource Manager、Service Account Credentials 和 Security Token Service API 的项目。
+
+```bash
+PROJECT_ID="my-project"
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+GITHUB_ORG="my-org"
+GITHUB_REPO="my-org/my-repo"
+SA_EMAIL="shunt-ci@${PROJECT_ID}.iam.gserviceaccount.com"
+
+gcloud iam service-accounts create shunt-ci --project="$PROJECT_ID"   # needs no project roles
+
+OWNER_ID="$(gh api "orgs/${GITHUB_ORG}" --jq .id)"
+REPO_ID="$(gh api "repos/${GITHUB_REPO}" --jq .id)"
+
+gcloud iam workload-identity-pools create github \
+  --project="$PROJECT_ID" --location=global \
+  --display-name="GitHub Actions"
+
+gcloud iam workload-identity-pools providers create-oidc shunt \
+  --project="$PROJECT_ID" --location=global \
+  --workload-identity-pool=github \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id" \
+  --attribute-condition="assertion.repository_owner_id == '${OWNER_ID}'"
+
+gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
+  --project="$PROJECT_ID" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/attribute.repository_id/${REPO_ID}"
+
+gcloud iam workload-identity-pools providers describe shunt \
+  --project="$PROJECT_ID" --location=global --workload-identity-pool=github \
+  --format='value(name)'                                              # -> workload_identity_provider
+
+gcloud iam service-accounts describe "$SA_EMAIL" \
+  --project="$PROJECT_ID" --format='value(uniqueId)'                  # -> authorized_parties
+```
+
+<Aside type="caution">
+
+GitHub 对所有组织使用同一个 issuer URL,所以把其他组织挡在 pool 之外的是 `--attribute-condition`。绝不要在没有它的情况下创建 provider:否则任何 GitHub 仓库都可以向你的 pool 出示 token。Google 建议使用数字形式的 `*_id` claim,而不是名称。IAM 绑定再把组织收窄到一个仓库;如果把 `principalSet` 成员放宽为 `attribute.repository_owner_id/...`,组织内的每个仓库都能调用你的网关。`roles/iam.workloadIdentityUser` 足以让 action 签发 ID token,因为它包含 `iam.serviceAccounts.getOpenIdToken`;`roles/iam.serviceAccountOpenIdTokenCreator` 也可以。
+
+</Aside>
+
+```toml
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["shunt-ci"]                                        # any string; the workflow asks for the same one
+allowed_emails = ["shunt-ci@my-project.iam.gserviceaccount.com"]
+authorized_parties = ["112010400000000710080"]                 # the service account's uniqueId
+```
+
+- **`allowed_emails`**:优先使用精确地址,而不是 `email_domains = ["my-project.iam.gserviceaccount.com"]`,后者会接受项目内任何服务账号签发的 ID token。调用方身份就是这个邮箱。
+- **`authorized_parties` 是必填的。** Google 把服务账号的数字唯一 ID 放在 `azp`(以及 `sub`)中,而 `aud` 是你的 audience 字符串。shunt 只要 `azp` 存在就会检查它,并把允许集合的默认值设为 `audience`,所以缺少这个键时每个 token 都会以 `401` 被拒绝。
+- 只有在签发时包含邮箱,token 的 `email_verified` 才为 `true`,所以 workflow 必须设置 `id_token_include_email: true`。
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  ask:
+    runs-on: ubuntu-latest
+    steps:
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/github/providers/shunt
+          service_account: shunt-ci@my-project.iam.gserviceaccount.com
+          create_credentials_file: false
+          token_format: id_token
+          id_token_audience: shunt-ci          # must equal `audience` in shunt
+          id_token_include_email: true         # adds the email and email_verified claims
+
+      - name: Run Claude Code
+        env:
+          ANTHROPIC_BASE_URL: https://shunt.example.com
+          ANTHROPIC_AUTH_TOKEN: ${{ steps.auth.outputs.id_token }}
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude -p "Summarize the last commit."
+```
+
+该 action 会把 ID token 注册为被屏蔽的 secret。有效期:Google 文档说明服务账号 ID token 的有效期为一小时;该 action 的 README 则写明最长 10 分钟且无法更改。两者都能通过默认的 `max_token_age_seconds`,但请按较短的那个来规划,并在较长的阶段之前重新运行 auth 步骤。遇到 `401` 时,同样可以使用上面的解码片段:应能看到 `iss`、`aud`、`azp`(= `sub` = 唯一 ID)、`email` 和 `email_verified: true`,并将 `aud` 与 `audience`、`azp` 与 `authorized_parties`、`email` 与 `allowed_emails` 对照。要在自己的机器上得到类似的 token,可以模拟(impersonate)该服务账号(你的用户需要在其上拥有 `roles/iam.serviceAccountOpenIdTokenCreator`):
+
+```bash
+SHUNT_TOKEN="$(gcloud auth print-identity-token \
+  --impersonate-service-account="$SA_EMAIL" --audiences=shunt-ci --include-email)"
+```
