@@ -11605,8 +11605,9 @@ mod tests {
     #[test]
     fn soonest_weekly_reset_keeps_accounts_with_no_known_reset_in_reserve() {
         // An unknown weekly reset sorts after every known one (the legacy
-        // no-pool-table tiebreak puts it first): an account whose weekly window
-        // has not opened stays untouched until the pool needs it.
+        // no-pool-table tiebreak puts it first): an account with no known reset,
+        // whether its window has not opened or its usage came without a reset,
+        // stays untouched until the pool needs it.
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b"), account("c")];
         let cfg = soonest_weekly_reset();
