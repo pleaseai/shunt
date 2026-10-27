@@ -1,0 +1,27 @@
+site/src/content/docs/ko/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_15e2c661762e97 80
+site/src/content/docs/ja/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_15e2c661762e97 80
+site/src/content/docs/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_15e2c661762e97 116
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_15e2c661762e97 80
+docs/inbound-jwt-auth.md
+  s_cbe1c4ca81e9ea::t_15e2c661762e97 109-115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7b52e79cee172806a583a1eee4ecee576e31e2ce",
+  "prompts": {},
+  "sessions": {
+    "s_cbe1c4ca81e9ea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fd6c44-81ff-45a5-b372-e829147fb9d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
