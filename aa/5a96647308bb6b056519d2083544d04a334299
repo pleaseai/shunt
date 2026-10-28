@@ -1,0 +1,25 @@
+site/src/content/docs/zh-cn/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_1d7e0ec9f96800 195
+site/src/content/docs/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_1d7e0ec9f96800 195
+site/src/content/docs/ja/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_1d7e0ec9f96800 195
+site/src/content/docs/ko/guides/github-actions-oidc.mdx
+  s_cbe1c4ca81e9ea::t_1d7e0ec9f96800 195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aa5a96647308bb6b056519d2083544d04a334299",
+  "prompts": {},
+  "sessions": {
+    "s_cbe1c4ca81e9ea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fd6c44-81ff-45a5-b372-e829147fb9d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
