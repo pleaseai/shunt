@@ -1,11 +1,11 @@
 ---
 title: GitHub Actions (OIDC)
-description: Let a GitHub Actions workflow call a shared shunt gateway with no static secret, by presenting the job's own GitHub OIDC token to a [[server.auth.jwt]] entry.
+description: Let a GitHub Actions workflow call a shared shunt gateway with no static secret, by presenting the job's own GitHub OIDC token to a [[server.auth.jwt]] entry; GitLab CI/CD and Kubernetes service accounts work the same way.
 ---
 
 A workflow that needs to call a shared gateway normally stores a client token in GitHub secrets. This guide removes that secret: every Actions job can request an OIDC token from GitHub, and shunt's [`[[server.auth.jwt]]`](/guides/shared-gateway/#verifying-jwts-from-your-own-identity-provider) verifier can accept it directly. Nothing new runs on the gateway and nothing long-lived is stored in GitHub.
 
-shunt verifies the token's signature against GitHub's published keys, then authorizes on its **claims**: which organization and repository the job runs in. If you already run Google Cloud and would rather have an email-shaped identity, see [the Google service-account alternative](#alternative-a-google-service-account) at the end.
+shunt verifies the token's signature against GitHub's published keys, then authorizes on its **claims**: which organization and repository the job runs in. The same pattern works for GitLab CI/CD and Kubernetes service accounts; see [Other CI and workload issuers](#other-ci-and-workload-issuers). If you already run Google Cloud and would rather have an email-shaped identity, see [the Google service-account alternative](#alternative-a-google-service-account) at the end.
 
 ## What GitHub puts in the token
 
@@ -127,6 +127,98 @@ python3 -c 'import sys,json,base64; p=sys.stdin.read().strip().split(".")[1]; pr
 ```
 
 Run it in a throwaway debug step. The payload holds no secret, but it is the quickest way to see which claim a check disagrees with. Full key list: [configuration reference](/reference/configuration/#serverauthjwt-optional).
+
+## Other CI and workload issuers
+
+`[[server.auth.jwt]]` is an array, so one config can hold a GitHub entry, a GitLab entry, and a Kubernetes entry side by side; a token is checked against the entries whose `issuer` equals its `iss`. The same rules as above apply to each. `require` and `identity_claim` read **top-level string claims only**: a number, array, or nested object never matches. The caller identity is not prefixed with its issuer, so pick claims whose values cannot collide with a static client name or another entry's identities (for example, GitHub's `repository` and GitLab's `project_path` are both shaped `group/project`).
+
+### GitLab CI/CD
+
+A GitLab job can request an ID token with the [`id_tokens`](https://docs.gitlab.com/ci/yaml/#id_tokens) keyword. Per GitLab's [ID token reference](https://docs.gitlab.com/ci/secrets/id_token_authentication/), `iss` is the domain of the GitLab instance (`https://gitlab.com`, or your self-managed URL), `aud` is whatever the job sets, and the token is RS256-signed. The claims used here are `namespace_id`, `project_id`, `project_path`, `ref`, `ref_type`, and `ref_protected`. GitLab's example payload shows them all as JSON strings (`"project_id": "20"`, `"ref_protected": "false"`), so quote them in `require`. `sub` defaults to `project_path:{group}/{project}:ref_type:{type}:ref:{branch}` and can be customized per project, so do not build on it. GitLab publishes OIDC discovery at `https://gitlab.com/.well-known/openid-configuration` (for self-managed, `https://<your-instance>/.well-known/openid-configuration`), which shunt uses by default.
+
+```toml
+[[server.auth.jwt]]
+issuer = "https://gitlab.com"                            # your instance URL if self-managed
+audience = ["https://shunt.example.com"]                 # the job asks for the same string
+require = { namespace_id = "72", project_id = ["20", "21"] }
+identity_claim = "project_path"
+```
+
+Read the ids from a decoded token (see the inspect snippet under Troubleshooting). As with GitHub, `require` is what authorizes: any GitLab project can request a token with any `aud`. Authorize on the numeric ids, because paths can be renamed. GitLab documents `project_id` as unchanging for the life of the project and `namespace_id` as stable only while the project stays in its namespace, so a transferred project stops matching until you update `namespace_id`. Add `ref_protected = "true"` to `require` to accept only jobs on protected refs. `project_path` is the identity, a label rather than the authorization.
+
+```yaml
+ask-claude:
+  image: node:22
+  id_tokens:
+    SHUNT_TOKEN:
+      aud: https://shunt.example.com     # must equal `audience` in shunt
+  script:
+    - npm install -g @anthropic-ai/claude-code
+    - ANTHROPIC_BASE_URL=https://shunt.example.com ANTHROPIC_AUTH_TOKEN="$SHUNT_TOKEN" claude -p "Summarize the last commit."
+```
+
+The token is exposed as a variable named after the `id_tokens` key. Lifetime: GitLab sets the token's expiry to the job's timeout if one is specified, or 5 minutes if not (its documentation states no maximum). Taken as the token's lifetime, a job timeout above one hour exceeds the default `max_token_age_seconds` of `3600`, and shunt rejects the token with a `401`. Keep the job timeout at or under an hour or raise `max_token_age_seconds` knowingly.
+
+### Kubernetes service account (projected token)
+
+A pod can mount a short-lived service-account token with a custom audience through a [`serviceAccountToken` projected volume](https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken). The token is a JWT whose `iss` is the first `--service-account-issuer` of the cluster's API server and whose `sub` is `system:serviceaccount:<namespace>:<name>`. The namespace and service-account details live in a nested `kubernetes.io` claim, which `require` cannot match, so authorize on `sub` with `subject_prefix` and use `sub` as the identity (the value must be at most 256 bytes).
+
+```toml
+[[server.auth.jwt]]
+issuer = "https://oidc.example.com"                      # exactly the cluster's --service-account-issuer
+jwks_url = "https://oidc.example.com/openid/v1/jwks"     # omit if discovery is reachable
+audience = ["https://shunt.example.com"]
+subject_prefix = ["system:serviceaccount:ci:"]           # every service account in namespace `ci`
+identity_claim = "sub"
+```
+
+End the prefix at the trailing colon so it covers one namespace. A prefix cannot pin a single service account: `system:serviceaccount:ci:runner` also matches `...:runner-2`, so give the callers their own namespace instead.
+
+shunt must be able to reach the keys over HTTPS. The API server serves a discovery document at `/.well-known/openid-configuration` and the key set at `/openid/v1/jwks` when the issuer URL is an `https` URL. On RBAC clusters the `system:service-account-issuer-discovery` ClusterRole is bound to the `system:serviceaccounts` group, which lets pods in the cluster read them, so a gateway outside the cluster has no access by default. Kubernetes names two ways to change that: an administrator can bind the role to `system:authenticated` or `system:unauthenticated`, or a public endpoint can serve cached responses from the API server, with the API server's `--service-account-jwks-uri` pointing the discovery document at it. An issuer such as `https://kubernetes.default.svc` (the value in Kubernetes' own example token) is not reachable from outside, so set `jwks_url` to wherever the keys are published; `issuer` must still equal the token's `iss`. Whether a managed cluster publishes a public issuer is provider-specific and not covered here.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: claude-runner
+  namespace: ci
+spec:
+  serviceAccountName: runner
+  containers:
+    - name: claude
+      image: node:22
+      env:
+        - name: ANTHROPIC_BASE_URL
+          value: https://shunt.example.com
+      volumeMounts:
+        - name: shunt-token
+          mountPath: /var/run/secrets/shunt
+          readOnly: true
+  volumes:
+    - name: shunt-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: https://shunt.example.com   # must equal `audience` in shunt
+              expirationSeconds: 3600
+              path: token
+```
+
+`expirationSeconds` defaults to 1 hour and must be at least 10 minutes (600); the cluster administrator can cap it with `--service-account-max-token-expiration`. One hour passes the default `max_token_age_seconds`, since shunt rejects only a token whose lifetime *exceeds* it.
+
+<Aside type="caution">
+
+The kubelet refreshes the file as the token nears expiry (it requests rotation once the token is older than 80% of its TTL, or older than 24 hours), but the application is responsible for reloading it. A process that read the token once and holds it, such as an exported `ANTHROPIC_AUTH_TOKEN`, gets `401` once that token expires. Configure Claude Code's `apiKeyHelper` to read the file instead, and start Claude Code without `ANTHROPIC_AUTH_TOKEN`, because an exported `ANTHROPIC_AUTH_TOKEN` takes precedence over `apiKeyHelper`:
+
+```json
+{ "apiKeyHelper": "cat /var/run/secrets/shunt/token" }
+```
+
+Claude Code caches the helper's output (five minutes by default) before running it again, so keep the token lifetime comfortably above that.
+
+</Aside>
+
+Do not use the legacy secret-based service-account tokens (a `kubernetes.io/service-account-token` Secret). Kubernetes describes them as tokens that never expire; shunt rejects a token without `exp` and `iat`.
 
 ## Alternative: a Google service account
 

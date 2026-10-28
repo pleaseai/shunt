@@ -1,11 +1,11 @@
 ---
 title: GitHub Actions (OIDC)
-description: 静的な secret なしで GitHub Actions ワークフローから共有 shunt ゲートウェイを呼び出せるよう、ジョブ自身の GitHub OIDC トークンを [[server.auth.jwt]] エントリに提示します。
+description: 静的な secret なしで GitHub Actions ワークフローから共有 shunt ゲートウェイを呼び出せるよう、ジョブ自身の GitHub OIDC トークンを [[server.auth.jwt]] エントリに提示します。GitLab CI/CD と Kubernetes サービスアカウントも同じ方式で使えます。
 ---
 
 共有ゲートウェイを呼び出すワークフローは、通常 GitHub secrets にクライアントトークンを保存します。このガイドはその secret をなくします。すべての Actions ジョブは GitHub に OIDC トークンを要求でき、shunt の [`[[server.auth.jwt]]`](/ja/guides/shared-gateway/#自組織の-identity-provider-が発行する-jwt-の検証) 検証機能はそれを直接受け付けられます。ゲートウェイ側で新たに動かすものはなく、GitHub に長期有効な認証情報を保存することもありません。
 
-shunt は GitHub が公開している鍵でトークンの署名を検証し、続いて**クレーム**で認可します。つまり、ジョブがどの組織・リポジトリで動いているかを見ます。すでに Google Cloud を運用していてメールアドレス形式の identity が欲しい場合は、末尾の [Google サービスアカウントを使う代替手段](#代替-google-サービスアカウント)を参照してください。
+shunt は GitHub が公開している鍵でトークンの署名を検証し、続いて**クレーム**で認可します。つまり、ジョブがどの組織・リポジトリで動いているかを見ます。GitLab CI/CD や Kubernetes サービスアカウントにも同じパターンを使えます。[その他の CI とワークロードの issuer](#その他の-ci-とワークロードの-issuer)を参照してください。すでに Google Cloud を運用していてメールアドレス形式の identity が欲しい場合は、末尾の [Google サービスアカウントを使う代替手段](#代替-google-サービスアカウント)を参照してください。
 
 ## GitHub がトークンに入れるもの
 
@@ -127,6 +127,98 @@ python3 -c 'import sys,json,base64; p=sys.stdin.read().strip().split(".")[1]; pr
 ```
 
 使い捨てのデバッグ用ステップで実行してください。ペイロードに secret は含まれませんが、どのクレームが検査と食い違っているかを最も早く確認できます。すべてのキーの一覧は[設定リファレンス](/ja/reference/configuration/#serverauthjwtオプション)を参照してください。
+
+## その他の CI とワークロードの issuer
+
+`[[server.auth.jwt]]` は配列なので、1 つの設定に GitHub のエントリ、GitLab のエントリ、Kubernetes のエントリを並べて置けます。トークンは、`issuer` が自分の `iss` と等しいエントリに対して検査されます。上記と同じルールが各エントリに適用されます。`require` と `identity_claim` は**トップレベルの文字列クレームだけ**を読みます。数値、配列、ネストしたオブジェクトは一致しません。呼び出し元の identity には issuer の接頭辞が付かないため、静的クライアント名や他のエントリの identity と値が衝突しないクレームを選んでください(たとえば GitHub の `repository` と GitLab の `project_path` はどちらも `group/project` の形です)。
+
+### GitLab CI/CD
+
+GitLab のジョブは [`id_tokens`](https://docs.gitlab.com/ci/yaml/#id_tokens) キーワードで ID トークンを要求できます。GitLab の [ID トークンのリファレンス](https://docs.gitlab.com/ci/secrets/id_token_authentication/)によると、`iss` は GitLab インスタンスのドメイン(`https://gitlab.com`、またはセルフマネージドの URL)、`aud` はジョブが指定した値で、トークンは RS256 で署名されます。ここで使うクレームは `namespace_id`、`project_id`、`project_path`、`ref`、`ref_type`、`ref_protected` です。GitLab のペイロード例ではすべて JSON 文字列として示されているため(`"project_id": "20"`、`"ref_protected": "false"`)、`require` では引用符で囲んでください。`sub` の既定値は `project_path:{group}/{project}:ref_type:{type}:ref:{branch}` で、プロジェクトごとに変更できるため、これに依存しないでください。GitLab は OIDC discovery を `https://gitlab.com/.well-known/openid-configuration` で公開しており(セルフマネージドは `https://<your-instance>/.well-known/openid-configuration`)、shunt は既定でこれを使います。
+
+```toml
+[[server.auth.jwt]]
+issuer = "https://gitlab.com"                            # your instance URL if self-managed
+audience = ["https://shunt.example.com"]                 # the job asks for the same string
+require = { namespace_id = "72", project_id = ["20", "21"] }
+identity_claim = "project_path"
+```
+
+`require` が認可を決める点は GitHub と同じです。どの GitLab プロジェクトでも任意の `aud` でトークンを要求できるからです。パスは名前を変更できるので、数値 id で認可してください。id はデコードしたトークンから読み取れます(トラブルシューティングのペイロード確認スニペットを参照)。GitLab のドキュメントは、`project_id` をプロジェクトの存続期間中変わらない値、`namespace_id` をプロジェクトが同じ名前空間にある間だけ安定する値と説明しています。そのため、プロジェクトを移管すると、`namespace_id` を更新するまで一致しなくなります。保護された ref のジョブだけを受け入れるには、`require` に `ref_protected = "true"` を追加します。`project_path` は identity であり、認可ではなくラベルです。
+
+```yaml
+ask-claude:
+  image: node:22
+  id_tokens:
+    SHUNT_TOKEN:
+      aud: https://shunt.example.com     # must equal `audience` in shunt
+  script:
+    - npm install -g @anthropic-ai/claude-code
+    - ANTHROPIC_BASE_URL=https://shunt.example.com ANTHROPIC_AUTH_TOKEN="$SHUNT_TOKEN" claude -p "Summarize the last commit."
+```
+
+トークンは `id_tokens` のキー名と同じ名前の変数として公開されます。有効期間: GitLab はトークンの有効期限を、ジョブのタイムアウトが指定されていればその値、なければ 5 分に設定します(ドキュメントに最大値の記載はありません)。これをトークンの有効期間とみなすと、タイムアウトが 1 時間を超えるジョブは既定の `max_token_age_seconds`(`3600`)を超え、shunt はそのトークンを `401` で拒否します。ジョブのタイムアウトを 1 時間以下に保つか、理解したうえで `max_token_age_seconds` を引き上げてください。
+
+### Kubernetes サービスアカウント (projected トークン)
+
+Pod は [`serviceAccountToken` projected ボリューム](https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken)で、任意の audience を持つ短命のサービスアカウントトークンをマウントできます。このトークンは JWT で、`iss` はクラスターの API サーバーの最初の `--service-account-issuer`、`sub` は `system:serviceaccount:<namespace>:<name>` です。名前空間とサービスアカウントの詳細はネストした `kubernetes.io` クレームの中にあり、`require` では一致させられません。そのため `subject_prefix` で `sub` を基準に認可し、`sub` を identity に使います(値は 256 バイト以下である必要があります)。
+
+```toml
+[[server.auth.jwt]]
+issuer = "https://oidc.example.com"                      # exactly the cluster's --service-account-issuer
+jwks_url = "https://oidc.example.com/openid/v1/jwks"     # omit if discovery is reachable
+audience = ["https://shunt.example.com"]
+subject_prefix = ["system:serviceaccount:ci:"]           # every service account in namespace `ci`
+identity_claim = "sub"
+```
+
+接頭辞は末尾のコロンで終えると、1 つの名前空間だけを対象にできます。接頭辞では単一のサービスアカウントに絞れません。`system:serviceaccount:ci:runner` は `...:runner-2` にも一致するため、呼び出し元には専用の名前空間を割り当ててください。
+
+shunt は HTTPS で鍵に到達できる必要があります。issuer URL が `https` URL であれば、API サーバーは `/.well-known/openid-configuration` で discovery ドキュメントを、`/openid/v1/jwks` で鍵セットを提供します。RBAC クラスターでは `system:service-account-issuer-discovery` ClusterRole が `system:serviceaccounts` グループにバインドされ、クラスター内の Pod がこれを読めるため、クラスター外のゲートウェイは既定ではアクセスできません。Kubernetes のドキュメントは、これを変える方法を 2 つ挙げています。管理者がそのロールを `system:authenticated` または `system:unauthenticated` にバインドする方法と、公開エンドポイントが API サーバーの応答のキャッシュを提供し、API サーバーの `--service-account-jwks-uri` で discovery ドキュメントがそのエンドポイントを指すようにする方法です。`https://kubernetes.default.svc` のような issuer(Kubernetes の例のトークンにある値)は外部から到達できないため、`jwks_url` には鍵が公開されている場所を指定してください。`issuer` は引き続きトークンの `iss` と等しくなければなりません。マネージドクラスターが公開 issuer を提供するかどうかはプロバイダー次第で、ここでは扱いません。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: claude-runner
+  namespace: ci
+spec:
+  serviceAccountName: runner
+  containers:
+    - name: claude
+      image: node:22
+      env:
+        - name: ANTHROPIC_BASE_URL
+          value: https://shunt.example.com
+      volumeMounts:
+        - name: shunt-token
+          mountPath: /var/run/secrets/shunt
+          readOnly: true
+  volumes:
+    - name: shunt-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: https://shunt.example.com   # must equal `audience` in shunt
+              expirationSeconds: 3600
+              path: token
+```
+
+`expirationSeconds` の既定値は 1 時間で、最小は 10 分(600)です。クラスター管理者は `--service-account-max-token-expiration` で上限を設けられます。shunt は有効期間が `max_token_age_seconds` を*超える*トークンだけを拒否するので、1 時間は既定値を通ります。
+
+<Aside type="caution">
+
+kubelet はトークンが期限に近づくとファイルを更新しますが(トークンが TTL の 80% を超えた、または 24 時間を超えた時点でローテーションを要求します)、再読み込みはアプリケーションの責任です。トークンを一度読んで保持し続けるプロセス、たとえば export した `ANTHROPIC_AUTH_TOKEN` は、そのトークンの期限が切れると `401` を受け取ります。代わりに Claude Code の `apiKeyHelper` でファイルを読むように設定し、`ANTHROPIC_AUTH_TOKEN` なしで Claude Code を起動してください。export した `ANTHROPIC_AUTH_TOKEN` は `apiKeyHelper` より優先されるためです。
+
+```json
+{ "apiKeyHelper": "cat /var/run/secrets/shunt/token" }
+```
+
+Claude Code はヘルパーの出力をキャッシュしてから(既定は 5 分)再実行するので、トークンの有効期間はそれより十分に長くしてください。
+
+</Aside>
+
+レガシーなシークレットベースのサービスアカウントトークン(`kubernetes.io/service-account-token` の Secret)は使わないでください。Kubernetes はこれを期限切れにならないトークンと説明しており、shunt は `exp` と `iat` のないトークンを拒否します。
 
 ## 代替: Google サービスアカウント
 

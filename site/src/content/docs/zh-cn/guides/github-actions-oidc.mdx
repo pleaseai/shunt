@@ -1,11 +1,11 @@
 ---
 title: GitHub Actions (OIDC)
-description: 无需静态 secret,让 GitHub Actions workflow 把 job 自身的 GitHub OIDC token 出示给 [[server.auth.jwt]] 条目,以调用共享的 shunt 网关。
+description: 无需静态 secret,让 GitHub Actions workflow 把 job 自身的 GitHub OIDC token 出示给 [[server.auth.jwt]] 条目,以调用共享的 shunt 网关。GitLab CI/CD 和 Kubernetes 服务账号也适用同样的方式。
 ---
 
 需要调用共享网关的 workflow 通常把客户端 token 存放在 GitHub secrets 中。本指南去掉这个 secret:每个 Actions job 都可以向 GitHub 请求 OIDC token,而 shunt 的 [`[[server.auth.jwt]]`](/zh-cn/guides/shared-gateway/#验证自有-identity-provider-签发的-jwt) 验证器可以直接接受它。网关侧不需要新增任何组件,GitHub 中也不保存任何长期凭据。
 
-shunt 用 GitHub 公布的密钥验证 token 签名,然后依据其 **claim** 授权:也就是 job 运行在哪个组织和仓库中。如果你已经在使用 Google Cloud,并且希望得到邮箱形式的身份,请参见末尾的 [Google 服务账号替代方案](#替代方案google-服务账号)。
+shunt 用 GitHub 公布的密钥验证 token 签名,然后依据其 **claim** 授权:也就是 job 运行在哪个组织和仓库中。GitLab CI/CD 和 Kubernetes 服务账号也可以用同样的方式,参见[其他 CI 与工作负载 issuer](#其他-ci-与工作负载-issuer)。如果你已经在使用 Google Cloud,并且希望得到邮箱形式的身份,请参见末尾的 [Google 服务账号替代方案](#替代方案google-服务账号)。
 
 ## GitHub 放进 token 的内容
 
@@ -127,6 +127,98 @@ python3 -c 'import sys,json,base64; p=sys.stdin.read().strip().split(".")[1]; pr
 ```
 
 请在一次性的调试步骤中运行。payload 不含 secret,但这是看出哪个 claim 与检查不符的最快方式。完整的键列表见[配置参考](/zh-cn/reference/configuration/#serverauthjwt可选)。
+
+## 其他 CI 与工作负载 issuer
+
+`[[server.auth.jwt]]` 是数组,因此一份配置里可以并排放 GitHub 条目、GitLab 条目和 Kubernetes 条目。token 会与 `issuer` 等于其 `iss` 的条目逐一比对。上文的规则对每个条目同样适用。`require` 和 `identity_claim` **只读取顶层的字符串 claim**:数字、数组、嵌套对象永远不会匹配。调用方身份不带 issuer 前缀,所以请选择取值不会与静态客户端名称或其他条目的身份冲突的 claim(例如 GitHub 的 `repository` 和 GitLab 的 `project_path` 都是 `group/project` 的形式)。
+
+### GitLab CI/CD
+
+GitLab 的 job 可以用 [`id_tokens`](https://docs.gitlab.com/ci/yaml/#id_tokens) 关键字请求 ID token。根据 GitLab 的 [ID token 参考](https://docs.gitlab.com/ci/secrets/id_token_authentication/),`iss` 是 GitLab 实例的域名(`https://gitlab.com`,或自托管实例的 URL),`aud` 是 job 指定的值,token 使用 RS256 签名。这里用到的 claim 是 `namespace_id`、`project_id`、`project_path`、`ref`、`ref_type` 和 `ref_protected`。GitLab 的示例 payload 中它们都是 JSON 字符串(`"project_id": "20"`、`"ref_protected": "false"`),所以在 `require` 中要加引号。`sub` 默认是 `project_path:{group}/{project}:ref_type:{type}:ref:{branch}`,并且可以按项目自定义,因此不要依赖它。GitLab 在 `https://gitlab.com/.well-known/openid-configuration` 提供 OIDC discovery(自托管为 `https://<your-instance>/.well-known/openid-configuration`),shunt 默认使用它。
+
+```toml
+[[server.auth.jwt]]
+issuer = "https://gitlab.com"                            # your instance URL if self-managed
+audience = ["https://shunt.example.com"]                 # the job asks for the same string
+require = { namespace_id = "72", project_id = ["20", "21"] }
+identity_claim = "project_path"
+```
+
+与 GitHub 一样,决定授权的是 `require`:任何 GitLab 项目都可以用任意 `aud` 请求 token。请用数字 id 授权,因为路径可以重命名。id 可以从解码后的 token 中读取(见故障排查一节中的 payload 查看代码片段)。GitLab 文档说明 `project_id` 在项目的整个生命周期内保持不变,而 `namespace_id` 只在项目留在原命名空间时保持稳定,因此转移项目后,在更新 `namespace_id` 之前不再匹配。若只接受受保护 ref 上的 job,可在 `require` 中加入 `ref_protected = "true"`。`project_path` 是身份,是标签而不是授权依据。
+
+```yaml
+ask-claude:
+  image: node:22
+  id_tokens:
+    SHUNT_TOKEN:
+      aud: https://shunt.example.com     # must equal `audience` in shunt
+  script:
+    - npm install -g @anthropic-ai/claude-code
+    - ANTHROPIC_BASE_URL=https://shunt.example.com ANTHROPIC_AUTH_TOKEN="$SHUNT_TOKEN" claude -p "Summarize the last commit."
+```
+
+token 以与 `id_tokens` 键同名的变量暴露。有效期:GitLab 把 token 的过期时间设为 job 的超时时间(若已指定),否则为 5 分钟(文档没有给出最大值)。若把它视为 token 的有效期,那么超时时间超过 1 小时的 job 会超出默认的 `max_token_age_seconds`(`3600`),shunt 会以 `401` 拒绝该 token。请把 job 超时保持在 1 小时以内,或在清楚后果的前提下调高 `max_token_age_seconds`。
+
+### Kubernetes 服务账号(投射 token)
+
+Pod 可以通过 [`serviceAccountToken` 投射卷](https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken)挂载带自定义 audience 的短期服务账号 token。该 token 是 JWT,其 `iss` 是集群 API 服务器的第一个 `--service-account-issuer`,`sub` 是 `system:serviceaccount:<namespace>:<name>`。命名空间和服务账号的详细信息位于嵌套的 `kubernetes.io` claim 中,`require` 无法匹配,所以用 `subject_prefix` 基于 `sub` 授权,并把 `sub` 用作身份(取值必须不超过 256 字节)。
+
+```toml
+[[server.auth.jwt]]
+issuer = "https://oidc.example.com"                      # exactly the cluster's --service-account-issuer
+jwks_url = "https://oidc.example.com/openid/v1/jwks"     # omit if discovery is reachable
+audience = ["https://shunt.example.com"]
+subject_prefix = ["system:serviceaccount:ci:"]           # every service account in namespace `ci`
+identity_claim = "sub"
+```
+
+前缀要以末尾的冒号结束,这样才只覆盖一个命名空间。前缀无法精确指定单个服务账号:`system:serviceaccount:ci:runner` 也会匹配 `...:runner-2`,因此请给调用方单独的命名空间。
+
+shunt 必须能通过 HTTPS 访问到密钥。当 issuer URL 是 `https` URL 时,API 服务器在 `/.well-known/openid-configuration` 提供 discovery 文档,在 `/openid/v1/jwks` 提供密钥集。在 RBAC 集群上,`system:service-account-issuer-discovery` ClusterRole 绑定到 `system:serviceaccounts` 组,集群内的 Pod 因此可以读取,所以集群外的网关默认无法访问。Kubernetes 给出了两种改变这一点的方式:管理员可以把该角色绑定到 `system:authenticated` 或 `system:unauthenticated`;或者由公开端点提供 API 服务器响应的缓存副本,并通过 API 服务器的 `--service-account-jwks-uri` 让 discovery 文档指向该端点。像 `https://kubernetes.default.svc` 这样的 issuer(Kubernetes 示例 token 中的值)无法从外部访问,所以请把 `jwks_url` 设为密钥的发布位置;`issuer` 仍须等于 token 的 `iss`。托管集群是否提供公开 issuer 因服务商而异,此处不涉及。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: claude-runner
+  namespace: ci
+spec:
+  serviceAccountName: runner
+  containers:
+    - name: claude
+      image: node:22
+      env:
+        - name: ANTHROPIC_BASE_URL
+          value: https://shunt.example.com
+      volumeMounts:
+        - name: shunt-token
+          mountPath: /var/run/secrets/shunt
+          readOnly: true
+  volumes:
+    - name: shunt-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: https://shunt.example.com   # must equal `audience` in shunt
+              expirationSeconds: 3600
+              path: token
+```
+
+`expirationSeconds` 默认为 1 小时,且必须至少为 10 分钟(600)。集群管理员可以用 `--service-account-max-token-expiration` 设置上限。shunt 只拒绝有效期*超过* `max_token_age_seconds` 的 token,所以 1 小时可以通过默认值。
+
+<Aside type="caution">
+
+kubelet 会在 token 接近过期时刷新文件(token 存活超过其 TTL 的 80%,或超过 24 小时,就会请求轮换),但重新加载由应用负责。只读取一次 token 并一直持有的进程,例如 export 的 `ANTHROPIC_AUTH_TOKEN`,在该 token 过期后会收到 `401`。请改为配置 Claude Code 的 `apiKeyHelper` 去读取文件,并且启动 Claude Code 时不要设置 `ANTHROPIC_AUTH_TOKEN`,因为 export 的 `ANTHROPIC_AUTH_TOKEN` 优先于 `apiKeyHelper`:
+
+```json
+{ "apiKeyHelper": "cat /var/run/secrets/shunt/token" }
+```
+
+Claude Code 会缓存 helper 的输出(默认 5 分钟)后再重新运行,所以 token 的有效期要明显长于这个时间。
+
+</Aside>
+
+不要使用旧式的基于 Secret 的服务账号 token(`kubernetes.io/service-account-token` Secret)。Kubernetes 把它们描述为永不过期的 token,而 shunt 会拒绝没有 `exp` 和 `iat` 的 token。
 
 ## 替代方案:Google 服务账号
 
