@@ -192,6 +192,7 @@ metadata:
 spec:
   serviceAccountName: runner
   restartPolicy: Never
+  automountServiceAccountToken: false
   containers:
     - name: claude
       image: node:22
