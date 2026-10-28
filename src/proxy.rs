@@ -96,7 +96,10 @@ pub async fn post(
 /// client receives: a pool replaces any label its upstream sent, while a
 /// provider without a pool relays its upstream's, so behind a chained shunt
 /// it names that shunt's account. It is absent when the response carries no
-/// such header, as for the relay after pool exhaustion.
+/// such header: after pool exhaustion, unless the upstream sent one, and on a
+/// Codex or ChatGPT pool stream committed before its account was chosen,
+/// which names the account in an `event: account` frame instead (see
+/// `adapters::responses::pool::pool_events_stream`).
 fn log_proxied_request(
     status: StatusCode,
     started_at: Instant,

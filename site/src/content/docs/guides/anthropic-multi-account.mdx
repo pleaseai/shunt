@@ -283,7 +283,7 @@ Pooled responses identify the account:
 x-shunt-account: backup
 ```
 
-Use neutral account names on a shared gateway. This header exposes the configured label to every authorized client that receives the response. The final last-upstream-response relay after pool exhaustion omits `x-shunt-account`. If the upstream sends its own `x-shunt-account` (a chained shunt, say), the pool's label replaces it. shunt's `proxied request` log line records the same label as an `account` field, so the log shows which account served each request and, with the line's `session_id`, when a session moved to another account.
+Use neutral account names on a shared gateway. This header exposes the configured label to every authorized client that receives the response. The final last-upstream-response relay after pool exhaustion adds no label, so it carries `x-shunt-account` only if the upstream sent one itself (a chained shunt, say). On every other pooled response the pool's label replaces any the upstream sent. shunt's `proxied request` log line records the same label as an `account` field, so the log shows which account served each request. With the line's `session_id`, which is empty while an OpenTelemetry or Sentry span export runs without `include_session_id`, it also shows when a session moved to another account. A Codex or ChatGPT pool stream that commits its response before it has chosen an account names the account in an `event: account` frame instead, so its log line has no `account`.
 
 ### `account_uuid`
 
