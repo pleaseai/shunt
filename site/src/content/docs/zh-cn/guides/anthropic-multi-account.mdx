@@ -116,7 +116,7 @@ Full OAuth 创建一个新的可刷新 credential;import 把当前的 `~/.claude
 
 ## 选择与主动轮换
 
-- 带 `x-claude-code-session-id` 时:会话 ID 通过会合哈希(rendezvous,最高随机权重)为池中各个不同账户排序。排名第一的账户就是粘性账户:如果它可用且低于切换阈值,shunt 会让它保持在首位,其余排名就是故障转移时依次尝试的顺序。新增账户只会移动那些现在把它排在第一的会话(在有 n 个账户的池中约为 n 分之一),移除账户也只会移动原本在它上面的会话。
+- 带 `x-claude-code-session-id` 时:会话 ID 通过会合哈希(rendezvous,最高随机权重)为池中各个不同账户排序。排名第一的账户就是粘性账户:如果它可用且低于切换阈值,shunt 会让它保持在首位,在它上面失败的请求会按排名依次尝试其余账户。新增账户只会移动那些现在把它排在第一的会话(在有 n 个账户的池中约为 n 分之一),移除账户也只会移动原本在它上面的会话。
 - 不带该头部、或该头部为空值时:每个提供方有自己的轮询计数器。空值不是一次对话,因此它共享这个轮询,而不会被哈希到某个固定账户上。
 - 在 `claude_oauth` 账户池处理的每个上游响应上,shunt 会记录以下头部(如存在):
   - `anthropic-ratelimit-unified-5h-utilization`、`anthropic-ratelimit-unified-7d-utilization` 和 `anthropic-ratelimit-unified-7d_oi-utilization`;
@@ -229,6 +229,7 @@ Anthropic 会把 Claude Sonnet 5.5 生成的 thinking 块绑定到生成它们�
 - 某个响应按照[故障转移规则](#故障转移规则)触发轮换:配额 429、刷新无法解决的 401(setup token 无法刷新,因此其上的任何 401 都会轮换),5xx,或者在立即重发后仍然出现的传输失败。
 - 池中新增了一个本会话会排在第一的账户,例如用 `shunt login claude` 新增的存储条目会在不重启的情况下进入池。在有 n 个账户的池中,只有约 n 分之一的会话会移到新账户,其余会话保持原账户。移除账户时,只有原本在该账户上的会话会移动。
 - 请求不带 `x-claude-code-session-id`,因此使用轮询。
+- 从按会话 ID 哈希对账户数取模来选择粘性账户的版本升级 shunt。会合哈希排名对会话的分配不同,因此大多数会话会移动一次。
 
 转移之后,后续的 Sonnet 5.5 轮次会在没有前一个账户上产生的推理的情况下运行。不会有任何失败。shunt 不会添加 `thinking-binding-controls-2026-08-01` beta 头部,因此除非客户端自己发送该头部,响应不会报告这次丢弃(shunt 会保留客户端的 `anthropic-beta` 值,仅在缺少 `oauth-2025-04-20` 时追加它)。shunt 也不会记录这次丢弃。
 

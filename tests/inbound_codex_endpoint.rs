@@ -32,6 +32,7 @@ use wiremock::{
 };
 
 mod common;
+use common::session_id_for_account;
 
 /// A raw OpenAI Responses request body, exactly as the Codex CLI would send it —
 /// note `input`/`instructions` (Responses shape), not `messages` (Anthropic). It
@@ -246,22 +247,6 @@ fn can_bind_loopback() -> bool {
         }
         Err(error) => panic!("unexpected loopback bind failure: {error}"),
     }
-}
-
-/// Brute-force a `session-id` whose sticky account is `identities[index]`.
-/// Production ranks a session's accounts by `shunt::accounts::session_score`
-/// of each identity, highest first: the `chatgpt_account_id` its token or
-/// credential file carries, else its `name`.
-fn session_id_for_account(index: usize, identities: &[&str]) -> String {
-    use shunt::accounts::session_score as score;
-
-    (0..1000)
-        .map(|candidate| format!("session-{candidate}"))
-        .find(|session_id| {
-            (0..identities.len()).max_by_key(|&slot| score(session_id, identities[slot]))
-                == Some(index)
-        })
-        .expect("a session id should map to the requested account")
 }
 
 /// POST a raw Responses request to one of the inbound codex paths.

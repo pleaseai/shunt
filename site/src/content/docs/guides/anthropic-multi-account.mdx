@@ -116,7 +116,7 @@ Deleting a store-managed account through the admin web surface clears that ident
 
 ## Selection and proactive rotation
 
-- With `x-claude-code-session-id`: the session id ranks the pool's distinct accounts by rendezvous (highest-random-weight) hashing. The top-ranked account is the sticky one: if it is available and under the switch threshold, shunt keeps it first, and the rest of the ranking is the order a failover tries next. Adding an account moves only the sessions that now rank it first, about one in n for a pool of n accounts, and removing one moves only the sessions that were on it.
+- With `x-claude-code-session-id`: the session id ranks the pool's distinct accounts by rendezvous (highest-random-weight) hashing. The top-ranked account is the sticky one: if it is available and under the switch threshold, shunt keeps it first, and a request that fails on it tries the rest of the ranking in order. Adding an account moves only the sessions that now rank it first, about one in n for a pool of n accounts, and removing one moves only the sessions that were on it.
 - Without the header, or with it sent blank: each provider has its own round-robin counter. A blank value is not a conversation, so it shares that rotation instead of hashing to one fixed account.
 - On every upstream response handled by the `claude_oauth` account pool, shunt records these headers when present:
   - `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, and `anthropic-ratelimit-unified-7d_oi-utilization`;
@@ -229,6 +229,7 @@ The pool is session-sticky, so a conversation normally stays on one account. It 
 - A response triggers a rotation under the [failover rules](#failover-rules): a quota 429, a 401 that a refresh does not fix (a setup token cannot be refreshed, so any 401 on one rotates), or a 5xx, or a transport failure that repeats on the immediate resend.
 - The pool gains a distinct account that this session now ranks first, for example a new `shunt login claude` store entry, which the pool picks up without a restart. In a pool of n accounts, about one session in n moves to the new account and the others keep theirs. Removing an account moves only the sessions that were on it.
 - The request has no `x-claude-code-session-id`, so it uses round-robin.
+- shunt is upgraded from a version that chose the sticky account by hashing the session id modulo the account count. Rendezvous ranking assigns sessions differently, so most of them move once.
 
 After a move, later Sonnet 5.5 turns run without the reasoning produced on the previous account. Nothing fails. shunt does not add the `thinking-binding-controls-2026-08-01` beta header, so the response does not report the drop unless the client sends that header itself (shunt keeps the client's `anthropic-beta` values and only appends `oauth-2025-04-20` when it is missing). shunt does not log the drop.
 

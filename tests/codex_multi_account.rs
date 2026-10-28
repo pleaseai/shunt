@@ -48,6 +48,7 @@ use wiremock::{
 };
 
 mod common;
+use common::{session_id_for_account, session_id_for_any_identity};
 
 struct BearerToken(String);
 
@@ -285,46 +286,6 @@ fn can_bind_loopback() -> bool {
         }
         Err(error) => panic!("unexpected loopback bind failure: {error}"),
     }
-}
-
-/// Brute-force a session id whose sticky account is `identities[index]`.
-/// Production ranks a session's accounts by `shunt::accounts::session_score`
-/// of each identity, highest first. A Codex account's identity is the
-/// `chatgpt_account_id` its token carries when shunt can read one, else its
-/// `name`, so each test passes the account ids of its own tokens.
-fn session_id_for_account(index: usize, identities: &[&str]) -> String {
-    let identities = identities
-        .iter()
-        .map(std::slice::from_ref)
-        .collect::<Vec<_>>();
-    session_id_for_any_identity(index, &identities)
-}
-
-/// [`session_id_for_account`] for a pool whose identities the test does not
-/// fully fix: each account lists every identity it may resolve to, and the
-/// session ranks `identities[index]` first under all of them. A `token_env`
-/// account whose variable this test leaves unset is one: it falls back to its
-/// name unless an earlier test in this process already cached the identity of
-/// the token under that variable.
-fn session_id_for_any_identity(index: usize, identities: &[&[&str]]) -> String {
-    use shunt::accounts::session_score as score;
-
-    (0..1000)
-        .map(|candidate| format!("session-{candidate}"))
-        .find(|session_id| {
-            let target = identities[index]
-                .iter()
-                .map(|identity| score(session_id, identity))
-                .min()
-                .expect("the target account has an identity");
-            identities
-                .iter()
-                .enumerate()
-                .filter(|&(slot, _)| slot != index)
-                .flat_map(|(_, alternatives)| alternatives.iter())
-                .all(|identity| score(session_id, identity) < target)
-        })
-        .expect("a session id should map to the requested account")
 }
 
 /// Find `message_start`'s `usage.input_tokens` in a gateway SSE response body,

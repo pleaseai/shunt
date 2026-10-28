@@ -18,6 +18,7 @@ use wiremock::{
 };
 
 mod common;
+use common::session_id_for_account;
 use common::{error_envelope, CREDIT_BALANCE_MESSAGE, SPEND_LIMIT_MESSAGE};
 
 struct BearerToken(String);
@@ -234,21 +235,6 @@ fn can_bind_loopback() -> bool {
         }
         Err(error) => panic!("unexpected loopback bind failure: {error}"),
     }
-}
-
-/// A session id whose sticky account is `identities[index]`: production ranks
-/// a session's accounts by `shunt::accounts::session_score` of each identity
-/// (the `uuid`, else the `name`), highest first.
-fn session_id_for_account(index: usize, identities: &[&str]) -> String {
-    use shunt::accounts::session_score as score;
-
-    (0..1000)
-        .map(|candidate| format!("session-{candidate}"))
-        .find(|session_id| {
-            (0..identities.len()).max_by_key(|&slot| score(session_id, identities[slot]))
-                == Some(index)
-        })
-        .expect("a session id should map to the requested account")
 }
 
 async fn post_messages(gateway: &TestGateway, session_id: Option<&str>) -> reqwest::Response {
