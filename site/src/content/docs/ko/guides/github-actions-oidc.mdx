@@ -174,7 +174,14 @@ identity_claim = "sub"
 
 접두사는 끝의 콜론에서 끝내야 한 네임스페이스만 포함합니다. 접두사로는 서비스 계정 하나만 지정할 수 없습니다. `system:serviceaccount:ci:runner`는 `...:runner-2`도 일치시키므로, 호출자에게 전용 네임스페이스를 주세요.
 
-shunt는 HTTPS로 키에 접근할 수 있어야 합니다. issuer URL이 `https` URL이면 API 서버는 `/.well-known/openid-configuration`에서 discovery 문서를, `/openid/v1/jwks`에서 키 집합을 제공합니다. RBAC 클러스터에서는 `system:service-account-issuer-discovery` ClusterRole이 `system:serviceaccounts` 그룹에 바인딩되어 클러스터 안의 파드가 이를 읽을 수 있으므로, 클러스터 밖의 게이트웨이는 기본적으로 접근할 수 없습니다. Kubernetes 문서는 이를 바꾸는 두 가지 방법을 듭니다. 관리자가 해당 역할을 `system:authenticated` 또는 `system:unauthenticated`에 바인딩하거나, 공개 엔드포인트가 API 서버 응답의 캐시본을 제공하고 API 서버의 `--service-account-jwks-uri`가 discovery 문서에서 그 엔드포인트를 가리키게 하는 것입니다. `https://kubernetes.default.svc` 같은 issuer(Kubernetes 예시 토큰의 값)는 외부에서 접근할 수 없으므로 `jwks_url`을 키가 게시된 곳으로 지정하세요. `issuer`는 여전히 토큰의 `iss`와 같아야 합니다. 관리형 클러스터가 공개 issuer를 제공하는지는 공급자마다 다르며 여기서는 다루지 않습니다.
+shunt는 HTTPS로 키에 접근할 수 있어야 합니다. issuer URL이 `https` URL이면 API 서버는 `/.well-known/openid-configuration`에서 discovery 문서를, `/openid/v1/jwks`에서 키 집합을 제공합니다. RBAC 클러스터에서는 `system:service-account-issuer-discovery` ClusterRole이 `system:serviceaccounts` 그룹에 바인딩되어 있어, 파드는 자기 서비스 계정 토큰으로 이를 읽을 수 있습니다. shunt는 키를 가져올 때 자격 증명을 보내지 않으므로, 게이트웨이가 어디서 실행되든 API 서버는 이 요청을 익명 요청으로 취급하며 기본 바인딩으로는 접근할 수 없습니다. Kubernetes 문서가 드는 공개 방법 중 shunt에 맞는 것은 두 가지입니다. 관리자가 해당 역할을 `system:unauthenticated`에 바인딩하거나(API 서버가 익명 요청을 허용하는 경우), 공개 엔드포인트가 API 서버 응답의 캐시본을 제공하고 API 서버의 `--service-account-jwks-uri`가 discovery 문서에서 그 엔드포인트를 가리키게 하는 것입니다. shunt는 인증을 하지 않으므로 역할을 `system:authenticated`에 바인딩해도 소용이 없습니다. `https://kubernetes.default.svc` 같은 issuer(Kubernetes 예시 토큰의 값)는 외부에서 접근할 수 없으므로 `jwks_url`을 키가 게시된 곳으로 지정하세요. `issuer`는 여전히 토큰의 `iss`와 같아야 합니다. 관리형 클러스터가 공개 issuer를 제공하는지는 공급자마다 다르며 여기서는 다루지 않습니다.
+
+아래 파드는 `ci` 네임스페이스의 `runner` ServiceAccount로 실행되며, 매니페스트는 이 둘을 만들지 않습니다. 아직 없다면 먼저 만드세요.
+
+```bash
+kubectl create namespace ci
+kubectl create serviceaccount runner --namespace ci
+```
 
 ```yaml
 apiVersion: v1
@@ -184,9 +191,17 @@ metadata:
   namespace: ci
 spec:
   serviceAccountName: runner
+  restartPolicy: Never
   containers:
     - name: claude
       image: node:22
+      command: ["sh", "-c"]
+      args:
+        - |
+          npm install -g @anthropic-ai/claude-code
+          mkdir -p ~/.claude
+          echo '{ "apiKeyHelper": "cat /var/run/secrets/shunt/token" }' > ~/.claude/settings.json
+          claude -p "Reply with the word ready."
       env:
         - name: ANTHROPIC_BASE_URL
           value: https://shunt.example.com

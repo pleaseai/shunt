@@ -174,7 +174,14 @@ identity_claim = "sub"
 
 End the prefix at the trailing colon so it covers one namespace. A prefix cannot pin a single service account: `system:serviceaccount:ci:runner` also matches `...:runner-2`, so give the callers their own namespace instead.
 
-shunt must be able to reach the keys over HTTPS. The API server serves a discovery document at `/.well-known/openid-configuration` and the key set at `/openid/v1/jwks` when the issuer URL is an `https` URL. On RBAC clusters the `system:service-account-issuer-discovery` ClusterRole is bound to the `system:serviceaccounts` group, which lets pods in the cluster read them, so a gateway outside the cluster has no access by default. Kubernetes names two ways to change that: an administrator can bind the role to `system:authenticated` or `system:unauthenticated`, or a public endpoint can serve cached responses from the API server, with the API server's `--service-account-jwks-uri` pointing the discovery document at it. An issuer such as `https://kubernetes.default.svc` (the value in Kubernetes' own example token) is not reachable from outside, so set `jwks_url` to wherever the keys are published; `issuer` must still equal the token's `iss`. Whether a managed cluster publishes a public issuer is provider-specific and not covered here.
+shunt must be able to reach the keys over HTTPS. The API server serves a discovery document at `/.well-known/openid-configuration` and the key set at `/openid/v1/jwks` when the issuer URL is an `https` URL. On RBAC clusters the `system:service-account-issuer-discovery` ClusterRole is bound to the `system:serviceaccounts` group, which lets a pod read them with its own service-account token. shunt fetches the keys without sending any credentials, so the API server treats its requests as anonymous wherever the gateway runs, and the default binding gives it no access. Of the ways Kubernetes names to open the keys up, two work with shunt: an administrator can bind the role to `system:unauthenticated` (where the API server allows anonymous requests), or a public endpoint can serve cached responses from the API server, with the API server's `--service-account-jwks-uri` pointing the discovery document at it. Binding the role to `system:authenticated` does not help, because shunt never authenticates. An issuer such as `https://kubernetes.default.svc` (the value in Kubernetes' own example token) is not reachable from outside, so set `jwks_url` to wherever the keys are published; `issuer` must still equal the token's `iss`. Whether a managed cluster publishes a public issuer is provider-specific and not covered here.
+
+The Pod below runs as the `runner` ServiceAccount in the `ci` namespace, and neither is created by the manifest. Create them first if they don't exist yet:
+
+```bash
+kubectl create namespace ci
+kubectl create serviceaccount runner --namespace ci
+```
 
 ```yaml
 apiVersion: v1
@@ -184,9 +191,17 @@ metadata:
   namespace: ci
 spec:
   serviceAccountName: runner
+  restartPolicy: Never
   containers:
     - name: claude
       image: node:22
+      command: ["sh", "-c"]
+      args:
+        - |
+          npm install -g @anthropic-ai/claude-code
+          mkdir -p ~/.claude
+          echo '{ "apiKeyHelper": "cat /var/run/secrets/shunt/token" }' > ~/.claude/settings.json
+          claude -p "Reply with the word ready."
       env:
         - name: ANTHROPIC_BASE_URL
           value: https://shunt.example.com

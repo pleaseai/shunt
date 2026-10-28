@@ -174,7 +174,14 @@ identity_claim = "sub"
 
 前缀要以末尾的冒号结束,这样才只覆盖一个命名空间。前缀无法精确指定单个服务账号:`system:serviceaccount:ci:runner` 也会匹配 `...:runner-2`,因此请给调用方单独的命名空间。
 
-shunt 必须能通过 HTTPS 访问到密钥。当 issuer URL 是 `https` URL 时,API 服务器在 `/.well-known/openid-configuration` 提供 discovery 文档,在 `/openid/v1/jwks` 提供密钥集。在 RBAC 集群上,`system:service-account-issuer-discovery` ClusterRole 绑定到 `system:serviceaccounts` 组,集群内的 Pod 因此可以读取,所以集群外的网关默认无法访问。Kubernetes 给出了两种改变这一点的方式:管理员可以把该角色绑定到 `system:authenticated` 或 `system:unauthenticated`;或者由公开端点提供 API 服务器响应的缓存副本,并通过 API 服务器的 `--service-account-jwks-uri` 让 discovery 文档指向该端点。像 `https://kubernetes.default.svc` 这样的 issuer(Kubernetes 示例 token 中的值)无法从外部访问,所以请把 `jwks_url` 设为密钥的发布位置;`issuer` 仍须等于 token 的 `iss`。托管集群是否提供公开 issuer 因服务商而异,此处不涉及。
+shunt 必须能通过 HTTPS 访问到密钥。当 issuer URL 是 `https` URL 时,API 服务器在 `/.well-known/openid-configuration` 提供 discovery 文档,在 `/openid/v1/jwks` 提供密钥集。在 RBAC 集群上,`system:service-account-issuer-discovery` ClusterRole 绑定到 `system:serviceaccounts` 组,Pod 可以用自己的服务账号 token 读取。shunt 获取密钥时不发送任何凭据,所以无论网关运行在哪里,API 服务器都把它的请求视为匿名请求,默认绑定不给它访问权限。在 Kubernetes 给出的开放方式中,有两种适用于 shunt:管理员可以把该角色绑定到 `system:unauthenticated`(前提是 API 服务器允许匿名请求);或者由公开端点提供 API 服务器响应的缓存副本,并通过 API 服务器的 `--service-account-jwks-uri` 让 discovery 文档指向该端点。shunt 从不进行认证,因此把角色绑定到 `system:authenticated` 并无作用。像 `https://kubernetes.default.svc` 这样的 issuer(Kubernetes 示例 token 中的值)无法从外部访问,所以请把 `jwks_url` 设为密钥的发布位置;`issuer` 仍须等于 token 的 `iss`。托管集群是否提供公开 issuer 因服务商而异,此处不涉及。
+
+下面的 Pod 以 `ci` 命名空间中的 `runner` ServiceAccount 运行,而清单并不会创建这两者。如果它们尚不存在,请先创建:
+
+```bash
+kubectl create namespace ci
+kubectl create serviceaccount runner --namespace ci
+```
 
 ```yaml
 apiVersion: v1
@@ -184,9 +191,17 @@ metadata:
   namespace: ci
 spec:
   serviceAccountName: runner
+  restartPolicy: Never
   containers:
     - name: claude
       image: node:22
+      command: ["sh", "-c"]
+      args:
+        - |
+          npm install -g @anthropic-ai/claude-code
+          mkdir -p ~/.claude
+          echo '{ "apiKeyHelper": "cat /var/run/secrets/shunt/token" }' > ~/.claude/settings.json
+          claude -p "Reply with the word ready."
       env:
         - name: ANTHROPIC_BASE_URL
           value: https://shunt.example.com

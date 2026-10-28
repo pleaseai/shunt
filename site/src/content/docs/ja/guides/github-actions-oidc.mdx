@@ -174,7 +174,14 @@ identity_claim = "sub"
 
 接頭辞は末尾のコロンで終えると、1 つの名前空間だけを対象にできます。接頭辞では単一のサービスアカウントに絞れません。`system:serviceaccount:ci:runner` は `...:runner-2` にも一致するため、呼び出し元には専用の名前空間を割り当ててください。
 
-shunt は HTTPS で鍵に到達できる必要があります。issuer URL が `https` URL であれば、API サーバーは `/.well-known/openid-configuration` で discovery ドキュメントを、`/openid/v1/jwks` で鍵セットを提供します。RBAC クラスターでは `system:service-account-issuer-discovery` ClusterRole が `system:serviceaccounts` グループにバインドされ、クラスター内の Pod がこれを読めるため、クラスター外のゲートウェイは既定ではアクセスできません。Kubernetes のドキュメントは、これを変える方法を 2 つ挙げています。管理者がそのロールを `system:authenticated` または `system:unauthenticated` にバインドする方法と、公開エンドポイントが API サーバーの応答のキャッシュを提供し、API サーバーの `--service-account-jwks-uri` で discovery ドキュメントがそのエンドポイントを指すようにする方法です。`https://kubernetes.default.svc` のような issuer(Kubernetes の例のトークンにある値)は外部から到達できないため、`jwks_url` には鍵が公開されている場所を指定してください。`issuer` は引き続きトークンの `iss` と等しくなければなりません。マネージドクラスターが公開 issuer を提供するかどうかはプロバイダー次第で、ここでは扱いません。
+shunt は HTTPS で鍵に到達できる必要があります。issuer URL が `https` URL であれば、API サーバーは `/.well-known/openid-configuration` で discovery ドキュメントを、`/openid/v1/jwks` で鍵セットを提供します。RBAC クラスターでは `system:service-account-issuer-discovery` ClusterRole が `system:serviceaccounts` グループにバインドされており、Pod は自身のサービスアカウントトークンでこれを読めます。shunt は鍵の取得時に資格情報を送らないため、ゲートウェイがどこで動いていても API サーバーはその要求を匿名として扱い、既定のバインドではアクセスできません。Kubernetes のドキュメントが挙げる公開方法のうち、shunt で使えるのは 2 つです。管理者がそのロールを `system:unauthenticated` にバインドする方法(API サーバーが匿名要求を許可している場合)と、公開エンドポイントが API サーバーの応答のキャッシュを提供し、API サーバーの `--service-account-jwks-uri` で discovery ドキュメントがそのエンドポイントを指すようにする方法です。shunt は認証を行わないため、ロールを `system:authenticated` にバインドしても効果はありません。`https://kubernetes.default.svc` のような issuer(Kubernetes の例のトークンにある値)は外部から到達できないため、`jwks_url` には鍵が公開されている場所を指定してください。`issuer` は引き続きトークンの `iss` と等しくなければなりません。マネージドクラスターが公開 issuer を提供するかどうかはプロバイダー次第で、ここでは扱いません。
+
+以下の Pod は `ci` 名前空間の `runner` ServiceAccount で動作しますが、マニフェストはどちらも作成しません。まだ存在しない場合は先に作成してください。
+
+```bash
+kubectl create namespace ci
+kubectl create serviceaccount runner --namespace ci
+```
 
 ```yaml
 apiVersion: v1
@@ -184,9 +191,17 @@ metadata:
   namespace: ci
 spec:
   serviceAccountName: runner
+  restartPolicy: Never
   containers:
     - name: claude
       image: node:22
+      command: ["sh", "-c"]
+      args:
+        - |
+          npm install -g @anthropic-ai/claude-code
+          mkdir -p ~/.claude
+          echo '{ "apiKeyHelper": "cat /var/run/secrets/shunt/token" }' > ~/.claude/settings.json
+          claude -p "Reply with the word ready."
       env:
         - name: ANTHROPIC_BASE_URL
           value: https://shunt.example.com
