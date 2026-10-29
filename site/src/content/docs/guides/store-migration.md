@@ -69,7 +69,7 @@ Before it serves, shunt creates or migrates the database, imports each snapshot 
 | `AlreadyImported` | A previous boot already handled this subsystem |
 | `Off` | The subsystem is not configured, so it is not store-backed |
 
-A malformed or version-mismatched snapshot stops the boot with `importing the <subsystem> state snapshot <path> into the store failed`. Nothing was imported for that subsystem, though subsystems imported before it keep their rows. Fix or remove the named file and start again.
+A failed import stops the boot with `importing the <subsystem> state snapshot <path> into the store failed`, followed by a colon and the reason. Nothing was imported for that subsystem, though subsystems imported before it keep their rows. Act on the reason: for a malformed or unsupported-version snapshot, fix or remove the named file; for an unreadable file, fix its permissions or path; for a failed store transaction, check the store itself. Then start again. [Troubleshooting](/reference/troubleshooting/) covers the remaining store startup errors.
 
 ## 6. Check the import
 
@@ -88,7 +88,7 @@ A malformed or version-mismatched snapshot stops the boot with `importing the <s
 
 A `NoSnapshot` outcome you did not expect usually means the path was wrong on the first boot: a different home directory, or a file that was not there yet. Placing the file afterwards changes nothing, because the import is decided by the `import_record` row, not by whether the tables are empty.
 
-On SQLite, if nothing has been written to the store since that boot, stop shunt, delete the database file together with its `-wal` and `-shm` files, fix the path, and start again. The snapshots are unchanged, so every subsystem imports afresh. Once clients have logged in or limits have changed in the store, deleting the database discards those changes.
+On SQLite, if no client has logged in and no spend limit has changed since that first boot, stop shunt, delete the database file together with its `-wal` and `-shm` files, fix the path, and start again. The snapshots are unchanged, so every subsystem imports afresh. Pool quota saved since then is lost too, but it is re-derived from upstream responses. After logins or limit changes, deleting the database discards them.
 
 ## Going back
 
