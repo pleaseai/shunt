@@ -69,7 +69,7 @@ Before it serves, shunt creates or migrates the database, imports each snapshot 
 | `AlreadyImported` | A previous boot already handled this subsystem |
 | `Off` | The subsystem is not configured, so it is not store-backed |
 
-A failed import stops the boot with `importing the <subsystem> state snapshot <path> into the store failed`, followed by a colon and the reason. Nothing was imported for that subsystem, though subsystems imported before it keep their rows. Act on the reason: for a malformed or unsupported-version snapshot, fix or remove the named file; for an unreadable file, fix its permissions or path; for a failed store transaction, check the store itself. Then start again. [Troubleshooting](/reference/troubleshooting/) covers the remaining store startup errors.
+A failed import stops the boot with `importing the <subsystem> state snapshot <path> into the store failed`, followed by a colon and the reason. Nothing was imported for that subsystem, unless the reason is a failed commit: then the import may have landed, and the next boot reports that subsystem as `AlreadyImported` instead of re-reading your corrected snapshot. Subsystems imported before it keep their rows either way. Act on the reason: for a malformed or unsupported-version snapshot, fix or remove the named file; for an unreadable file, fix its permissions or path; for a failed store transaction, check the store itself. Then start again. [Troubleshooting](/reference/troubleshooting/) covers the remaining store startup errors.
 
 ## 6. Check the import
 
@@ -88,7 +88,7 @@ A failed import stops the boot with `importing the <subsystem> state snapshot <p
 
 A `NoSnapshot` outcome you did not expect usually means the path was wrong on the first boot: a different home directory, or a file that was not there yet. Placing the file afterwards changes nothing, because the import is decided by the `import_record` row, not by whether the tables are empty.
 
-On SQLite, if no client has logged in and no spend limit has changed since that first boot, stop shunt, delete the database file together with its `-wal` and `-shm` files, fix the path, and start again. The snapshots are unchanged, so every subsystem imports afresh. Pool quota saved since then is lost too, but it is re-derived from upstream responses. After logins or limit changes, deleting the database discards them.
+On SQLite, if the gateway has not issued, refreshed, or revoked any token and no spend limit has changed since that first boot, stop shunt, delete the database file together with its `-wal` and `-shm` files, fix the path, and start again. The snapshots are unchanged, so every subsystem imports afresh. Pool quota saved since then is lost too, but it is re-derived from upstream responses. Do not reset after token or limit changes: re-importing the old snapshot would bring back refresh tokens revoked since then and drop the ones issued in their place.
 
 ## Going back
 
