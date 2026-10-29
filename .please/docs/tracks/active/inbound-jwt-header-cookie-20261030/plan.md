@@ -129,6 +129,10 @@ Everything under spec `## Out of Scope`. Considered and not built:
 
 - 2026-10-30: Implementation started on `amondnet/crinoid` (this worktree's branch, linked to #860 with `gh issue develop --name`) rather than a fresh `gh issue develop --checkout` branch, which would have been cut from `main` without the unpushed track commits. The branch was rebased onto `main` (#859, a docs-only store-migration guide touching no track file), so `Planned At` moved from `03ececb` to its rebased equivalent `49110d8`.
 
+- 2026-10-30 (review): A non-UTF-8 `Authorization` value no longer rejects outright on the Codex gate; it is `Unreadable` and the scan moves on to `jwt_header` and `jwt_cookie`, as FR-5's "first slot that succeeds" requires. `Slots::Client` and a Codex deployment with neither key set present only the bearer slot, so their outcome is unchanged (NFR-1).
+
+- 2026-10-30 (review): `tests/inbound_codex_jwt_slots.rs` is 551 lines, over the AGENTS.md "preferably under 500" guideline. Kept as one file: it is eight end-to-end tests sharing one mock JWKS + upstream harness, and splitting it would duplicate that harness; neighbouring suites such as `src/auth/inbound_jwt/tests.rs` (1712 lines) are larger.
+
 ## Surprises & Discoveries
 
 - Observation: the FR-12 STOP condition (Codex CLI sending `Origin`) does not hold for current Codex. In `openai/codex` `main`, `ORIGIN` appears only in server-side middleware that rejects requests carrying it (`codex-rs/otel-trace-websocket`, `exec-server`, `app-server-transport`) and in tests that inject it to exercise that rejection; no client code sets it, and the client stacks (`reqwest`, `tokio-tungstenite` via `codex-rs/websocket-client/src/dialer.rs`) add none on their own.
