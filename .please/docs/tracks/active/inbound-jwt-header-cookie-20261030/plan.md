@@ -52,7 +52,7 @@ Everything under spec `## Out of Scope`. Considered and not built:
 
 ## Tasks
 
-- [ ] T001 Add `jwt_header` / `jwt_cookie` to `[server.auth]` with startup validation (file: src/config.rs) [FR-8, FR-10, AC-011, AC-012, AC-014, AC-015]
+- [x] T001 Add `jwt_header` / `jwt_cookie` to `[server.auth]` with startup validation (file: src/config.rs) [FR-8, FR-10, AC-011, AC-012, AC-014, AC-015]
   Validation: each FR-8 clause fails startup with an error naming the key (AC-011, AC-012), including mixed-case or whitespace-padded reserved names and an empty string; with neither key set the resolved `InboundAuth` carries no header or cookie slot and every existing `config::` / `reload::` test passes unchanged (AC-015); a reload that adds `jwt_header` shows it on the next request snapshot (AC-014).
   Method: `cargo test --all-features --lib -- config:: reload::` and `cargo clippy --all-targets --all-features -- -D warnings`
 - [ ] T002 Strip the configured JWT header at every forward site (file: src/auth/slots.rs) (depends on T001) [FR-7, NFR-1]
@@ -109,6 +109,8 @@ Everything under spec `## Out of Scope`. Considered and not built:
 
 - [x] (2026-10-30 KST) T001 Add `jwt_header` / `jwt_cookie` to `[server.auth]` with startup validation
   Evidence: `cargo +1.98.1 test --lib -- config:: reload::` -> 483 passed, 0 failed; `cargo +1.98.1 clippy --all-targets -- -D warnings` -> clean; `cargo +1.98.1 test --workspace` -> 59 suites, 4403 passed, 0 failed (default features; `--all-features` needs `ui/dist` and a Python env absent here)
+- [x] (2026-10-30 KST) T002 Strip the configured JWT header at every forward site
+  Evidence: `cargo +1.98.1 test --lib -- auth::slots codex_endpoint::websocket` -> 42 passed, 0 failed (no `--all-features`: `ui/dist` and a Python env are absent here); mutation check (disabling the upgrade-time `jwt_header` strip in `run_turn`) turned both new WebSocket tests red; `cargo +1.98.1 clippy --all-targets -- -D warnings` -> clean; `cargo +1.98.1 fmt --all --check` -> clean; `cargo +1.98.1 test --workspace` -> 59 suites, 4408 passed, 0 failed (one earlier full run reported 1 unidentified failure, three reruns were green)
 
 ## Decision Log
 

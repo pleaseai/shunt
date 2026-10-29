@@ -127,6 +127,7 @@ async fn ws_turn_attributes_before_stripping_an_auth_header_named_like_a_client_
         session_id: None,
         headers,
         auth_header,
+        jwt_header: None,
         admin_header: None,
         body: Bytes::from(format!(r#"{{"model":"{MODEL}","stream":true,"input":[]}}"#)),
         estimate_body: None,
@@ -289,6 +290,7 @@ async fn ws_turn_strips_the_upgrade_time_auth_header_a_reload_renamed() {
         session_id: None,
         headers,
         auth_header: Some(axum::http::HeaderName::from_static("x-upgrade-auth")),
+        jwt_header: None,
         admin_header: None,
         body: Bytes::from(format!(r#"{{"model":"{MODEL}","stream":true,"input":[]}}"#)),
         estimate_body: None,
@@ -336,4 +338,173 @@ async fn ws_turn_strips_the_upgrade_time_auth_header_a_reload_renamed() {
     );
     assert_eq!(count, 1, "the turn must be counted as client_kind=codex");
     upstream.verify().await;
+}
+
+/// Drives one passthrough turn that upgraded while `[server.auth] jwt_header`
+/// was `x-upgrade-jwt` (`TurnContext.jwt_header`), against a refreshed state
+/// whose `jwt_header` is `refreshed` (`None` models a reload that removed it),
+/// and returns the headers the upstream received. `tag` only names the temp dir
+/// and model.
+async fn upstream_headers_after_jwt_header_reload(
+    tag: &str,
+    refreshed: Option<&'static str>,
+) -> HeaderMap {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    let model = format!("ws-{tag}-model");
+    let token = format!("ws-{tag}-passthrough-token");
+    // Fixed names: `CONFIG_ENV_LOCK` below already serializes these tests.
+    const ACCOUNT_ENV: &str = "SHUNT_TEST_861_CODEX_TOKEN";
+    const TOKENS_ENV: &str = "SHUNT_TEST_861_PASSTHROUGH_TOKENS";
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_jwt\"}}\n\n",
+            "text/event-stream",
+        ))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let _lock = crate::config::CONFIG_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let accounts_dir = EmptyAccountsDir(std::env::temp_dir().join(format!(
+        "shunt-{tag}-accounts-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    std::fs::create_dir_all(&accounts_dir.0).unwrap();
+    let _accounts_env =
+        crate::auth::shared::EnvVarGuard::set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir.0);
+    let claims = json!({
+        "exp": 4_000_000_000u64,
+        "https://api.openai.com/auth": {"chatgpt_account_id": "acct_jwt"}
+    });
+    let account_token = format!(
+        "x.{}.y",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+    );
+    let _account_env = crate::auth::shared::EnvVarGuard::set(ACCOUNT_ENV, account_token);
+    let _tokens = crate::auth::shared::EnvVarGuard::set(TOKENS_ENV, format!("alice:{token}"));
+
+    let mut config = Config::default();
+    let codex = config.providers.get_mut("codex").unwrap();
+    codex.base_url = upstream.uri();
+    codex.accounts = vec![crate::config::AccountConfig {
+        name: format!("acct-{tag}"),
+        token_env: Some(ACCOUNT_ENV.to_string()),
+        ..Default::default()
+    }];
+    config.server.auth = Some(InboundAuthConfig {
+        header: "originator".to_string(),
+        tokens_env: TOKENS_ENV.to_string(),
+        ..Default::default()
+    });
+    config.server.codex_endpoint = Some(CodexEndpointConfig {
+        provider: "codex".to_string(),
+        routes: Vec::new(),
+    });
+    let mut state = AppState::new(config, reqwest::Client::new()).unwrap();
+    // `jwt_header` needs a `[[server.auth.jwt]]` issuer to resolve through
+    // config, which plays no part in stripping, so the refreshed slot is
+    // attached directly.
+    let auth = state.inbound_auth.as_deref().unwrap().clone();
+    state.inbound_auth = Some(Arc::new(auth.with_jwt_slots(
+        crate::auth::jwt_slots::JwtSlots {
+            header: refreshed.map(axum::http::HeaderName::from_static),
+            cookie: None,
+        },
+    )));
+
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", "application/json".parse().unwrap());
+    headers.insert("originator", token.parse().unwrap());
+    headers.insert("x-upgrade-jwt", "stale-upgrade-jwt".parse().unwrap());
+    headers.insert("x-jwt-probe", "forwarded".parse().unwrap());
+
+    let (out_tx, mut out_rx) = mpsc::channel(8);
+    let recorder = TurnRecorder::new(
+        Arc::new(std::sync::Mutex::new(None)),
+        "codex".to_string(),
+        Vec::new(),
+        String::new(),
+    );
+    run_turn(TurnContext {
+        state,
+        model: Some(model.clone()),
+        session_id: None,
+        headers,
+        auth_header: None,
+        jwt_header: Some(axum::http::HeaderName::from_static("x-upgrade-jwt")),
+        admin_header: None,
+        body: Bytes::from(format!(r#"{{"model":"{model}","stream":true,"input":[]}}"#)),
+        estimate_body: None,
+        generation: 1,
+        current_generation: Arc::new(AtomicU64::new(1)),
+        out_tx,
+        recorder,
+    })
+    .await;
+
+    let (_, frame) = out_rx.recv().await.expect("the turn sent no frame");
+    let axum::extract::ws::Message::Text(frame) = frame else {
+        panic!("expected a text frame, got {frame:?}");
+    };
+    assert!(
+        frame.as_str().contains("response.completed"),
+        "unexpected frame: {}",
+        frame.as_str()
+    );
+    let requests = upstream.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let sent = requests[0].headers.clone();
+    upstream.verify().await;
+    let mut out = HeaderMap::new();
+    for (name, value) in sent.iter() {
+        out.append(
+            axum::http::HeaderName::from_bytes(name.as_str().as_bytes()).unwrap(),
+            axum::http::HeaderValue::from_bytes(value.as_bytes()).unwrap(),
+        );
+    }
+    out
+}
+
+/// A turn strips the `jwt_header` captured at upgrade (`TurnContext.jwt_header`)
+/// when a reload renamed it: the passthrough forwards every client header and
+/// its own `strip_reserved_slots` knows only the refreshed name. Deleting
+/// `run_turn`'s `jwt_header` strip turns this and the removal test red.
+#[tokio::test]
+async fn ws_turn_strips_the_upgrade_time_jwt_header_a_reload_renamed() {
+    let sent = upstream_headers_after_jwt_header_reload("861a", Some("x-renamed-jwt")).await;
+    assert_eq!(
+        sent.get("x-jwt-probe").and_then(|v| v.to_str().ok()),
+        Some("forwarded"),
+        "the passthrough must still relay arbitrary client headers"
+    );
+    assert!(
+        !sent.contains_key("x-upgrade-jwt"),
+        "the upgrade-time jwt_header reached the upstream"
+    );
+}
+
+/// Same, for a reload that removed `jwt_header` altogether: the refreshed
+/// state names nothing, so only the upgrade-time name can strip it.
+#[tokio::test]
+async fn ws_turn_strips_the_upgrade_time_jwt_header_a_reload_removed() {
+    let sent = upstream_headers_after_jwt_header_reload("861b", None).await;
+    assert_eq!(
+        sent.get("x-jwt-probe").and_then(|v| v.to_str().ok()),
+        Some("forwarded"),
+        "the passthrough must still relay arbitrary client headers"
+    );
+    assert!(
+        !sent.contains_key("x-upgrade-jwt"),
+        "the upgrade-time jwt_header reached the upstream"
+    );
 }

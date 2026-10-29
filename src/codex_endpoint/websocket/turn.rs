@@ -31,6 +31,9 @@ pub(super) struct TurnContext {
     pub(super) session_id: Option<String>,
     pub(super) headers: HeaderMap,
     pub(super) auth_header: Option<HeaderName>,
+    /// The `[server.auth] jwt_header` name captured at upgrade, stripped per
+    /// turn even after a reload renames or removes it.
+    pub(super) jwt_header: Option<HeaderName>,
     pub(super) admin_header: Option<HeaderName>,
     pub(super) body: Bytes,
     /// What the spend estimate counts when `body` is a continuation holding
@@ -77,6 +80,7 @@ pub(super) async fn run_turn(context: TurnContext) {
         session_id,
         headers,
         auth_header,
+        jwt_header,
         admin_header,
         body,
         estimate_body,
@@ -155,7 +159,7 @@ pub(super) async fn run_turn(context: TurnContext) {
         return;
     }
     // Classified before the credential headers are stripped below: a
-    // `[server.auth]` or `[server.admin]` header may share a name with a client
+    // `[server.auth]` (`header` or `jwt_header`) or `[server.admin]` header may share a name with a client
     // marker (`originator`, `x-app`), and removing it first would erase that
     // marker. A WebSocket turn has no request span, so this records nothing
     // there; it still tags the turn's metric samples
@@ -167,6 +171,16 @@ pub(super) async fn run_turn(context: TurnContext) {
     }
     if let Some(auth) = state.inbound_auth.as_ref() {
         headers.remove(auth.header());
+    }
+    if let Some(header) = jwt_header {
+        headers.remove(header);
+    }
+    if let Some(header) = state
+        .inbound_auth
+        .as_ref()
+        .and_then(|auth| auth.jwt_header())
+    {
+        headers.remove(header);
     }
     if let Some(admin_header) = admin_header {
         headers.remove(admin_header);

@@ -100,6 +100,10 @@ pub async fn get(
         .inbound_auth
         .as_ref()
         .map(|auth| auth.header().clone());
+    let jwt_header = state
+        .inbound_auth
+        .as_ref()
+        .and_then(|auth| auth.jwt_header().cloned());
     let admin_header = state.admin_auth.as_ref().map(|auth| auth.header().clone());
 
     ws.on_upgrade(move |socket| async move {
@@ -111,6 +115,7 @@ pub async fn get(
             session_id,
             headers,
             auth_header,
+            jwt_header,
             admin_header,
         )
         .await;
@@ -123,6 +128,7 @@ async fn handle_socket(
     session_id: Option<String>,
     handshake_headers: HeaderMap,
     auth_header: Option<HeaderName>,
+    jwt_header: Option<HeaderName>,
     admin_header: Option<HeaderName>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -249,6 +255,7 @@ async fn handle_socket(
 
                         let session_id_clone = session_id.clone();
                         let auth_header_clone = auth_header.clone();
+                        let jwt_header_clone = jwt_header.clone();
                         let admin_header_clone = admin_header.clone();
                         let out_tx_clone = out_tx.clone();
                         let gen_clone = current_generation.clone();
@@ -266,6 +273,7 @@ async fn handle_socket(
                                 session_id: session_id_clone,
                                 headers: turn_headers,
                                 auth_header: auth_header_clone,
+                                jwt_header: jwt_header_clone,
                                 admin_header: admin_header_clone,
                                 body: body_bytes,
                                 estimate_body,
