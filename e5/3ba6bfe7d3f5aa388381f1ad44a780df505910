@@ -1,0 +1,40 @@
+site/src/content/docs/ko/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_f8d79ad3d3a36d 1303
+site/src/content/docs/zh-cn/guides/store-migration.md
+  s_cbe1c4ca81e9ea::t_7f2594e4110faa 1-94
+  s_cbe1c4ca81e9ea::t_f0f35d18b9d259 95
+site/src/content/docs/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_f8d79ad3d3a36d 1510
+site/src/content/docs/ko/guides/store-migration.md
+  s_cbe1c4ca81e9ea::t_7f2594e4110faa 1-95
+site/src/content/docs/zh-cn/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_f8d79ad3d3a36d 1235
+site/src/content/docs/ja/reference/configuration.md
+  s_cbe1c4ca81e9ea::t_f8d79ad3d3a36d 1312
+site/src/content/docs/guides/store-migration.md
+  s_cbe1c4ca81e9ea::t_24246f8b00a4e6 1-84,86-95
+  s_cbe1c4ca81e9ea::t_f1e9de323813a1 85
+site/src/lib/i18n.ts
+  s_cbe1c4ca81e9ea::t_681b48362544cb 93
+docs/store.md
+  s_cbe1c4ca81e9ea::t_1af55af4c343de 15-16,111-113
+site/src/content/docs/ja/guides/store-migration.md
+  s_cbe1c4ca81e9ea::t_7f2594e4110faa 1-94
+  s_cbe1c4ca81e9ea::t_f0f35d18b9d259 95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e53ba6bfe7d3f5aa388381f1ad44a780df505910",
+  "prompts": {},
+  "sessions": {
+    "s_cbe1c4ca81e9ea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fd6c44-81ff-45a5-b372-e829147fb9d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
