@@ -43,6 +43,8 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | :-- | :-- | :-- |
 | `header` | `x-shunt-token` | クライアントトークンを運ぶヘッダー |
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | カンマ区切りの `name:token` ペアを保持する環境変数 |
+| `jwt_header` | 未設定 | インバウンド Codex エンドポイントが IdP の JWT を追加で読むヘッダー。Codex `gateway_oauth` の `delivery.kind = "header"` 用 |
+| `jwt_cookie` | 未設定 | インバウンド Codex エンドポイントが IdP の JWT を追加で読む Cookie。`delivery.kind = "cookie"` 用 |
 
 指定された環境変数には 1 つ以上の認証情報が必要です。例: `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`。テーブルが存在するのに変数が未設定・空・不正な場合、起動はフェイルクローズします。ゲートされるルート（マッピングされた `/v1/messages` 推論と `GET /v1/models` discovery）は、設定されたヘッダー、`Authorization: Bearer`、`x-api-key` のいずれでもトークンを受け付けます — 複数のスロットに有効なトークンがある場合は専用ヘッダーが優先されます。
 
@@ -88,11 +90,29 @@ identity_claim = "repository"
 
 エントリが 1 つでもあれば `tokens_env` は空でも構いません — 認証をすべて IdP に任せるデプロイには設定すべき静的トークンがありません。トークンリストもエントリもない場合、`[server.auth]` は従来どおり起動に失敗します。
 
-JWT は **`Authorization: Bearer` でのみ**受け付けます — 設定された `header` でも `x-api-key` でもありません。Claude Code がすでに `ANTHROPIC_AUTH_TOKEN` を送っているスロットです。ゲートされたルートでは、まず静的トークン、そのルートが受け付ける場合は gateway JWT、次に `iss` で JWT エントリの順に確認します。検証はアルゴリズムを config で固定し（トークンヘッダーの `alg` が選ぶことはありません）、`kid` を必須とし、`exp`/`nbf`、`aud`、`azp`、`exp - iat`、設定された `require`/`subject_prefix` オペレーター、メール許可リスト、およびエントリが `email` を読む場合は `email_verified = true` を確認します。検証済みの identity クレーム（デフォルトはメール）がログと使用量の帰属における呼び出し元 identity になり、256 バイトを超える値は切り詰めずに拒否します。ゲートされるルートは `[server.auth]` がすでに保護しているルートです: 認証情報を注入する `/v1/messages` と `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`（loopback 以外のみ）、そしてインバウンド Codex エンドポイント（HTTP、WebSocket、analytics）。
+JWT は `Authorization: Bearer` で受け付けます。これは Claude Code がすでに `ANTHROPIC_AUTH_TOKEN` を送っているスロットです。インバウンド Codex エンドポイントに限り、後述の任意スロット `jwt_header` と `jwt_cookie` でも受け付けます。設定された `header` や `x-api-key` から JWT を読むことはありません。ゲートされたルートでは、まず静的トークン、そのルートが受け付ける場合は gateway JWT、次に `iss` で JWT エントリの順に確認します。検証はアルゴリズムを config で固定し（トークンヘッダーの `alg` が選ぶことはありません）、`kid` を必須とし、`exp`/`nbf`、`aud`、`azp`、`exp - iat`、設定された `require`/`subject_prefix` オペレーター、メール許可リスト、およびエントリが `email` を読む場合は `email_verified = true` を確認します。検証済みの identity クレーム（デフォルトはメール）がログと使用量の帰属における呼び出し元 identity になり、256 バイトを超える値は切り詰めずに拒否します。ゲートされるルートは `[server.auth]` がすでに保護しているルートです: 認証情報を注入する `/v1/messages` と `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`（loopback 以外のみ）、そしてインバウンド Codex エンドポイント（HTTP、WebSocket、analytics）。
 
 key set は issuer ごとに初回使用時に遅延取得されるため、IdP に到達できなくても起動を妨げません。キャッシュした key set を信頼するのは最大 5 分で、その後は次のリクエストが再取得を試みます（60 秒の再取得下限が適用されます）。再取得に成功すると key set を丸ごと置き換えるため、issuer が取り下げた鍵は約 5 分以内に検証に使われなくなります。再取得に失敗した場合は、IdP の障害が全面停止に広がらないよう期限切れの key set を使い続け、discovery 自体が失敗したときは最後に発見した `jwks_uri` を代わりに試します。config reload は、エントリの `issuer` と `jwks_url` がどちらも変わらない場合に限りキャッシュ済みの鍵を保持します。未知の `kid` は key set あたり 60 秒のウィンドウで最大 1 回しか再取得を起こしません。どのエントリでも検証できなかったトークンは `401`、検証できたエントリがなく、トークンの issuer に一致するエントリのうちキャッシュ済みの key set がなく取得にも失敗したものがある場合は **`503`** です — IdP の障害が不正な認証情報として報告されることはありません。
 
 shunt は失効状態を保持しないため、有効なトークンは期限まで使えます。その範囲を制限するのが `max_token_age_seconds` で、issuer は分単位の寿命のトークンを発行すべきです。許可リストからドメインやアドレスを削除した場合は次のリクエストから反映されます。
+
+### Codex gateway OAuth: `jwt_header` と `jwt_cookie`
+
+Codex CLI のネイティブ `gateway_oauth` は `Authorization` を予約しており、ID プロバイダー（IdP）のアクセストークンを Cookie またはカスタムヘッダーで渡します。任意の 2 つの `[server.auth]` キーで shunt が読む場所を指定し、トークンは bearer JWT と同じ `[[server.auth.jwt]]` エントリで検証されます。Microsoft Entra ID の例を含む手順全体は [Codex CLI の接続ガイド](/ja/guides/connect-codex-cli/)にあります。
+
+```toml
+[server.auth]
+jwt_cookie = "auth-openid"        # Codex: delivery = { kind = "cookie", name = "auth-openid" }
+# jwt_header = "X-Gateway-Token"  # Codex: delivery = { kind = "header", name = "X-Gateway-Token", scheme = "Bearer" }
+```
+
+- **検証。** 起動時に次を拒否します: `[[server.auth.jwt]]` エントリのないままキーを設定した場合、空の値、不正なヘッダー名、および `authorization`、`x-api-key`、`cookie`、`x-shunt-token`、`x-shunt-admin-token`、`x-shunt-inbound-client`、`[server.auth]` の `header`、`[server.admin]` の `header` のいずれかであるヘッダー名。Cookie 名は RFC 6265 の token でなければなりません。どちらのキーも hot-reload されます。
+- **対象範囲。** このキーを読むのはインバウンド Codex エンドポイントだけです: Responses ルート（`/v1/responses`、`/backend-api/codex/responses`、`/responses` の HTTP と WebSocket）、`/alpha/search`、analytics sink。`/v1/messages`、`/v1/models`、`/usage`、Codex の discovery パスは JWT を `Authorization: Bearer` でのみ受け付けます。
+- **スロットの順序。** 静的トークン、`Authorization: Bearer` の JWT、`jwt_header`（生の JWT または `Bearer <jwt>`、scheme の大文字小文字は不問）、`jwt_cookie` の順です。検証に成功した最初のスロットが採用されるため、`Authorization` の ChatGPT トークンは Cookie にフォールスルーします。スロットはスキャンが到達したときだけ調べます。設定したヘッダー名または Cookie 名が複数回現れると、先行スロットがすでに認証した場合を除きリクエストを拒否します。認証情報がない、または無効なら `401`、issuer の鍵を取得できなければ `503` で、このエンドポイントではどちらも OpenAI のエラー形式です。
+- **Origin ルール。** Cookie を参照するのは、リクエストに `Origin` ヘッダーがない場合、またはリクエストの `Host` と一致する `Origin` がちょうど 1 つある場合だけです。cross-origin、`null`、解析できない、または重複した `Origin`（および `Host` のない `Origin`）は Cookie スロットを無効にします。ヘッダースロットには影響しません。ブラウザはゲートウェイのドメインに対して保持する Cookie をリクエストに付けるため、`jwt_cookie` をそのような Cookie（例: shunt の前段にある SSO プロキシの Cookie、Cloudflare Access の `CF_Authorization`）に向けないでください。
+- **転送。** 設定したヘッダーとすべての `cookie` ヘッダーは、プールでもルーティング先プロバイダーでも、アップストリームへのリクエスト前に取り除かれます。
+- **WebSocket。** ハンドシェイクの認証情報は毎ターン再検証されます。IdP トークンが期限切れになると次のターンが `401` エラーフレームで失敗し、Codex は更新されたトークンで再接続します。
+- **サイズ。** Entra のアクセストークンは大きくなります。`[server.limits]` の `max_request_header_bytes` を設定している場合はその対象に含まれ、リバースプロキシは通常 Cookie 1 つを約 4 KB に制限します。どちらかが問題になるならヘッダー配信を使ってください。
 
 ## `[server.admin]`（オプション）
 

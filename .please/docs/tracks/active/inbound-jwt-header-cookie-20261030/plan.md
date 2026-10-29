@@ -64,7 +64,7 @@ Everything under spec `## Out of Scope`. Considered and not built:
 - [x] T004 Accept a JWT from the configured cookie on the Codex gate (file: src/auth/jwt_slots.rs) (depends on T003) [FR-2, FR-12, AC-004, AC-005, AC-017]
   Validation: the cookie authenticates when split across several `cookie` fields and when quoted; a ChatGPT bearer plus a valid cookie authenticates (AC-004); the configured name repeated in one field or across fields is `401` (AC-005), and non-UTF-8 bytes neither hide a duplicate nor panic; an `Origin` that is cross-origin, `null`, or unparseable disables the cookie slot (AC-017) while a missing `Origin` keeps it.
   Method: `cargo test --all-features --lib -- auth::gate auth::jwt_slots`
-- [ ] T005 Prove header and cookie sign-in end to end on the Codex endpoint (file: tests/inbound_codex_jwt_slots.rs) (depends on T004) [FR-6, AC-001, AC-003, AC-008, AC-009, AC-010]
+- [x] T005 Prove header and cookie sign-in end to end on the Codex endpoint (file: tests/inbound_codex_jwt_slots.rs) (depends on T004) [FR-6, AC-001, AC-003, AC-008, AC-009, AC-010]
   Validation: against a mock JWKS and upstream — `/v1/responses` with only the header serves a turn (AC-001); a WebSocket upgrade on `/backend-api/codex/responses` with the cookie among others serves a turn, and a later turn after token expiry gets a `401` frame (AC-003); `/v1/messages` with only the header is `401` (AC-007); an over-cap cookie principal is refused with `usage_limit_reached` (AC-008); neither the pool nor a routed non-ChatGPT upstream receives the header or `cookie` (AC-009, AC-010); an unreachable issuer yields an OpenAI-shaped `503` (AC-013); a cross-origin WebSocket upgrade carrying only the cookie is `401` (AC-017).
   Method: `cargo test --all-features --test inbound_codex_jwt_slots`
 - [ ] T006 Document Codex gateway OAuth via `jwt_header` / `jwt_cookie` (file: site/src/content/docs/guides/connect-codex-cli.mdx) (depends on T004) [FR-11]
@@ -117,6 +117,8 @@ Everything under spec `## Out of Scope`. Considered and not built:
   Evidence: `cargo +1.98.1 test --lib -- auth::gate auth::jwt_slots auth::inbound_jwt codex_endpoint::websocket auth::slots` -> 198 passed, 0 failed (no `--all-features`: `ui/dist` and a Python env are absent here); 9 parser/origin unit tests in `auth::jwt_slots::tests` and 9 gate tests in `auth::inbound_jwt::tests`; `cargo +1.98.1 clippy --all-targets -- -D warnings` -> clean; `cargo +1.98.1 fmt --all --check` -> clean; `cargo +1.98.1 test --workspace` -> all suites ok, 3591 lib tests passed, 0 failed
 - [x] (2026-10-30 KST) T005 Prove header and cookie sign-in end to end on the Codex endpoint
   Evidence: `cargo +1.98.1 test --test inbound_codex_jwt_slots` -> 8 passed, 0 failed, 3.9s (no `--all-features`: `ui/dist` and a Python env are absent here); clippy `--all-targets -D warnings` clean; `cargo +1.98.1 test --workspace` -> 60 suites, 4446 passed, 0 failed
+- [x] (2026-10-30 KST) T006 Document Codex gateway OAuth via `jwt_header` / `jwt_cookie`
+  Evidence: `cd site && bun run build` -> exit 0, 217 pages; new section present in dist/{,ko/,ja/,zh-cn/}guides/connect-codex-cli (7. gateway OAuth + Entra pitfalls) and `jwt_header` in all four configuration pages; every fragment link in the four edited locale page sets resolves to an id in the built HTML; `cargo fmt --all --check` clean. READMEs: one capability-row clause added to all four (no Decision Log entry needed). Also edited: docs/inbound-jwt-auth.md, shunt.toml.example, the 4 README files, inbound-codex-endpoint pointer x4
 
 ## Decision Log
 

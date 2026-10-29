@@ -266,6 +266,74 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
 这条路径与 `/v1/messages` 路径的差异,见[入站 Codex 端点](/zh-cn/guides/inbound-codex-endpoint/);已注册的
 路由见 [HTTP 端点](/zh-cn/reference/endpoints/)。
 
+## 7. 通过身份提供商登录(gateway OAuth)
+
+第 3 步的共享 token 让所有开发者共用同一个身份。如果你的组织运行着身份提供商(IdP),Codex CLI 原生的 `gateway_oauth` 会让每位开发者通过 IdP 登录,而 shunt 只**验证**返回的访问令牌:它不签发令牌,也不保存会话。Codex 保留 `Authorization`,所以把令牌放在 cookie 或自定义头部中传递,再由两个可选的 `[server.auth]` 键告诉 shunt 读取哪一个。Codex 一侧的说明见 OpenAI 的 [Connect to a gateway](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway?gateway-auth=oauth) 指南。
+
+在 Codex 一侧,给 shunt 提供商添加 `gateway_oauth`,并保持 `requires_openai_auth = false`:
+
+```toml
+# ~/.codex/config.toml
+model_provider = "shunt"
+
+[model_providers.shunt]
+name = "shunt"
+base_url = "https://shunt.example.com/v1"
+wire_api = "responses"
+requires_openai_auth = false
+
+[model_providers.shunt.gateway_oauth]
+authorization_url = "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize"
+token_url = "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token"
+client_id = "<codex public client id>"
+scopes = ["api://<shunt-app-id>/.default"]
+# resource = "..."                                  # 可选,IdP 需要时再设置
+delivery = { kind = "cookie", name = "auth-openid" }
+# 或:delivery = { kind = "header", name = "X-Gateway-Token", scheme = "Bearer" }
+redirect_port = 8765                                # 固定的 loopback 端口,见下文
+```
+
+在 shunt 一侧,指定同一个 cookie 或头部名称,并描述 issuer:
+
+```toml
+# shunt config.toml
+[server.auth]
+jwt_cookie = "auth-openid"          # kind = "cookie" 时必须等于 delivery.name
+# jwt_header = "X-Gateway-Token"    # kind = "header" 时必须等于 delivery.name
+
+[[server.auth.jwt]]
+issuer = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+audience = ["api://<shunt-app-id>"]
+authorized_parties = ["<codex public client id>"]
+require = { tid = "<tenant-id>" }
+identity_claim = "preferred_username"     # 或不可变的 "oid"
+max_token_age_seconds = 5400
+```
+
+根据 `delivery` 的类型设置这两个键之一。两者都是可选的,并支持 hot-reload。验证后的 `identity_claim` 与 bearer JWT 一样,成为日志、用量、支出限制和 sticky key 中的调用者身份。全部校验规则见[配置参考](/zh-cn/reference/configuration/)。
+
+### Microsoft Entra ID 的注意事项
+
+上面示例中的每个值都对应下列某一项:
+
+- **访问令牌必须是 JWT。** shunt 在本地验证,不做 introspection。请求你为 shunt 注册的 API 作用域(`scopes` 中的 `api://<shunt-app-id>/.default`),Entra 就会签发 JWT。Google OAuth 这类 opaque 访问令牌无法使用。
+- **使用 v2 令牌。** 把 API 应用注册的 `accessTokenAcceptedVersion` 设为 `2`。v2 令牌的 issuer 是 `https://login.microsoftonline.com/<tenant-id>/v2.0`。v1 令牌的 issuer 是 `https://sts.windows.net/<tenant-id>/`,并使用 `appid` 而不是 `azp`,与上面的条目不匹配。
+- **与令牌的 `aud` 一致。** `audience` 填 `api://<shunt-app-id>` 或应用 ID 的 GUID,以令牌实际携带的为准。
+- **把 Codex 客户端列入 `authorized_parties`。** v2 令牌的 `azp` 是请求令牌的客户端(这里是 Codex public client),而 `authorized_parties` 默认等于 `audience`。不显式写出客户端 ID,所有令牌都会被拒绝。
+- **不要使用 `email_domains`。** Entra 访问令牌没有 `email_verified`,也常常没有 `email`,所以邮箱规则会拒绝所有令牌。用 `require = { tid = "<tenant-id>" }` 按租户授权,身份取自 `preferred_username` 或 `oid`。
+- **调高 `max_token_age_seconds`。** 访问令牌的默认有效期在 60 到 90 分钟之间随机,可能超过默认值 `3600`。请设为约 `5400`。参见 Microsoft 文档中的[访问令牌](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens)和[令牌有效期](https://learn.microsoft.com/en-us/entra/identity-platform/configurable-token-lifetimes)。
+- **注册固定的重定向 URI。** 在 **public client** 上注册 `http://127.0.0.1:<redirect_port>/callback`,并在 Codex 配置中设置相同的 `redirect_port`。
+
+### 需要了解的行为
+
+- **浏览器与 loopback 回调。** 原生 gateway OAuth 会打开浏览器并监听 loopback 端口,没有 device-code 回退。通过 SSH 连接时,设置 `redirect_port` 并用 `ssh -L <port>:127.0.0.1:<port>` 转发。
+- **槽位顺序。** shunt 依次尝试静态 token、`Authorization: Bearer` JWT、`jwt_header`、`jwt_cookie`,第一个验证成功的生效。因此 `Authorization` 中的 ChatGPT bearer 会落到 cookie 上。只有[入站 Codex 端点](/zh-cn/guides/inbound-codex-endpoint/)读取这些新槽位;`/v1/messages`、`/v1/models`、`/usage` 和 Codex discovery 路径对 JWT 仍只接受 bearer。
+- **Origin 规则。** 仅当请求没有 `Origin`,或 `Origin` 与其 `Host` 匹配时才使用 cookie,所以网站无法借浏览器持有的 cookie 发起已认证的轮次。Codex CLI 不是浏览器,不发送 `Origin`。出于同样的原因,不要让 `jwt_cookie` 指向浏览器为网关域名持有的 cookie(例如 SSO 代理的 `CF_Authorization`)。头部槽位没有这条规则。
+- **WebSocket 过期。** 握手时的凭据在每一轮都会重新验证。连接期间 IdP 令牌过期,下一轮会以 `401` 错误帧失败,Codex 随后用刷新后的令牌重新连接。
+- **不会转发。** 配置的头部和所有 `cookie` 头部在发往上游之前都会被移除。
+- **大小限制。** Entra 访问令牌可能有几 KB。若设置了 `[server.limits] max_request_header_bytes`,它会计入该上限;反向代理通常把 cookie 限制在约 4 KB。任何一项成为问题时,用 `delivery = { kind = "header", ... }` 代替 cookie。
+- **模型元数据。** 仅有 OAuth 不会启用远程模型目录 discovery。自定义模型元数据请使用 `model_catalog_json`。
+
 ## HTTP/SSE 与 WebSocket
 
 这个端点在同样的三个 Responses 路径上同时接受 HTTP `POST` 请求和 WebSocket `GET` 升级,因此 Codex CLI

@@ -77,6 +77,8 @@ Presence of this table enables inbound client-token auth ([details](/guides/shar
 | :-- | :-- | :-- |
 | `header` | `x-shunt-token` | Header carrying the client token |
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | Env var holding comma-separated `name:token` pairs |
+| `jwt_header` | unset | Header the inbound Codex endpoint also reads an IdP JWT from, for Codex `gateway_oauth` `delivery.kind = "header"` ([details](#codex-gateway-oauth-jwt_header-and-jwt_cookie)) |
+| `jwt_cookie` | unset | Cookie the inbound Codex endpoint also reads an IdP JWT from, for `delivery.kind = "cookie"` |
 
 The named environment variable must contain one or more credentials, for example `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`. Startup fails closed if the table is present but the variable is unset, empty, or malformed. Gated routes (mapped `/v1/messages` inference and `GET /v1/models` discovery) accept the token via the configured header, `Authorization: Bearer`, or `x-api-key` — the dedicated header wins when several carry valid tokens.
 
@@ -124,11 +126,29 @@ Each entry needs `issuer`, `audience`, and at least one authorization rule: an `
 
 Once at least one entry exists, `tokens_env` may resolve empty: a deployment authenticating entirely through an IdP has no static tokens to set. With neither a resolvable token list nor an entry, `[server.auth]` still fails startup.
 
-A JWT is accepted **only** in `Authorization: Bearer` — not in the configured `header` and not in `x-api-key` — which is the slot Claude Code already sends `ANTHROPIC_AUTH_TOKEN` in. On a gated route the static token is checked first, then the gateway JWT where that route accepts it, then JWT entries by `iss`. Verification pins the algorithm from config (the token header's `alg` never selects it), requires `kid`, and checks `exp`/`nbf`, `aud`, `azp`, `exp - iat`, the configured `require`/`subject_prefix` operators, the email allowlist, and `email_verified = true` whenever the entry reads `email`. The verified identity claim (the email by default) becomes the caller identity in logs and usage attribution; a value longer than 256 bytes is rejected rather than truncated. Gated routes are the ones `[server.auth]` already guards: credential-injecting `/v1/messages` and `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage` (off loopback only), and the inbound Codex endpoint (HTTP, WebSocket, and analytics).
+A JWT is accepted in `Authorization: Bearer` — the slot Claude Code already sends `ANTHROPIC_AUTH_TOKEN` in — and, on the inbound Codex endpoint only, in the optional `jwt_header` and `jwt_cookie` slots below. It is never read from the configured `header` or from `x-api-key`. On a gated route the static token is checked first, then the gateway JWT where that route accepts it, then JWT entries by `iss`. Verification pins the algorithm from config (the token header's `alg` never selects it), requires `kid`, and checks `exp`/`nbf`, `aud`, `azp`, `exp - iat`, the configured `require`/`subject_prefix` operators, the email allowlist, and `email_verified = true` whenever the entry reads `email`. The verified identity claim (the email by default) becomes the caller identity in logs and usage attribution; a value longer than 256 bytes is rejected rather than truncated. Gated routes are the ones `[server.auth]` already guards: credential-injecting `/v1/messages` and `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage` (off loopback only), and the inbound Codex endpoint (HTTP, WebSocket, and analytics).
 
 Key sets are fetched lazily on first use per issuer, so an unreachable IdP does not block startup. A cached key set is trusted for at most 5 minutes; after that the next request attempts a refresh (subject to the 60-second refetch floor), and a successful refresh replaces the set, so a key the issuer withdraws stops verifying within about 5 minutes. If the refresh fails, the expired set keeps serving rather than turning an IdP outage into a total one; when discovery itself fails, the last discovered `jwks_uri` is tried instead. A config reload keeps cached keys only while an entry's `issuer` and `jwks_url` are both unchanged. An unknown `kid` triggers at most one refetch per 60-second window per key set. A token that verifies against no entry is `401`; a matching entry that has no cached key set and cannot fetch one is **`503`**, so an IdP outage is not reported as a bad credential.
 
 shunt keeps no revocation state, so a valid token works until it expires: `max_token_age_seconds` is what bounds that, and issuers should mint minutes-scale tokens. Removing a domain or address from the allowlist does take effect on the next request.
+
+### Codex gateway OAuth: `jwt_header` and `jwt_cookie`
+
+The Codex CLI's native `gateway_oauth` reserves `Authorization` and delivers the identity provider's access token in a cookie or a custom header. Two optional `[server.auth]` keys tell shunt where to read it; the token is verified by the same `[[server.auth.jwt]]` entries as a bearer JWT. The [Codex connection guide](/guides/connect-codex-cli/) has the end-to-end setup, including a Microsoft Entra ID example.
+
+```toml
+[server.auth]
+jwt_cookie = "auth-openid"        # Codex: delivery = { kind = "cookie", name = "auth-openid" }
+# jwt_header = "X-Gateway-Token"  # Codex: delivery = { kind = "header", name = "X-Gateway-Token", scheme = "Bearer" }
+```
+
+- **Validation.** Startup rejects either key without a `[[server.auth.jwt]]` entry, an empty value, and a header name that is invalid or is `authorization`, `x-api-key`, `cookie`, `x-shunt-token`, `x-shunt-admin-token`, `x-shunt-inbound-client`, `[server.auth]`'s `header`, or `[server.admin]`'s `header`. A cookie name must be an RFC 6265 token. Both keys hot-reload.
+- **Scope.** Only the inbound Codex endpoint reads them: the Responses routes (HTTP and WebSocket on `/v1/responses`, `/backend-api/codex/responses`, `/responses`), `/alpha/search`, and the analytics sink. `/v1/messages`, `/v1/models`, `/usage`, and the Codex discovery paths accept a JWT only in `Authorization: Bearer`.
+- **Slot order.** Static token, then `Authorization: Bearer` JWT, then `jwt_header` (the raw JWT or `Bearer <jwt>`, scheme in any case), then `jwt_cookie`. The first slot that verifies wins, so a ChatGPT token in `Authorization` falls through to the cookie. A slot is examined only when the scan reaches it; a configured header or cookie name that appears more than once rejects the request unless an earlier slot already authenticated it. A missing or invalid credential is `401` and an issuer whose keys cannot be fetched is `503`, both in the OpenAI error shape on this endpoint.
+- **Origin rule.** The cookie is consulted only when the request has no `Origin` header, or exactly one that matches the request's `Host`. A cross-origin, `null`, unparseable, or repeated `Origin` (or an `Origin` with no `Host`) disables the cookie slot; the header slot is unaffected. Because a browser attaches cookies it holds for the gateway's domain, do not point `jwt_cookie` at one, such as the cookie of an SSO proxy in front of shunt (for example Cloudflare Access `CF_Authorization`).
+- **Forwarding.** The configured header and every `cookie` header are stripped before any upstream request, for the pool and for routed providers alike.
+- **WebSocket.** The handshake credential is verified again on every turn, so an expired IdP token fails the next turn with a `401` error frame, and Codex reconnects with a refreshed token.
+- **Size.** An Entra access token is large. It counts toward [`[server.limits]`](#serverlimits) `max_request_header_bytes` when that is set, and reverse proxies commonly cap a single cookie near 4 KB; prefer header delivery if either bites.
 
 ## `[server.admin]` (optional)
 
