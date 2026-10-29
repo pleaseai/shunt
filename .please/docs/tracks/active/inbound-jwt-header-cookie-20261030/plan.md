@@ -61,7 +61,7 @@ Everything under spec `## Out of Scope`. Considered and not built:
 - [x] T003 Accept a JWT from the configured header on the Codex gate (file: src/auth/gate.rs) (depends on T002) [FR-1, FR-3, FR-4, FR-5, FR-9, NFR-2, AC-002, AC-006, AC-007, AC-013, AC-016]
   Validation: the header authenticates raw or with a `Bearer` scheme in any case (AC-002); a repeated header is `401` (AC-016), or `503` when an earlier slot's issuer was unreachable (AC-013); a wrong-audience token is `401` (AC-006); `Slots::Client` ignores the header (AC-007); the analytics sink accepts the same credential; the `401` body and the default-level log line are identical whichever slot was presented or failed, and no token value is logged (NFR-2).
   Method: `cargo test --all-features --lib -- auth::gate auth::jwt_slots codex_analytics`
-- [ ] T004 Accept a JWT from the configured cookie on the Codex gate (file: src/auth/jwt_slots.rs) (depends on T003) [FR-2, FR-12, AC-004, AC-005, AC-017]
+- [x] T004 Accept a JWT from the configured cookie on the Codex gate (file: src/auth/jwt_slots.rs) (depends on T003) [FR-2, FR-12, AC-004, AC-005, AC-017]
   Validation: the cookie authenticates when split across several `cookie` fields and when quoted; a ChatGPT bearer plus a valid cookie authenticates (AC-004); the configured name repeated in one field or across fields is `401` (AC-005), and non-UTF-8 bytes neither hide a duplicate nor panic; an `Origin` that is cross-origin, `null`, or unparseable disables the cookie slot (AC-017) while a missing `Origin` keeps it.
   Method: `cargo test --all-features --lib -- auth::gate auth::jwt_slots`
 - [ ] T005 Prove header and cookie sign-in end to end on the Codex endpoint (file: tests/inbound_codex_jwt_slots.rs) (depends on T004) [FR-6, AC-001, AC-003, AC-008, AC-009, AC-010]
@@ -115,6 +115,8 @@ Everything under spec `## Out of Scope`. Considered and not built:
   Evidence: `cargo +1.98.1 test --lib -- auth::gate auth::jwt_slots codex_analytics` -> 91 passed, 0 failed (no `--all-features`: `ui/dist` and a Python env are absent here); 11 new tests in `auth::inbound_jwt::tests` (header raw/any-case Bearer, fall-through, repeated, 503, audience, `Slots::Client`, non-UTF-8, byte-identical 401 body, analytics sink); `cargo +1.98.1 clippy --all-targets -- -D warnings` -> clean; `cargo +1.98.1 fmt --all --check` -> clean; `cargo +1.98.1 test --workspace` -> 4420 passed, 0 failed
 - [x] (2026-10-30 KST) T004 Accept a JWT from the configured cookie on the Codex gate
   Evidence: `cargo +1.98.1 test --lib -- auth::gate auth::jwt_slots auth::inbound_jwt codex_endpoint::websocket auth::slots` -> 198 passed, 0 failed (no `--all-features`: `ui/dist` and a Python env are absent here); 9 parser/origin unit tests in `auth::jwt_slots::tests` and 9 gate tests in `auth::inbound_jwt::tests`; `cargo +1.98.1 clippy --all-targets -- -D warnings` -> clean; `cargo +1.98.1 fmt --all --check` -> clean; `cargo +1.98.1 test --workspace` -> all suites ok, 3591 lib tests passed, 0 failed
+- [x] (2026-10-30 KST) T005 Prove header and cookie sign-in end to end on the Codex endpoint
+  Evidence: `cargo +1.98.1 test --test inbound_codex_jwt_slots` -> 8 passed, 0 failed, 3.9s (no `--all-features`: `ui/dist` and a Python env are absent here); clippy `--all-targets -D warnings` clean; `cargo +1.98.1 test --workspace` -> 60 suites, 4446 passed, 0 failed
 
 ## Decision Log
 

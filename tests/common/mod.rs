@@ -8,6 +8,8 @@
 // it is code this binary happens not to need.
 #![allow(dead_code)]
 
+pub mod jwt;
+
 /// Serializes every test in a binary that touches the process environment.
 ///
 /// The hazard is not two tests sharing a variable name — it is `setenv` itself.
