@@ -1,0 +1,25 @@
+site/src/content/docs/ko/guides/store-migration.md
+  s_cbe1c4ca81e9ea::t_d3c947eecb8393 72,91
+site/src/content/docs/ja/guides/store-migration.md
+  s_cbe1c4ca81e9ea::t_d3c947eecb8393 72,91
+site/src/content/docs/zh-cn/guides/store-migration.md
+  s_cbe1c4ca81e9ea::t_d3c947eecb8393 72,91
+site/src/content/docs/guides/store-migration.md
+  s_cbe1c4ca81e9ea::t_d3c947eecb8393 72,91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f8412a617b9e97684baf751001ecb63465bc63b8",
+  "prompts": {},
+  "sessions": {
+    "s_cbe1c4ca81e9ea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "09fd6c44-81ff-45a5-b372-e829147fb9d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Minsu Lee <amond@amond.net>"
+    }
+  }
+}
