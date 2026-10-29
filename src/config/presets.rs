@@ -113,6 +113,14 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         // rejected as a missing key (measured against the live endpoint).
         api_key_header: Some(super::ApiKeyHeader::XApiKey),
     },
+    ProviderPreset {
+        name: "chatgpt-plan",
+        kind: ProviderKind::Responses,
+        base_url: "https://api.openai.com/v1",
+        auth: AuthMode::ChatgptPlanOauth,
+        api_key_env: None,
+        api_key_header: None,
+    },
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static ProviderPreset> {
@@ -155,12 +163,13 @@ mod tests {
                 "kimi-code",
                 "zhipu",
                 "minimax-cn",
-                "opencode"
+                "opencode",
+                "chatgpt-plan"
             ]
         );
         assert_eq!(
             available_names(),
-            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn, opencode"
+            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn, opencode, chatgpt-plan"
         );
     }
 

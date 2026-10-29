@@ -365,7 +365,8 @@ pub(super) fn request_builder(
         Credential::XaiOauth { access_token } => {
             request = grok_identity_headers(request.bearer_auth(access_token));
         }
-        Credential::ClaudeOauth { access_token, .. }
+        Credential::ChatgptPlanOauth { access_token }
+        | Credential::ClaudeOauth { access_token, .. }
         | Credential::GoogleOauth { access_token, .. } => {
             request = request.bearer_auth(access_token);
         }

@@ -656,7 +656,11 @@ fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -
             path,
         } => crate::auth::codex::store::credential_account_id(Path::new(path)),
         InlineIdentityKey::Credentials {
-            family: StoreFamily::Kimi | StoreFamily::Antigravity | StoreFamily::Xai,
+            family:
+                StoreFamily::Kimi
+                | StoreFamily::Antigravity
+                | StoreFamily::Xai
+                | StoreFamily::ChatgptPlan,
             ..
         } => {
             // Unreachable by construction: `inline_identity_key` only builds a

@@ -145,3 +145,8 @@ Rejected alternatives are in ADR-0007. Two more: persisting tokens before valida
 
 - 2026-10-30: Reuse the `OpenAi` dialect rather than a new flavor (user choice; ADR-0007).
 - 2026-10-30: Needs-sign-in accounts keep the existing cooldown + flag instead of hard exclusion (user choice; spec AC-012 reworded).
+
+## Progress
+
+- [x] (2026-10-30 KST) T001 Register the chatgpt-plan auth mode, preset, and config validation
+  Evidence: `cargo +1.98.1 test --features bench --workspace` (RUSTFLAGS=-D warnings) → exit 0, lib 3563 passed / 0 failed; clippy and fmt --check clean
