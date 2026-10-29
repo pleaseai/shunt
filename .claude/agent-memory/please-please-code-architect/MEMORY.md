@@ -1,0 +1,1 @@
+- [chatgpt-plan design](project_chatgpt_plan_design.md) — minimal-change design for the SIWC chatgpt-plan track (pool peek, JWT verify reuse, store layout)
