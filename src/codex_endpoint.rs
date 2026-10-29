@@ -327,7 +327,7 @@ pub(crate) fn extract_session_id(headers: &HeaderMap) -> Option<String> {
 
 /// Gate one inbound Codex request against `[server.auth]`: a static token in the
 /// configured header or `Authorization: Bearer`, or a verified
-/// `[[server.auth.jwt]]` JWT in the bearer slot. `Ok(None)` when no
+/// `[[server.auth.jwt]]` JWT in the bearer slot or the `[server.auth] jwt_header` slot. `Ok(None)` when no
 /// `[server.auth]` is configured. An unreachable JWT issuer key set is a `503`,
 /// never a `401`, so an operator is not sent hunting a credential that is fine.
 pub(crate) async fn authenticate_inbound(
@@ -339,7 +339,7 @@ pub(crate) async fn authenticate_inbound(
     let Some(auth) = auth else {
         return Ok(None);
     };
-    match gate::authenticate(auth, jwks, headers, gate::Slots::Bearer).await {
+    match gate::authenticate(auth, jwks, headers, gate::Slots::Codex).await {
         gate::Outcome::Authenticated { client, .. } => Ok(Some(client)),
         gate::Outcome::Unavailable => {
             tracing::warn!(

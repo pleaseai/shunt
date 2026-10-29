@@ -1250,3 +1250,268 @@ async fn a_reload_swaps_the_issuer_set_but_keeps_the_key_cache() {
         "the JWKS cache must survive the reload"
     );
 }
+
+// --- `jwt_header` slot on the Codex gate -----------------------------------
+
+const JWT_HEADER: &str = "x-gateway-jwt";
+
+fn auth_with_jwt_header(entries: Vec<InboundJwtConfig>, tokens_env: Option<&str>) -> InboundAuth {
+    let env = tokens_env.unwrap_or("SHUNT_TEST_JWT_NO_TOKENS");
+    InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: env.to_string(),
+        jwt: entries,
+        jwt_header: Some(JWT_HEADER.to_string()),
+        ..Default::default()
+    }
+    .resolve()
+    .expect("test inbound auth resolves")
+}
+
+fn with_header(mut headers: HeaderMap, value: &str) -> HeaderMap {
+    headers.append(JWT_HEADER, HeaderValue::from_str(value).unwrap());
+    headers
+}
+
+fn authenticated(client: &str) -> Outcome {
+    Outcome::Authenticated {
+        client: client.to_string(),
+        static_token: false,
+    }
+}
+
+async fn down_issuer() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn codex_gate(auth: &InboundAuth, headers: &HeaderMap) -> Outcome {
+    gate::authenticate(auth, &JwksCache::new(), headers, Slots::Codex).await
+}
+
+#[tokio::test]
+async fn the_jwt_header_authenticates_raw_or_with_a_bearer_scheme_in_any_case() {
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with_jwt_header(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        None,
+    );
+    let jwt = token(&claims(&server.uri()));
+    for value in [
+        jwt.clone(),
+        format!("Bearer {jwt}"),
+        format!("bearer {jwt}"),
+        format!("BEARER {jwt}"),
+    ] {
+        // No `Authorization` header at all.
+        assert_eq!(
+            codex_gate(&auth, &with_header(HeaderMap::new(), &value)).await,
+            authenticated("dev@example.com"),
+            "{value:.12}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_unconfigured_issuer_bearer_falls_through_to_the_header() {
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with_jwt_header(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        None,
+    );
+    let chatgpt = token(&claims("https://auth.openai.example"));
+    let headers = with_header(bearer(&chatgpt), &token(&claims(&server.uri())));
+    assert_eq!(
+        codex_gate(&auth, &headers).await,
+        authenticated("dev@example.com")
+    );
+}
+
+#[tokio::test]
+async fn a_valid_static_token_wins_over_a_repeated_header() {
+    let _env_lock = crate::config::test_env_lock();
+    let env = "SHUNT_TEST_JWT_HEADER_STATIC_TOKENS";
+    std::env::set_var(env, "ci:static-token");
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with_jwt_header(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        Some(env),
+    );
+    std::env::remove_var(env);
+    let jwt = token(&claims(&server.uri()));
+    let mut headers = bearer("static-token");
+    headers.append(JWT_HEADER, HeaderValue::from_str(&jwt).unwrap());
+    headers.append(JWT_HEADER, HeaderValue::from_str(&jwt).unwrap());
+    assert_eq!(
+        codex_gate(&auth, &headers).await,
+        Outcome::Authenticated {
+            client: "ci".to_string(),
+            static_token: true,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_valid_bearer_jwt_wins_over_a_repeated_header() {
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with_jwt_header(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        None,
+    );
+    let jwt = token(&claims(&server.uri()));
+    let headers = with_header(with_header(bearer(&jwt), &jwt), &jwt);
+    assert_eq!(
+        codex_gate(&auth, &headers).await,
+        authenticated("dev@example.com")
+    );
+}
+
+#[tokio::test]
+async fn a_repeated_header_alone_is_rejected() {
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with_jwt_header(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        None,
+    );
+    let jwt = token(&claims(&server.uri()));
+    let headers = with_header(with_header(HeaderMap::new(), &jwt), &jwt);
+    assert_eq!(codex_gate(&auth, &headers).await, Outcome::Rejected);
+}
+
+#[tokio::test]
+async fn an_unreachable_bearer_issuer_plus_a_repeated_header_is_unavailable() {
+    let down = down_issuer().await;
+    let auth = auth_with_jwt_header(
+        vec![entry(&down.uri(), &format!("{}/jwks", down.uri()))],
+        None,
+    );
+    let jwt = token(&claims(&down.uri()));
+    let headers = with_header(with_header(bearer(&jwt), "a"), "b");
+    assert_eq!(codex_gate(&auth, &headers).await, Outcome::Unavailable);
+}
+
+#[tokio::test]
+async fn an_unreachable_issuer_on_the_header_alone_is_unavailable() {
+    let down = down_issuer().await;
+    let auth = auth_with_jwt_header(
+        vec![entry(&down.uri(), &format!("{}/jwks", down.uri()))],
+        None,
+    );
+    let headers = with_header(HeaderMap::new(), &token(&claims(&down.uri())));
+    assert_eq!(codex_gate(&auth, &headers).await, Outcome::Unavailable);
+}
+
+#[tokio::test]
+async fn a_wrong_audience_in_the_header_is_rejected() {
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with_jwt_header(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        None,
+    );
+    let mut wrong = claims(&server.uri());
+    wrong["aud"] = json!("someone-else");
+    let headers = with_header(HeaderMap::new(), &token(&wrong));
+    assert_eq!(codex_gate(&auth, &headers).await, Outcome::Rejected);
+}
+
+#[tokio::test]
+async fn the_client_slots_ignore_the_jwt_header() {
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with_jwt_header(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        None,
+    );
+    let headers = with_header(HeaderMap::new(), &token(&claims(&server.uri())));
+    assert_eq!(
+        gate::authenticate(&auth, &JwksCache::new(), &headers, Slots::Client).await,
+        Outcome::Rejected
+    );
+}
+
+#[tokio::test]
+async fn non_utf8_header_bytes_are_rejected_without_panicking() {
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with_jwt_header(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        None,
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        JWT_HEADER,
+        HeaderValue::from_bytes(b"Bearer \xff\xfe").unwrap(),
+    );
+    assert_eq!(codex_gate(&auth, &headers).await, Outcome::Rejected);
+}
+
+#[tokio::test]
+async fn the_401_body_is_identical_whichever_slot_was_presented() {
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with_jwt_header(
+        vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        None,
+    );
+    let jwks_cache = JwksCache::new();
+    let mut bodies = Vec::new();
+    for headers in [
+        HeaderMap::new(),
+        bearer("not-a-jwt"),
+        with_header(HeaderMap::new(), "not-a-jwt"),
+        with_header(with_header(HeaderMap::new(), "a"), "b"),
+    ] {
+        let error = crate::codex_endpoint::authenticate_inbound(
+            Some(&auth),
+            &jwks_cache,
+            &headers,
+            "codex",
+        )
+        .await
+        .expect_err("no credential verifies");
+        let response = axum::response::IntoResponse::into_response(error);
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+        bodies.push(
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        );
+    }
+    assert!(bodies.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+#[tokio::test]
+async fn codex_analytics_sink_accepts_a_jwt_from_the_configured_header() {
+    use axum::extract::State;
+
+    let _env_lock = crate::config::test_env_lock();
+    let env = unset_tokens_env("ANALYTICS_HEADER");
+    let server = issuer_serving(jwks()).await;
+    let mut config = crate::config::Config::default();
+    config.server.auth = Some(InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: env,
+        jwt: vec![entry(&server.uri(), &format!("{}/jwks", server.uri()))],
+        jwt_header: Some(JWT_HEADER.to_string()),
+        ..Default::default()
+    });
+    let state = crate::server::AppState::new(config, reqwest::Client::new()).unwrap();
+
+    let post = |headers| {
+        crate::codex_analytics::post(
+            State(state.clone()),
+            headers,
+            axum::body::Body::from(r#"{"events":[]}"#),
+        )
+    };
+    let accepted = post(with_header(
+        HeaderMap::new(),
+        &token(&claims(&server.uri())),
+    ))
+    .await;
+    assert_eq!(accepted.status(), axum::http::StatusCode::OK);
+    let refused = post(HeaderMap::new()).await;
+    assert_eq!(refused.status(), axum::http::StatusCode::UNAUTHORIZED);
+}

@@ -16,6 +16,7 @@ use axum::response::{IntoResponse, Response};
 
 use crate::auth::inbound::{bearer_token, InboundAuth};
 use crate::auth::inbound_jwt::{self, JwksCache, JwtOutcome};
+use crate::auth::jwt_slots::{header_credential, Presented};
 use crate::error::ShuntError;
 
 /// Which credential slots a route accepts for the static-token check.
@@ -24,9 +25,11 @@ pub enum Slots {
     /// The configured header, `Authorization: Bearer`, and `x-api-key` — every
     /// slot the Anthropic client protocol can carry a gate token in.
     Client,
-    /// The configured header and `Authorization: Bearer` only. The inbound
-    /// Codex endpoint's posture: the Codex CLI never sends `x-api-key`.
-    Bearer,
+    /// The inbound Codex endpoint's posture: the configured header and
+    /// `Authorization: Bearer` for a static token (the Codex CLI never sends
+    /// `x-api-key`), then a JWT from `Authorization: Bearer` and from the
+    /// `[server.auth] jwt_header` slot. `Client` never reads the JWT slots.
+    Codex,
 }
 
 /// What the presented credentials resolved to.
@@ -62,7 +65,7 @@ pub async fn authenticate(
 ) -> Outcome {
     let static_client = match slots {
         Slots::Client => auth.authenticate_client(headers),
-        Slots::Bearer => auth.authenticate_bearer(headers),
+        Slots::Codex => auth.authenticate_bearer(headers),
     };
     if let Some(client) = static_client {
         return Outcome::Authenticated {
@@ -73,23 +76,60 @@ pub async fn authenticate(
     if auth.jwt().is_empty() {
         return Outcome::Rejected;
     }
-    // JWT credentials arrive in the `Authorization: Bearer` slot, which is
-    // where Claude Code sends `ANTHROPIC_AUTH_TOKEN` — the whole point of the
-    // design is that the client needs no shunt-specific configuration.
-    let Some(token) = bearer_token(headers).and_then(|value| std::str::from_utf8(value).ok())
-    else {
-        return Outcome::Rejected;
-    };
-    match inbound_jwt::verify(auth.jwt(), jwks, token).await {
-        JwtOutcome::Verified { identity, issuer } => {
-            tracing::debug!(%issuer, "inbound JWT verified");
-            Outcome::Authenticated {
-                client: identity,
-                static_token: false,
+    let mut presented = vec![bearer_credential(headers)];
+    if slots == Slots::Codex {
+        presented.extend(
+            auth.jwt_header()
+                .map(|name| header_credential(headers, name)),
+        );
+    }
+    verify_slots(auth, jwks, presented).await
+}
+
+/// `Authorization: Bearer` is where Claude Code sends `ANTHROPIC_AUTH_TOKEN`,
+/// so a JWT arrives there with no shunt-specific client configuration. Only the
+/// first `Authorization` value is read, as on the static path.
+fn bearer_credential(headers: &HeaderMap) -> Presented<'_> {
+    match bearer_token(headers) {
+        None => Presented::Absent,
+        Some(value) => std::str::from_utf8(value).map_or(Presented::Unreadable, Presented::One),
+    }
+}
+
+/// Verify the JWT slots lazily, in order. The first `Verified` wins; a slot is
+/// examined only when the scan reaches it, so an earlier credential that
+/// authenticates wins even when a later slot is repeated. A repeated slot ends
+/// the scan, and no slot verifying is `Unavailable` rather than `Rejected`
+/// when any consulted issuer was unreachable, so a `401` never blames the
+/// credential for an IdP outage.
+async fn verify_slots(
+    auth: &InboundAuth,
+    jwks: &JwksCache,
+    presented: Vec<Presented<'_>>,
+) -> Outcome {
+    let mut unavailable = false;
+    for slot in presented {
+        let token = match slot {
+            Presented::Absent | Presented::Unreadable => continue,
+            Presented::Repeated => break,
+            Presented::One(token) => token,
+        };
+        match inbound_jwt::verify(auth.jwt(), jwks, token).await {
+            JwtOutcome::Verified { identity, issuer } => {
+                tracing::debug!(%issuer, "inbound JWT verified");
+                return Outcome::Authenticated {
+                    client: identity,
+                    static_token: false,
+                };
             }
+            JwtOutcome::Rejected => {}
+            JwtOutcome::Unavailable => unavailable = true,
         }
-        JwtOutcome::Rejected => Outcome::Rejected,
-        JwtOutcome::Unavailable => Outcome::Unavailable,
+    }
+    if unavailable {
+        Outcome::Unavailable
+    } else {
+        Outcome::Rejected
     }
 }
 

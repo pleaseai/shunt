@@ -1,11 +1,14 @@
 //! Resolution and validation of the optional `[server.auth] jwt_header` and
 //! `jwt_cookie` slots: the extra places a verify-only JWT (see
-//! [`crate::auth::inbound_jwt`]) may be presented, for deployments behind an
-//! identity-aware proxy that injects the token somewhere other than
-//! `Authorization`. This module only resolves and validates the names; reading
-//! the slots on a request is the gate's job.
+//! [`crate::auth::inbound_jwt`]) may be presented. They exist for the Codex
+//! CLI's native `gateway_oauth`, which delivers the identity-provider token in a
+//! named header or cookie because Codex reserves `Authorization`. This module
+//! resolves and validates the names and extracts a slot's value from a request;
+//! deciding what the value is worth is the gate's job.
 
-use axum::http::HeaderName;
+use axum::http::{HeaderMap, HeaderName};
+
+use crate::auth::inbound::bearer_payload;
 
 use crate::auth::slots::RESERVED_SLOTS;
 
@@ -42,6 +45,35 @@ pub(crate) fn resolve(
         .map(|value| resolve_cookie(value).map_err(|m| ("jwt_cookie", m)))
         .transpose()?;
     Ok(JwtSlots { header, cookie })
+}
+
+/// What one JWT slot carries on a request, gathered with no I/O.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Presented<'a> {
+    Absent,
+    One(&'a str),
+    /// The slot appears more than once, so no single value can be trusted.
+    Repeated,
+    /// Present but not readable text; it can never verify.
+    Unreadable,
+}
+
+/// Read the JWT out of header `name`: raw, or after a `Bearer` scheme in any
+/// case.
+pub(crate) fn header_credential<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Presented<'a> {
+    let mut values = headers.get_all(name).iter();
+    let (Some(value), None) = (values.next(), values.next()) else {
+        return if headers.contains_key(name) {
+            Presented::Repeated
+        } else {
+            Presented::Absent
+        };
+    };
+    let text = match bearer_payload(value) {
+        Some(payload) => std::str::from_utf8(payload).ok(),
+        None => value.to_str().ok().map(str::trim),
+    };
+    text.map_or(Presented::Unreadable, Presented::One)
 }
 
 fn resolve_header(value: &str, static_header: &HeaderName) -> Result<HeaderName, String> {

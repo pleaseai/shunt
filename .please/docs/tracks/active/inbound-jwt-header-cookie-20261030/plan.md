@@ -55,7 +55,7 @@ Everything under spec `## Out of Scope`. Considered and not built:
 - [x] T001 Add `jwt_header` / `jwt_cookie` to `[server.auth]` with startup validation (file: src/config.rs) [FR-8, FR-10, AC-011, AC-012, AC-014, AC-015]
   Validation: each FR-8 clause fails startup with an error naming the key (AC-011, AC-012), including mixed-case or whitespace-padded reserved names and an empty string; with neither key set the resolved `InboundAuth` carries no header or cookie slot and every existing `config::` / `reload::` test passes unchanged (AC-015); a reload that adds `jwt_header` shows it on the next request snapshot (AC-014).
   Method: `cargo test --all-features --lib -- config:: reload::` and `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] T002 Strip the configured JWT header at every forward site (file: src/auth/slots.rs) (depends on T001) [FR-7, NFR-1]
+- [x] T002 Strip the configured JWT header at every forward site (file: src/auth/slots.rs) (depends on T001) [FR-7, NFR-1]
   Validation: the configured header and every `cookie` field are absent after `strip_reserved_slots`; a WebSocket turn after a reload that removes or renames `jwt_header` still strips the upgrade-time name; with neither key set the forwarded header set is unchanged (NFR-1).
   Method: `cargo test --all-features --lib -- auth::slots codex_endpoint::websocket`
 - [ ] T003 Accept a JWT from the configured header on the Codex gate (file: src/auth/gate.rs) (depends on T002) [FR-1, FR-3, FR-4, FR-5, FR-9, NFR-2, AC-002, AC-006, AC-007, AC-013, AC-016]
@@ -111,6 +111,8 @@ Everything under spec `## Out of Scope`. Considered and not built:
   Evidence: `cargo +1.98.1 test --lib -- config:: reload::` -> 483 passed, 0 failed; `cargo +1.98.1 clippy --all-targets -- -D warnings` -> clean; `cargo +1.98.1 test --workspace` -> 59 suites, 4403 passed, 0 failed (default features; `--all-features` needs `ui/dist` and a Python env absent here)
 - [x] (2026-10-30 KST) T002 Strip the configured JWT header at every forward site
   Evidence: `cargo +1.98.1 test --lib -- auth::slots codex_endpoint::websocket` -> 42 passed, 0 failed (no `--all-features`: `ui/dist` and a Python env are absent here); mutation check (disabling the upgrade-time `jwt_header` strip in `run_turn`) turned both new WebSocket tests red; `cargo +1.98.1 clippy --all-targets -- -D warnings` -> clean; `cargo +1.98.1 fmt --all --check` -> clean; `cargo +1.98.1 test --workspace` -> 59 suites, 4408 passed, 0 failed (one earlier full run reported 1 unidentified failure, three reruns were green)
+- [x] (2026-10-30 KST) T003 Accept a JWT from the configured header on the Codex gate
+  Evidence: `cargo +1.98.1 test --lib -- auth::gate auth::jwt_slots codex_analytics` -> 91 passed, 0 failed (no `--all-features`: `ui/dist` and a Python env are absent here); 11 new tests in `auth::inbound_jwt::tests` (header raw/any-case Bearer, fall-through, repeated, 503, audience, `Slots::Client`, non-UTF-8, byte-identical 401 body, analytics sink); `cargo +1.98.1 clippy --all-targets -- -D warnings` -> clean; `cargo +1.98.1 fmt --all --check` -> clean; `cargo +1.98.1 test --workspace` -> 4420 passed, 0 failed
 
 ## Decision Log
 
