@@ -10,3 +10,4 @@
 | [ADR-0004](0004-content-aware-stage-router.md) | Content-aware stage router: opt-in, signal-only, session-pinned | 2026-09-12 | Accepted |
 | [ADR-0005](0005-routing-algorithm-extensions.md) | Full Switchyard routing-algorithm parity on `[[models]]` | 2026-09-18 | Accepted |
 | [ADR-0006](0006-optional-pluggable-store.md) | Optional pluggable store on sqlx — SQLite and PostgreSQL; single instance first | 2026-10-01 | Accepted |
+| [ADR-0007](0007-chatgpt-plan-provider.md) | ChatGPT plan provider as its own auth mode on the OpenAi dialect, with a pre-content usage-limit check | 2026-10-30 | Accepted |
