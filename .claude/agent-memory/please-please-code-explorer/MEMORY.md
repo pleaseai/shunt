@@ -1,0 +1,1 @@
+- [Auth machinery map](reference_auth_machinery.md) — reusable OAuth/store/lock/JWKS helpers in shunt for new per-account OAuth providers
