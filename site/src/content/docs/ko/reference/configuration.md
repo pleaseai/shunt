@@ -1300,7 +1300,7 @@ policy = { type = "target_selector", selector = "/target" }
 
 ## `[store]` (선택)
 
-풀 쿼터, 게이트웨이 refresh token, 지출 한도와 감사 기록을 위한 선택적 트랜잭션 저장소로, SQLite 또는 PostgreSQL을 사용합니다. 이 테이블이 없으면 아무것도 바뀌지 않습니다. 세 하위 시스템은 기존과 똑같이 JSON `state_path` 스냅샷과 복원 경로를 유지합니다. 이 테이블을 설정하면 저장소가 스냅샷을 대체하고, 기존 스냅샷은 한 번만 가져옵니다. 전체 동작은 [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)(영문)에 있습니다. `[store]`는 재시작 전용입니다. 설정 reload 중에 바꾸면 경고를 로그로 남기고, 재시작한 뒤에 적용됩니다.
+풀 쿼터, 게이트웨이 refresh token, 지출 한도와 감사 기록을 위한 선택적 트랜잭션 저장소로, SQLite 또는 PostgreSQL을 사용합니다. 이 테이블이 없으면 아무것도 바뀌지 않습니다. 세 하위 시스템은 기존과 똑같이 JSON `state_path` 스냅샷과 복원 경로를 유지합니다. 이 테이블을 설정하면 저장소가 스냅샷을 대체하고, 기존 스냅샷은 한 번만 가져옵니다. 전체 동작은 [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)(영문)에 있습니다. 기존 스냅샷을 저장소로 옮기는 절차는 [저장소로 마이그레이션](/ko/guides/store-migration/)을 참고하세요. `[store]`는 재시작 전용입니다. 설정 reload 중에 바꾸면 경고를 로그로 남기고, 재시작한 뒤에 적용됩니다.
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |

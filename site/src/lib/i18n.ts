@@ -90,6 +90,7 @@ export const NAVIGATION: NavigationEntry[] = [
       { label: "Sharing a Gateway", translations: { ko: "게이트웨이 공유", ja: "ゲートウェイの共有", "zh-cn": "共享网关" }, slug: "guides/shared-gateway" },
       { label: "GitHub Actions (OIDC)", translations: { ko: "GitHub Actions (OIDC)", ja: "GitHub Actions (OIDC)", "zh-cn": "GitHub Actions (OIDC)" }, slug: "guides/github-actions-oidc" },
       { label: "OpenTelemetry", translations: { ko: "OpenTelemetry", ja: "OpenTelemetry", "zh-cn": "OpenTelemetry" }, slug: "guides/opentelemetry" },
+      { label: "Migrating to the Store", translations: { ko: "저장소로 마이그레이션", ja: "ストアへの移行", "zh-cn": "迁移到存储" }, slug: "guides/store-migration" },
     ],
   },
   {

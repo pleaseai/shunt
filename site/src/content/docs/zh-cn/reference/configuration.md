@@ -1232,7 +1232,7 @@ policy = { type = "target_selector", selector = "/target" }
 
 ## `[store]`(可选)
 
-用于保存池配额、网关 refresh token、支出限制及其审计记录的可选事务型存储,支持 SQLite 或 PostgreSQL。没有这个表时一切照旧:这三个子系统继续使用 JSON `state_path` 快照及其恢复路径。设置后,存储取代这些快照,已有快照只导入一次。完整行为见 [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)(英文)。`[store]` 仅在重启后生效:配置重载时修改它会记录一条警告,重启后才会应用。
+用于保存池配额、网关 refresh token、支出限制及其审计记录的可选事务型存储,支持 SQLite 或 PostgreSQL。没有这个表时一切照旧:这三个子系统继续使用 JSON `state_path` 快照及其恢复路径。设置后,存储取代这些快照,已有快照只导入一次。完整行为见 [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)(英文)。将已有快照迁移到存储的步骤见 [迁移到存储](/zh-cn/guides/store-migration/)。`[store]` 仅在重启后生效:配置重载时修改它会记录一条警告,重启后才会应用。
 
 | 键 | 默认 | 含义 |
 | :-- | :-- | :-- |

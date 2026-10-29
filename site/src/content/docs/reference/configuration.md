@@ -1507,7 +1507,7 @@ and no passthrough route.
 
 ## `[store]` (optional)
 
-An optional transactional store for pool quota, gateway refresh tokens, and spend limits plus their audit trail, on SQLite or PostgreSQL. Without the table nothing changes: those three subsystems keep their JSON `state_path` snapshots and restore paths exactly as before. With it, the store replaces the snapshots, and each existing snapshot is imported once. The full behavior is in [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md). `[store]` is restart-only: changing it on a config reload logs a warning and takes effect after a restart.
+An optional transactional store for pool quota, gateway refresh tokens, and spend limits plus their audit trail, on SQLite or PostgreSQL. Without the table nothing changes: those three subsystems keep their JSON `state_path` snapshots and restore paths exactly as before. With it, the store replaces the snapshots, and each existing snapshot is imported once. The full behavior is in [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md). To move existing snapshots into a store, follow [Migrating to the Store](/guides/store-migration/). `[store]` is restart-only: changing it on a config reload logs a warning and takes effect after a restart.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
