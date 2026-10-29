@@ -1699,3 +1699,14 @@ async fn the_client_slots_ignore_the_jwt_cookie() {
         Outcome::Rejected
     );
 }
+
+#[tokio::test]
+async fn a_repeated_header_stops_the_scan_before_a_valid_cookie() {
+    let (server, auth) = cookie_auth().await;
+    let jwt = token(&claims(&server.uri()));
+    let headers = with_cookie(
+        with_header(with_header(HeaderMap::new(), "first"), "second"),
+        &format!("{JWT_COOKIE}={jwt}"),
+    );
+    assert_eq!(codex_gate(&auth, &headers).await, Outcome::Rejected);
+}
