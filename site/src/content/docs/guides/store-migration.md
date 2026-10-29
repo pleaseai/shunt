@@ -21,7 +21,7 @@ Some state stays outside the store: provider credential files, admin browser ses
 
 ## 1. Find and back up the snapshots
 
-List the `state_path` of each configured subsystem, including the defaults above, and confirm each file exists where the shunt process will look. The defaults resolve against the home directory of the user that runs shunt, which under systemd or in a container may not be yours.
+List the `state_path` of each configured subsystem, including the defaults above, and confirm each file exists where the shunt process will look. The defaults resolve against the home directory of the user that runs shunt, which under systemd or in a container may not be yours. shunt reads it from `HOME`, falling back to `USERPROFILE`; when neither is set, the gateway and spend subsystems have no default snapshot, so the first boot records `NoSnapshot` and never imports one. In that case set each `state_path` explicitly.
 
 Copy the files somewhere safe. shunt only reads them during the import and never writes them while a store is attached, but a copy is the only way to inspect the pre-migration state later.
 
@@ -82,7 +82,7 @@ A failed import stops the boot with `importing the <subsystem> state snapshot <p
   ```
 
   A `NULL` `source_path` means no snapshot was found for that subsystem.
-- Gateway clients keep working without signing in again, and `GET /v1/organizations/spend_limits` ([endpoints](/reference/endpoints/)) lists the same spend limits as before.
+- Gateway clients keep working without signing in again, and `GET /v1/organizations/spend_limits`, sent with the `[server.admin]` credential in `x-shunt-admin-token` (the default admin header) or `x-api-key` ([endpoints](/reference/endpoints/)), lists the same spend limits as before.
 
 ## If a snapshot was missed
 

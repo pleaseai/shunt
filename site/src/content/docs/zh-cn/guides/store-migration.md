@@ -21,7 +21,7 @@ description: 将池配额、网关 refresh token 和支出限制从 JSON state_p
 
 ## 1. 找到并备份快照
 
-列出每个已配置子系统的 `state_path`(包括上面的默认值),并确认文件位于 shunt 进程会去查找的位置。默认值相对于运行 shunt 的用户的主目录解析,在 systemd 或容器中,这可能不是你自己的主目录。
+列出每个已配置子系统的 `state_path`(包括上面的默认值),并确认文件位于 shunt 进程会去查找的位置。默认值相对于运行 shunt 的用户的主目录解析,在 systemd 或容器中,这可能不是你自己的主目录。shunt 从 `HOME` 读取主目录,未设置时回退到 `USERPROFILE`;两者都未设置时,网关和支出子系统没有默认快照,首次启动会记录 `NoSnapshot`,之后也不会再导入。这种情况下请显式设置每个 `state_path`。
 
 把这些文件复制到安全的地方。shunt 只在导入期间读取它们,附加存储后也不会再写入,但之后想查看迁移前的状态,只能依靠这份副本。
 
@@ -82,7 +82,7 @@ shunt run
   ```
 
   `source_path` 为 `NULL` 表示该子系统没有找到快照。
-- 网关客户端无需重新登录即可继续工作,`GET /v1/organizations/spend_limits`([端点](/zh-cn/reference/endpoints/))列出的支出限制与之前相同。
+- 网关客户端无需重新登录即可继续工作,`GET /v1/organizations/spend_limits`(在 `x-shunt-admin-token`(默认管理请求头)或 `x-api-key` 中携带 `[server.admin]` 凭据,见[端点](/zh-cn/reference/endpoints/))列出的支出限制与之前相同。
 
 ## 如果漏掉了某个快照
 
