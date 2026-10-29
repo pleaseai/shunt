@@ -11,7 +11,7 @@
 - **Created**: 2026-10-30
 - **Approach**: Two optional `[server.auth]` keys resolved into `InboundAuth`; the Codex gate (renamed `Slots::Codex`) scans static → bearer JWT → header JWT → cookie JWT through the unchanged `inbound_jwt::verify`; the configured header joins the single by-name strip point in `ShuntCredentials`
 - **Plan Depth**: standard
-- **Planned At**: 03ececb
+- **Planned At**: 49110d8
 
 ## Purpose
 
@@ -112,5 +112,7 @@ Everything under spec `## Out of Scope`. Considered and not built:
 - 2026-10-30: Added FR-12 / AC-017 (cookie slot requires no `Origin` or a same-origin one) during planning. Both the spec review and the architect flagged cross-site use of an ambient cookie: an operator can point `jwt_cookie` at a JWT cookie a browser already holds for the gateway's domain (e.g. Cloudflare Access `CF_Authorization`), and the existing Origin check runs only without `[server.auth]`. The Codex CLI is not a browser, so the guard does not narrow requested behavior.
 
 - 2026-10-30: A repeated configured header or cookie rejects only when the scan reaches that slot; a static or bearer credential that authenticates first still wins (user decision at plan review). AC-005 and AC-016 were narrowed to "no earlier slot authenticates the caller", which keeps FR-9's `503` rule exceptionless; the repeated value is stripped before forwarding either way.
+
+- 2026-10-30: Implementation started on `amondnet/crinoid` (this worktree's branch, linked to #860 with `gh issue develop --name`) rather than a fresh `gh issue develop --checkout` branch, which would have been cut from `main` without the unpushed track commits. The branch was rebased onto `main` (#859, a docs-only store-migration guide touching no track file), so `Planned At` moved from `03ececb` to its rebased equivalent `49110d8`.
 
 ## Surprises & Discoveries
