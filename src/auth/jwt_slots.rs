@@ -6,7 +6,7 @@
 //! resolves and validates the names and extracts a slot's value from a request;
 //! deciding what the value is worth is the gate's job.
 
-use axum::http::{HeaderMap, HeaderName};
+use axum::http::{header, HeaderMap, HeaderName};
 
 use crate::auth::inbound::bearer_payload;
 
@@ -76,6 +76,93 @@ pub(crate) fn header_credential<'a>(headers: &'a HeaderMap, name: &HeaderName) -
     text.map_or(Presented::Unreadable, Presented::One)
 }
 
+/// Read the JWT out of the cookie `name`. `Cookie` fields are scanned as raw
+/// bytes, never through `to_str`, so a byte outside visible ASCII in another
+/// pair cannot hide a repeated `name`. HTTP/2 may split the header across
+/// several fields, so every field counts toward the repeat check.
+pub(crate) fn cookie_credential<'a>(headers: &'a HeaderMap, name: &str) -> Presented<'a> {
+    let mut found = None;
+    for field in headers.get_all(header::COOKIE) {
+        for pair in field.as_bytes().split(|b| *b == b';') {
+            let pair = pair.trim_ascii();
+            let Some(eq) = pair.iter().position(|b| *b == b'=') else {
+                continue;
+            };
+            if &pair[..eq] != name.as_bytes() {
+                continue;
+            }
+            if found.replace(&pair[eq + 1..]).is_some() {
+                return Presented::Repeated;
+            }
+        }
+    }
+    let Some(value) = found else {
+        return Presented::Absent;
+    };
+    // RFC 6265 allows the value to be wrapped in one pair of double quotes.
+    let value = match value {
+        [b'"', inner @ .., b'"'] => inner,
+        other => other,
+    };
+    match std::str::from_utf8(value) {
+        Ok(text) if !text.is_empty() => Presented::One(text),
+        _ => Presented::Unreadable,
+    }
+}
+
+/// Whether the request may present a cookie credential (FR-12): a cookie rides
+/// along on a cross-origin browser request without the page's consent, so the
+/// slot is consulted only when the request carries no `Origin` or exactly one
+/// that names this host. Anything unreadable, `null`, repeated, or unparseable
+/// fails closed.
+pub(crate) fn cookie_slot_allowed(headers: &HeaderMap) -> bool {
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let Some(origin) = origins.next() else {
+        return true;
+    };
+    if origins.next().is_some() {
+        return false;
+    }
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    match (origin.to_str(), host) {
+        (Ok(origin), Some(host)) => origin_matches_host(origin, host),
+        _ => false,
+    }
+}
+
+/// Whether the `Origin` header value names the same host and port as the
+/// request's `Host` header value, with the scheme's default port filled in on
+/// the `Origin` side. `null` and unparseable origins never match.
+pub(crate) fn origin_matches_host(origin: &str, host: &str) -> bool {
+    let Ok(origin) = url::Url::parse(origin) else {
+        return false;
+    };
+    let Some(origin_host) = origin.host_str() else {
+        return false;
+    };
+    let origin_port = origin.port_or_known_default();
+    // Split a trailing `:port` only when it parses; a port-less IPv6 literal
+    // (`[::1]`) keeps its whole text as the host name.
+    let (host_without_port, host_port) = host
+        .rsplit_once(':')
+        .and_then(|(name, port)| Some((name, Some(port.parse::<u16>().ok()?))))
+        .unwrap_or((host, None));
+    // `Url::host_str` keeps an IPv6 literal's brackets and so does the Host
+    // header; compare both unbracketed so either spelling matches.
+    let unbracket = |host: &str| {
+        host.trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_owned()
+    };
+    unbracket(origin_host).eq_ignore_ascii_case(&unbracket(host_without_port))
+        && origin_port
+            == host_port.or_else(|| match origin.scheme() {
+                "http" => Some(80),
+                "https" => Some(443),
+                _ => None,
+            })
+}
+
 fn resolve_header(value: &str, static_header: &HeaderName) -> Result<HeaderName, String> {
     if value.trim().is_empty() {
         return Err("must not be empty".to_string());
@@ -107,3 +194,6 @@ fn resolve_cookie(value: &str) -> Result<String, String> {
     }
     Ok(value.to_string())
 }
+
+#[cfg(test)]
+mod tests;

@@ -338,33 +338,7 @@ fn same_origin_or_non_browser(headers: &HeaderMap) -> bool {
     else {
         return false;
     };
-    let Ok(origin) = url::Url::parse(origin) else {
-        return false;
-    };
-    let Some(origin_host) = origin.host_str() else {
-        return false;
-    };
-    let origin_port = origin.port_or_known_default();
-    // Split a trailing `:port` only when it parses; a port-less IPv6 literal
-    // (`[::1]`) keeps its whole text as the host name.
-    let (host_without_port, host_port) = host
-        .rsplit_once(':')
-        .and_then(|(name, port)| Some((name, Some(port.parse::<u16>().ok()?))))
-        .unwrap_or((host, None));
-    // `Url::host_str` keeps an IPv6 literal's brackets and so does the Host
-    // header; compare both unbracketed so either spelling matches.
-    let unbracket = |host: &str| {
-        host.trim_start_matches('[')
-            .trim_end_matches(']')
-            .to_owned()
-    };
-    unbracket(origin_host).eq_ignore_ascii_case(&unbracket(host_without_port))
-        && origin_port
-            == host_port.or_else(|| match origin.scheme() {
-                "http" => Some(80),
-                "https" => Some(443),
-                _ => None,
-            })
+    crate::auth::jwt_slots::origin_matches_host(origin, host)
 }
 
 #[cfg(test)]

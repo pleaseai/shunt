@@ -1515,3 +1515,187 @@ async fn codex_analytics_sink_accepts_a_jwt_from_the_configured_header() {
     let refused = post(HeaderMap::new()).await;
     assert_eq!(refused.status(), axum::http::StatusCode::UNAUTHORIZED);
 }
+
+// --- `jwt_cookie` slot on the Codex gate -----------------------------------
+
+const JWT_COOKIE: &str = "gw_session";
+
+fn auth_with_jwt_cookie(entries: Vec<InboundJwtConfig>) -> InboundAuth {
+    InboundAuthConfig {
+        header: "x-shunt-token".to_string(),
+        tokens_env: "SHUNT_TEST_JWT_NO_TOKENS".to_string(),
+        jwt: entries,
+        jwt_header: Some(JWT_HEADER.to_string()),
+        jwt_cookie: Some(JWT_COOKIE.to_string()),
+    }
+    .resolve()
+    .expect("test inbound auth resolves")
+}
+
+async fn cookie_auth() -> (MockServer, InboundAuth) {
+    let server = issuer_serving(jwks()).await;
+    let auth = auth_with_jwt_cookie(vec![entry(
+        &server.uri(),
+        &format!("{}/jwks", server.uri()),
+    )]);
+    (server, auth)
+}
+
+fn with_cookie(mut headers: HeaderMap, field: &str) -> HeaderMap {
+    headers.append("cookie", HeaderValue::from_str(field).unwrap());
+    headers
+}
+
+fn with_origin(mut headers: HeaderMap, origin: &[u8], host: Option<&str>) -> HeaderMap {
+    headers.insert("origin", HeaderValue::from_bytes(origin).unwrap());
+    if let Some(host) = host {
+        headers.insert("host", HeaderValue::from_str(host).unwrap());
+    }
+    headers
+}
+
+#[tokio::test]
+async fn the_jwt_cookie_authenticates_split_across_fields_and_quoted() {
+    let (server, auth) = cookie_auth().await;
+    let jwt = token(&claims(&server.uri()));
+    let split = with_cookie(
+        with_cookie(
+            with_cookie(HeaderMap::new(), "theme=dark"),
+            &format!("{JWT_COOKIE}={jwt}"),
+        ),
+        "lang=en",
+    );
+    assert_eq!(
+        codex_gate(&auth, &split).await,
+        authenticated("dev@example.com")
+    );
+    let quoted = with_cookie(
+        HeaderMap::new(),
+        &format!("a=1; {JWT_COOKIE}=\"{jwt}\"; b=2"),
+    );
+    assert_eq!(
+        codex_gate(&auth, &quoted).await,
+        authenticated("dev@example.com")
+    );
+}
+
+#[tokio::test]
+async fn a_chatgpt_bearer_plus_a_valid_cookie_authenticates() {
+    let (server, auth) = cookie_auth().await;
+    let chatgpt = token(&claims("https://auth.openai.example"));
+    let headers = with_cookie(
+        bearer(&chatgpt),
+        &format!("{JWT_COOKIE}={}", token(&claims(&server.uri()))),
+    );
+    assert_eq!(
+        codex_gate(&auth, &headers).await,
+        authenticated("dev@example.com")
+    );
+}
+
+#[tokio::test]
+async fn a_repeated_cookie_alone_is_rejected() {
+    let (server, auth) = cookie_auth().await;
+    let jwt = token(&claims(&server.uri()));
+    let one_field = with_cookie(
+        HeaderMap::new(),
+        &format!("{JWT_COOKIE}={jwt}; {JWT_COOKIE}={jwt}"),
+    );
+    assert_eq!(codex_gate(&auth, &one_field).await, Outcome::Rejected);
+    let two_fields = with_cookie(
+        with_cookie(HeaderMap::new(), &format!("{JWT_COOKIE}={jwt}")),
+        &format!("{JWT_COOKIE}={jwt}"),
+    );
+    assert_eq!(codex_gate(&auth, &two_fields).await, Outcome::Rejected);
+}
+
+#[tokio::test]
+async fn a_non_utf8_cookie_byte_does_not_hide_a_duplicate() {
+    let (server, auth) = cookie_auth().await;
+    let jwt = token(&claims(&server.uri()));
+    let mut headers = HeaderMap::new();
+    let mut field = format!("{JWT_COOKIE}={jwt}; junk=").into_bytes();
+    field.extend_from_slice(b"\xff\xfe");
+    field.extend_from_slice(format!("; {JWT_COOKIE}={jwt}").as_bytes());
+    headers.append("cookie", HeaderValue::from_bytes(&field).unwrap());
+    headers.append("cookie", HeaderValue::from_bytes(b"junk=\xff\xfe").unwrap());
+    assert_eq!(codex_gate(&auth, &headers).await, Outcome::Rejected);
+}
+
+#[tokio::test]
+async fn a_valid_header_jwt_wins_over_a_repeated_cookie() {
+    let (server, auth) = cookie_auth().await;
+    let jwt = token(&claims(&server.uri()));
+    let headers = with_cookie(
+        with_header(HeaderMap::new(), &jwt),
+        &format!("{JWT_COOKIE}=bad; {JWT_COOKIE}=bad"),
+    );
+    assert_eq!(
+        codex_gate(&auth, &headers).await,
+        authenticated("dev@example.com")
+    );
+}
+
+#[tokio::test]
+async fn a_cross_origin_null_or_unparseable_origin_disables_the_cookie() {
+    let (server, auth) = cookie_auth().await;
+    let jwt = token(&claims(&server.uri()));
+    let cookie = with_cookie(HeaderMap::new(), &format!("{JWT_COOKIE}={jwt}"));
+    for origin in [
+        &b"https://evil.example"[..],
+        b"null",
+        b"not a url",
+        b"https://\xff",
+    ] {
+        let headers = with_origin(cookie.clone(), origin, Some("gw.example"));
+        assert_eq!(
+            codex_gate(&auth, &headers).await,
+            Outcome::Rejected,
+            "{origin:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_same_origin_or_missing_origin_keeps_the_cookie() {
+    let (server, auth) = cookie_auth().await;
+    let jwt = token(&claims(&server.uri()));
+    let cookie = with_cookie(HeaderMap::new(), &format!("{JWT_COOKIE}={jwt}"));
+    assert_eq!(
+        codex_gate(&auth, &cookie).await,
+        authenticated("dev@example.com")
+    );
+    let same = with_origin(cookie, b"https://gw.example", Some("gw.example"));
+    assert_eq!(
+        codex_gate(&auth, &same).await,
+        authenticated("dev@example.com")
+    );
+}
+
+#[tokio::test]
+async fn origin_only_gates_the_cookie_not_the_header() {
+    let (server, auth) = cookie_auth().await;
+    let jwt = token(&claims(&server.uri()));
+    let headers = with_origin(
+        with_header(HeaderMap::new(), &jwt),
+        b"https://evil.example",
+        Some("gw.example"),
+    );
+    assert_eq!(
+        codex_gate(&auth, &headers).await,
+        authenticated("dev@example.com")
+    );
+}
+
+#[tokio::test]
+async fn the_client_slots_ignore_the_jwt_cookie() {
+    let (server, auth) = cookie_auth().await;
+    let headers = with_cookie(
+        HeaderMap::new(),
+        &format!("{JWT_COOKIE}={}", token(&claims(&server.uri()))),
+    );
+    assert_eq!(
+        gate::authenticate(&auth, &JwksCache::new(), &headers, Slots::Client).await,
+        Outcome::Rejected
+    );
+}

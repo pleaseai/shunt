@@ -16,7 +16,9 @@ use axum::response::{IntoResponse, Response};
 
 use crate::auth::inbound::{bearer_token, InboundAuth};
 use crate::auth::inbound_jwt::{self, JwksCache, JwtOutcome};
-use crate::auth::jwt_slots::{header_credential, Presented};
+use crate::auth::jwt_slots::{
+    cookie_credential, cookie_slot_allowed, header_credential, Presented,
+};
 use crate::error::ShuntError;
 
 /// Which credential slots a route accepts for the static-token check.
@@ -82,6 +84,14 @@ pub async fn authenticate(
             auth.jwt_header()
                 .map(|name| header_credential(headers, name)),
         );
+        // A cookie rides along on cross-origin browser requests, so the slot
+        // is consulted only when `Origin` does not rule it out (FR-12).
+        if cookie_slot_allowed(headers) {
+            presented.extend(
+                auth.jwt_cookie()
+                    .map(|name| cookie_credential(headers, name)),
+            );
+        }
     }
     verify_slots(auth, jwks, presented).await
 }
