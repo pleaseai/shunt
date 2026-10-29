@@ -120,6 +120,7 @@ fn config(upstream: &str, inbound_auth: bool, spend: SpendConfig) -> Config {
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: TOKENS_ENV.to_string(),
+            ..Default::default()
         });
     }
     config.server.admin = Some(admin());

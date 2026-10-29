@@ -162,6 +162,7 @@ fn config_with(anth: &str, resp: &str, metered: bool, classifier: bool) -> Confi
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: TOKENS_ENV.to_string(),
+        ..Default::default()
     });
     config.server.admin = Some(AdminConfig {
         header: "x-shunt-admin-token".to_string(),

@@ -1924,6 +1924,7 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
+        ..Default::default()
     });
     // An explicit, never-existing credentials path keeps the `/admin/api/pool`
     // requests below off the real on-disk store (see the `admin_config` doc

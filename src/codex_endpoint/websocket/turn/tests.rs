@@ -89,6 +89,7 @@ async fn ws_turn_attributes_before_stripping_an_auth_header_named_like_a_client_
         header: "originator".to_string(),
         tokens_env: "SHUNT_TEST_813_CLIENT_TOKENS".to_string(),
         jwt: Vec::new(),
+        ..Default::default()
     });
     config.server.codex_endpoint = Some(CodexEndpointConfig {
         provider: "codex".to_string(),
@@ -259,6 +260,7 @@ async fn ws_turn_strips_the_upgrade_time_auth_header_a_reload_renamed() {
         header: "originator".to_string(),
         tokens_env: "SHUNT_TEST_813_PASSTHROUGH_TOKENS".to_string(),
         jwt: Vec::new(),
+        ..Default::default()
     });
     config.server.codex_endpoint = Some(CodexEndpointConfig {
         provider: "codex".to_string(),

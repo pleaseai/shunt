@@ -107,6 +107,9 @@ Everything under spec `## Out of Scope`. Considered and not built:
 
 ## Progress
 
+- [x] (2026-10-30 KST) T001 Add `jwt_header` / `jwt_cookie` to `[server.auth]` with startup validation
+  Evidence: `cargo +1.98.1 test --lib -- config:: reload::` -> 483 passed, 0 failed; `cargo +1.98.1 clippy --all-targets -- -D warnings` -> clean; `cargo +1.98.1 test --workspace` -> 59 suites, 4403 passed, 0 failed (default features; `--all-features` needs `ui/dist` and a Python env absent here)
+
 ## Decision Log
 
 - 2026-10-30: Added FR-12 / AC-017 (cookie slot requires no `Origin` or a same-origin one) during planning. Both the spec review and the architect flagged cross-site use of an ambient cookie: an operator can point `jwt_cookie` at a JWT cookie a browser already holds for the gateway's domain (e.g. Cloudflare Access `CF_Authorization`), and the existing Origin check runs only without `[server.auth]`. The Codex CLI is not a browser, so the guard does not narrow requested behavior.
