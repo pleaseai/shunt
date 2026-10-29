@@ -52,22 +52,22 @@ Everything under spec `## Out of Scope`. Considered and not built:
 
 ## Tasks
 
-- [ ] T001 Add `jwt_header` / `jwt_cookie` to `[server.auth]` with startup validation (file: src/config.rs)
+- [ ] T001 Add `jwt_header` / `jwt_cookie` to `[server.auth]` with startup validation (file: src/config.rs) [FR-8, FR-10, AC-011, AC-012, AC-014, AC-015]
   Validation: each FR-8 clause fails startup with an error naming the key (AC-011, AC-012), including mixed-case or whitespace-padded reserved names and an empty string; with neither key set the resolved `InboundAuth` carries no header or cookie slot and every existing `config::` / `reload::` test passes unchanged (AC-015); a reload that adds `jwt_header` shows it on the next request snapshot (AC-014).
   Method: `cargo test --all-features --lib -- config:: reload::` and `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] T002 Strip the configured JWT header at every forward site (file: src/auth/slots.rs) (depends on T001)
+- [ ] T002 Strip the configured JWT header at every forward site (file: src/auth/slots.rs) (depends on T001) [FR-7, NFR-1]
   Validation: the configured header and every `cookie` field are absent after `strip_reserved_slots`; a WebSocket turn after a reload that removes or renames `jwt_header` still strips the upgrade-time name; with neither key set the forwarded header set is unchanged (NFR-1).
   Method: `cargo test --all-features --lib -- auth::slots codex_endpoint::websocket`
-- [ ] T003 Accept a JWT from the configured header on the Codex gate (file: src/auth/gate.rs) (depends on T002)
+- [ ] T003 Accept a JWT from the configured header on the Codex gate (file: src/auth/gate.rs) (depends on T002) [FR-1, FR-3, FR-4, FR-5, FR-9, NFR-2, AC-002, AC-006, AC-007, AC-013, AC-016]
   Validation: the header authenticates raw or with a `Bearer` scheme in any case (AC-002); a repeated header is `401` (AC-016), or `503` when an earlier slot's issuer was unreachable (AC-013); a wrong-audience token is `401` (AC-006); `Slots::Client` ignores the header (AC-007); the analytics sink accepts the same credential; the `401` body and the default-level log line are identical whichever slot was presented or failed, and no token value is logged (NFR-2).
   Method: `cargo test --all-features --lib -- auth::gate auth::jwt_slots codex_analytics`
-- [ ] T004 Accept a JWT from the configured cookie on the Codex gate (file: src/auth/jwt_slots.rs) (depends on T003)
+- [ ] T004 Accept a JWT from the configured cookie on the Codex gate (file: src/auth/jwt_slots.rs) (depends on T003) [FR-2, FR-12, AC-004, AC-005, AC-017]
   Validation: the cookie authenticates when split across several `cookie` fields and when quoted; a ChatGPT bearer plus a valid cookie authenticates (AC-004); the configured name repeated in one field or across fields is `401` (AC-005), and non-UTF-8 bytes neither hide a duplicate nor panic; an `Origin` that is cross-origin, `null`, or unparseable disables the cookie slot (AC-017) while a missing `Origin` keeps it.
   Method: `cargo test --all-features --lib -- auth::gate auth::jwt_slots`
-- [ ] T005 Prove header and cookie sign-in end to end on the Codex endpoint (file: tests/inbound_codex_jwt_slots.rs) (depends on T004)
+- [ ] T005 Prove header and cookie sign-in end to end on the Codex endpoint (file: tests/inbound_codex_jwt_slots.rs) (depends on T004) [FR-6, AC-001, AC-003, AC-008, AC-009, AC-010]
   Validation: against a mock JWKS and upstream — `/v1/responses` with only the header serves a turn (AC-001); a WebSocket upgrade on `/backend-api/codex/responses` with the cookie among others serves a turn, and a later turn after token expiry gets a `401` frame (AC-003); `/v1/messages` with only the header is `401` (AC-007); an over-cap cookie principal is refused with `usage_limit_reached` (AC-008); neither the pool nor a routed non-ChatGPT upstream receives the header or `cookie` (AC-009, AC-010); an unreachable issuer yields an OpenAI-shaped `503` (AC-013); a cross-origin WebSocket upgrade carrying only the cookie is `401` (AC-017).
   Method: `cargo test --all-features --test inbound_codex_jwt_slots`
-- [ ] T006 Document Codex gateway OAuth via `jwt_header` / `jwt_cookie` (file: site/src/content/docs/guides/connect-codex-cli.mdx) (depends on T004)
+- [ ] T006 Document Codex gateway OAuth via `jwt_header` / `jwt_cookie` (file: site/src/content/docs/guides/connect-codex-cli.mdx) (depends on T004) [FR-11]
   Validation: `docs/inbound-jwt-auth.md` §1/§3, `shunt.toml.example`, the configuration reference, the Codex connection guide, and a pointer in the inbound Codex endpoint guide cover the keys, slot order, the Origin rule, and an Entra ID example with every FR-11 pitfall, the per-turn WebSocket re-auth on token expiry, and `max_request_header_bytes` / proxy cookie-size caps; the `ko`, `ja`, `zh-cn` copies match; no locale page links an anchor its built page lacks; the README and its translations are checked and either updated or recorded in the Decision Log as needing no change.
   Method: `cd site && bun run build` exits 0 and the section renders in `site/dist/{,ko/,ja/,zh-cn/}guides/connect-codex-cli/index.html`
 
