@@ -52,7 +52,7 @@ store ok: sqlite sqlite:/var/lib/shunt/shunt.db, file does not exist yet; it is 
 
 ## 4. 停止运行中的实例
 
-正常停止当前的 shunt,让它把最后的池配额、refresh token 和支出变更写入快照。导入之后,没有使用存储的进程写入快照的内容不会进入存储,因此在旧实例退出之前不要启动新实例。
+正常停止当前的 shunt。没有存储时,refresh token 和支出限制在每次变更时都会写入快照,因此这些快照已经是最新的。池配额则不同:不使用存储的 shunt 每 15 秒保存一次池配额,关闭时不会再保存,因此快照可能缺少最近最多 15 秒的配额变更。配额会根据上游响应重新推算,代价只是受影响账户短暂冷启动;如果连这一点也想避免,请先停止发送流量,等待 15 秒后再停止 shunt。导入之后,没有使用存储的进程写入快照的内容不会进入存储,因此在旧实例退出之前不要启动新实例。
 
 ## 5. 带存储启动 shunt
 
@@ -73,7 +73,7 @@ shunt run
 
 ## 6. 检查导入结果
 
-- 每个已导入快照旁边会生成一个 `<state_path>.imported` 文件,记录后端、时间和快照的 SHA-256。
+- 每个已导入快照旁边通常会生成一个 `<state_path>.imported` 文件,记录后端、时间和快照的 SHA-256。shunt 在导入提交之后写入该文件;如果无法写入(例如快照所在目录为只读),只会记录警告 `imported the snapshot but could not write its .imported sidecar` 并继续运行。缺少该文件并不代表导入失败:以启动日志中的结果和 `import_record` 为准。
 - 存储中每个使用存储的子系统有一行 `import_record`。对于 SQLite:
 
   ```bash

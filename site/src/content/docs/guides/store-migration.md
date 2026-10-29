@@ -52,7 +52,7 @@ store ok: sqlite sqlite:/var/lib/shunt/shunt.db, file does not exist yet; it is 
 
 ## 4. Stop the running instance
 
-Stop the current shunt gracefully, so it writes its last pool quota, refresh tokens, and spend changes to the snapshots. Anything a store-less process writes to a snapshot after the import never reaches the store, so do not start the new instance until the old one has exited.
+Stop the current shunt gracefully. Without a store, refresh tokens and spend limits are written to their snapshots as they change, so those snapshots are already current. Pool quota is not: a store-less shunt saves it every 15 seconds and does not save it again at shutdown, so its snapshot can miss up to the last 15 seconds of quota changes. Quota is re-derived from upstream responses, so the cost is a short cold start for the affected accounts; to avoid even that, stop sending traffic and wait 15 seconds before stopping shunt. Anything a store-less process writes to a snapshot after the import never reaches the store, so do not start the new instance until the old one has exited.
 
 ## 5. Start shunt with the store
 
@@ -73,7 +73,7 @@ A malformed or version-mismatched snapshot stops the boot with `importing the <s
 
 ## 6. Check the import
 
-- Next to each imported snapshot there is now a `<state_path>.imported` file recording the backend, the time, and the snapshot's SHA-256.
+- Next to each imported snapshot there is usually a `<state_path>.imported` file recording the backend, the time, and the snapshot's SHA-256. shunt writes it after the import commits; if it cannot (for example, the snapshot's directory is read-only), it logs the warning `imported the snapshot but could not write its .imported sidecar` and carries on. A missing file does not mean the import failed: the startup outcome and `import_record` are what count.
 - The store has one `import_record` row per store-backed subsystem. For SQLite:
 
   ```bash
