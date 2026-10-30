@@ -469,6 +469,7 @@ pub(crate) fn passthrough_request_headers(
         }
         out.append(name.clone(), value.clone());
     }
+    crate::headers::strip_browser_context(&mut out);
     credentials.strip_reserved_slots(&mut out);
     out
 }

@@ -13,11 +13,34 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-use super::{run_turn, upstream_error_parts, TurnContext};
+use super::{auth_error_frame, run_turn, upstream_error_parts, TurnContext};
 use crate::client_attribution::{ClientAttribution, ClientKind};
 use crate::codex_endpoint::websocket::continuation::TurnRecorder;
 use crate::config::{CodexEndpointConfig, CodexRouteConfig, Config, InboundAuthConfig};
 use crate::server::AppState;
+
+#[test]
+fn a_turn_refused_for_its_origin_reports_403_not_an_invalid_token() {
+    // A reload that drops `[server.auth]` under a cross-origin connection makes
+    // the turn's re-authentication refuse the origin; the frame must say so
+    // rather than blame a token the client did present.
+    let frame: serde_json::Value =
+        serde_json::from_str(&auth_error_frame(axum::http::StatusCode::FORBIDDEN)).unwrap();
+    assert_eq!(frame["status"], 403);
+    assert_eq!(frame["error"]["type"], "forbidden");
+    assert!(frame["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("different browser origin"));
+
+    for (status, expected) in [
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, 503),
+        (axum::http::StatusCode::UNAUTHORIZED, 401),
+    ] {
+        let frame: serde_json::Value = serde_json::from_str(&auth_error_frame(status)).unwrap();
+        assert_eq!(frame["status"], expected);
+    }
+}
 
 #[test]
 fn upstream_detail_shape_is_surfaced_not_masked() {
