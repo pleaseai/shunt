@@ -189,7 +189,7 @@ pub(crate) const RESERVED_SLOTS: [&str; 4] = [
 ///
 /// Deliberately **not** `Default`, and the fields are private. An all-`None`
 /// value strips nothing at all — `strip_consumed_slots` matches no credential
-/// and every `if let Some(name)` arm of `strip_reserved_slots` are skipped — so
+/// and every `if let Some(name)` arm of `strip_reserved_slots` is skipped — so
 /// a `Default` is a placeholder that compiles and silently disables the whole
 /// boundary. [`Self::from_state`] is therefore the only way to build one
 /// outside tests, which also means the production callers must pass the real
