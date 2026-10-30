@@ -93,7 +93,7 @@ Rejected alternatives are in ADR-0007. Two more: persisting tokens before valida
 - [x] T010 Sign out with `shunt logout chatgpt-plan --name` (depends on T004) (file: src/auth/chatgpt_plan/logout.rs) [FR-13, AC-025, AC-026]
   Validation: a 200 from the revocation endpoint (discovered, https, issuer host only) clears the tokens, keeps client id and host id, and reports confirmed (AC-025); network or 5xx failures retry with bounded backoff, then clear locally and report "remote revocation not confirmed — finish in ChatGPT settings" (AC-026); an unknown provider or missing `--name` is a usage error; existing CLI parse tests pass unchanged.
   Method: `cargo test --all-features -- chatgpt_plan::logout` plus `main.rs` CLI parse tests
-- [ ] T011 Document the chatgpt-plan provider on every surface (depends on T002, T006, T010) (file: site/src/content/docs/guides/chatgpt-plan.mdx) [FR-15]
+- [x] T011 Document the chatgpt-plan provider on every surface (depends on T002, T006, T010) (file: site/src/content/docs/guides/chatgpt-plan.mdx) [FR-15]
   Validation: README (+ ko/ja/zh-CN), a site guide in en/ko/ja/zh-cn with a sidebar entry, `guides/providers.mdx`, `reference/cli.mdx` (login, logout, env vars), `reference/configuration.md` (auth value, preset), `shunt.toml.example`, `docs/m19-chatgpt-plan-provider.md`, and `docs/notes/chatgpt-plan.md` (probe findings, no token material) all describe setup, paste fallback, sign-out, preview limits (including that idle-gated escalation/advisor calls do not rotate on in-stream usage limits), and error meanings (FR-15); the site builds and no locale page links an anchor missing in its locale.
   Method: `bun run build` in `site/` plus a grep of `site/dist` for each locale fragment link; `wiki/` untouched
 
