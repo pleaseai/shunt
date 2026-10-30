@@ -144,8 +144,9 @@ codex-fallback = "gpt-5.6-sol"
 **ChatGPT 플랜(Sign in with ChatGPT).** `chatgpt-plan` 프리셋은 `api.openai.com/v1/responses`에서 OpenAI의 "Sign in with ChatGPT" 토큰 공유 프리뷰를 통해 ChatGPT 플랜을 사용하며, 위의 `codex` 프로바이더와는 별개입니다. `shunt login chatgpt-plan --name <account>`로 로그인하고(`127.0.0.1:1455`로의 브라우저 콜백, 또는 원격 호스트에서는 콜백 URL 붙여넣기), `provider = "chatgpt-plan"`인 순서 있는 `[[upstreams]]` 항목을 추가하고(프리셋이 `kind`, `base_url`, `auth = "chatgpt_plan_oauth"`를 채웁니다) 아래처럼 모델을 연결합니다. 이름 있는 여러 계정은 풀을 이루어 한 계정이 플랜 사용량 한도에 닿으면 순환하며, `shunt logout chatgpt-plan --name <account>`는 계정 하나를 폐기하고 지웁니다. 프리뷰는 일부 요청 파라미터를 거부하고, 출력이 시작된 뒤 사용량 한도에 닿으면 순환하지 않고 스트림이 끝납니다. [ChatGPT 플랜 가이드](https://shunt.sh/ko/guides/chatgpt-plan/)를 참고하세요.
 
 ```toml
-[server]
-default_provider = "chatgpt-plan"
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic" # preset: Claude models pass through to Anthropic
 
 [[upstreams]]
 name = "chatgpt-plan"

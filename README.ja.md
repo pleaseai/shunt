@@ -143,8 +143,9 @@ codex-fallback = "gpt-5.6-sol"
 **ChatGPT プラン（Sign in with ChatGPT）。** `chatgpt-plan` プリセットは、`api.openai.com/v1/responses` 上の OpenAI「Sign in with ChatGPT」トークン共有プレビューを通じて ChatGPT プランを消費します。上の `codex` プロバイダーとは別物です。`shunt login chatgpt-plan --name <account>` でサインインし（`127.0.0.1:1455` へのブラウザーコールバック、リモートホストではコールバック URL の貼り付け）、`provider = "chatgpt-plan"` を指定した順序付きの `[[upstreams]]` エントリーを追加し（プリセットが `kind`、`base_url`、`auth = "chatgpt_plan_oauth"` を補完します）、以下のようにモデルを割り当てます。名前付きの複数アカウントはプールとなり、1 つがプランの使用量上限に達するとローテーションします。`shunt logout chatgpt-plan --name <account>` は 1 つのアカウントを失効させて消去します。プレビューは一部のリクエストパラメーターを拒否し、出力開始後に使用量上限に達した場合はローテーションせずストリームが終了します。詳しくは [ChatGPT プランのガイド](https://shunt.sh/ja/guides/chatgpt-plan/)を参照してください。
 
 ```toml
-[server]
-default_provider = "chatgpt-plan"
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic" # preset: Claude models pass through to Anthropic
 
 [[upstreams]]
 name = "chatgpt-plan"

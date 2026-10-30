@@ -141,8 +141,9 @@ codex-fallback = "gpt-5.6-sol"
 **ChatGPT 套餐(Sign in with ChatGPT)。** `chatgpt-plan` 预设通过 `api.openai.com/v1/responses` 上 OpenAI 的 "Sign in with ChatGPT" 令牌共享预览使用 ChatGPT 套餐,与上面的 `codex` 提供方相互独立。用 `shunt login chatgpt-plan --name <account>` 登录(浏览器回调到 `127.0.0.1:1455`,远程主机上则粘贴回调 URL),添加一个 `provider = "chatgpt-plan"` 的有序 `[[upstreams]]` 条目(预设会补齐 `kind`、`base_url` 和 `auth = "chatgpt_plan_oauth"`),并按下面的方式映射模型。多个命名账户组成账户池,某个账户触达套餐用量上限时会轮换;`shunt logout chatgpt-plan --name <account>` 会撤销并清除一个账户。预览会拒绝一些请求参数,输出开始后触达用量上限时流会直接结束而不是轮换。详见 [ChatGPT 套餐指南](https://shunt.sh/zh-cn/guides/chatgpt-plan/)。
 
 ```toml
-[server]
-default_provider = "chatgpt-plan"
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic" # preset: Claude models pass through to Anthropic
 
 [[upstreams]]
 name = "chatgpt-plan"

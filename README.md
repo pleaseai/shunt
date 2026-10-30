@@ -143,8 +143,9 @@ Ordered `[[upstreams]]` entries additionally accept the presets `kimi`, `kimi-co
 **ChatGPT plan (Sign in with ChatGPT).** The `chatgpt-plan` preset spends a ChatGPT plan through OpenAI's "Sign in with ChatGPT" token-sharing preview on `api.openai.com/v1/responses`, separate from the `codex` provider above. Sign in with `shunt login chatgpt-plan --name <account>` (a browser callback on `127.0.0.1:1455`, or paste the callback URL on a remote host), add an ordered `[[upstreams]]` entry with `provider = "chatgpt-plan"` (the preset fills in `kind`, `base_url`, and `auth = "chatgpt_plan_oauth"`) and map a model to it, as below. Several named accounts form a pool that rotates when one hits its plan usage limit, and `shunt logout chatgpt-plan --name <account>` revokes and clears one. The preview rejects some request parameters and a usage limit hit after output starts ends the stream instead of rotating; see the [ChatGPT plan guide](https://shunt.sh/guides/chatgpt-plan/).
 
 ```toml
-[server]
-default_provider = "chatgpt-plan"
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic" # preset: Claude models pass through to Anthropic
 
 [[upstreams]]
 name = "chatgpt-plan"
