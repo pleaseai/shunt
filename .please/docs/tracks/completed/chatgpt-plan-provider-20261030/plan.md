@@ -207,3 +207,33 @@ Rejected alternatives are in ADR-0007. Two more: persisting tokens before valida
 - [x] (2026-10-30 KST) T011 Document the chatgpt-plan provider on every surface
   Evidence: `bun run build` in `site/` → Complete, 221 pages built; `bun run lint:docs` → 134 files lint clean; link check of 44 added internal links in `site/dist` → 0 missing pages or anchors (every fragment is `#shunt-login-chatgpt-plan` or `#shunt-logout-chatgpt-plan`, present in all four locales); guide + sidebar link present in en/ko/ja/zh-cn dist; `wiki/` and Rust untouched.
   Files beyond the task's `Files:`: the 3 locale guides, `site/src/lib/i18n.ts`, `guides/providers.mdx`, `reference/{cli.mdx,configuration.md}` (+ ko/ja/zh-cn copies), `README*.md`, `shunt.toml.example`, `docs/m19-chatgpt-plan-provider.md`, `docs/notes/chatgpt-plan.md`.
+- [x] (2026-10-30 KST) Review-stage commits (SHA: `f36c18ba`, `8f808ffc`, `0780d861`, `263d2a4a`, `34227672`, `ba2c4ebb`, `40087a98`, `2a8b48b2`)
+  Evidence: `cargo +1.98.1 test --features bench --no-fail-fast` (RUSTFLAGS=-D warnings) on the tree merged with `main` (eb491308) → 4593 passed / 0 failed over 61 suites; clippy --all-targets --features bench and fmt --check clean.
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+
+- A `chatgpt-plan` provider on OpenAI's Sign in with ChatGPT preview: `shunt login chatgpt-plan --name` (loopback listener or a pasted callback URL, ID token verified against OpenAI's keys), a named-account pool on the unchanged `OpenAi` Responses dialect with refresh before expiry, rotation on a usage limit (including an in-stream limit reported before any content), and `shunt logout chatgpt-plan --name` with RFC 7009 revocation.
+- SIWC error codes mapped to the Anthropic error shape, with a usage-page hint on 429 and a re-sign-in hint on 401.
+- Docs on every surface: README in 4 languages, the site guide and reference pages in 4 locales, `docs/m19-chatgpt-plan-provider.md`, `docs/notes/chatgpt-plan.md`, ADR-0007.
+
+### What Went Well
+
+- The live probe before planning settled the request shape, so the existing `OpenAi` dialect shipped unchanged and the plan held through implementation.
+- The multi-engine review loop found real defects the task tests missed: unbounded login and logout network calls, a sign-in commit race, and two logout races (a rotated token reported as revoked, and the rotated token itself left unrevoked).
+
+### What Could Improve
+
+- Logout needed three review rounds to converge, because releasing the account lock during revocation opened one race after another. Next time, a credential flow that drops a lock mid-operation should get its concurrent-writer cases written down in the plan, not discovered in review.
+- Validators rejected several reworded copies of findings already in the ledger as by-design (AC-009, AC-012). Ledger keys match on the exact title, so each rewording cost another validator.
+- The local toolchain could not build `--all-features`, so every local check ran `--features bench`. CI is the only `--all-features` run.
+- The disk filled when the merge bumped the crate version and doubled the test-binary set. Stale test binaries had to be pruned by hand.
+- The end-to-end smoke test against a real account (session-affinity headers, hosted `web_search`, a real revocation) was not run before finalize.
+
+### Tech Debt Created
+
+- `src/adapters/responses/pool_plan_tests.rs` is 695 lines, over the 500-line guideline (TD-025).
+- `error_hint` adds the usage-limit hint to every 429 from a plan account, including a 429 that is not a plan usage limit (TD-026).
+- The refresh deadline handling adapted from the xAI store was flagged as plausible but unproven in review (TD-027).
+- Follow-up issues: #868 (stop reason on `max_output_tokens`), #877 (login overwrite after an intervening logout), #878 (unrevoked tokens on the missing-scope path), #879 (pre-existing same-origin default-port fill-in).

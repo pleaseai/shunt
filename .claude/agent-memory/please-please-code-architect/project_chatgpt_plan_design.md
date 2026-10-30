@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-Track `.please/docs/tracks/active/chatgpt-plan-provider-20261030/`. Simplicity-perspective design chose:
+Track `.please/docs/tracks/completed/chatgpt-plan-provider-20261030/`. Simplicity-perspective design chose:
 
 - New `AuthMode::ChatgptPlanOauth` + `StoreFamily::ChatgptPlan` + `Credential::ChatgptPlan{access_token}`; no new `ResponsesFlavor` (api.openai.com host already yields `OpenAi`, which is what the preview accepts). Preset only, NOT in `Config::default()` / `upstream_order` (NFR-3: default routing must not change).
 - Pool reuses the xAI fork points in `adapters/responses/pool.rs` (`resolve_or_cooldown`, `classify_first`, `classify_retry`, `force_refresh_or_cooldown`); new code lives in a new `pool_plan.rs` because pool.rs is already >2000 lines.

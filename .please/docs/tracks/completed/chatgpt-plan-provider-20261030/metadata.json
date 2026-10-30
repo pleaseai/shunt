@@ -1,12 +1,13 @@
 {
   "track_id": "chatgpt-plan-provider-20261030",
   "type": "feature",
-  "status": "in_progress",
+  "status": "completed",
   "created_at": "2026-10-29T20:33:15Z",
-  "updated_at": "2026-10-29T21:17:30Z",
+  "updated_at": "2026-10-30T12:35:56Z",
   "issue": "#863",
-  "pr": "",
+  "pr": "#871",
   "project": "2",
   "project_item_id": "PVTI_lADODf_st84BRosizhEm0kg",
-  "code_branch": "feat/863-chatgpt-plan-provider"
+  "code_branch": "feat/863-chatgpt-plan-provider",
+  "code_pr": "#871"
 }

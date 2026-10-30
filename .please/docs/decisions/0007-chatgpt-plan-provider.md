@@ -85,4 +85,4 @@ HTTP status only; an in-stream failure is terminal and never cools an account
 
 ## Related
 
-- Track `chatgpt-plan-provider-20261030`: [spec](../tracks/active/chatgpt-plan-provider-20261030/spec.md), [plan](../tracks/active/chatgpt-plan-provider-20261030/plan.md)
+- Track `chatgpt-plan-provider-20261030`: [spec](../tracks/completed/chatgpt-plan-provider-20261030/spec.md), [plan](../tracks/completed/chatgpt-plan-provider-20261030/plan.md)
