@@ -180,6 +180,7 @@ async fn start_native_gateway(
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env,
+        ..Default::default()
     });
     let (router, _, _) = server::build_router(config).unwrap();
     start_server(router).await
@@ -227,6 +228,7 @@ async fn start_gateway(
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env,
+        ..Default::default()
     });
     let (router, _, _) = server::build_router(config).unwrap();
     start_server(router).await
@@ -469,6 +471,7 @@ async fn upgrade_after_reload_disables_endpoint_returns_responses_error_envelope
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
+        ..Default::default()
     });
     let (router, shared, _) = server::build_router(config.clone()).unwrap();
     let gateway = start_server(router).await;
@@ -702,6 +705,7 @@ async fn missing_model_websocket_uses_pinned_fallback_even_when_unknown_route_ex
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
+        ..Default::default()
     });
     let (router, _, _) = server::build_router(config).unwrap();
     let gateway = start_server(router).await;
@@ -777,6 +781,7 @@ async fn hot_reload_snapshot_routes_each_websocket_turn_once() {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
+        ..Default::default()
     });
     let (router, shared, _) = server::build_router(config.clone()).unwrap();
     let gateway = start_server(router).await;

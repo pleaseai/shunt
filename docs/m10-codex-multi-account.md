@@ -57,7 +57,7 @@ Each account has these fields:
 
 | Field | Required | Meaning |
 | :-- | :-- | :-- |
-| `name` | yes | Stable account label. Must contain only lowercase ASCII letters, digits, and hyphens. Names must be unique within the provider. A name-only entry resolves from the shunt account store. |
+| `name` | yes | Stable account label. Must contain only lowercase ASCII letters, digits, and `.`, `_`, `@`, `+` or `-`, and must not start or end with a dot, so a login's email address, in lowercase, is a valid name. Names must be unique within the provider. A name-only entry resolves from the shunt account store. |
 | `credentials` | no | Path to a Codex CLI `auth.json`-shaped file. shunt reads the `tokens` block, refreshes near expiry, and writes refreshed tokens back atomically — same read/refresh/write-back cycle as `~/.codex/auth.json` itself (see [`codex-configuration.md`](codex-configuration.md#4-authentication-codexauthjson)). |
 | `token_env` | no | Environment variable containing a raw ChatGPT access token. The value is used verbatim and is **not** refreshed; a 401 cools the account down instead of retrying. |
 | `uuid` | no | Stable upstream identity used to coalesce aliases. A name-only entry (resolved by a store scan) is filled in automatically from `tokens.account_id` or the access-token JWT *before* selection runs, so store-scanned aliases coalesce without any config change. A `credentials`- or `token_env`-configured entry's account id is resolved only *after* selection, for the request it sends — it never populates `uuid`, so such an entry's identity is its `uuid` when set, else its `name`; it coalesces with another alias whenever that identity equals the other alias's explicit `uuid` or name-fallback identity — set a matching nonblank `uuid` on both entries for a clear, intentional coalesce (shunt also warns on an accidental cross `uuid`/`name` collision). It is not written into the Codex request body. |
@@ -162,7 +162,7 @@ A pooled upstream response identifies the winning account — non-streaming and 
 x-shunt-account: backup
 ```
 
-Same caveat as M8: use neutral labels (`primary`, `backup-1`, `pool-a`) rather than names or emails on a shared gateway, since the header and the frame expose the configured account name to clients. The final translated-error relay after pool exhaustion carries neither; a name that fails the `[a-z0-9-]+` pre-validation is silently omitted rather than causing an error.
+Same caveat as M8: use neutral labels (`primary`, `backup-1`, `pool-a`) rather than names or emails on a shared gateway, since the header and the frame expose the configured account name to clients. The final translated-error relay after pool exhaustion carries neither; a name that is not a valid header value is silently omitted rather than causing an error (none is, under the shared account-name rule).
 
 ### WebSocket transport (`websocket = true`)
 

@@ -1,0 +1,1 @@
+- [Inbound auth/credential slot map](project_inbound_auth_map.md) — gate.rs, slots.rs strip wiring, Codex endpoint auth path, config literal count

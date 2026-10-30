@@ -411,6 +411,32 @@ pub struct InboundAuthConfig {
     /// use different claim vocabularies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jwt: Vec<InboundJwtConfig>,
+    /// Extra header that may carry a JWT from one of the `[[server.auth.jwt]]`
+    /// issuers, for deployments behind an identity-aware proxy. Requires at
+    /// least one `[[server.auth.jwt]]` entry; may not name `authorization`,
+    /// `x-api-key`, a shunt-reserved slot, or the `[server.auth]` /
+    /// `[server.admin]` header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt_header: Option<String>,
+    /// Cookie (case-sensitive name) that may carry such a JWT. Requires at
+    /// least one `[[server.auth.jwt]]` entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt_cookie: Option<String>,
+}
+
+impl Default for InboundAuthConfig {
+    /// The serde defaults, so a literal can name only the fields it cares
+    /// about. `resolve()` still fails closed: no tokens and no JWT entries is
+    /// an error, whatever built the value.
+    fn default() -> Self {
+        Self {
+            header: default_auth_header(),
+            tokens_env: default_tokens_env(),
+            jwt: Vec::new(),
+            jwt_header: None,
+            jwt_cookie: None,
+        }
+    }
 }
 
 /// One `[[server.auth.jwt]]` entry: an external issuer whose JWTs shunt
@@ -435,6 +461,20 @@ pub struct InboundJwtConfig {
     /// Individual verified addresses that are accepted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_emails: Vec<String>,
+    /// Workload-identity operator: claim name → accepted values. Every listed
+    /// claim must be a top-level JSON string equal to one of its values (AND
+    /// across claims, any-of within one).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub require: BTreeMap<String, StringList>,
+    /// Accepted `sub` prefixes. When non-empty, `sub` must be a string starting
+    /// with one of them. End a prefix at a delimiter (`repo:org/`), or it also
+    /// matches sibling names.
+    #[serde(default)]
+    pub subject_prefix: StringList,
+    /// Claim whose string value becomes the caller identity. Defaults to
+    /// `email`; required when the entry has no email rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_claim: Option<String>,
     /// Accepted signing algorithms. The token header's `alg` never selects the
     /// algorithm; this list does.
     #[serde(default = "default_jwt_algorithms")]
@@ -522,6 +562,13 @@ impl InboundAuthConfig {
             .enumerate()
             .map(|(index, entry)| entry.resolve(index))
             .collect::<Result<Vec<_>, _>>()?;
+        let jwt_slots = crate::auth::jwt_slots::resolve(
+            self.jwt_header.as_deref(),
+            self.jwt_cookie.as_deref(),
+            !jwt.is_empty(),
+            &header,
+        )
+        .map_err(|(key, message)| ConfigError::InvalidInboundJwtSlot { key, message })?;
         let raw = std::env::var(&self.tokens_env).unwrap_or_default();
         let tokens = if raw.trim().is_empty() {
             if jwt.is_empty() {
@@ -538,7 +585,9 @@ impl InboundAuthConfig {
                 }
             })?
         };
-        Ok(crate::auth::inbound::InboundAuth::new(header, tokens).with_jwt(jwt))
+        Ok(crate::auth::inbound::InboundAuth::new(header, tokens)
+            .with_jwt(jwt)
+            .with_jwt_slots(jwt_slots))
     }
 }
 
@@ -577,16 +626,61 @@ impl InboundJwtConfig {
             .map(|email| email.trim().to_ascii_lowercase())
             .filter(|email| !email.is_empty())
             .collect();
-        // Every entry must carry an authorization rule beyond `audience`.
-        // Phase 1 offers only the email operators; the rule is enforced here
-        // rather than documented because for some issuers `audience` is not an
-        // authorization decision at all — a GitHub Actions workflow picks its
-        // own `aud`, so any repository could mint a token carrying it.
-        if allowed_domains.is_empty() && allowed_emails.is_empty() {
+        let subject_prefixes = self.subject_prefix.resolve();
+        let mut require: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (claim, values) in &self.require {
+            let claim = claim.trim();
+            if claim.is_empty() {
+                return Err(invalid("require claim names must not be empty".to_string()));
+            }
+            if is_numeric_claim(claim) {
+                return Err(invalid(format!(
+                    "require.{claim} names a numeric claim, which never matches a string value"
+                )));
+            }
+            let values = values.resolve();
+            if values.is_empty() {
+                return Err(invalid(format!(
+                    "require.{claim} must list at least one non-empty value"
+                )));
+            }
+            if require.insert(claim.to_string(), values).is_some() {
+                return Err(invalid(format!("duplicate require claim name: {claim}")));
+            }
+        }
+        // Every entry must carry an authorization rule beyond `audience`; the
+        // rule is enforced here rather than documented because for some
+        // issuers `audience` is not an authorization decision at all — a
+        // GitHub Actions workflow picks its own `aud`, so any repository could
+        // mint a token carrying it.
+        let has_email_rule = !allowed_domains.is_empty() || !allowed_emails.is_empty();
+        let has_claim_rule = require
+            .keys()
+            .any(|claim| !matches!(claim.as_str(), "aud" | "iss"));
+        if !has_email_rule && !has_claim_rule && subject_prefixes.is_empty() {
             return Err(invalid(
-                "requires at least one email_domains or allowed_emails entry: audience alone is not an authorization rule".to_string(),
+                "requires at least one email_domains or allowed_emails entry, a require table naming a claim other than aud or iss, or a subject_prefix: audience alone is not an authorization rule".to_string(),
             ));
         }
+        let identity_claim = self
+            .identity_claim
+            .as_deref()
+            .map(str::trim)
+            .filter(|claim| !claim.is_empty());
+        let identity_claim = match identity_claim {
+            Some(claim) if is_numeric_claim(claim) => {
+                return Err(invalid(format!(
+                    "identity_claim {claim:?} names a numeric claim; the identity must be a string claim"
+                )))
+            }
+            Some(claim) => claim.to_string(),
+            None if has_email_rule => "email".to_string(),
+            None => {
+                return Err(invalid(
+                    "identity_claim is required when the entry has no email_domains or allowed_emails (a workload token carries no email)".to_string(),
+                ))
+            }
+        };
 
         let mut algorithms = Vec::new();
         for raw in &self.algorithms {
@@ -655,10 +749,19 @@ impl InboundJwtConfig {
             authorized_parties,
             allowed_domains,
             allowed_emails,
+            require: require.into_iter().collect(),
+            subject_prefixes,
+            identity_claim,
             clock_skew_seconds: self.clock_skew_seconds,
             max_token_age_seconds: self.max_token_age_seconds,
         })
     }
+}
+
+/// Registered JWT claims that are always numbers (RFC 7519 §4.1), so neither a
+/// `require` value nor an identity can ever match them.
+fn is_numeric_claim(claim: &str) -> bool {
+    matches!(claim, "exp" | "iat" | "nbf")
 }
 
 /// `[server.admin]` — opt-in admin web surface (M9). A **separate** credential
@@ -2814,7 +2917,10 @@ pub enum ConfigError {
     KimiOauthNotHttps { provider: String },
     #[error("providers.{provider}.accounts contains duplicate account name \"{name}\"")]
     DuplicateAccountName { provider: String, name: String },
-    #[error("providers.{provider}.accounts account name \"{name}\" must match [a-z0-9-]+")]
+    #[error(
+        "providers.{provider}.accounts account name \"{name}\" must contain {rule}",
+        rule = crate::auth::shared::ACCOUNT_NAME_RULE
+    )]
     InvalidAccountName { provider: String, name: String },
     #[error("providers.{provider}.accounts account \"{name}\" sets both credentials and token_env; set at most one credential source")]
     AccountMultipleCredentialSources { provider: String, name: String },
@@ -3154,6 +3260,8 @@ pub enum ConfigError {
     InvalidClientTokens { env: String, message: String },
     #[error("[[server.auth.jwt]] entry {index}: {message}")]
     InvalidInboundJwt { index: usize, message: String },
+    #[error("server.auth.{key} is invalid: {message}")]
+    InvalidInboundJwtSlot { key: &'static str, message: String },
     #[error("[[server.auth.jwt]] entry {index} uses issuer {issuer}, which is also [server.gateway] public_url: the gateway's own session tokens and this issuer's tokens would be indistinguishable")]
     InboundJwtCollidesWithGateway { index: usize, issuer: String },
     #[error("sentry.dsn is not a valid DSN: {message}")]
@@ -4363,8 +4471,10 @@ impl Config {
         }
         // Fail closed at boot: [server.auth] without resolvable tokens is an
         // error, not an open gateway.
+        let mut jwt_header = None;
         if let Some(auth) = &self.server.auth {
             let resolved = auth.resolve()?;
+            jwt_header = resolved.jwt_header().cloned();
             // Keep the two JWT paths unambiguous. `[server.gateway]` mints its
             // own session tokens with `iss` equal to its `public_url`, and
             // `authenticate_bearer` checks them on the same header slot as an
@@ -4407,8 +4517,25 @@ impl Config {
         // would be an unauthenticated admin surface. Reject it rather than run
         // open. This also runs the admin key arrays' shape and cross-set
         // uniqueness checks (see `AdminConfig::resolve`).
-        if let Some(admin) = &self.server.admin {
-            admin.resolve()?;
+        let admin_auth = self
+            .server
+            .admin
+            .as_ref()
+            .map(|admin| admin.resolve())
+            .transpose()?;
+        // `jwt_header` is a header shunt reads a JWT from; it may not also be
+        // the admin token header. (`[server.auth] header` is checked in
+        // `InboundAuthConfig::resolve`.)
+        if let (Some(jwt_header), Some(admin_auth)) = (&jwt_header, &admin_auth) {
+            if jwt_header == admin_auth.header() {
+                return Err(ConfigError::InvalidInboundJwtSlot {
+                    key: "jwt_header",
+                    message: format!(
+                        "{} is already the [server.admin] header",
+                        admin_auth.header()
+                    ),
+                });
+            }
         }
         // `[server.spend]` authenticates with the admin credential, so it
         // cannot be served without one.
@@ -6848,7 +6975,7 @@ mod tests {
             ConfigError::DuplicateAccountName { .. }
         ));
 
-        for invalid in ["", "Main", "main_account", "main.account"] {
+        for invalid in ["", "Main", ".main", "main.", "main/account"] {
             let mut config = claude_oauth_config();
             config.providers.get_mut("anthropic").unwrap().accounts = vec![account(invalid)];
             assert!(matches!(
@@ -6856,6 +6983,14 @@ mod tests {
                 ConfigError::InvalidAccountName { .. }
             ));
         }
+
+        // A login's own email address is a valid name.
+        let mut config = claude_oauth_config();
+        config.providers.get_mut("anthropic").unwrap().accounts = vec![
+            account("first.last+work@example.com"),
+            account("main_account"),
+        ];
+        config.validate().expect("email-shaped names are valid");
     }
 
     #[test]
@@ -9449,6 +9584,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: default_auth_header(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let result = config.validate();
         std::env::remove_var(&env);
@@ -9578,6 +9714,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let anthropic = config.providers.get_mut("anthropic").unwrap();
         anthropic.auth = AuthMode::ClaudeOauth;
@@ -9605,6 +9742,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let anthropic = config.providers.get_mut("anthropic").unwrap();
         anthropic.auth = AuthMode::ClaudeOauth;
@@ -9629,6 +9767,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let anthropic = config.providers.get_mut("anthropic").unwrap();
         anthropic.auth = AuthMode::ClaudeOauth;
@@ -14122,6 +14261,9 @@ routes:
             audience: super::StringList::One("shunt-clients".to_string()),
             email_domains: vec!["example.com".to_string()],
             allowed_emails: Vec::new(),
+            require: BTreeMap::new(),
+            subject_prefix: super::StringList::default(),
+            identity_claim: None,
             algorithms: vec!["RS256".to_string()],
             authorized_parties: Vec::new(),
             clock_skew_seconds: 0,
@@ -14135,6 +14277,7 @@ routes:
             header: default_auth_header(),
             tokens_env: tokens_env.to_string(),
             jwt: entries,
+            ..Default::default()
         }
     }
 
@@ -14171,6 +14314,204 @@ routes:
         ));
     }
 
+    /// `auth_with_jwt` plus the two optional slot keys.
+    fn auth_with_slots(
+        entries: Vec<InboundJwtConfig>,
+        tokens_env: &str,
+        jwt_header: Option<&str>,
+        jwt_cookie: Option<&str>,
+    ) -> InboundAuthConfig {
+        InboundAuthConfig {
+            jwt_header: jwt_header.map(str::to_string),
+            jwt_cookie: jwt_cookie.map(str::to_string),
+            ..auth_with_jwt(entries, tokens_env)
+        }
+    }
+
+    /// The offending key named by an `InvalidInboundJwtSlot`, asserting the
+    /// rendered message names it too.
+    fn slot_error_key(error: ConfigError) -> &'static str {
+        let rendered = error.to_string();
+        match error {
+            ConfigError::InvalidInboundJwtSlot { key, .. } => {
+                assert!(rendered.contains(key), "{rendered}");
+                key
+            }
+            other => panic!("expected InvalidInboundJwtSlot, got {other}"),
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_slots_default_to_none() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_NONE");
+        let resolved = auth_with_jwt(vec![jwt_entry()], &env).resolve().unwrap();
+        assert!(resolved.jwt_header().is_none());
+        assert!(resolved.jwt_cookie().is_none());
+    }
+
+    #[test]
+    fn inbound_jwt_slots_resolve_onto_inbound_auth() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_OK");
+        let resolved = auth_with_slots(
+            vec![jwt_entry()],
+            &env,
+            Some("X-Forwarded-Access-Token"),
+            Some("Proxy_Jwt"),
+        )
+        .resolve()
+        .expect("valid slots resolve");
+        assert_eq!(
+            resolved.jwt_header().map(|name| name.as_str()),
+            Some("x-forwarded-access-token")
+        );
+        // Cookie names are case-sensitive: the configured spelling survives.
+        assert_eq!(resolved.jwt_cookie(), Some("Proxy_Jwt"));
+    }
+
+    #[test]
+    fn inbound_jwt_slots_parse_from_toml() {
+        let auth: InboundAuthConfig =
+            toml::from_str("jwt_header = \"x-iap-jwt\"\njwt_cookie = \"iap\"\n").unwrap();
+        assert_eq!(auth.jwt_header.as_deref(), Some("x-iap-jwt"));
+        assert_eq!(auth.jwt_cookie.as_deref(), Some("iap"));
+        let bare: InboundAuthConfig = toml::from_str("").unwrap();
+        assert!(bare.jwt_header.is_none() && bare.jwt_cookie.is_none());
+        assert_eq!(bare.header, "x-shunt-token");
+    }
+
+    #[test]
+    fn inbound_jwt_slot_without_a_jwt_entry_names_the_key() {
+        // Fires before the tokens check, so no env needs to be set.
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_NO_ENTRY");
+        for (header, cookie, key) in [
+            (Some("x-iap-jwt"), None, "jwt_header"),
+            (None, Some("iap"), "jwt_cookie"),
+            // An empty string is "set", not "unset".
+            (Some(""), None, "jwt_header"),
+            (None, Some(""), "jwt_cookie"),
+        ] {
+            let error = auth_with_slots(Vec::new(), &env, header, cookie)
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), key);
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_header_rejects_unusable_names() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_HEADER");
+        for bad in [
+            "",
+            "   ",
+            " x-iap-jwt",
+            "x-iap-jwt ",
+            "x iap",
+            "x-iap\u{e9}",
+            "Authorization",
+            "X-API-KEY",
+            "Cookie",
+            "X-Shunt-Token",
+            "x-shunt-admin-token",
+            "X-Shunt-Inbound-Client",
+            "Session-Id",
+            "X-Claude-Code-Session-Id",
+            "Content-Type",
+            "content-length",
+            "Content-Encoding",
+            "Transfer-Encoding",
+            "Host",
+            "Origin",
+            "Upgrade",
+            "Connection",
+            "OpenAI-Beta",
+            "Sec-WebSocket-Key",
+            "sec-websocket-protocol",
+            "Thread-Id",
+            "x-client-request-id",
+            "X-Codex-Window-Id",
+            "Originator",
+            "X-Codex-Routing-Hint",
+        ] {
+            let error = auth_with_slots(vec![jwt_entry()], &env, Some(bad), None)
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), "jwt_header", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_header_rejects_the_configured_auth_header() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_STATIC");
+        let mut auth = auth_with_slots(vec![jwt_entry()], &env, Some("X-Custom-Token"), None);
+        auth.header = "x-custom-token".to_string();
+        assert_eq!(slot_error_key(auth.resolve().unwrap_err()), "jwt_header");
+    }
+
+    #[test]
+    fn inbound_jwt_cookie_rejects_invalid_names() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_COOKIE");
+        for bad in [
+            "", "a=b", "a b", "a;b", "a,b", "a\"b", "a(b)", "a/b", " a", "a\tb",
+        ] {
+            let error = auth_with_slots(vec![jwt_entry()], &env, None, Some(bad))
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), "jwt_cookie", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_cookie_rejects_the_admin_session_cookie() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_COOKIE_ADMIN");
+        for bad in ["shunt_admin_session", "Shunt_Admin_Session"] {
+            let error = auth_with_slots(vec![jwt_entry()], &env, None, Some(bad))
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), "jwt_cookie", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_header_equal_to_the_admin_header_fails_validation() {
+        let _env_lock = crate::config::test_env_lock();
+        let tokens_env = format!("SHUNT_TEST_SLOT_ADMIN_{}", std::process::id());
+        std::env::remove_var(&tokens_env);
+        let build = |jwt_header: &str| {
+            let mut config = Config::default();
+            config.server.auth = Some(auth_with_slots(
+                vec![jwt_entry()],
+                &unset_tokens_env("SLOTS_ADMIN"),
+                Some(jwt_header),
+                None,
+            ));
+            config.server.admin = Some(admin_config_with_keys(
+                &tokens_env,
+                vec![admin_key("terraform", ADMIN_KEY_A)],
+                Vec::new(),
+            ));
+            config
+        };
+
+        // Case-insensitive: the admin header is `x-shunt-admin-token`, which is
+        // also a reserved slot, so use a distinct admin header to reach the
+        // admin-specific comparison.
+        let mut config = build("X-Admin-Proxy");
+        config.server.admin.as_mut().unwrap().header = "x-admin-proxy".to_string();
+        assert_eq!(slot_error_key(config.validate().unwrap_err()), "jwt_header");
+
+        // A different name validates.
+        build("x-iap-jwt")
+            .validate()
+            .expect("a distinct jwt_header validates alongside [server.admin]");
+    }
+
     #[test]
     fn inbound_jwt_requires_an_authorization_rule_beyond_audience() {
         // `audience` is not an authorization decision for every issuer — a
@@ -14188,6 +14529,156 @@ routes:
                 if message.contains("email_domains")),
             "{error}"
         );
+    }
+
+    #[test]
+    fn inbound_jwt_workload_entry_needs_an_identity_claim() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("NO_IDENTITY");
+        let mut require_only = jwt_entry();
+        require_only.email_domains = Vec::new();
+        require_only.require = BTreeMap::from([(
+            "repository_owner".to_string(),
+            super::StringList::One("o".into()),
+        )]);
+        let mut subject_only = jwt_entry();
+        subject_only.email_domains = Vec::new();
+        subject_only.subject_prefix = super::StringList::One("repo:o/".to_string());
+        let mut empty_prefix = jwt_entry();
+        empty_prefix.email_domains = Vec::new();
+        empty_prefix.subject_prefix = super::StringList::One("  ".to_string());
+        empty_prefix.identity_claim = Some("repository".to_string());
+
+        for (entry, needle) in [
+            (require_only, "identity_claim"),
+            (subject_only, "identity_claim"),
+            (empty_prefix, "authorization rule"),
+        ] {
+            let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+            assert!(
+                matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                    if message.contains(needle)),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_an_empty_require_claim_name_or_value_list() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("REQUIRE_SHAPE");
+        for require in [
+            BTreeMap::from([(
+                "repository_owner".to_string(),
+                super::StringList::Many(vec![" ".into()]),
+            )]),
+            BTreeMap::from([(
+                "repository_owner".to_string(),
+                super::StringList::Many(Vec::new()),
+            )]),
+            BTreeMap::from([(" ".to_string(), super::StringList::One("o".into()))]),
+        ] {
+            let mut entry = jwt_entry();
+            entry.require = require.clone();
+            assert!(
+                matches!(
+                    auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+                    ConfigError::InvalidInboundJwt { index: 0, .. }
+                ),
+                "{require:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_require_on_aud_or_iss_is_not_an_authorization_rule() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("REQUIRE_AUD");
+        for claim in ["aud", "iss"] {
+            let mut entry = jwt_entry();
+            entry.email_domains = Vec::new();
+            entry.identity_claim = Some("repository".to_string());
+            entry.require =
+                BTreeMap::from([(claim.to_string(), super::StringList::One("shunt-ci".into()))]);
+            let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+            assert!(
+                matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                    if message.contains("other than aud or iss")),
+                "{claim}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_numeric_claims_in_require_and_identity_claim() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("NUMERIC_CLAIM");
+        for claim in ["exp", "iat", "nbf"] {
+            let mut required = jwt_entry();
+            required.require =
+                BTreeMap::from([(claim.to_string(), super::StringList::One("1".into()))]);
+            let mut identity = jwt_entry();
+            identity.identity_claim = Some(claim.to_string());
+            for entry in [required, identity] {
+                let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+                assert!(
+                    matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                        if message.contains("numeric claim")),
+                    "{claim}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_duplicate_require_claim_names_after_trimming() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("REQUIRE_DUP");
+        let mut entry = jwt_entry();
+        entry.require = BTreeMap::from([
+            (
+                "repository_id".to_string(),
+                super::StringList::One("7654321".into()),
+            ),
+            (
+                " repository_id ".to_string(),
+                super::StringList::One("7654322".into()),
+            ),
+        ]);
+        assert!(matches!(
+            auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+            ConfigError::InvalidInboundJwt { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_workload_entry_resolves_from_toml() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("WORKLOAD");
+        for require in [
+            r#"{ repository_owner = ["pleaseai"] }"#,
+            r#"{ repository_owner = "pleaseai" }"#,
+        ] {
+            let entry: InboundJwtConfig = toml::from_str(&format!(
+                r#"
+                issuer = "https://issuer.example"
+                audience = "shunt-clients"
+                require = {require}
+                subject_prefix = "repo:pleaseai/"
+                identity_claim = " repository "
+                "#
+            ))
+            .expect("workload entry parses");
+
+            let resolved = auth_with_jwt(vec![entry], &env).resolve().unwrap();
+            let rule = &resolved.jwt()[0];
+            assert_eq!(
+                rule.require,
+                vec![("repository_owner".to_string(), vec!["pleaseai".to_string()])]
+            );
+            assert_eq!(rule.subject_prefixes, vec!["repo:pleaseai/".to_string()]);
+            assert_eq!(rule.identity_claim, "repository");
+        }
     }
 
     #[test]

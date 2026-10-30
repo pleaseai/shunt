@@ -271,6 +271,11 @@ pub(super) fn session_affinity_headers(
 /// chatgpt-oauth origin passes config validation (the https and host checks
 /// skip loopback) and stays unguarded; it already holds the plaintext bearer
 /// by design, so the guard adds nothing there.
+///
+/// Anthropic origins get the same guard for the same reason. A Messages turn
+/// carries `x-api-key` on the api-key arm, which reqwest does not count as a
+/// credential and so keeps across a host change, and on any arm a 307 or 308
+/// replays the prompt body to the new host.
 pub(crate) fn codex_identity_redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
         let origin = attempt.previous().first().and_then(|url| url.host_str());
@@ -281,6 +286,9 @@ pub(crate) fn codex_identity_redirect_policy() -> reqwest::redirect::Policy {
             }
             Some(origin) if crate::config::host_is_chatgpt(origin) => {
                 !crate::config::host_is_chatgpt(target)
+            }
+            Some(origin) if crate::config::host_is_anthropic(origin) => {
+                !crate::config::host_is_anthropic(target)
             }
             _ => false,
         };
@@ -825,6 +833,78 @@ mod tests {
             "the identity headers and account id must not follow a cross-host redirect"
         );
         backend.verify().await;
+    }
+
+    /// Same guard, Anthropic origin: a cross-host 3xx from api.anthropic.com
+    /// stops at the hop, so neither the `x-api-key` header (which reqwest keeps
+    /// across a host change) nor the replayed prompt body reaches the redirect
+    /// target, while a hop within anthropic.com still follows.
+    #[tokio::test]
+    async fn a_cross_host_redirect_from_anthropic_never_carries_the_key_or_body() {
+        use wiremock::{
+            matchers::{header, method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+
+        let anthropic = MockServer::start().await;
+        let relay = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("x-api-key", "sk-ant-redir"))
+            .respond_with(
+                ResponseTemplate::new(reqwest::StatusCode::TEMPORARY_REDIRECT)
+                    .insert_header("location", format!("{}/v1/messages", relay.uri())),
+            )
+            .expect(1)
+            .mount(&anthropic)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/follow"))
+            .respond_with(
+                ResponseTemplate::new(reqwest::StatusCode::TEMPORARY_REDIRECT)
+                    .insert_header("location", "http://api.anthropic.com/v1/landed"),
+            )
+            .expect(1)
+            .mount(&anthropic)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/landed"))
+            .respond_with(ResponseTemplate::new(reqwest::StatusCode::OK))
+            .expect(1)
+            .mount(&anthropic)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .redirect(crate::adapters::responses::request::codex_identity_redirect_policy())
+            .resolve("api.anthropic.com", *anthropic.address())
+            .build()
+            .unwrap();
+
+        let response = client
+            .post("http://api.anthropic.com/v1/messages")
+            .header("x-api-key", "sk-ant-redir")
+            .body(r#"{"messages":[]}"#)
+            .send()
+            .await
+            .expect("the redirect stops at the hop and returns the 307");
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT,
+            "a refused cross-host hop returns the upstream redirect"
+        );
+        let followed = client
+            .post("http://api.anthropic.com/v1/follow")
+            .header("x-api-key", "sk-ant-follow")
+            .body("{}")
+            .send()
+            .await
+            .expect("the same-host hop follows to the landing path");
+        assert_eq!(followed.status(), reqwest::StatusCode::OK);
+        assert!(
+            relay.received_requests().await.unwrap().is_empty(),
+            "the api key and prompt body must not follow a cross-host redirect"
+        );
+        anthropic.verify().await;
     }
 
     #[test]

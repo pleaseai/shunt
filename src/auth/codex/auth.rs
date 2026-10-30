@@ -121,8 +121,9 @@ pub struct CodexAuthStore {
 }
 
 /// Resolve the Codex OAuth refresh endpoint from a raw `SHUNT_CODEX_TOKEN_URL`
-/// value, rejecting an empty, malformed, or non-loopback-plaintext override that
-/// would egress the long-lived `refresh_token` off-origin or in the clear. Binds
+/// value, rejecting an empty, malformed, or off-host override (anything but
+/// loopback or HTTPS to `auth.openai.com`) that would egress the long-lived
+/// `refresh_token`. Binds
 /// the shared [`crate::auth::shared::sanitize_token_url`] guard to the production
 /// `auth.openai.com` default; the Claude store shares the same guard (#118) so
 /// the two cannot drift.
@@ -621,10 +622,16 @@ mod tests {
         // Unset or empty → the real production endpoint.
         assert_eq!(resolved(None), TOKEN_URL);
         assert_eq!(resolved(Some(String::new())), TOKEN_URL);
-        // HTTPS to any host is fine — the refresh_token is encrypted in transit.
+        // HTTPS to the production endpoint's own host is honored.
+        assert_eq!(
+            resolved(Some("https://auth.openai.com/v2/token".to_string())),
+            "https://auth.openai.com/v2/token"
+        );
+        // HTTPS to any other host is not: the refresh_token would reach it on
+        // the first hop, encrypted in transit but in full.
         assert_eq!(
             resolved(Some("https://mock.example/token".to_string())),
-            "https://mock.example/token"
+            TOKEN_URL
         );
         // Plain HTTP is allowed only for a loopback test mock.
         assert_eq!(
@@ -1486,6 +1493,37 @@ mod tests {
             .send()
             .await
             .expect_err("must not follow a redirect to a plaintext off-host target");
+        assert!(
+            error.is_redirect(),
+            "expected redirect refusal, got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_refresh_client_refuses_offhost_https_redirect() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // HTTPS hides the body in transit, but a 307 replays it, refresh_token
+        // included, to whichever host the endpoint names. Only a hop on the host
+        // the request started on is followed. `.invalid` never resolves, so a
+        // client that followed would fail on DNS instead (`is_connect`, not
+        // `is_redirect`).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", "https://refresh-thief.invalid/token"),
+            )
+            .mount(&server)
+            .await;
+
+        let error = crate::auth::shared::token_refresh_client()
+            .post(format!("{}/token", server.uri()))
+            .body("grant_type=refresh_token&refresh_token=secret")
+            .send()
+            .await
+            .expect_err("must not follow a redirect to another host, even over https");
         assert!(
             error.is_redirect(),
             "expected redirect refusal, got: {error}"

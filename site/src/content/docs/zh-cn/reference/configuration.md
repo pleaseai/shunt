@@ -43,6 +43,8 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | :-- | :-- | :-- |
 | `header` | `x-shunt-token` | 携带客户端 token 的头部 |
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | 保存逗号分隔的 `name:token` 对的环境变量 |
+| `jwt_header` | 未设置 | 入站 Codex 端点额外从中读取 IdP JWT 的头部,对应 Codex `gateway_oauth` 的 `delivery.kind = "header"` |
+| `jwt_cookie` | 未设置 | 入站 Codex 端点额外从中读取 IdP JWT 的 cookie,对应 `delivery.kind = "cookie"` |
 
 指定的环境变量必须包含至少一个凭据,例如 `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`。若此表存在但该变量未设置、为空或格式错误,启动会安全失败(fail closed)。被门控的路由(映射的 `/v1/messages` 推理和 `GET /v1/models` 发现)接受 token 出现在配置的头部、`Authorization: Bearer` 或 `x-api-key` 中 —— 当多个槽位携带有效 token 时,专用头部优先。
 
@@ -62,6 +64,13 @@ tokens_env = "SHUNT_CLIENT_TOKENS"   # 配置了 JWT issuer 后即为可选
 issuer = "https://accounts.google.com"
 audience = ["<专供 shunt 使用的 client id>"]
 email_domains = ["example.com"]
+
+# 工作负载身份:GitHub Actions 的 OIDC token 不带 email
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
 ```
 
 | 键 | 默认值 | 含义 |
@@ -70,21 +79,42 @@ email_domains = ["example.com"]
 | `audience` | 必填 | 接受的 `aud` 值,字符串或数组 |
 | `email_domains` | `[]` | 不区分大小写的域名,与最后一个 `@` 之后的部分**精确**匹配,不是后缀匹配 |
 | `allowed_emails` | `[]` | 不区分大小写的完整邮箱地址 |
+| `require` | `{}` | 声明名 → 字符串或字符串数组的表。列出的每个声明都必须是顶层 JSON **字符串**,并与其某个值精确相等(区分大小写);不同声明之间为 AND。用于不带 `email` 的工作负载 issuer |
+| `subject_prefix` | `[]` | 字符串或数组。设置后,`sub` 必须以其中之一开头(区分大小写)。前缀应止于分隔符,例如 `repo:pleaseai/`(`repo:pleaseai` 也会匹配 `pleaseai-evil`)。GitHub 的 `sub` 格式因仓库创建时间和管理员自定义而异,应优先对 ID 声明使用 `require` |
+| `identity_claim` | `email` | 其字符串值(非空,不超过 256 字节)成为调用方身份的声明。条目没有 `email_domains`/`allowed_emails` 时必填。应选择 `repository` 这类长度受限的声明,而不是 `sub`。身份不带 issuer 前缀,与静态客户端名称或其他条目的身份值相同时,在用量和 spend 中会被视为同一调用方,因此应避免 `actor` 这类单纯的用户名声明 |
 | `algorithms` | `["RS256"]` | 接受的签名算法,仅限非对称算法 |
 | `authorized_parties` | `audience` | `azp` claim 存在时接受的值 |
 | `clock_skew_seconds` | `0` | 应用于 `exp` 和 `nbf` 的容差 |
 | `max_token_age_seconds` | `3600` | `exp - iat` 超过该值时拒绝 |
 | `jwks_url` | discovery | 为不提供 discovery 文档的 issuer 显式指定 JWKS 端点 |
 
-每个条目都需要 `issuer`、`audience`,以及至少一个 `email_domains` 或 `allowed_emails` 值。仅有 `audience` 不构成授权规则 —— 对某些 issuer 来说,调用方可以自行选择 audience。如果 `algorithms` 含有对称算法或未知值,或者 `issuer` 与 `[server.gateway]` 的 `public_url` 相同,启动同样会 fail closed:两个验证器读取同一个 bearer 槽位,issuer 相同会让 token 的归属取决于求值顺序。
+每个条目都需要 `issuer`、`audience`,以及至少一条授权规则:`email_domains`/`allowed_emails` 值、指定了 `aud`、`iss` 以外声明的 `require` 表(这两者只是重复 shunt 已经做过的检查)或 `subject_prefix`。仅有 `audience` 不构成授权规则 —— 对某些 issuer 来说,调用方可以自行选择 audience(任何 GitHub 仓库都可以签发带有任意 `aud` 的 token)。没有邮箱规则的条目还必须设置 `identity_claim`。所有已配置的组(邮箱规则、`require`、`subject_prefix`)都必须通过。条目有邮箱规则、身份声明为 `email`,或 `require` 指定了 `email` 时,会强制 `email_verified = true`;其他条目不会读取 `email`。如果 `algorithms` 含有对称算法或未知值,或者 `issuer` 与 `[server.gateway]` 的 `public_url` 相同,启动同样会 fail closed:两个验证器读取同一个 bearer 槽位,issuer 相同会让 token 的归属取决于求值顺序。
 
 只要存在至少一个条目,`tokens_env` 就可以解析为空 —— 完全通过 IdP 认证的部署没有静态 token 需要设置。既没有可解析的 token 列表也没有条目时,`[server.auth]` 仍然启动失败。
 
-JWT **只**通过 `Authorization: Bearer` 接受 —— 不接受配置的 `header`,也不接受 `x-api-key`。这正是 Claude Code 已经发送 `ANTHROPIC_AUTH_TOKEN` 的槽位。在受控路由上先检查静态 token,该路由接受时再检查 gateway JWT,然后按 `iss` 检查 JWT 条目。验证会从 config 固定算法(token header 里的 `alg` 永远不参与选择)、要求 `kid`,并检查 `exp`/`nbf`、`aud`、`azp`、`exp - iat`、`email_verified = true` 和邮箱允许列表。验证通过的邮箱成为日志和用量归属中的调用方身份;超过 256 字节的地址会被拒绝,而不是截断。受控路由就是 `[server.auth]` 已经保护的那些路由:注入凭据的 `/v1/messages` 和 `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`(仅在非 loopback 监听时),以及入站 Codex 端点(HTTP、WebSocket 和 analytics)。
+JWT 通过 `Authorization: Bearer` 接受,这正是 Claude Code 已经发送 `ANTHROPIC_AUTH_TOKEN` 的槽位。仅在入站 Codex 端点上,还可通过下文可选的 `jwt_header` 和 `jwt_cookie` 槽位接受;配置的 `header` 和 `x-api-key` 从不读取 JWT。在受控路由上先检查静态 token,该路由接受时再检查 gateway JWT,然后按 `iss` 检查 JWT 条目。验证会从 config 固定算法(token header 里的 `alg` 永远不参与选择)、要求 `kid`,并检查 `exp`/`nbf`、`aud`、`azp`、`exp - iat`、已配置的 `require`/`subject_prefix` 运算符,邮箱允许列表,以及(条目读取 `email` 时)`email_verified = true`。验证通过的身份声明(默认是邮箱)成为日志和用量归属中的调用方身份;超过 256 字节的值会被拒绝,而不是截断。受控路由就是 `[server.auth]` 已经保护的那些路由:注入凭据的 `/v1/messages` 和 `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`(仅在非 loopback 监听时),以及入站 Codex 端点(HTTP、WebSocket 和 analytics)。
 
 key set 按 issuer 在首次使用时惰性拉取,因此 IdP 不可达不会阻塞启动。缓存的 key set 最多信任 5 分钟,之后由下一个请求尝试重新拉取(受 60 秒重新拉取下限约束);拉取成功会整体替换 key set,因此 issuer 撤下的密钥大约 5 分钟内就不再参与验证。拉取失败时会继续使用已过期的 key set,以免 IdP 故障变成全面故障;discovery 本身失败时则改为尝试上次发现的 `jwks_uri`。只有条目的 `issuer` 和 `jwks_url` 都未变化时,config reload 才会保留已缓存的密钥。未知的 `kid` 在每个 key set 的 60 秒窗口内最多触发一次重新拉取。没有任何条目能验证的 token 返回 `401`;没有任何条目验证通过、且与 token 的 issuer 匹配的条目中存在既无缓存 key set 又拉取失败的条目时,返回 **`503`**,这样 IdP 故障就不会被报告成凭据错误。
 
 shunt 不保存吊销状态,所以有效的 token 会一直可用到过期:限制这一范围的是 `max_token_age_seconds`,issuer 应当签发分钟级寿命的 token。从允许列表中移除域名或地址会在下一次请求时生效。
+
+### Codex gateway OAuth:`jwt_header` 与 `jwt_cookie`
+
+Codex CLI 原生的 `gateway_oauth` 保留 `Authorization`,把身份提供商(IdP)的访问令牌放在 cookie 或自定义头部中传递。两个可选的 `[server.auth]` 键告诉 shunt 从哪里读取,令牌由与 bearer JWT 相同的 `[[server.auth.jwt]]` 条目验证。包含 Microsoft Entra ID 示例的完整配置见 [Codex CLI 连接指南](/zh-cn/guides/connect-codex-cli/)。
+
+```toml
+[server.auth]
+jwt_cookie = "auth-openid"        # Codex: delivery = { kind = "cookie", name = "auth-openid" }
+# jwt_header = "X-Gateway-Token"  # Codex: delivery = { kind = "header", name = "X-Gateway-Token", scheme = "Bearer" }
+```
+
+- **校验。** 启动时会拒绝:没有 `[[server.auth.jwt]]` 条目却设置了任一键、空值、无效的头部名称,以及等于 `authorization`、`x-api-key`、`cookie`、`x-shunt-token`、`x-shunt-admin-token`、`x-shunt-inbound-client`、shunt 在 Codex 端点上读取或改写的头部(`session-id`, `x-claude-code-session-id`, `content-type`, `content-length`, `content-encoding`, `transfer-encoding`, `host`, `origin`, `upgrade`, `connection`, `openai-beta`, `sec-websocket-*`)、Codex CLI 发送或 shunt 在该处合成的头部(`originator`, `x-codex-routing-hint`, `thread-id`, `x-client-request-id`, `x-codex-window-id`)、`[server.auth]` 的 `header` 或 `[server.admin]` 的 `header` 的头部名称。cookie 名称必须是 RFC 6265 的 token,且不能是管理仪表板的 `shunt_admin_session`。两个键都支持 hot-reload。
+- **范围。** 只有入站 Codex 端点读取它们:Responses 路由(`/v1/responses`、`/backend-api/codex/responses`、`/responses` 上的 HTTP 与 WebSocket)、`/alpha/search` 以及 analytics sink。`/v1/messages`、`/v1/models`、`/usage` 和 Codex discovery 路径仍只接受 `Authorization: Bearer` 中的 JWT。
+- **槽位顺序。** 静态 token、`Authorization: Bearer` JWT、`jwt_header`(原始 JWT 或 `Bearer <jwt>`,scheme 大小写不限)、`jwt_cookie`。第一个验证成功的槽位生效,因此 `Authorization` 中的 ChatGPT token 会落到 cookie 上。只有扫描到某个槽位时才会检查它;配置的头部或 cookie 名称出现多次时,除非更早的槽位已经完成认证,否则请求被拒绝。凭据缺失或无效返回 `401`,issuer 的密钥无法获取返回 `503`,在此端点上两者都使用 OpenAI 错误格式。
+- **Origin 规则。** 仅当请求没有 `Origin` 头部,或恰好有一个与请求的 scheme、`Host` 和有效端口都匹配的 `Origin` 时,才会使用 cookie。scheme 取第一个 `X-Forwarded-Proto` 值(`http` 或 `https`),没有时为 `http`,因为 shunt 本身以明文 HTTP 监听;位于终止 TLS 的代理之后时,请让代理发送 `X-Forwarded-Proto`。跨源(包括 scheme 不同)、`null`、无法解析或重复的 `Origin`,以及出现在没有 `Host` 或 `X-Forwarded-Proto` 无法识别的请求上的 `Origin`会禁用 cookie 槽位,头部槽位不受影响。浏览器会为网关域名附带它持有的 cookie,所以不要让 `jwt_cookie` 指向这类 cookie,例如 shunt 前面 SSO 代理的 cookie(Cloudflare Access 的 `CF_Authorization`)。
+- **转发。** 配置的头部和所有 `cookie` 头部在发往上游之前都会被移除,账户池和被路由的提供商均如此。
+- **WebSocket。** 握手时的凭据在每一轮都会重新验证,所以 IdP 令牌过期后,下一轮会以 `401` 错误帧失败,Codex 随后用刷新后的令牌重新连接。
+- **大小。** Entra 访问令牌较大。若设置了 `[server.limits]` 的 `max_request_header_bytes`,它会计入该上限;反向代理通常把单个 cookie 限制在约 4 KB。任何一项成为问题时,请改用头部传递。
 
 ## `[server.admin]`(可选)
 
@@ -186,9 +216,9 @@ cache_write = 4.125
 | :-- | :-- | :-- |
 | `fail_closed_on_error` | `false` | 当某个主体的计量器不可信时(有计数记录恢复失败,直到其窗口结束):`false` 转发请求并记录警告;`true` 对设有上限的主体以 `429` `spend limit unavailable` 拒绝(无上限的主体照常转发) |
 
-限制实施作用于 `POST /v1/messages`(不含 `count_tokens`)。主体(principal)是静态 `[server.auth]` 令牌名、已验证的 JWT 邮箱或 gateway 登录邮箱,并与 `user` 限制的 `user_id` 逐字匹配;注入凭据但没有身份的请求共用 `shunt:anonymous`,仅由 passthrough 或 `type = "noop"` 路由组成的链既不实施也不计量。每个 UTC 周期(日、周一起始的周、月)的上限依次取该主体的 `user` 行、`organization` 行(按人的默认值,而非共享池),都没有则不限。`amount: null` 的 `user` 行表示显式不限。检查是不做预留的事前检查,因此处理中的请求可能超出上限。达到上限的主体会收到带 `retry-after` 与 `x-should-retry: false` 的 `429 billing_error`(`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`),对有上限的主体,计量请求(仅由 passthrough 或 `noop` 路由组成的链不计量,保留上游头部)在任何状态码下的响应都会移除上游的 `anthropic-ratelimit-*` 头部,而该主体自己的 `anthropic-ratelimit-unified-*` 头部只在 `2xx` 响应和两种支出上限拒绝中写入,即超出上限的 `429`,以及带有 `anthropic-ratelimit-unified-overage-disabled-reason: fetch_error` 的 fail-closed `429 spend limit unavailable`(其他错误和 fail-open 转发都没有)。`/audit`、审计与身份保留清理以及 group scope 尚未实现。完整行为见 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(英文)。
+限制实施作用于 `POST /v1/messages`(不含 `count_tokens`)。主体(principal)是静态 `[server.auth]` 令牌名、已验证的 JWT 身份(`identity_claim`,默认为邮箱)或 gateway 登录邮箱,并与 `user` 限制的 `user_id` 逐字匹配;注入凭据但没有身份的请求共用 `shunt:anonymous`,仅由 passthrough 或 `type = "noop"` 路由组成的链既不实施也不计量。每个 UTC 周期(日、周一起始的周、月)的上限依次取该主体的 `user` 行、`organization` 行(按人的默认值,而非共享池),都没有则不限。`amount: null` 的 `user` 行表示显式不限。检查是不做预留的事前检查,因此处理中的请求可能超出上限。达到上限的主体会收到带 `retry-after` 与 `x-should-retry: false` 的 `429 billing_error`(`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`),对有上限的主体,计量请求(仅由 passthrough 或 `noop` 路由组成的链不计量,保留上游头部)在任何状态码下的响应都会移除上游的 `anthropic-ratelimit-*` 头部,而该主体自己的 `anthropic-ratelimit-unified-*` 头部只在 `2xx` 响应和两种支出上限拒绝中写入,即超出上限的 `429`,以及带有 `anthropic-ratelimit-unified-overage-disabled-reason: fetch_error` 的 fail-closed `429 spend limit unavailable`(其他错误和 fail-open 转发都没有)。`/audit`、审计与身份保留清理以及 group scope 尚未实现。完整行为见 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(英文)。
 
-入站 Codex 端点(`[server.codex_endpoint]`)按同一组上限和计数器检查并计量,因此一个上限同时约束主体在两个界面上的支出。每个回合在调用任何上游之前检查,HTTP 和 Responses WebSocket 均如此;主体是静态令牌名、已验证的 JWT 邮箱,或没有 `[server.auth]` 时的 `shunt:anonymous`。超限的回合收到 `429`,`error.type` 与 `error.code` 均为 `usage_limit_reached`,并带有 `resets_at`(纪元秒,取已达上限中最晚重置的一个)、`retry-after`、`x-should-retry: false`,且当 `blocked_message` 为纯 ASCII 时通过 `x-codex-promo-message` 一并给出。`fail_closed_on_error` 会以相同的 type 拒绝有上限的主体,且不带 `resets_at` 和 `retry-after`。已完成的回合按 Responses 的 `usage` 计费:缓存输入 token 按 `cache_read` 费率,其余输入按 `input` 费率,推理计入输出。未报告用量就结束的回合,按估算输入的下限加上已送达的输出计费。面向客户端的行为见[入站 Codex 端点](/zh-cn/guides/inbound-codex-endpoint/#支出限制)。
+入站 Codex 端点(`[server.codex_endpoint]`)按同一组上限和计数器检查并计量,因此一个上限同时约束主体在两个界面上的支出。每个回合在调用任何上游之前检查,HTTP 和 Responses WebSocket 均如此;主体是静态令牌名、已验证的 JWT 身份(`identity_claim`,默认为邮箱),或没有 `[server.auth]` 时的 `shunt:anonymous`。超限的回合收到 `429`,`error.type` 与 `error.code` 均为 `usage_limit_reached`,并带有 `resets_at`(纪元秒,取已达上限中最晚重置的一个)、`retry-after`、`x-should-retry: false`,且当 `blocked_message` 为纯 ASCII 时通过 `x-codex-promo-message` 一并给出。`fail_closed_on_error` 会以相同的 type 拒绝有上限的主体,且不带 `resets_at` 和 `retry-after`。已完成的回合按 Responses 的 `usage` 计费:缓存输入 token 按 `cache_read` 费率,其余输入按 `input` 费率,推理计入输出。未报告用量就结束的回合,按估算输入的下限加上已送达的输出计费。面向客户端的行为见[入站 Codex 端点](/zh-cn/guides/inbound-codex-endpoint/#支出限制)。
 
 ## `[server.gateway]`(可选)
 
@@ -1224,7 +1254,7 @@ policy = { type = "target_selector", selector = "/target" }
 
 ## `[store]`(可选)
 
-用于保存池配额、网关 refresh token、支出限制及其审计记录的可选事务型存储,支持 SQLite 或 PostgreSQL。没有这个表时一切照旧:这三个子系统继续使用 JSON `state_path` 快照及其恢复路径。设置后,存储取代这些快照,已有快照只导入一次。完整行为见 [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)(英文)。`[store]` 仅在重启后生效:配置重载时修改它会记录一条警告,重启后才会应用。
+用于保存池配额、网关 refresh token、支出限制及其审计记录的可选事务型存储,支持 SQLite 或 PostgreSQL。没有这个表时一切照旧:这三个子系统继续使用 JSON `state_path` 快照及其恢复路径。设置后,存储取代这些快照,已有快照只导入一次。完整行为见 [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)(英文)。将已有快照迁移到存储的步骤见 [迁移到存储](/zh-cn/guides/store-migration/)。`[store]` 仅在重启后生效:配置重载时修改它会记录一条警告,重启后才会应用。
 
 | 键 | 默认 | 含义 |
 | :-- | :-- | :-- |

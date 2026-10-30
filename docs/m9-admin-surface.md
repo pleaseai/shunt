@@ -241,6 +241,12 @@ process-lifetime state:
   downgrading that dashboard to read-only until the operator signed in again.
   Scripted logins are unaffected: the check passes when neither `Sec-Fetch-Site`
   nor `Origin` is present.
+- **The OIDC callback redeems `state` before it spends that budget.** The
+  callback is a `GET`, so another site can fire it with an `<img>` tag, and a
+  same-origin check cannot apply to the identity provider's own redirect. A
+  callback carrying no live `state` is therefore refused before the rate limit
+  is consulted; only `POST /admin/api/oidc/start`, which is same-origin checked,
+  mints one. Without `[server.admin.oidc]` the callback answers `404`.
 - **Pending-login store** is in-memory only, single-use, and TTL-bound; each
   completion attempt is counted and the entry is discarded after a small cap. The
   256-bit OAuth `state` already makes guessing infeasible.
@@ -379,10 +385,11 @@ redirect URL from the browser address bar or `<code>#<state>`. Completion checks
 the pending state in constant time, requires a refresh token, derives the account
 ID from the access-token JWT, and writes the verbatim `auth.json` shape at `0600`.
 `SHUNT_CODEX_TOKEN_URL` overrides the exchange endpoint for local tests; an
-invalid or non-HTTPS/non-loopback override is ignored with a warning (mirroring the
-Claude completion flow) instead of silently, and the exchange POST uses the
-redirect-hardened client so a permitted endpoint cannot 3xx the single-use code to
-an unsafe plaintext host. No access, refresh, or ID token is returned or logged.
+invalid override, or one that is neither loopback nor HTTPS to the built-in
+endpoint's host, is ignored with a warning (mirroring the Claude completion flow)
+instead of silently, and the exchange POST uses the redirect-hardened client, which
+follows a 3xx only within the host it started on, so a permitted endpoint cannot
+hand the single-use code to another host. No access, refresh, or ID token is returned or logged.
 
 Like Claude, an empty-account `chatgpt_oauth` provider scans the Codex store and
 makes the new account live on its next request. Explicit-account providers need a

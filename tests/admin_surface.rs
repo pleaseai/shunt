@@ -500,6 +500,139 @@ async fn admin_oidc_rejects_replay_disallowed_email_provider_error_and_cross_ori
     assert!(!error_html.contains("access_denied"));
 }
 
+/// Callbacks fired by another site, which an `<img>` tag can do because the
+/// callback is a `GET`. None carries a live `state`, so each is refused before
+/// the shared login budget (30 a minute, `src/admin/session.rs`) is spent.
+const FORGED_CALLBACKS: usize = 40;
+
+async fn send_forged_callbacks(client: &reqwest::Client, gateway: &Gateway, expected: StatusCode) {
+    for attempt in 0..FORGED_CALLBACKS {
+        let response = client
+            .get(format!(
+                "{}/admin/oidc/callback?code=x&state=forged-{attempt}",
+                gateway.base_url
+            ))
+            .header("sec-fetch-site", "cross-site")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "forged callback {attempt}");
+    }
+}
+
+/// `POST /admin/login` answers `429` once the budget is gone, so a `303` here
+/// proves the forged callbacks before it spent none of it.
+async fn assert_login_budget_unspent(client: &reqwest::Client, gateway: &Gateway, token: &str) {
+    let response = client
+        .post(format!("{}/admin/login", gateway.base_url))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(format!("token={token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "forged OIDC callbacks must not spend the admin login budget"
+    );
+}
+
+#[tokio::test]
+async fn admin_oidc_forged_callbacks_do_not_spend_the_login_budget() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let idp = MockServer::start().await;
+    vars.set("SHUNT_TEST_ADMIN_OIDC_FORGED_TOKENS", "ops:forged-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_FORGED_SECRET", "client-secret");
+    let config = admin_oidc_config(
+        "SHUNT_TEST_ADMIN_OIDC_FORGED_TOKENS",
+        "SHUNT_TEST_ADMIN_OIDC_FORGED_SECRET",
+        &idp,
+    );
+    let gateway = start_with_addr(config).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    send_forged_callbacks(&client, &gateway, StatusCode::BAD_REQUEST).await;
+    assert_login_budget_unspent(&client, &gateway, "forged-secret").await;
+    // The sign-in the forged callbacks were imitating still starts, too.
+    oidc_state(&client, &gateway).await;
+}
+
+/// Without `[server.admin.oidc]` no sign-in can have started, so the callback
+/// has nothing to redeem: it answers `404` and spends nothing either.
+#[tokio::test]
+async fn admin_oidc_callback_is_not_found_without_oidc() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_ADMIN_NO_OIDC_TOKENS", "ops:no-oidc-secret");
+    let gateway = start(admin_config("SHUNT_TEST_ADMIN_NO_OIDC_TOKENS")).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    send_forged_callbacks(&client, &gateway, StatusCode::NOT_FOUND).await;
+    assert_login_budget_unspent(&client, &gateway, "no-oidc-secret").await;
+}
+
+/// A callback with a live `state` still spends the budget, and once the budget
+/// is gone it answers `429`. The state has been redeemed by then, so the same
+/// link then answers `400` and the user starts sign-in again: the one cost of
+/// redeeming before counting.
+#[tokio::test]
+async fn admin_oidc_callback_with_a_live_state_still_spends_the_login_budget() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let idp = MockServer::start().await;
+    vars.set("SHUNT_TEST_ADMIN_OIDC_SPENT_TOKENS", "ops:spent-secret");
+    vars.set("SHUNT_TEST_ADMIN_OIDC_SPENT_SECRET", "client-secret");
+    let config = admin_oidc_config(
+        "SHUNT_TEST_ADMIN_OIDC_SPENT_TOKENS",
+        "SHUNT_TEST_ADMIN_OIDC_SPENT_SECRET",
+        &idp,
+    );
+    let gateway = start_with_addr(config).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    // Starting sign-in spends one of the 30; 29 failed logins spend the rest.
+    let (_, state) = oidc_state(&client, &gateway).await;
+    for attempt in 0..29 {
+        let response = client
+            .post(format!("{}/admin/login", gateway.base_url))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("token=wrong")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "login attempt {attempt}"
+        );
+    }
+
+    let callback = format!(
+        "{}/admin/oidc/callback?code=authorization-code&state={state}",
+        gateway.base_url
+    );
+    let response = client.get(&callback).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let response = client.get(&callback).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn admin_oidc_discovery_builds_authorization_redirect() {
     if !can_bind_loopback() {
@@ -1791,6 +1924,7 @@ async fn admin_credential_never_authenticates_an_inference_route_in_either_slot(
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.to_string(),
+        ..Default::default()
     });
     // An explicit, never-existing credentials path keeps the `/admin/api/pool`
     // requests below off the real on-disk store (see the `admin_config` doc
@@ -2568,6 +2702,140 @@ async fn claude_remove_preserves_shared_identity_health_until_last_alias_is_remo
 
     task.abort();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An account can be named after its login's email address. The store scan
+/// lists it, the pool reports it, and the account routes resolve it from a
+/// percent-encoded path segment, the way the dashboard sends it. A file whose
+/// stem starts with a dot is still not an account.
+///
+/// The provider points at a local mock, so the pool's profile lookup for the
+/// live-looking fixture token never leaves the machine.
+#[tokio::test]
+async fn an_email_named_store_account_works_through_the_admin_routes() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let dir = unique_dir();
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &dir);
+    vars.set(
+        "SHUNT_TEST_ADMIN_TOKENS_EMAIL_NAME",
+        "ops:secret-email-name",
+    );
+    // The default `antigravity` and `grok` providers pool with empty account
+    // lists, so `/admin/api/pool` would scan their real stores; point both at
+    // an empty directory.
+    let empty_store = unique_dir();
+    vars.set("SHUNT_ANTIGRAVITY_ACCOUNTS_DIR", &empty_store);
+    vars.set("SHUNT_XAI_ACCOUNTS_DIR", &empty_store);
+    for name in ["first.last+work@example.com", ".hidden"] {
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            serde_json::json!({
+                "claudeAiOauth": {
+                    "accessToken": format!("{name}-access"),
+                    "refreshToken": format!("{name}-refresh"),
+                    "expiresAt": 4_102_444_800_000i64,
+                },
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    let profile_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/oauth/profile"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "organization": {"organization_type": "claude_max"}
+        })))
+        .mount(&profile_server)
+        .await;
+
+    let mut config = admin_config("SHUNT_TEST_ADMIN_TOKENS_EMAIL_NAME");
+    config.providers.get_mut("anthropic").unwrap().base_url = profile_server.uri();
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, _state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+    let client = reqwest::Client::new();
+    let auth = |request: reqwest::RequestBuilder| {
+        request.header("x-shunt-admin-token", "secret-email-name")
+    };
+
+    let listed: serde_json::Value = auth(client.get(format!("{base_url}/admin/api/accounts")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let names: Vec<&str> = listed["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|account| account["name"].as_str())
+        .collect();
+    assert_eq!(names, ["first.last+work@example.com"]);
+
+    let pool: serde_json::Value = auth(client.get(format!("{base_url}/admin/api/pool")))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let anthropic = pool["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["provider"] == "anthropic")
+        .expect("the anthropic pool is reported");
+    let pooled: Vec<&str> = anthropic["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|account| account["name"].as_str())
+        .collect();
+    assert_eq!(pooled, ["first.last+work@example.com"]);
+
+    // The dashboard sends the name through encodeURIComponent.
+    let response = auth(client.delete(format!(
+        "{base_url}/admin/api/accounts/claude/first.last%2Bwork%40example.com"
+    )))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!dir.join("first.last+work@example.com.json").exists());
+    assert!(
+        dir.join(".hidden.json").exists(),
+        "never an account, never removed"
+    );
+
+    let response = auth(client.post(format!("{base_url}/admin/api/accounts/claude")))
+        .header("content-type", "application/json")
+        .body(r#"{"name":".hidden"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(response
+        .text()
+        .await
+        .unwrap()
+        .contains("must not start or end with a dot"));
+
+    task.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&empty_store);
 }
 
 #[tokio::test]

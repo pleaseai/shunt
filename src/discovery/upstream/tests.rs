@@ -285,6 +285,9 @@ fn inbound_auth_with_jwt() -> InboundAuth {
         authorized_parties: vec!["shunt-clients".to_string()],
         allowed_domains: vec!["example.com".to_string()],
         allowed_emails: Vec::new(),
+        require: Vec::new(),
+        subject_prefixes: Vec::new(),
+        identity_claim: "email".to_string(),
         clock_skew_seconds: 0,
         max_token_age_seconds: 3600,
     }])

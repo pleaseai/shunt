@@ -20,6 +20,7 @@ use std::collections::HashSet;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
+use serde_json::Value;
 
 mod jwks;
 pub use jwks::{JwksCache, JwksUnavailable};
@@ -54,6 +55,14 @@ pub struct JwtIssuerRule {
     pub allowed_domains: Vec<String>,
     /// Lowercase full addresses.
     pub allowed_emails: Vec<String>,
+    /// Claim name → accepted values, from `require`. Each claim must be a
+    /// top-level JSON string equal to one of its values.
+    pub require: Vec<(String, Vec<String>)>,
+    /// Accepted `sub` prefixes; empty ⇒ `sub` is not checked.
+    pub subject_prefixes: Vec<String>,
+    /// The claim whose string value becomes the caller identity. `"email"` when
+    /// the entry has an email rule and names nothing else.
+    pub identity_claim: String,
     /// Tolerance applied to `exp` and `nbf`.
     pub clock_skew_seconds: u64,
     /// Reject when `exp - iat` exceeds this. shunt keeps no revocation state,
@@ -96,18 +105,25 @@ pub(crate) fn validate_endpoint(raw: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
-/// The claims Phase 1 reads. Every field the verification depends on is
-/// non-optional, so a token missing one fails to deserialize rather than
-/// reaching a check that would have to invent a default: an absent `iat` would
-/// otherwise skip the `max_token_age_seconds` bound entirely.
 #[derive(Deserialize)]
 struct VerifiedClaims {
     exp: u64,
     iat: u64,
-    email: String,
-    email_verified: bool,
-    #[serde(default)]
-    azp: Option<String>,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, Value>,
+}
+
+impl VerifiedClaims {
+    fn string(&self, name: &str) -> Option<&str> {
+        self.rest.get(name)?.as_str()
+    }
+
+    fn verified_email(&self) -> Option<&str> {
+        if self.rest.get("email_verified") != Some(&Value::Bool(true)) {
+            return None;
+        }
+        self.string("email")
+    }
 }
 
 /// Verify a presented bearer token against the configured entries.
@@ -148,11 +164,11 @@ pub async fn verify(rules: &[JwtIssuerRule], cache: &JwksCache, token: &str) -> 
         let Ok(key) = DecodingKey::from_jwk(&jwk) else {
             continue;
         };
-        let Some(claims) = validate_claims(rule, token, &key) else {
+        let Some(identity) = validate_claims(rule, token, &key) else {
             continue;
         };
         return JwtOutcome::Verified {
-            identity: claims.email,
+            identity,
             issuer: rule.issuer.clone(),
         };
     }
@@ -168,9 +184,10 @@ pub async fn verify(rules: &[JwtIssuerRule], cache: &JwksCache, token: &str) -> 
     }
 }
 
-/// Signature and claim checks for one entry. `None` on any failure — the caller
-/// collapses every rejection into one `401`, so no reason is returned.
-fn validate_claims(rule: &JwtIssuerRule, token: &str, key: &DecodingKey) -> Option<VerifiedClaims> {
+/// Signature and claim checks for one entry, returning the validated caller
+/// identity. `None` on any failure — the caller collapses every rejection into
+/// one `401`, so no reason is returned.
+fn validate_claims(rule: &JwtIssuerRule, token: &str, key: &DecodingKey) -> Option<String> {
     // `Validation::algorithms` is the pin: jsonwebtoken rejects a token whose
     // header `alg` is not in this list, so the header can never select the
     // algorithm. Config validation additionally refuses HMAC entries, which is
@@ -195,26 +212,59 @@ fn validate_claims(rule: &JwtIssuerRule, token: &str, key: &DecodingKey) -> Opti
         return None;
     }
     // `azp` names the party the token was issued *to*. Checked only when
-    // present, per OIDC Core, but never ignored when it is.
-    if let Some(azp) = &claims.azp {
-        if !rule.authorized_parties.iter().any(|party| party == azp) {
+    // present, per OIDC Core, but never ignored when it is. A JSON `null` counts
+    // as absent, as it did when `azp` deserialized into `Option<String>`.
+    if let Some(azp) = claims.rest.get("azp").filter(|azp| !azp.is_null()) {
+        let authorized = azp
+            .as_str()
+            .is_some_and(|azp| rule.authorized_parties.iter().any(|party| party == azp));
+        if !authorized {
             return None;
         }
     }
-    // Phase 1 authorizes on email alone, so an unverified address is worthless:
-    // an IdP that lets a user set an arbitrary unverified email would otherwise
-    // let them claim any address in an allowed domain.
-    if !claims.email_verified {
+    let identity = claims.string(&rule.identity_claim)?;
+    if identity.is_empty() || identity.len() > MAX_IDENTITY_BYTES {
         return None;
     }
-    // Over the cap is a rejection, not a truncation; see [`MAX_IDENTITY_BYTES`].
-    if claims.email.len() > MAX_IDENTITY_BYTES {
+    if !email_rules_pass(rule, &claims) {
         return None;
     }
-    if !crate::gateway::email_allowed(&claims.email, &rule.allowed_emails, &rule.allowed_domains) {
+    let required = rule.require.iter().all(|(name, values)| {
+        claims
+            .string(name)
+            .is_some_and(|claim| values.iter().any(|value| value == claim))
+    });
+    if !required {
         return None;
     }
-    Some(claims)
+    if !rule.subject_prefixes.is_empty() {
+        let sub = claims.string("sub")?;
+        if !rule
+            .subject_prefixes
+            .iter()
+            .any(|prefix| sub.starts_with(prefix.as_str()))
+        {
+            return None;
+        }
+    }
+    Some(identity.to_string())
+}
+
+/// Whether the entry's email-dependent checks pass. Any entry that reads
+/// `email` — an email rule, `identity_claim = "email"`, or `require` naming it —
+/// trusts only a verified address.
+fn email_rules_pass(rule: &JwtIssuerRule, claims: &VerifiedClaims) -> bool {
+    let has_email_rule = !rule.allowed_domains.is_empty() || !rule.allowed_emails.is_empty();
+    let reads_email = has_email_rule
+        || rule.identity_claim == "email"
+        || rule.require.iter().any(|(name, _)| name == "email");
+    if !reads_email {
+        return true;
+    }
+    claims.verified_email().is_some_and(|email| {
+        !has_email_rule
+            || crate::gateway::email_allowed(email, &rule.allowed_emails, &rule.allowed_domains)
+    })
 }
 
 /// Whether `value` — one raw header-slot value — is a JWT naming one of

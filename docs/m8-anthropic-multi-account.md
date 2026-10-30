@@ -61,7 +61,7 @@ Each account has these fields:
 
 | Field | Required | Meaning |
 | :-- | :-- | :-- |
-| `name` | yes | Stable account label. Must contain only lowercase ASCII letters, digits, and hyphens. Names must be unique within the provider. A name-only entry resolves from the shunt account store. |
+| `name` | yes | Stable account label. Must contain only lowercase ASCII letters, digits, and `.`, `_`, `@`, `+` or `-`, and must not start or end with a dot, so a login's email address, in lowercase, is a valid name. Names must be unique within the provider. A name-only entry resolves from the shunt account store. |
 | `credentials` | no | Path to a Claude Code `.credentials.json`-shaped file. shunt reads `claudeAiOauth`, refreshes near expiry, and writes refreshed tokens back atomically. |
 | `token_env` | no | Environment variable containing a setup token. The value is used verbatim and is not refreshed. |
 | `uuid` | no | Anthropic account UUID used for the request-body rewrite described below. |

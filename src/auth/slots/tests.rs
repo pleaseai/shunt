@@ -15,7 +15,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use crate::{
     adapters::responses::inbound::passthrough_request_headers,
     admin::AdminAuth,
-    auth::inbound::InboundAuth,
+    auth::{inbound::InboundAuth, jwt_slots::JwtSlots},
     config::{AdminKey, AdminKeyring, AuthMode, Config, Secret},
     discovery::upstream::upstream_headers,
     gateway::{approval::Identity, jwt, GatewayAuth},
@@ -780,6 +780,132 @@ async fn stripping_the_cookie_header_leaves_the_callers_own_credential_alone() {
         );
         assert!(out.get("cookie").is_none());
     }
+}
+
+/// A configured `[server.auth] jwt_header` for the tests below. Not a default
+/// name and not a shared slot, as startup validation requires.
+const JWT_HEADER: &str = "x-corp-jwt";
+/// A token-shaped value presented in [`JWT_HEADER`]. No accept predicate in
+/// this task reads it; the slot is reserved by name, so its value is never
+/// judged.
+const JWT_SLOT_TOKEN: &str = "eyJhbGciOiJSUzI1NiJ9.jwt-slot-payload.sig";
+
+/// [`state`] with the `[server.auth]` table replaced by one that also carries
+/// `jwt_header` / `jwt_cookie` slots. Built directly rather than through
+/// `InboundAuthConfig::resolve` because that would also require a
+/// `[[server.auth.jwt]]` issuer, which plays no part in stripping.
+fn state_with_jwt_slots(slots: JwtSlots) -> AppState {
+    let mut state = state();
+    state.inbound_auth = Some(Arc::new(
+        InboundAuth::new(
+            HeaderName::from_static("x-shunt-token"),
+            vec![("client".to_string(), STATIC_TOKEN.to_string())],
+        )
+        .with_jwt_slots(slots),
+    ));
+    state
+}
+
+fn state_with_jwt_header() -> AppState {
+    state_with_jwt_slots(JwtSlots {
+        header: Some(HeaderName::from_static(JWT_HEADER)),
+        cookie: Some("shunt_jwt".to_string()),
+    })
+}
+
+#[test]
+fn strip_reserved_slots_removes_the_configured_jwt_header_and_every_cookie() {
+    let state = state_with_jwt_header();
+    let mut headers = HeaderMap::new();
+    headers.insert(JWT_HEADER, JWT_SLOT_TOKEN.parse().unwrap());
+    // Every `cookie` field goes, not only the one carrying `jwt_cookie`.
+    headers.append("cookie", "shunt_jwt=jwt-cookie-token".parse().unwrap());
+    headers.append("cookie", "theme=dark".parse().unwrap());
+    headers.insert("x-probe", HeaderValue::from_static("kept"));
+
+    credentials(&state).strip_reserved_slots(&mut headers);
+
+    assert!(headers.get(JWT_HEADER).is_none(), "jwt_header survived");
+    assert_eq!(
+        headers.get_all("cookie").iter().count(),
+        0,
+        "a cookie survived"
+    );
+    // Non-vacuity: a header shunt does not reserve is untouched.
+    assert_eq!(
+        headers.get("x-probe").map(HeaderValue::as_bytes),
+        Some(b"kept".as_slice())
+    );
+}
+
+#[tokio::test]
+async fn no_forward_site_relays_the_configured_jwt_header_or_cookie() {
+    let state = state_with_jwt_header();
+    let mut headers = HeaderMap::new();
+    headers.insert(JWT_HEADER, JWT_SLOT_TOKEN.parse().unwrap());
+    headers.insert(
+        "cookie",
+        "shunt_jwt=jwt-cookie-token; theme=dark".parse().unwrap(),
+    );
+    headers.insert("x-api-key", GENUINE_UPSTREAM_KEY.parse().unwrap());
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+
+    for site in FORWARD_SITES {
+        let out = site.run(&state, &headers).await;
+        assert!(
+            !contains_value(&out, JWT_SLOT_TOKEN),
+            "{} relayed the configured jwt_header",
+            site.name()
+        );
+        assert!(
+            !contains_value(&out, "jwt-cookie-token"),
+            "{} relayed the jwt cookie",
+            site.name()
+        );
+        assert!(out.get("cookie").is_none(), "{} kept cookie", site.name());
+    }
+    // Non-vacuity: the codex passthrough relays arbitrary client headers, so
+    // the absence above is the strip's doing, not an empty map's.
+    let out = ForwardSite::CodexPassthrough.run(&state, &headers).await;
+    assert!(out.get("content-type").is_some());
+}
+
+#[tokio::test]
+async fn an_unconfigured_jwt_header_leaves_every_forwarded_set_unchanged() {
+    // NFR-1: with neither `jwt_header` nor `jwt_cookie` set, every forward
+    // site's output is byte-for-byte what the pre-existing `state()` fixture
+    // (whose `InboundAuth` never had JWT slots) produces, and a header that
+    // merely *looks* like a JWT slot is forwarded by the passthrough as before.
+    let baseline = state();
+    let unconfigured = state_with_jwt_slots(JwtSlots::default());
+    let mut headers = HeaderMap::new();
+    headers.insert(JWT_HEADER, JWT_SLOT_TOKEN.parse().unwrap());
+    headers.insert("x-api-key", GENUINE_UPSTREAM_KEY.parse().unwrap());
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+
+    for site in FORWARD_SITES {
+        let expected = site.run(&baseline, &headers).await;
+        let actual = site.run(&unconfigured, &headers).await;
+        let render = |map: &HeaderMap| {
+            map.iter()
+                .map(|(name, value)| (name.as_str().to_string(), value.as_bytes().to_vec()))
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            render(&actual),
+            render(&expected),
+            "{} changed",
+            site.name()
+        );
+    }
+    let out = ForwardSite::CodexPassthrough
+        .run(&unconfigured, &headers)
+        .await;
+    assert_eq!(
+        out.get(JWT_HEADER).map(HeaderValue::as_bytes),
+        Some(JWT_SLOT_TOKEN.as_bytes()),
+        "an unconfigured jwt_header name must not be reserved"
+    );
 }
 
 // --- Tripwire ----------------------------------------------------------------

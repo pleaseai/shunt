@@ -39,7 +39,7 @@ shunt run
 ## 在浏览器中预配 Claude 账户
 
 1. 打开 `/admin`,用管理员 token 登录。
-2. 输入一个只含小写字母、数字和连字符的账户名。
+2. 输入一个只含小写字母、数字和 `.` `_` `@` `+` `-`、且不以点开头或结尾的账户名。登录邮箱地址转为小写后即可使用。
 3. 选择 **Full OAuth (refreshable)**(仪表盘默认值)或 **Setup token (1-year, inference-only)**,然后选择 **Start**。
 4. 在另一个标签页打开显示的授权 URL。登录目标 Claude 账户并批准访问。
 5. 把得到的 `<code>#<state>` 值复制回管理页面,选择 **Complete**。

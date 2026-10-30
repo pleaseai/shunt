@@ -31,10 +31,19 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # --- Optional: accept JWTs from your own identity provider instead of (or
 # alongside) the static tokens above. shunt verifies against the issuer's JWKS
 # and issues nothing itself — no login flow, no session, no signing secret, so
-# clients stay out of Claude Code's gateway provider mode. A JWT is accepted
-# only in Authorization: Bearer. With an entry configured, tokens_env above may
-# be unset; with neither, startup still fails closed. Repeat the table per
-# issuer (docs/inbound-jwt-auth.md).
+# clients stay out of Claude Code's gateway provider mode. Outside the inbound
+# Codex endpoint a JWT is accepted only in Authorization: Bearer. With an entry
+# configured, tokens_env above may be unset; with neither, startup still fails
+# closed. Repeat the table per issuer (docs/inbound-jwt-auth.md).
+#
+# Codex CLI `gateway_oauth` delivers the IdP token in a cookie or a custom
+# header instead of Authorization. Name that slot in [server.auth] (each needs
+# a [[server.auth.jwt]] entry; only the inbound Codex endpoint reads them):
+# jwt_cookie = "auth-openid"        # Codex: delivery.kind = "cookie"
+# jwt_header = "X-Gateway-Token"    # Codex: delivery.kind = "header"
+# The cookie is ignored on a cross-origin request. Do not name a cookie a
+# browser holds for this domain (e.g. Cloudflare Access CF_Authorization).
+# Entra ID: see the Codex connection guide for the audience/azp/tid settings.
 # [[server.auth.jwt]]
 # issuer = "https://accounts.google.com"       # exact `iss`; JWKS via discovery
 # audience = ["<client id dedicated to shunt>"] # string or array

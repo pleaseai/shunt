@@ -254,12 +254,13 @@ fn valid_when_beyond_expiry_buffer() {
 }
 
 #[test]
-fn sanitize_token_url_rejects_plaintext_off_origin_override() {
+fn sanitize_token_url_rejects_off_origin_override() {
     // Parity with the Codex guard (#118): the Claude default is kept unless the
-    // override is HTTPS or loopback HTTP, so a misconfigured env var can never
-    // egress the long-lived refresh_token off-origin or in the clear. The Codex
-    // store's own test exercises the full accept/reject matrix against the shared
-    // guard; here we confirm the Claude wrapper binds it to the Claude default.
+    // override is a loopback URL or HTTPS to the default's own host, so a
+    // misconfigured env var can never egress the long-lived refresh_token to
+    // another host, in the clear or not. The Codex store's own test exercises
+    // the full accept/reject matrix against the shared guard; here we confirm
+    // the Claude wrapper binds it to the Claude default.
     assert_eq!(sanitize_token_url(None), TOKEN_URL);
     assert_eq!(
         sanitize_token_url(Some("http://malicious.test/oauth".to_string())),
@@ -267,7 +268,13 @@ fn sanitize_token_url_rejects_plaintext_off_origin_override() {
     );
     assert_eq!(
         sanitize_token_url(Some("https://claude-mock.test/oauth".to_string())),
-        "https://claude-mock.test/oauth"
+        TOKEN_URL
+    );
+    assert_eq!(
+        sanitize_token_url(Some(
+            "https://platform.claude.com/v2/oauth/token".to_string()
+        )),
+        "https://platform.claude.com/v2/oauth/token"
     );
     assert_eq!(
         sanitize_token_url(Some("http://localhost:7000/oauth".to_string())),

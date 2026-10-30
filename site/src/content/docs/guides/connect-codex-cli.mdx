@@ -284,6 +284,74 @@ side beyond the base URL. See [Inbound Codex Endpoint](/guides/inbound-codex-end
 differs from the `/v1/messages` path and [HTTP Endpoints](/reference/endpoints/) for the registered
 routes.
 
+## 7. Sign in through your identity provider (gateway OAuth)
+
+Step 3's shared token gives every developer the same identity. When your organization runs an identity provider (IdP), the Codex CLI's native `gateway_oauth` signs each developer in through it, and shunt only **verifies** the access token that comes back: it issues nothing and keeps no session. Codex reserves `Authorization`, so it delivers the token in a cookie or a custom header, and two optional `[server.auth]` keys tell shunt which one to read. OpenAI's [Connect to a gateway](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway?gateway-auth=oauth) guide describes the Codex side.
+
+On the Codex side, add `gateway_oauth` to the shunt provider and keep `requires_openai_auth = false`:
+
+```toml
+# ~/.codex/config.toml
+model_provider = "shunt"
+
+[model_providers.shunt]
+name = "shunt"
+base_url = "https://shunt.example.com/v1"
+wire_api = "responses"
+requires_openai_auth = false
+
+[model_providers.shunt.gateway_oauth]
+authorization_url = "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize"
+token_url = "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token"
+client_id = "<codex public client id>"
+scopes = ["api://<shunt-app-id>/.default"]
+# resource = "..."                                  # optional, if your IdP needs it
+delivery = { kind = "cookie", name = "auth-openid" }
+# or: delivery = { kind = "header", name = "X-Gateway-Token", scheme = "Bearer" }
+redirect_port = 8765                                # fixed loopback port, see below
+```
+
+On the shunt side, name the same cookie or header and describe the issuer:
+
+```toml
+# shunt config.toml
+[server.auth]
+jwt_cookie = "auth-openid"          # must equal delivery.name for kind = "cookie"
+# jwt_header = "X-Gateway-Token"    # must equal delivery.name for kind = "header"
+
+[[server.auth.jwt]]
+issuer = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+audience = ["api://<shunt-app-id>"]
+authorized_parties = ["<codex public client id>"]
+require = { tid = "<tenant-id>" }
+identity_claim = "preferred_username"     # or "oid", which is immutable
+max_token_age_seconds = 5400
+```
+
+Set one of the two keys to match the `delivery` kind. Both are optional and hot-reload. The verified `identity_claim` becomes the caller identity for logs, usage, spend limits, and the sticky key, exactly as for a bearer JWT. The [configuration reference](/reference/configuration/) lists every validation rule.
+
+### Microsoft Entra ID pitfalls
+
+Every value in the example above exists because of one of these:
+
+- **The access token must be a JWT.** shunt verifies locally and does no introspection. Request an API scope you register for shunt (`api://<shunt-app-id>/.default` in `scopes`), which makes Entra issue a JWT. Opaque access tokens, such as Google OAuth's, cannot work.
+- **Issue v2 tokens.** Set the API app registration's `accessTokenAcceptedVersion` to `2`. A v2 token has the issuer `https://login.microsoftonline.com/<tenant-id>/v2.0`. A v1 token uses `https://sts.windows.net/<tenant-id>/` as the issuer and `appid` instead of `azp`, and would fail the entry above.
+- **Match the token's `aud`.** Use `api://<shunt-app-id>` or the app-id GUID in `audience`, whichever the token carries.
+- **List the Codex client in `authorized_parties`.** A v2 token carries `azp` set to the client that requested it, here the Codex public client, and `authorized_parties` defaults to `audience`. Without the explicit client ID every token is rejected.
+- **Do not use `email_domains`.** Entra access tokens carry no `email_verified` and often no `email`, so an email rule rejects every token. Authorize on the tenant with `require = { tid = "<tenant-id>" }` and take the identity from `preferred_username` or `oid`.
+- **Raise `max_token_age_seconds`.** The default access-token lifetime is randomized between 60 and 90 minutes, which exceeds the default `3600`. Set about `5400`. See Microsoft's documentation on [access tokens](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens) and [token lifetimes](https://learn.microsoft.com/en-us/entra/identity-platform/configurable-token-lifetimes).
+- **Register the fixed redirect URI.** Register `http://127.0.0.1:<redirect_port>/callback` on a **public client** and set the same `redirect_port` in the Codex config.
+
+### Behavior to know
+
+- **Browser and loopback callback.** Native gateway OAuth opens a browser and listens on a loopback port; there is no device-code fallback. Over SSH, set `redirect_port` and forward it with `ssh -L <port>:127.0.0.1:<port>`.
+- **Slot order.** shunt tries the static token, then an `Authorization: Bearer` JWT, then `jwt_header`, then `jwt_cookie`, and the first that verifies wins. A ChatGPT bearer in `Authorization` therefore falls through to the cookie. Only the [inbound Codex endpoint](/guides/inbound-codex-endpoint/) reads the new slots; `/v1/messages`, `/v1/models`, `/usage`, and the Codex discovery paths stay bearer-only for JWTs.
+- **Origin rule.** The cookie is used only when the request has no `Origin` or one that matches its `Host`, so a website cannot drive a browser-held cookie into authenticated turns. The Codex CLI is not a browser and sends no `Origin`. For the same reason, never point `jwt_cookie` at a cookie a browser holds for the gateway's domain, such as an SSO proxy's `CF_Authorization`. The header slot has no such rule.
+- **Expiry on WebSocket.** The handshake credential is verified again on every turn. When the IdP token expires mid-connection, the next turn fails with a `401` error frame and Codex reconnects with a refreshed token.
+- **Never forwarded.** The configured header and every `cookie` header are stripped before any upstream request.
+- **Size limits.** An Entra access token can be several kilobytes. It counts toward `[server.limits] max_request_header_bytes` when that is set, and reverse proxies commonly cap a cookie near 4 KB. If either bites, use `delivery = { kind = "header", ... }` instead of a cookie.
+- **Model metadata.** OAuth alone does not enable remote model catalog discovery. Use `model_catalog_json` for custom model metadata.
+
 ## HTTP/SSE and WebSocket
 
 The endpoint accepts HTTP `POST` requests and WebSocket `GET` upgrades on the same three Responses

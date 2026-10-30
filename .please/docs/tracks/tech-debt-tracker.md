@@ -24,6 +24,8 @@
 | TD-019 | anthropic-account-refusal-20261022 | The `judge` doc says a body stalled past the budget is not a refusal, but with an idle clock a zero-byte stall returns the idle error (#825) | Low | 2026-10-23 |
 | TD-020 | anthropic-account-refusal-20261022 | No integration test checks that a stated `You will regain access on … UTC` time becomes the recorded skip or cooldown; only unit tests cover the parsed window (#825) | Low | 2026-10-23 |
 | TD-022 | anthropic-account-refusal-20261022 | Stale "every account refused" comments in `account_refusal.rs` and `upstream_skip.rs`; `account_refusal.rs` (523 lines) and `failover/chain.rs` (566 lines) exceed the 500-line guideline (#825) | Low | 2026-10-23 |
+| TD-023 | inbound-jwt-header-cookie-20261030 | `CODEX_PATH_HEADERS` (`src/auth/jwt_slots.rs`) duplicates the headers the Codex endpoint and WebSocket bridge read or rewrite; a new one there must be added to the `jwt_header` reject list by hand (#862) | Low | 2026-10-30 |
+| TD-024 | inbound-jwt-header-cookie-20261030 | `tests/inbound_codex_jwt_slots.rs` is 558 lines, over the 500-line guideline (#862) | Low | 2026-10-30 |
 
 ## Resolved
 

@@ -94,6 +94,8 @@ http_headers = { "x-shunt-token" = "<token>" }
 
 `[server.auth]` がなければ、このエンドポイントはそこへ到達できる誰にでも開かれています — ループバックや個人利用なら許容できますが、共有ゲートウェイでは不可です。クライアントが提示した認証情報は shunt への認証に**のみ**使われ、それ（および CLI がたまたま送る `Authorization`）は取り除かれ、上流へ転送されることはありません。`[server.admin]` の認証情報ヘッダー（既定では `x-shunt-admin-token`、`[server.admin] header` で指定した名前）も取り除かれます — 管理サーフェスはそのスロットで認証し、管理用の認証情報はアップストリームアカウントをプロビジョニングできるためです。`cookie` ヘッダーもヘッダーごと取り除かれます: 管理サーフェスはセッション Cookie もそこで受理し、shunt 自身は Cookie ジャーを持たないため、上流がそれに依存することはありません。`x-api-key` も無条件に取り除かれます — `[server.auth]` が設定されていない場合も同様です。対象のプロバイダーは起動時に `chatgpt_oauth` 専用であることが検証されるため、インバウンドの `x-api-key` の値がこのアップストリームに対して有効な認証情報になることは決してありません。Claude Code の `apiKeyHelper` のように `Authorization` と `x-api-key` の両方に同じキーを設定するクライアントであっても、2 つ目のスロット経由でそのキーが漏れることはありません。インバウンドのクライアントが実際の Codex CLI であるため、パススルーはそのリクエストヘッダーをそのまま転送し（`version`、`originator`、`OpenAI-Beta`、`x-codex-*`、…）、差し替えるのは選択されたプールアカウントの `Authorization` ベアラーと `chatgpt-account-id` **だけ**です。認証の詳しい手順は [Codex CLI の接続](/ja/guides/connect-codex-cli/#3-shunt-クライアントトークンを提示するserverauth-設定時)を参照してください。
 
+Codex CLI の `gateway_oauth` で組織の ID プロバイダー経由で開発者ごとにサインインさせるには、`[server.auth]` の `jwt_header` または `jwt_cookie` を設定します。エンドポイントはそのヘッダーまたは Cookie からも IdP の JWT を読み、その値は他のクライアント認証情報と同様に取り除かれます。[Codex CLI の接続](/ja/guides/connect-codex-cli/#7-id-プロバイダー経由でサインインするgateway-oauth)を参照してください。
+
 ## WebSocket トランスポート
 
 3 つの Responses パスは HTTP `POST` と認証済み WebSocket `GET` アップグレードの両方を受け付けます。認証は `101 Switching Protocols` より前に完了します。ソケットでは `generate: false` のウォームアップをローカルで完了し、通常の `response.create` は既存の HTTP アカウントプールを再利用して上流ストリーミングを強制し、最初の終端イベントまで各 SSE `data:` ペイロードを WebSocket テキストフレームとして転送します。ターンの置換またはソケット切断はアクティブな上流ボディをキャンセルします。クライアントフレームと SSE イベントは 4 MiB に制限され、送信には有界バックプレッシャーが適用され、エラーフレームには安全なレスポンスメタデータだけが含まれます。
@@ -178,7 +180,7 @@ shunt は Codex CLI のディスカバリー要求に対して有効なフォー
 
 [`[server.spend]`](/ja/reference/configuration/#serverspendオプション)を設定すると、このエンドポイントも `/v1/messages` と同じプリンシパル単位の上限をチェックし、計測します。設定しない場合、以下は適用されません。完全な動作は [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)（英語）を参照してください。
 
-- **チェックの時点。** すべてのターンは、アップストリームを呼ぶ前にチェックされます。3 つの Responses パスの HTTP `POST` と Responses WebSocket の両方が対象です。プリンシパルは静的な `[server.auth]` トークン名、検証済み JWT のメール、または `[server.auth]` がオフのときの匿名プリンシパルです。このエンドポイントは gateway ログインセッションを受け付けません。
+- **チェックの時点。** すべてのターンは、アップストリームを呼ぶ前にチェックされます。3 つの Responses パスの HTTP `POST` と Responses WebSocket の両方が対象です。プリンシパルは静的な `[server.auth]` トークン名、検証済み JWT の identity（`identity_claim`、既定はメール）、または `[server.auth]` がオフのときの匿名プリンシパルです。このエンドポイントは gateway ログインセッションを受け付けません。
 - **拒否レスポンス。** 上限を超えたターンには `429` と `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<エポック秒>}}` が返り、`retry-after`、`x-should-retry: false`、`x-codex-promo-message: <blocked_message>` ヘッダーが付きます。promo ヘッダーは `blocked_message` が純粋な ASCII の場合にのみ送られ、テキストは常にメッセージにも含まれます。名前が挙がる上限は、到達した上限のうち最後にリセットされるものです。`fail_closed_on_error` が有効なとき、支出状態を確認できない上限付きプリンシパルは同じ type で拒否され、`resets_at` と `retry-after` はありません。
 - **Codex CLI の表示。** 固定バージョン `rust-v0.159.3` では、Codex CLI はこのエラーを再試行しません。`resets_at` から独自の文面（"You've hit your usage limit … Try again at"）を表示し、ヘッダーがあれば promo メッセージも表示して、サーバーのメッセージは無視します。これは Codex CLI の動作であり、他のバージョンでは異なる可能性があります。
 - **WebSocket。** 拒否された `response.create` には、同じエラーと `retry-after`、`x-codex-promo-message` を載せた `{"type":"error","status":429,"error":{…},"headers":{…}}` フレームが 1 つ返ります。ソケットは開いたままで、以降の各ターンは改めてチェックされ、`generate: false` のウォームアップはチェックされません。

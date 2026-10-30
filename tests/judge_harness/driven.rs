@@ -102,6 +102,7 @@ pub(crate) fn lane_config(
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: TOKENS_ENV.to_string(),
+        ..Default::default()
     });
 
     let mut models = vec![

@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.61.0](https://github.com/pleaseai/shunt/compare/v0.60.0...v0.61.0) (2026-10-30)
+
+
+### Features
+
+* **auth:** accept inbound JWTs from a configured header or cookie for Codex gateway OAuth ([#862](https://github.com/pleaseai/shunt/issues/862)) ([56b9fc0](https://github.com/pleaseai/shunt/commit/56b9fc0ad03f99060feb0ed36a5a65ab8fd330ce))
+
+## [0.60.0](https://github.com/pleaseai/shunt/compare/v0.59.1...v0.60.0) (2026-10-27)
+
+
+### Features
+
+* **accounts:** allow . _ @ + in account names, so a name can be the login's email ([#847](https://github.com/pleaseai/shunt/issues/847)) ([66c2c0b](https://github.com/pleaseai/shunt/commit/66c2c0bfd712003b4e7ae6179c4f493518b08e8d))
+* **auth:** inbound JWT phase 2 workload identity (require, subject_prefix, identity_claim) ([#854](https://github.com/pleaseai/shunt/issues/854)) ([83ef44b](https://github.com/pleaseai/shunt/commit/83ef44b4ae1c1cc6267fe6e7fa32d493fb500cf5))
+
+
+### Bug Fixes
+
+* **admin:** redeem the OIDC callback state before spending the login budget ([#838](https://github.com/pleaseai/shunt/issues/838)) ([b3fe834](https://github.com/pleaseai/shunt/commit/b3fe834d3808b5d5068c0ccfcc7fbee204a271b2))
+* **auth:** keep refresh tokens and auth codes on their own host ([#839](https://github.com/pleaseai/shunt/issues/839)) ([a66b87c](https://github.com/pleaseai/shunt/commit/a66b87c9462594e99b42d1b76fd21dc1e23b5e5e))
+* **deps:** bump crates past published RustSec advisories ([#835](https://github.com/pleaseai/shunt/issues/835)) ([3dfdf1f](https://github.com/pleaseai/shunt/commit/3dfdf1f634a1f17f80a1ecc76cb8d9eed826df04))
+
+## [0.59.1](https://github.com/pleaseai/shunt/compare/v0.59.0...v0.59.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **anthropic:** decode compressed upstream responses before relaying ([#832](https://github.com/pleaseai/shunt/issues/832)) ([83e312f](https://github.com/pleaseai/shunt/commit/83e312f2b1b58bf35c60f246688d6398e8c94743))
+* **anthropic:** keep every anthropic-beta line when adding the OAuth beta ([#834](https://github.com/pleaseai/shunt/issues/834)) ([b36a8f0](https://github.com/pleaseai/shunt/commit/b36a8f0b6ecd224439c20d767cad0bc592087c00))
+* **auth:** bound the Claude token refresh with a request timeout ([#833](https://github.com/pleaseai/shunt/issues/833)) ([a658fef](https://github.com/pleaseai/shunt/commit/a658fef8621337dfd51174421f1c7f5c438f1f70))
+
 ## [0.59.0](https://github.com/pleaseai/shunt/compare/v0.58.0...v0.59.0) (2026-10-23)
 
 

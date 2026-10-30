@@ -1,0 +1,13 @@
+{
+  "track_id": "inbound-jwt-header-cookie-20261030",
+  "type": "feature",
+  "status": "completed",
+  "created_at": "2026-10-29T18:34:26Z",
+  "updated_at": "2026-10-30T12:05:21+09:00",
+  "issue": "#860",
+  "pr": "#862",
+  "project": "2",
+  "project_item_id": "PVTI_lADODf_st84BRosizhElrpY",
+  "code_branch": "amondnet/crinoid",
+  "code_pr": "#862"
+}

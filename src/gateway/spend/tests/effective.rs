@@ -169,6 +169,7 @@ async fn actor_is_derived_from_static_token_email_and_anonymous_principals() {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: auth_env.clone(),
+        ..Default::default()
     });
     let (router, _, state) = build_router(config).unwrap();
     for principal in ["ci-bot", "dev@example.com", "shunt:anonymous"] {

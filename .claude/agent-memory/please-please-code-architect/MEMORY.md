@@ -1,0 +1,1 @@
+- [Inbound auth architecture](project_inbound_auth_architecture.md) — gate/Slots, strip centralisation, WS handshake-header reuse, literal-site churn

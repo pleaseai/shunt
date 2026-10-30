@@ -89,7 +89,7 @@ A successful refresh can return a replacement refresh token and invalidate the p
 
 | Field | Required | Meaning |
 | :-- | :-- | :-- |
-| `name` | yes | Unique label containing only lowercase letters, digits, and hyphens. Without another source field, resolves the matching shunt store file. |
+| `name` | yes | Unique label containing only lowercase letters, digits, and `.`, `_`, `@`, `+` or `-`, not starting or ending with a dot (an email address works once lowercased). Without another source field, resolves the matching shunt store file. |
 | `credentials` | one usable source | Claude Code `.credentials.json`-shaped file. `~/` is expanded. shunt refreshes near expiry and atomically writes refreshed tokens back. |
 | `token_env` | one usable source | Environment variable containing a setup token. The value is used verbatim and cannot be refreshed after a 401. |
 | `uuid` | no | Selected account's Anthropic UUID for rewriting an existing `metadata.user_id.account_uuid`, and the stable identity used to coalesce aliases in the pool. A name-only entry (resolved by a store scan) is filled in automatically from the store's `shuntAccountUuid` before selection runs; a `credentials`- or `token_env`-configured entry's identity is its `uuid` when set, else its `name`, and it coalesces with another alias whenever that identity equals the other alias's explicit `uuid` or name-fallback identity — set a matching nonblank `uuid` on both entries for a clear, intentional coalesce (shunt also warns on an accidental cross `uuid`/`name` collision). |

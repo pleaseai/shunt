@@ -127,14 +127,37 @@ pub(crate) fn is_safe_refresh_url(url: &reqwest::Url) -> bool {
             && crate::config::host_is_loopback(url.host_str().unwrap_or_default()))
 }
 
+/// Whether a `SHUNT_*_TOKEN_URL` override may stand in for `default_url`: a loopback
+/// endpoint, which is the local mock these overrides exist for, or HTTPS to the
+/// default's own host.
+///
+/// Narrower than [`is_safe_refresh_url`] on purpose. That floor governs where a
+/// refresh may go once an endpoint is chosen; this decides which endpoint is chosen.
+/// An override is the first hop, so no redirect policy sees it, and HTTPS to any
+/// other host would hand that host the long-lived `refresh_token` (or the one-time
+/// authorization code) encrypted but in full.
+fn is_permitted_token_url_override(url: &reqwest::Url, default_url: &str) -> bool {
+    if !is_safe_refresh_url(url) {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default();
+    crate::config::host_is_loopback(host)
+        || reqwest::Url::parse(default_url)
+            .ok()
+            .as_ref()
+            .and_then(reqwest::Url::host_str)
+            .is_some_and(|default_host| default_host == host)
+}
+
 /// Resolve an OAuth refresh endpoint from a `SHUNT_*_TOKEN_URL` override; an empty,
-/// malformed, or unsafe one (see [`is_safe_refresh_url`]) falls back to `default_url`.
+/// malformed, or unpermitted one (see [`is_permitted_token_url_override`]) falls
+/// back to `default_url`.
 pub(crate) fn sanitize_token_url(raw: Option<String>, default_url: &str) -> String {
     raw.filter(|value| !value.is_empty())
         .filter(|value| {
             value
                 .parse::<reqwest::Url>()
-                .is_ok_and(|url| is_safe_refresh_url(&url))
+                .is_ok_and(|url| is_permitted_token_url_override(&url, default_url))
         })
         .unwrap_or_else(|| default_url.to_string())
 }
@@ -158,28 +181,39 @@ pub(crate) fn admin_token_url_override(env_var: &str, default_url: &str) -> Stri
         );
         return default_url.to_string();
     };
-    if is_safe_refresh_url(&url) {
+    if is_permitted_token_url_override(&url, default_url) {
         raw
     } else {
         tracing::warn!(
             env = env_var,
             scheme = url.scheme(),
             host = url.host_str().unwrap_or_default(),
-            "admin: ignoring token URL override (only https, or http to loopback, is allowed)"
+            "admin: ignoring token URL override (only a loopback URL, or https to the built-in endpoint's host, is allowed)"
         );
         default_url.to_string()
     }
 }
 
 /// Process-wide client for the OAuth refresh POST; follows a 3xx only to a safe
-/// endpoint ([`is_safe_refresh_url`]), closing [`sanitize_token_url`]'s initial-URL gap.
+/// endpoint ([`is_safe_refresh_url`]) on the host the request started on, closing
+/// [`sanitize_token_url`]'s initial-URL gap.
+///
+/// Same host, not merely HTTPS: a 307 or 308 replays the POST body, which carries
+/// the refresh token or authorization code, so a token endpoint may move it to
+/// another path or port of its own host but never hand it to a different one.
+/// reqwest strips `Authorization` on a host change, but not a body.
 pub(crate) fn token_refresh_client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                    if attempt.previous().len() >= 10 || !is_safe_refresh_url(attempt.url()) {
+                    let origin = attempt.previous().first().and_then(|url| url.host_str());
+                    let same_host = origin.is_some() && origin == attempt.url().host_str();
+                    if attempt.previous().len() >= 10
+                        || !same_host
+                        || !is_safe_refresh_url(attempt.url())
+                    {
                         attempt.error("unsafe or excessive token refresh redirect refused")
                     } else {
                         attempt.follow()
@@ -198,16 +232,29 @@ pub(crate) fn write_auth_file_atomic(path: &Path, value: &Value) -> io::Result<(
     crate::atomic_file::write_private_atomic_in_existing_dir(path, &bytes)
 }
 
-/// Validate a store account name: non-empty and `[a-z0-9-]+` only. Shared by the
-/// Claude and Codex account stores so the path-safety invariant — a name can
-/// never escape the accounts directory — cannot drift between them.
+/// [`validate_account_name`]'s rule in words, for the messages that report a
+/// rejected name without repeating it.
+pub const ACCOUNT_NAME_RULE: &str =
+    "only lowercase letters, digits, and . _ @ + -, and must not start or end with a dot";
+
+/// Validate a store account name. Shared by every account store so the
+/// path-safety invariant — a name can never escape the accounts directory —
+/// cannot drift between them.
+///
+/// A name is lowercase ASCII letters and digits plus `.`, `_`, `@`, `+` and `-`,
+/// enough for it to be the login's own email address. It becomes
+/// `<accounts dir>/<name>.json` and a segment of the admin account routes, so:
+/// - no path separator can appear, and a leading or trailing dot is refused,
+///   which rules out the `.` and `..` dot segments, hidden files, and the
+///   trailing dot Windows strips from a file name;
+/// - no uppercase: on a case-insensitive filesystem two names that differ only
+///   in case would share one store file.
 pub fn validate_account_name(name: &str) -> anyhow::Result<()> {
-    if name.is_empty()
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    let allowed =
+        |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._@+-".contains(&byte);
+    if name.is_empty() || !name.bytes().all(allowed) || name.starts_with('.') || name.ends_with('.')
     {
-        anyhow::bail!("account name {name:?} must match [a-z0-9-]+");
+        anyhow::bail!("account name {name:?} must contain {ACCOUNT_NAME_RULE}");
     }
     Ok(())
 }
@@ -1104,12 +1151,48 @@ mod tests {
 
     #[test]
     fn validate_account_name_accepts_kebab_and_rejects_the_rest() {
-        for ok in ["primary", "a", "a-1", "backup-2"] {
+        for ok in ["primary", "a", "a-1", "backup-2", "-edge", "edge-"] {
             assert!(validate_account_name(ok).is_ok(), "rejected {ok:?}");
         }
-        for bad in ["", "Bad", "a b", "under_score", "a.b", "café"] {
+        for bad in ["", "Bad", "a b", "café", "a/b", "a\\b", "a:b", "a%40b"] {
             assert!(validate_account_name(bad).is_err(), "accepted {bad:?}");
         }
+    }
+
+    /// A name can be the login's email address, with the separators emails
+    /// use, so an operator need not invent a second label for each account.
+    #[test]
+    fn validate_account_name_accepts_an_email_address() {
+        for ok in [
+            "me@example.org",
+            "first.last@example.com",
+            "first_last+work@example.co.uk",
+            "a..b",
+            "@",
+        ] {
+            assert!(validate_account_name(ok).is_ok(), "rejected {ok:?}");
+        }
+    }
+
+    /// The dot is the one new character with a path meaning: `.` and `..` are
+    /// dot segments in an admin route, and a leading dot hides the store file.
+    /// Uppercase stays out because a case-insensitive filesystem would give
+    /// `Me@x.com` and `me@x.com` the same store file.
+    #[test]
+    fn validate_account_name_refuses_edge_dots_and_uppercase() {
+        for bad in [
+            ".",
+            "..",
+            ".hidden",
+            "trailing.",
+            "../escape",
+            "a/../b",
+            "Me@example.com",
+        ] {
+            assert!(validate_account_name(bad).is_err(), "accepted {bad:?}");
+        }
+        let message = validate_account_name("..").unwrap_err().to_string();
+        assert!(message.contains(ACCOUNT_NAME_RULE), "{message}");
     }
 
     #[test]
@@ -1158,7 +1241,13 @@ mod tests {
         env::set_var(&env_name, "");
         assert_eq!(admin_token_url_override(&env_name, default), default);
 
-        // Safe overrides are honored: https anywhere, or http to loopback.
+        // Permitted overrides are honored: loopback over either scheme, or https to
+        // the built-in endpoint's own host.
+        env::set_var(&env_name, "https://auth.example.com/v2/token");
+        assert_eq!(
+            admin_token_url_override(&env_name, default),
+            "https://auth.example.com/v2/token"
+        );
         env::set_var(&env_name, "https://localhost:9999/token");
         assert_eq!(
             admin_token_url_override(&env_name, default),
@@ -1175,6 +1264,10 @@ mod tests {
         env::set_var(&env_name, "not a url");
         assert_eq!(admin_token_url_override(&env_name, default), default);
         env::set_var(&env_name, "http://evil.example.com/token");
+        assert_eq!(admin_token_url_override(&env_name, default), default);
+        // HTTPS to any other host would receive the one-time code on the first
+        // hop, where no redirect policy sees it, so it is ignored too.
+        env::set_var(&env_name, "https://evil.example.com/token");
         assert_eq!(admin_token_url_override(&env_name, default), default);
 
         env::remove_var(&env_name);

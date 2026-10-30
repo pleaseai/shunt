@@ -19,6 +19,7 @@ pub mod gateway;
 pub mod google;
 pub mod inbound;
 pub mod inbound_jwt;
+pub(crate) mod jwt_slots;
 pub mod kimi;
 pub mod observation;
 pub mod shared;

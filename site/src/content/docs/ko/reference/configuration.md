@@ -43,6 +43,8 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 | :-- | :-- | :-- |
 | `header` | `x-shunt-token` | 클라이언트 토큰을 담는 헤더 |
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | 쉼표로 구분된 `name:token` 쌍을 담는 env 변수 |
+| `jwt_header` | 미설정 | 인바운드 Codex 엔드포인트가 IdP JWT를 추가로 읽는 헤더. Codex `gateway_oauth`의 `delivery.kind = "header"`용 |
+| `jwt_cookie` | 미설정 | 인바운드 Codex 엔드포인트가 IdP JWT를 추가로 읽는 쿠키. `delivery.kind = "cookie"`용 |
 
 지정된 환경 변수에는 하나 이상의 자격 증명이 있어야 합니다. 예: `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`. 테이블이 있는데 변수가 설정되지 않았거나, 비어 있거나, 형식이 잘못되면 시작은 닫힌 채로 실패(fail closed)합니다. 게이팅되는 라우트(매핑된 `/v1/messages` 추론과 `GET /v1/models` 디스커버리)는 구성된 헤더, `Authorization: Bearer`, `x-api-key`로 토큰을 받습니다 — 여러 슬롯에 유효한 토큰이 있으면 전용 헤더가 우선합니다.
 
@@ -62,6 +64,13 @@ tokens_env = "SHUNT_CLIENT_TOKENS"   # JWT issuer가 구성되면 선택
 issuer = "https://accounts.google.com"
 audience = ["<shunt 전용 client id>"]
 email_domains = ["example.com"]
+
+# 워크로드 ID: GitHub Actions OIDC 토큰에는 email이 없습니다
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
 ```
 
 | 키 | 기본값 | 의미 |
@@ -70,21 +79,42 @@ email_domains = ["example.com"]
 | `audience` | 필수 | 허용되는 `aud` 값. 문자열 또는 배열 |
 | `email_domains` | `[]` | 대소문자 무시 도메인. 마지막 `@` 뒤 부분과 **정확히** 일치해야 하며 접미사 매칭이 아님 |
 | `allowed_emails` | `[]` | 대소문자 무시 전체 이메일 주소 |
+| `require` | `{}` | 클레임 이름 → 문자열 또는 문자열 배열 테이블. 나열된 각 클레임은 최상위 JSON **문자열**이어야 하며 값 중 하나와 정확히(대소문자 구분) 일치해야 함. 클레임 간에는 AND. `email`이 없는 워크로드 issuer용 |
+| `subject_prefix` | `[]` | 문자열 또는 배열. 설정하면 `sub`가 이 중 하나로 시작해야 함(대소문자 구분). 구분자에서 끝내세요 — 예: `repo:pleaseai/` (`repo:pleaseai`는 `pleaseai-evil`도 일치). GitHub의 `sub` 형식은 저장소 생성 시점과 관리자 설정에 따라 달라지므로 ID 클레임에 대한 `require`를 우선 사용하세요 |
+| `identity_claim` | `email` | 문자열 값(비어 있지 않고 256바이트 이하)이 호출자 신원이 되는 클레임. 항목에 `email_domains`/`allowed_emails`가 없으면 필수. `sub`가 아니라 `repository` 같은 길이가 제한된 클레임을 선택. 신원에는 issuer 접두사가 붙지 않으므로, 정적 클라이언트 이름이나 다른 항목의 신원과 값이 같으면 사용량·spend에서 같은 호출자로 취급됨. `actor` 같은 단순 사용자 이름 클레임은 피할 것 |
 | `algorithms` | `["RS256"]` | 허용되는 서명 알고리즘. 비대칭만 가능 |
 | `authorized_parties` | `audience` | `azp` 클레임이 있을 때 허용되는 값 |
 | `clock_skew_seconds` | `0` | `exp`와 `nbf`에 적용되는 허용 오차 |
 | `max_token_age_seconds` | `3600` | `exp - iat`가 이 값을 넘으면 거부 |
 | `jwks_url` | discovery | discovery 문서를 제공하지 않는 issuer용 명시적 JWKS 엔드포인트 |
 
-각 항목에는 `issuer`, `audience`, 그리고 `email_domains` 또는 `allowed_emails` 값이 최소 하나 필요합니다. `audience`만으로는 인가 규칙이 되지 않습니다 — issuer에 따라서는 호출자가 audience를 스스로 정하기 때문입니다. `algorithms`에 대칭 알고리즘이나 알 수 없는 값이 있어도, `issuer`가 `[server.gateway]`의 `public_url`과 같아도 시작은 닫힌 채로 실패합니다. 두 검증기가 같은 bearer 슬롯을 읽으므로, issuer가 겹치면 토큰의 소유권이 평가 순서에 좌우됩니다.
+각 항목에는 `issuer`, `audience`, 그리고 인가 규칙이 최소 하나 필요합니다: `email_domains`/`allowed_emails` 값, `aud`·`iss` 외의 클레임을 지정한 `require` 테이블(이 둘은 shunt가 이미 하는 검사를 반복할 뿐입니다), 또는 `subject_prefix`. `audience`만으로는 인가 규칙이 되지 않습니다 — issuer에 따라서는 호출자가 audience를 스스로 정하기 때문입니다(어떤 GitHub 저장소든 임의의 `aud`로 토큰을 발급할 수 있습니다). 이메일 규칙이 없는 항목은 `identity_claim`도 설정해야 합니다. 구성된 모든 그룹(이메일 규칙, `require`, `subject_prefix`)을 통과해야 합니다. `email_verified = true`는 항목에 이메일 규칙이 있거나, 신원 클레임이 `email`이거나, `require`가 `email`을 지정할 때 강제되며, 그 밖의 항목은 `email`을 읽지 않습니다. `algorithms`에 대칭 알고리즘이나 알 수 없는 값이 있어도, `issuer`가 `[server.gateway]`의 `public_url`과 같아도 시작은 닫힌 채로 실패합니다. 두 검증기가 같은 bearer 슬롯을 읽으므로, issuer가 겹치면 토큰의 소유권이 평가 순서에 좌우됩니다.
 
 항목이 하나라도 있으면 `tokens_env`는 비어 있어도 됩니다 — 인증을 전부 IdP로 하는 배포에는 설정할 정적 토큰이 없습니다. 토큰 목록도 항목도 없으면 `[server.auth]`는 여전히 시작에 실패합니다.
 
-JWT는 **오직** `Authorization: Bearer`로만 받습니다 — 구성된 `header`도, `x-api-key`도 아닙니다. Claude Code가 이미 `ANTHROPIC_AUTH_TOKEN`을 보내는 슬롯입니다. 게이팅되는 라우트에서는 정적 토큰을 먼저 확인하고, 그 라우트가 받는 경우 gateway JWT를, 그다음 `iss`로 JWT 항목을 확인합니다. 검증은 알고리즘을 config에서 고정하고(토큰 헤더의 `alg`는 절대 선택하지 않습니다) `kid`를 요구하며, `exp`/`nbf`, `aud`, `azp`, `exp - iat`, `email_verified = true`, 이메일 허용 목록을 확인합니다. 검증된 이메일이 로그와 사용량 귀속에서 호출자 신원이 되며, 256바이트를 넘는 주소는 잘라내지 않고 거부합니다. 게이팅되는 라우트는 `[server.auth]`가 이미 보호하는 라우트입니다: 자격 증명을 주입하는 `/v1/messages`와 `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage`(loopback이 아닐 때만), 그리고 인바운드 Codex 엔드포인트(HTTP, WebSocket, analytics).
+JWT는 `Authorization: Bearer`로 받습니다 — Claude Code가 이미 `ANTHROPIC_AUTH_TOKEN`을 보내는 슬롯입니다. 인바운드 Codex 엔드포인트에 한해 아래의 선택 슬롯 `jwt_header`와 `jwt_cookie`로도 받습니다. 구성된 `header`나 `x-api-key`에서는 JWT를 읽지 않습니다. 게이팅되는 라우트에서는 정적 토큰을 먼저 확인하고, 그 라우트가 받는 경우 gateway JWT를, 그다음 `iss`로 JWT 항목을 확인합니다. 검증은 알고리즘을 config에서 고정하고(토큰 헤더의 `alg`는 절대 선택하지 않습니다) `kid`를 요구하며, `exp`/`nbf`, `aud`, `azp`, `exp - iat`, 구성된 `require`/`subject_prefix` 연산자, 이메일 허용 목록, 그리고 항목이 `email`을 읽는 경우 `email_verified = true`를 확인합니다. 검증된 신원 클레임(기본값은 이메일)이 로그와 사용량 귀속에서 호출자 신원이 되며, 256바이트를 넘는 값은 잘라내지 않고 거부합니다. 게이팅되는 라우트는 `[server.auth]`가 이미 보호하는 라우트입니다: 자격 증명을 주입하는 `/v1/messages`와 `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`, `GET /api/oauth/usage`(loopback이 아닐 때만), 그리고 인바운드 Codex 엔드포인트(HTTP, WebSocket, analytics).
 
 key set은 issuer별로 최초 사용 시점에 lazy하게 가져오므로 IdP에 접근할 수 없어도 시작을 막지 않습니다. 캐시된 key set은 최대 5분 동안만 신뢰하고, 그 뒤에는 다음 요청이 재조회를 시도합니다(60초 재조회 하한 적용). 재조회에 성공하면 key set을 통째로 교체하므로 issuer가 철회한 키는 약 5분 안에 검증에서 빠집니다. 재조회에 실패하면 IdP 장애가 전면 장애로 번지지 않도록 만료된 key set을 계속 쓰고, discovery 자체가 실패하면 마지막으로 발견한 `jwks_uri`를 대신 시도합니다. config reload는 항목의 `issuer`와 `jwks_url`이 모두 그대로일 때만 캐시된 키를 유지합니다. 알 수 없는 `kid`는 key set당 60초 창에서 최대 한 번만 재조회를 유발합니다. 어떤 항목으로도 검증되지 않은 토큰은 `401`이고, 검증된 항목이 없으면서 토큰의 issuer와 일치하는 항목 중 캐시된 key set이 없는데 가져오기도 실패한 것이 있으면 **`503`**입니다 — IdP 장애가 잘못된 자격 증명으로 보고되지 않습니다.
 
 shunt는 취소(revocation) 상태를 보관하지 않으므로 유효한 토큰은 만료될 때까지 동작합니다. 그 범위를 제한하는 것이 `max_token_age_seconds`이며, issuer는 분 단위 수명의 토큰을 발급해야 합니다. 허용 목록에서 도메인이나 주소를 제거하면 다음 요청부터 적용됩니다.
+
+### Codex gateway OAuth: `jwt_header`와 `jwt_cookie`
+
+Codex CLI의 네이티브 `gateway_oauth`는 `Authorization`을 예약해 두고, ID 공급자(IdP)의 액세스 토큰을 쿠키나 사용자 지정 헤더로 전달합니다. 선택 사항인 두 `[server.auth]` 키가 shunt가 그 토큰을 어디서 읽을지 알려 주며, 토큰은 bearer JWT와 같은 `[[server.auth.jwt]]` 항목으로 검증합니다. Microsoft Entra ID 예시를 포함한 전체 설정은 [Codex CLI 연결 가이드](/ko/guides/connect-codex-cli/)에 있습니다.
+
+```toml
+[server.auth]
+jwt_cookie = "auth-openid"        # Codex: delivery = { kind = "cookie", name = "auth-openid" }
+# jwt_header = "X-Gateway-Token"  # Codex: delivery = { kind = "header", name = "X-Gateway-Token", scheme = "Bearer" }
+```
+
+- **검증.** 시작 시 다음을 거부합니다: `[[server.auth.jwt]]` 항목 없이 키만 설정한 경우, 빈 값, 유효하지 않거나 `authorization`, `x-api-key`, `cookie`, `x-shunt-token`, `x-shunt-admin-token`, `x-shunt-inbound-client`, Codex 엔드포인트에서 shunt가 읽거나 다시 쓰는 헤더(`session-id`, `x-claude-code-session-id`, `content-type`, `content-length`, `content-encoding`, `transfer-encoding`, `host`, `origin`, `upgrade`, `connection`, `openai-beta`, `sec-websocket-*`), Codex CLI가 보내거나 shunt가 그곳에서 합성하는 헤더(`originator`, `x-codex-routing-hint`, `thread-id`, `x-client-request-id`, `x-codex-window-id`), `[server.auth]`의 `header`, `[server.admin]`의 `header`인 헤더 이름. 쿠키 이름은 RFC 6265 token이어야 하며 관리 대시보드의 `shunt_admin_session`이어서는 안 됩니다. 두 키 모두 hot-reload됩니다.
+- **범위.** 인바운드 Codex 엔드포인트만 이 키를 읽습니다: Responses 라우트(`/v1/responses`, `/backend-api/codex/responses`, `/responses`의 HTTP와 WebSocket), `/alpha/search`, analytics sink. `/v1/messages`, `/v1/models`, `/usage`, Codex discovery 경로는 JWT를 `Authorization: Bearer`로만 받습니다.
+- **슬롯 순서.** 정적 토큰, `Authorization: Bearer` JWT, `jwt_header`(원본 JWT 또는 `Bearer <jwt>`, scheme은 대소문자 무관), `jwt_cookie` 순입니다. 검증에 성공한 첫 슬롯이 채택되므로 `Authorization`의 ChatGPT 토큰은 쿠키로 넘어갑니다. 슬롯은 스캔이 도달했을 때만 확인합니다. 구성된 헤더나 쿠키 이름이 두 번 이상 나타나면, 앞선 슬롯이 이미 인증한 경우가 아닌 한 요청을 거부합니다. 자격 증명이 없거나 유효하지 않으면 `401`, issuer의 키를 가져올 수 없으면 `503`이며, 이 엔드포인트에서는 둘 다 OpenAI 오류 형태입니다.
+- **Origin 규칙.** 쿠키는 요청에 `Origin` 헤더가 없거나, 요청의 scheme, `Host`, 유효 포트와 일치하는 `Origin`이 정확히 하나일 때만 사용합니다. scheme은 첫 번째 `X-Forwarded-Proto` 값(`http` 또는 `https`)이며, 없으면 shunt 자체가 평문 HTTP로 수신하므로 `http`입니다. TLS를 종료하는 프록시 뒤에서는 프록시가 `X-Forwarded-Proto`를 보내도록 설정하세요. cross-origin(scheme이 다른 경우 포함), `null`, 해석할 수 없는, 또는 중복된 `Origin`, 그리고 `Host`가 없거나 `X-Forwarded-Proto`를 인식할 수 없는 요청의 `Origin`은 쿠키 슬롯을 비활성화하며, 헤더 슬롯에는 영향이 없습니다. 브라우저는 게이트웨이 도메인에 대해 보유한 쿠키를 요청에 붙이므로, `jwt_cookie`가 그런 쿠키(예: shunt 앞단 SSO 프록시의 쿠키, Cloudflare Access의 `CF_Authorization`)를 가리키게 하지 마세요.
+- **전달.** 구성된 헤더와 모든 `cookie` 헤더는 풀과 라우팅된 프로바이더 모두에서 업스트림 요청 전에 제거됩니다.
+- **WebSocket.** 핸드셰이크 자격 증명은 매 턴마다 다시 검증합니다. IdP 토큰이 만료되면 다음 턴이 `401` 오류 프레임으로 실패하고, Codex는 갱신된 토큰으로 다시 연결합니다.
+- **크기.** Entra 액세스 토큰은 큽니다. `[server.limits]`의 `max_request_header_bytes`를 설정했다면 그 값에 포함되고, 리버스 프록시는 보통 쿠키 하나를 약 4 KB로 제한합니다. 둘 중 하나가 문제가 되면 헤더 전달을 쓰세요.
 
 ## `[server.admin]` (선택)
 
@@ -186,9 +216,9 @@ rate는 upstream 단위로 가장 구체적인 것부터 매칭됩니다. upstre
 | :-- | :-- | :-- |
 | `fail_closed_on_error` | `false` | 주체의 meter를 신뢰할 수 없을 때(복원에 실패한 카운터 레코드, 해당 window가 끝날 때까지): `false`는 요청을 전달하고 경고를 기록, `true`는 cap이 있는 주체에 대해 `429` `spend limit unavailable`로 거부(cap이 없는 주체는 전달) |
 
-제한은 `POST /v1/messages`에 적용됩니다(`count_tokens`는 제외). 주체(principal)는 정적 `[server.auth]` 토큰 이름, 검증된 JWT 이메일, 또는 gateway 로그인 이메일이며 `user` 한도의 `user_id`와 그대로 일치시킵니다. 자격 증명을 주입하지만 신원이 없는 요청은 `shunt:anonymous`를 공유하고, passthrough 또는 `type = "noop"` 라우트만으로 이루어진 체인은 제한도 계측도 하지 않습니다. UTC 기간(일, 월요일 시작 주, 월)별 상한은 해당 주체의 `user` 행, 없으면 `organization` 행(공유 풀이 아니라 사용자별 기본값), 그것도 없으면 무제한입니다. `amount: null`인 `user` 행은 명시적 무제한입니다. 검사는 예약 없는 사전 검사이므로 진행 중인 요청은 상한을 넘을 수 있습니다. 상한에 도달한 주체는 `retry-after`와 `x-should-retry: false`가 붙은 `429 billing_error`(`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`)를 받고, 상한이 있는 주체의 계측 대상 응답에서는(passthrough 또는 `noop` 라우트만으로 이루어진 체인은 업스트림 헤더를 그대로 유지) 모든 상태 코드에서 업스트림 `anthropic-ratelimit-*` 헤더가 제거되고, 해당 주체 자신의 `anthropic-ratelimit-unified-*` 헤더는 `2xx`와 두 가지 지출 한도 거부 응답, 즉 상한 초과 `429`와 `anthropic-ratelimit-unified-overage-disabled-reason: fetch_error`가 붙는 fail-closed `429 spend limit unavailable`에만 붙습니다(그 밖의 오류나 fail-open 전달에는 붙지 않음). `/audit`, 감사·아이덴티티 보존 sweep, group scope는 아직 구현하지 않았습니다. 전체 동작은 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(영문)를 참고하세요.
+제한은 `POST /v1/messages`에 적용됩니다(`count_tokens`는 제외). 주체(principal)는 정적 `[server.auth]` 토큰 이름, 검증된 JWT 신원(`identity_claim`, 기본값은 이메일), 또는 gateway 로그인 이메일이며 `user` 한도의 `user_id`와 그대로 일치시킵니다. 자격 증명을 주입하지만 신원이 없는 요청은 `shunt:anonymous`를 공유하고, passthrough 또는 `type = "noop"` 라우트만으로 이루어진 체인은 제한도 계측도 하지 않습니다. UTC 기간(일, 월요일 시작 주, 월)별 상한은 해당 주체의 `user` 행, 없으면 `organization` 행(공유 풀이 아니라 사용자별 기본값), 그것도 없으면 무제한입니다. `amount: null`인 `user` 행은 명시적 무제한입니다. 검사는 예약 없는 사전 검사이므로 진행 중인 요청은 상한을 넘을 수 있습니다. 상한에 도달한 주체는 `retry-after`와 `x-should-retry: false`가 붙은 `429 billing_error`(`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`)를 받고, 상한이 있는 주체의 계측 대상 응답에서는(passthrough 또는 `noop` 라우트만으로 이루어진 체인은 업스트림 헤더를 그대로 유지) 모든 상태 코드에서 업스트림 `anthropic-ratelimit-*` 헤더가 제거되고, 해당 주체 자신의 `anthropic-ratelimit-unified-*` 헤더는 `2xx`와 두 가지 지출 한도 거부 응답, 즉 상한 초과 `429`와 `anthropic-ratelimit-unified-overage-disabled-reason: fetch_error`가 붙는 fail-closed `429 spend limit unavailable`에만 붙습니다(그 밖의 오류나 fail-open 전달에는 붙지 않음). `/audit`, 감사·아이덴티티 보존 sweep, group scope는 아직 구현하지 않았습니다. 전체 동작은 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(영문)를 참고하세요.
 
-인바운드 Codex 엔드포인트(`[server.codex_endpoint]`)도 같은 상한과 카운터로 검사하고 계측하므로, 하나의 상한이 두 표면에 걸친 주체의 지출을 함께 제한합니다. 모든 턴은 HTTP와 Responses WebSocket 모두에서 업스트림을 호출하기 전에 검사합니다. 주체는 정적 토큰 이름, 검증된 JWT 이메일, 또는 `[server.auth]`가 없을 때의 `shunt:anonymous`입니다. 상한을 넘은 턴은 `429`를 받으며, `error.type`과 `error.code`는 `usage_limit_reached`이고, `resets_at`(에포크 초, 도달한 상한 중 가장 늦게 리셋되는 것), `retry-after`, `x-should-retry: false`가 붙고, `blocked_message`가 순수 ASCII이면 `x-codex-promo-message`로도 전달됩니다. `fail_closed_on_error`는 상한이 있는 주체를 같은 type으로, `resets_at`과 `retry-after` 없이 거부합니다. 완료된 턴은 Responses `usage`로 청구합니다. 캐시된 입력 토큰은 `cache_read` 요율, 나머지 입력은 `input` 요율이며 추론 토큰은 출력에 포함됩니다. 사용량 보고 없이 끝난 턴은 추정 입력 하한에 전달된 출력을 더해 청구합니다. 클라이언트에 보이는 동작은 [인바운드 Codex 엔드포인트](/ko/guides/inbound-codex-endpoint/#지출-한도)를 참고하세요.
+인바운드 Codex 엔드포인트(`[server.codex_endpoint]`)도 같은 상한과 카운터로 검사하고 계측하므로, 하나의 상한이 두 표면에 걸친 주체의 지출을 함께 제한합니다. 모든 턴은 HTTP와 Responses WebSocket 모두에서 업스트림을 호출하기 전에 검사합니다. 주체는 정적 토큰 이름, 검증된 JWT 신원(`identity_claim`, 기본값은 이메일), 또는 `[server.auth]`가 없을 때의 `shunt:anonymous`입니다. 상한을 넘은 턴은 `429`를 받으며, `error.type`과 `error.code`는 `usage_limit_reached`이고, `resets_at`(에포크 초, 도달한 상한 중 가장 늦게 리셋되는 것), `retry-after`, `x-should-retry: false`가 붙고, `blocked_message`가 순수 ASCII이면 `x-codex-promo-message`로도 전달됩니다. `fail_closed_on_error`는 상한이 있는 주체를 같은 type으로, `resets_at`과 `retry-after` 없이 거부합니다. 완료된 턴은 Responses `usage`로 청구합니다. 캐시된 입력 토큰은 `cache_read` 요율, 나머지 입력은 `input` 요율이며 추론 토큰은 출력에 포함됩니다. 사용량 보고 없이 끝난 턴은 추정 입력 하한에 전달된 출력을 더해 청구합니다. 클라이언트에 보이는 동작은 [인바운드 Codex 엔드포인트](/ko/guides/inbound-codex-endpoint/#지출-한도)를 참고하세요.
 
 ## `[server.gateway]` (선택)
 
@@ -1292,7 +1322,7 @@ policy = { type = "target_selector", selector = "/target" }
 
 ## `[store]` (선택)
 
-풀 쿼터, 게이트웨이 refresh token, 지출 한도와 감사 기록을 위한 선택적 트랜잭션 저장소로, SQLite 또는 PostgreSQL을 사용합니다. 이 테이블이 없으면 아무것도 바뀌지 않습니다. 세 하위 시스템은 기존과 똑같이 JSON `state_path` 스냅샷과 복원 경로를 유지합니다. 이 테이블을 설정하면 저장소가 스냅샷을 대체하고, 기존 스냅샷은 한 번만 가져옵니다. 전체 동작은 [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)(영문)에 있습니다. `[store]`는 재시작 전용입니다. 설정 reload 중에 바꾸면 경고를 로그로 남기고, 재시작한 뒤에 적용됩니다.
+풀 쿼터, 게이트웨이 refresh token, 지출 한도와 감사 기록을 위한 선택적 트랜잭션 저장소로, SQLite 또는 PostgreSQL을 사용합니다. 이 테이블이 없으면 아무것도 바뀌지 않습니다. 세 하위 시스템은 기존과 똑같이 JSON `state_path` 스냅샷과 복원 경로를 유지합니다. 이 테이블을 설정하면 저장소가 스냅샷을 대체하고, 기존 스냅샷은 한 번만 가져옵니다. 전체 동작은 [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)(영문)에 있습니다. 기존 스냅샷을 저장소로 옮기는 절차는 [저장소로 마이그레이션](/ko/guides/store-migration/)을 참고하세요. `[store]`는 재시작 전용입니다. 설정 reload 중에 바꾸면 경고를 로그로 남기고, 재시작한 뒤에 적용됩니다.
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
