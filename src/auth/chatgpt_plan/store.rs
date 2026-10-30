@@ -38,9 +38,10 @@ pub static ACCOUNT_FILE_LOCK: FileLockKind = FileLockKind {
     warned: std::sync::Once::new(),
 };
 
-/// How long a writer waits for [`ACCOUNT_FILE_LOCK`]. The longest legitimate
-/// hold is one read plus one atomic write of a small file; no network call is
-/// made under this lock.
+/// How long a writer waits for [`ACCOUNT_FILE_LOCK`]. A login or logout holds
+/// it for one read plus one atomic write of a small file; a token refresh
+/// holds it across its read, the token-endpoint POST (bounded by the refresh
+/// timeout), and its write, because the refresh token rotates.
 pub const ACCOUNT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 const HOST_ID_FILE: &str = ".host-id";
@@ -92,6 +93,20 @@ pub fn write_account(name: &str, record: &AccountRecord) -> anyhow::Result<()> {
         &ACCOUNT_FILE_LOCK,
         ACCOUNT_LOCK_TIMEOUT,
     )
+}
+
+/// Write `record` as account `name` while the caller already holds
+/// [`ACCOUNT_FILE_LOCK`] for it (`_lock`): the one lock-held write path, for a
+/// read-modify-write that must stay atomic across processes. The guard must be
+/// the lock of this account's file, taken with [`account_path`].
+pub fn write_account_locked(
+    _lock: &shared::file_lock::FileLock,
+    name: &str,
+    record: &AccountRecord,
+) -> anyhow::Result<()> {
+    validate_account_name(name)?;
+    shared::write_auth_file_atomic(&account_path(name), &serde_json::to_value(record)?)?;
+    Ok(())
 }
 
 /// Write account `name` signed out: only `client_id` (and `version`) remain.

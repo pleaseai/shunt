@@ -311,18 +311,17 @@ async fn saved_client_id(name: &str) -> anyhow::Result<Option<String>> {
 
 /// Write `record` if the saved client id is still what the attempt started
 /// from. The lock is held across the read and the write, so the write goes
-/// through the lock-free atomic helper (the store's own writer takes the lock).
+/// through the store's lock-held writer (the plain writer takes the lock).
 async fn commit(name: &str, expected: Option<String>, record: AccountRecord) -> anyhow::Result<()> {
     let name = name.to_string();
     tokio::task::spawn_blocking(move || {
-        let _guard = lock_account(&name)?;
+        let guard = lock_account(&name)?;
         let current = store::read_account(&name)?.map(|saved| saved.client_id);
         anyhow::ensure!(
             current == expected,
             "the account changed while you were signing in; nothing was stored. Run the sign-in again"
         );
-        shared::write_auth_file_atomic(&store::account_path(&name), &serde_json::to_value(&record)?)?;
-        Ok(())
+        store::write_account_locked(&guard, &name, &record)
     })
     .await
     .context("account write task failed")?
