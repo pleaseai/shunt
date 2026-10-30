@@ -1323,6 +1323,13 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
         "sort_by_reset": state
             .accounts
             .effective_sort_by_reset(state.config.server.pool.as_ref()),
+        // The usage poller's cadence, for the dashboard's next-check
+        // countdown: `null` until its first pass, and whenever it is off.
+        "usage_poll": state.accounts.usage_poll_schedule().map(|schedule| json!({
+            "interval_seconds": schedule.interval_seconds,
+            "last_started_at": schedule.last_started_at,
+            "next_at": schedule.next_at(),
+        })),
     }))
 }
 

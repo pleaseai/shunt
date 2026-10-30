@@ -149,6 +149,7 @@ Setting `[server.pool] usage_refresh_seconds` to a positive value spawns one bac
 - **Eligibility:** only imported (refreshable) logins are polled — accounts created by `shunt login claude --name <name>` without `--long-lived`, or a `credentials` account backed by a file that contains a refresh token. A long-lived `claude setup-token` account and a `token_env` account are skipped, because the usage endpoint rejects a non-refreshable token (mirroring the adapter's own non-refreshable 401 handling).
 - **Floor:** a configured value below 60 is clamped up to a 60-second floor to avoid hammering the endpoint.
 - **Fixed at boot:** the interval is read once at startup; a config reload does not start, stop, or re-tune the poller.
+- **Schedule on the dashboard:** each pass records when it began, and `GET /admin/api/pool` reports it as `usage_poll` (`interval_seconds`, `last_started_at`, `next_at`), so the admin dashboard can count down to the next pass. It is `null` while the poller is off and before its first pass. Nothing on the admin surface starts a pass early.
 
 ## Quota-state persistence (opt-in)
 

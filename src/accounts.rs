@@ -650,6 +650,29 @@ pub struct AccountPool {
     /// (issue #817). Lives here because the pool is the process-lifetime state
     /// every `AppState` snapshot shares across reloads; memory-only.
     upstream_skips: UpstreamSkips,
+    /// When the usage poller last began a pass, and its interval. `None` until
+    /// the first pass, and for good when `usage_refresh_seconds` leaves the
+    /// poller off. Read by `GET /admin/api/pool` for the dashboard's
+    /// next-check countdown.
+    usage_poll: Mutex<Option<UsagePollSchedule>>,
+}
+
+/// The usage poller's cadence as of its latest pass (`crate::usage_poll`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsagePollSchedule {
+    /// The effective interval, after the 60-second floor.
+    pub interval_seconds: u64,
+    /// Unix seconds at which the latest pass began.
+    pub last_started_at: u64,
+}
+
+impl UsagePollSchedule {
+    /// Unix seconds at which the next pass is due. The poller skips missed
+    /// ticks rather than bursting, so a pass that overruns its interval moves
+    /// the real next pass later than this; the next pass then restamps it.
+    pub fn next_at(&self) -> u64 {
+        self.last_started_at.saturating_add(self.interval_seconds)
+    }
 }
 
 /// Why one account is not selectable for this request.
@@ -765,6 +788,20 @@ impl AccountPool {
     /// The per-upstream skip windows that account-level refusals start.
     pub(crate) fn upstream_skips(&self) -> &UpstreamSkips {
         &self.upstream_skips
+    }
+
+    /// Record that a usage-poller pass began at `started_at` (Unix seconds).
+    pub fn note_usage_poll_started(&self, interval_seconds: u64, started_at: u64) {
+        *self.usage_poll.lock().expect("usage poll lock poisoned") = Some(UsagePollSchedule {
+            interval_seconds,
+            last_started_at: started_at,
+        });
+    }
+
+    /// The usage poller's cadence as of its latest pass, or `None` when no pass
+    /// has run (the poller is off, or has not started yet).
+    pub fn usage_poll_schedule(&self) -> Option<UsagePollSchedule> {
+        *self.usage_poll.lock().expect("usage poll lock poisoned")
     }
 
     /// Synchronize the upstream's current configured identities before an
