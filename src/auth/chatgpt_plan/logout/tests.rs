@@ -314,6 +314,38 @@ async fn a_missing_account_is_an_error_naming_it() {
     assert!(env.server.received_requests().await.unwrap().is_empty());
 }
 
+/// Rotates the stored refresh token as the revocation arrives, as a gateway
+/// refresh landing between logout's read and its clear would.
+struct RotateThenOk;
+
+impl wiremock::Respond for RotateThenOk {
+    fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+        let mut rotated = signed_in();
+        rotated.tokens.as_mut().unwrap().refresh_token = "REFRESH-ROTATED".into();
+        store::write_account(NAME, &rotated).unwrap();
+        ResponseTemplate::new(200)
+    }
+}
+
+#[tokio::test]
+async fn a_token_rotated_during_revocation_is_not_reported_confirmed() {
+    let env = Env::new("rotated").await;
+    store::write_account(NAME, &signed_in()).unwrap();
+    env.discovery(&format!("{}/revoke", env.server.uri())).await;
+    Mock::given(method("POST"))
+        .and(path("/revoke"))
+        .and(body_string_contains("token=REFRESH-SECRET"))
+        .respond_with(RotateThenOk)
+        .expect(1)
+        .mount(&env.server)
+        .await;
+
+    let outcome = run_with(NAME, &env.endpoints(), &behavior()).await.unwrap();
+
+    assert_eq!(outcome, Outcome::NotConfirmed { name: NAME.into() });
+    assert_cleared_locally();
+}
+
 #[tokio::test]
 async fn a_stalled_issuer_times_out_and_still_clears_locally() {
     let env = Env::new("stall").await;

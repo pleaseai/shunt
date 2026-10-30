@@ -125,7 +125,7 @@ shunt 会在 OpenAI 的撤销(revocation)端点撤销该账户的 refresh 令牌
 | 结果 | 含义 |
 | :-- | :-- |
 | `… signed out; remote revocation confirmed.` | OpenAI 返回了 200。会话已被撤销。 |
-| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | 网络失败,或尝试几次后 OpenAI 仍返回 5xx。本机的令牌已清除,但 OpenAI 那边的会话可能仍然有效。请在 ChatGPT 设置中移除它。 |
+| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | 网络失败,或尝试几次后 OpenAI 仍返回 5xx;或者在登出期间账户的令牌发生了变化(网关刷新了它,或有新的登录写入),当前会话从未被撤销。本机的令牌已清除,但 OpenAI 那边的会话可能仍然有效。请在 ChatGPT 设置中移除它。 |
 | `… is already signed out.` | 该账户没有令牌。没有发送任何内容。 |
 
 运行中的网关会把已登出的账户视为需要登录。参见

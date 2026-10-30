@@ -182,7 +182,7 @@ refresh, and ID tokens. It keeps the issued client id and the host id.
 | Outcome | Message |
 | :-- | :-- |
 | HTTP 200 (also for an already-invalid token) | `ChatGPT plan account "<name>" signed out; remote revocation confirmed.` |
-| Network or 5xx failure after three attempts with backoff, or no usable discovery document | `ChatGPT plan account "<name>" signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` The tokens are cleared locally anyway. |
+| Network or 5xx failure after three attempts with backoff, no usable discovery document, or a refresh token that changed on disk during the revocation (a gateway refresh or a new sign-in; it is cleared but was never revoked) | `ChatGPT plan account "<name>" signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` The tokens are cleared locally anyway. |
 | The account has no tokens | `ChatGPT plan account "<name>" is already signed out.` |
 
 A 4xx answer from the revocation endpoint is not retried.

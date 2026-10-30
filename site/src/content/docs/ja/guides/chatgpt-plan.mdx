@@ -138,7 +138,7 @@ shunt は OpenAI の失効（revocation）エンドポイントでアカウン�
 | 結果 | 意味 |
 | :-- | :-- |
 | `… signed out; remote revocation confirmed.` | OpenAI が 200 を返しました。セッションは失効しました。 |
-| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | ネットワークが失敗したか、数回試しても OpenAI が 5xx を返しました。このマシンのトークンは消去されましたが、OpenAI 側のセッションはまだ有効な可能性があります。ChatGPT の設定から削除してください。 |
+| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | ネットワークが失敗したか、数回試しても OpenAI が 5xx を返しました。または、サインアウト中にアカウントのトークンが変わり(ゲートウェイが更新したか、新しいサインインが保存された)、現在のセッションは失効していません。このマシンのトークンは消去されましたが、OpenAI 側のセッションはまだ有効な可能性があります。ChatGPT の設定から削除してください。 |
 | `… is already signed out.` | アカウントにトークンがありませんでした。何も送信していません。 |
 
 実行中のゲートウェイは、サインアウトしたアカウントを再サインインが必要なものとして扱います。詳しくは

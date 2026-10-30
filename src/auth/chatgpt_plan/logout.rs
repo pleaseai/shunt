@@ -118,9 +118,9 @@ pub async fn run_with(
         &tokens.refresh_token,
     )
     .await;
-    clear(name).await?;
+    let unchanged = clear(name, &tokens.refresh_token).await?;
     let name = name.to_string();
-    Ok(if confirmed {
+    Ok(if confirmed && unchanged {
         Outcome::Confirmed { name }
     } else {
         Outcome::NotConfirmed { name }
@@ -218,14 +218,25 @@ async fn read(name: &str) -> anyhow::Result<Option<AccountRecord>> {
 
 /// Rewrite the account as `{version, client_id}` under the account lock. The
 /// client id is re-read under the lock so a concurrent re-registration is kept.
-async fn clear(name: &str) -> anyhow::Result<()> {
+///
+/// Returns whether the stored refresh token is still `revoked`. The lock is not
+/// held across the revocation, so a gateway refresh or a new sign-in can
+/// replace the token meanwhile; the replacement is cleared locally but was
+/// never revoked, and the caller must not report the sign-out as confirmed.
+async fn clear(name: &str, revoked: &str) -> anyhow::Result<bool> {
     let name = name.to_string();
+    let revoked = revoked.to_string();
     tokio::task::spawn_blocking(move || {
         let guard = lock_account(&name)?;
         let current = store::read_account(&name)?.with_context(|| {
             format!("chatgpt-plan account {name:?} disappeared during sign-out")
         })?;
-        store::write_account_locked(&guard, &name, &current.into_signed_out())
+        let unchanged = current
+            .tokens
+            .as_ref()
+            .is_some_and(|tokens| tokens.refresh_token == revoked);
+        store::write_account_locked(&guard, &name, &current.into_signed_out())?;
+        Ok(unchanged)
     })
     .await
     .context("account write task failed")?

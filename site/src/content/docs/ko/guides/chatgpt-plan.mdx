@@ -135,7 +135,7 @@ refresh, ID 토큰을 지웁니다. **등록된 클라이언트 ID는 유지**�
 | 결과 | 의미 |
 | :-- | :-- |
 | `… signed out; remote revocation confirmed.` | OpenAI가 200으로 응답했습니다. 세션이 폐기되었습니다. |
-| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | 네트워크가 실패했거나 몇 번 시도한 뒤에도 OpenAI가 5xx로 응답했습니다. 이 머신의 토큰은 지워졌지만 OpenAI 쪽 세션은 아직 살아 있을 수 있습니다. ChatGPT 설정에서 직접 제거하세요. |
+| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | 네트워크가 실패했거나 몇 번 시도한 뒤에도 OpenAI가 5xx로 응답했습니다. 또는 로그아웃 도중 계정의 토큰이 바뀌어(게이트웨이가 갱신했거나 새 로그인이 저장됨) 현재 세션은 폐기되지 않았습니다. 이 머신의 토큰은 지워졌지만 OpenAI 쪽 세션은 아직 살아 있을 수 있습니다. ChatGPT 설정에서 직접 제거하세요. |
 | `… is already signed out.` | 계정에 토큰이 없었습니다. 아무것도 전송하지 않았습니다. |
 
 실행 중인 게이트웨이는 로그아웃된 계정을 로그인이 필요한 계정으로 취급합니다.
