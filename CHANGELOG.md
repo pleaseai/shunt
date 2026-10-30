@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.61.0](https://github.com/pleaseai/shunt/compare/v0.60.0...v0.61.0) (2026-10-30)
+
+
+### Features
+
+* **auth:** accept inbound JWTs from a configured header or cookie for Codex gateway OAuth ([#862](https://github.com/pleaseai/shunt/issues/862)) ([56b9fc0](https://github.com/pleaseai/shunt/commit/56b9fc0ad03f99060feb0ed36a5a65ab8fd330ce))
+
 ## [0.60.0](https://github.com/pleaseai/shunt/compare/v0.59.1...v0.60.0) (2026-10-27)
 
 

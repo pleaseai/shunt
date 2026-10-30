@@ -86,6 +86,7 @@ fn with_inbound_auth(mut config: Config, tokens_env: &'static str) -> Config {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.to_string(),
+        ..Default::default()
     });
     config
 }
@@ -610,6 +611,124 @@ async fn without_auth_config_mapped_route_stays_open() {
 
     let response = post_messages(&gateway, "mapped-model", None).await;
 
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// A browser POST that a page on another site can send without a preflight:
+/// `text/plain`, with the `Origin` and fetch metadata the browser attaches.
+async fn post_messages_from_page(gateway: &TestGateway, origin: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "text/plain")
+        .header("origin", origin)
+        .header("referer", format!("{origin}/page"))
+        .header("sec-fetch-site", "cross-site")
+        .header("sec-fetch-mode", "no-cors")
+        .body(r#"{"model":"mapped-model","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn without_auth_config_a_cross_origin_page_cannot_use_the_mapped_route() {
+    // Without [server.auth], a mapped route injects its credential for anyone
+    // who reaches the port, so a request another site's page sent is refused
+    // before the upstream is called. `Origin: null` (a sandboxed frame) too.
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_ORIGIN", "upstream-key");
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+    let gateway =
+        start_gateway_with(test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_ORIGIN")).await;
+
+    for origin in ["https://evil.example", "null"] {
+        let response = post_messages_from_page(&gateway, origin).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "origin {origin}");
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert_eq!(body["error"]["type"], "permission_error");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("different browser origin"));
+    }
+}
+
+#[tokio::test]
+async fn without_auth_config_a_same_origin_page_is_forwarded_without_browser_headers() {
+    // A page served from shunt's own origin passes the check, and the `Origin`,
+    // `Referer` and `Sec-Fetch-*` headers its browser attached never reach the
+    // upstream: Anthropic answers an OAuth request carrying `Origin` with a 401
+    // that the pool would take for a dead credential.
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_SAME_ORIGIN", "upstream-key");
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(NoHeader("origin"))
+        .and(NoHeader("referer"))
+        .and(NoHeader("sec-fetch-site"))
+        .and(NoHeader("sec-fetch-mode"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        "SHUNT_TEST_M4_KEY_SAME_ORIGIN",
+    ))
+    .await;
+
+    let base_url = gateway.base_url.clone();
+    let response = post_messages_from_page(&gateway, &base_url).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn with_auth_config_a_cross_origin_request_is_left_to_the_token_gate() {
+    // With [server.auth] configured a page on another site cannot present the
+    // token without a preflight shunt never answers, so the origin check does
+    // not apply: a caller that does hold the token is served from any origin.
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_M4_KEY_ORIGIN_AUTH", "upstream-key");
+    vars.set("SHUNT_TEST_M4_TOKENS_ORIGIN_AUTH", "alice:tok-origin");
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(NoHeader("origin"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let config = with_inbound_auth(
+        test_config(&upstream.uri(), "SHUNT_TEST_M4_KEY_ORIGIN_AUTH"),
+        "SHUNT_TEST_M4_TOKENS_ORIGIN_AUTH",
+    );
+    let gateway = start_gateway_with(config).await;
+
+    let response = post_messages_with_headers(
+        &gateway,
+        "mapped-model",
+        &[
+            ("x-shunt-token", "tok-origin"),
+            ("origin", "https://app.example"),
+        ],
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
 }
 

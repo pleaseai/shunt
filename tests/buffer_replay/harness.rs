@@ -80,6 +80,7 @@ pub(crate) fn unvalidated_gated_config(tiers: &Tiers, router: &str) -> Config {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: TOKENS_ENV.to_string(),
+        ..Default::default()
     });
     config.models = vec![
         ModelConfig {

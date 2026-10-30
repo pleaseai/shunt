@@ -12,7 +12,7 @@ set -eu
 
 REPO="pleaseai/shunt"
 # Stamped by release-please on every release (release-please-config.json).
-DEFAULT_VERSION="0.60.0" # x-release-please-version
+DEFAULT_VERSION="0.61.0" # x-release-please-version
 
 err() {
   printf 'shunt-install: error: %s\n' "$*" >&2

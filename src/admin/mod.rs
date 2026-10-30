@@ -65,7 +65,7 @@ pub use ui::embedded_file_count;
 
 use session::{PendingAttempt, PendingKind, COMPLETION_EXCHANGE_TIMEOUT};
 
-const SESSION_COOKIE: &str = "shunt_admin_session";
+pub(crate) const SESSION_COOKIE: &str = "shunt_admin_session";
 
 /// Resolved admin credentials plus session/pending lifetimes. Held in
 /// `RuntimeState` (hot-reloaded so credential edits apply); the session and

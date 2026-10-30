@@ -281,6 +281,7 @@ fn state_with_claude_and_codex_accounts(
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: env.clone(),
+        ..Default::default()
     });
     config.server.oauth_usage = Some(OauthUsageConfig::default());
     let anthropic = config.providers.get_mut("anthropic").unwrap();

@@ -411,6 +411,32 @@ pub struct InboundAuthConfig {
     /// use different claim vocabularies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jwt: Vec<InboundJwtConfig>,
+    /// Extra header that may carry a JWT from one of the `[[server.auth.jwt]]`
+    /// issuers, for deployments behind an identity-aware proxy. Requires at
+    /// least one `[[server.auth.jwt]]` entry; may not name `authorization`,
+    /// `x-api-key`, a shunt-reserved slot, or the `[server.auth]` /
+    /// `[server.admin]` header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt_header: Option<String>,
+    /// Cookie (case-sensitive name) that may carry such a JWT. Requires at
+    /// least one `[[server.auth.jwt]]` entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt_cookie: Option<String>,
+}
+
+impl Default for InboundAuthConfig {
+    /// The serde defaults, so a literal can name only the fields it cares
+    /// about. `resolve()` still fails closed: no tokens and no JWT entries is
+    /// an error, whatever built the value.
+    fn default() -> Self {
+        Self {
+            header: default_auth_header(),
+            tokens_env: default_tokens_env(),
+            jwt: Vec::new(),
+            jwt_header: None,
+            jwt_cookie: None,
+        }
+    }
 }
 
 /// One `[[server.auth.jwt]]` entry: an external issuer whose JWTs shunt
@@ -536,6 +562,13 @@ impl InboundAuthConfig {
             .enumerate()
             .map(|(index, entry)| entry.resolve(index))
             .collect::<Result<Vec<_>, _>>()?;
+        let jwt_slots = crate::auth::jwt_slots::resolve(
+            self.jwt_header.as_deref(),
+            self.jwt_cookie.as_deref(),
+            !jwt.is_empty(),
+            &header,
+        )
+        .map_err(|(key, message)| ConfigError::InvalidInboundJwtSlot { key, message })?;
         let raw = std::env::var(&self.tokens_env).unwrap_or_default();
         let tokens = if raw.trim().is_empty() {
             if jwt.is_empty() {
@@ -552,7 +585,9 @@ impl InboundAuthConfig {
                 }
             })?
         };
-        Ok(crate::auth::inbound::InboundAuth::new(header, tokens).with_jwt(jwt))
+        Ok(crate::auth::inbound::InboundAuth::new(header, tokens)
+            .with_jwt(jwt)
+            .with_jwt_slots(jwt_slots))
     }
 }
 
@@ -3254,6 +3289,8 @@ pub enum ConfigError {
     InvalidClientTokens { env: String, message: String },
     #[error("[[server.auth.jwt]] entry {index}: {message}")]
     InvalidInboundJwt { index: usize, message: String },
+    #[error("server.auth.{key} is invalid: {message}")]
+    InvalidInboundJwtSlot { key: &'static str, message: String },
     #[error("[[server.auth.jwt]] entry {index} uses issuer {issuer}, which is also [server.gateway] public_url: the gateway's own session tokens and this issuer's tokens would be indistinguishable")]
     InboundJwtCollidesWithGateway { index: usize, issuer: String },
     #[error("sentry.dsn is not a valid DSN: {message}")]
@@ -4470,8 +4507,10 @@ impl Config {
         }
         // Fail closed at boot: [server.auth] without resolvable tokens is an
         // error, not an open gateway.
+        let mut jwt_header = None;
         if let Some(auth) = &self.server.auth {
             let resolved = auth.resolve()?;
+            jwt_header = resolved.jwt_header().cloned();
             // Keep the two JWT paths unambiguous. `[server.gateway]` mints its
             // own session tokens with `iss` equal to its `public_url`, and
             // `authenticate_bearer` checks them on the same header slot as an
@@ -4514,8 +4553,25 @@ impl Config {
         // would be an unauthenticated admin surface. Reject it rather than run
         // open. This also runs the admin key arrays' shape and cross-set
         // uniqueness checks (see `AdminConfig::resolve`).
-        if let Some(admin) = &self.server.admin {
-            admin.resolve()?;
+        let admin_auth = self
+            .server
+            .admin
+            .as_ref()
+            .map(|admin| admin.resolve())
+            .transpose()?;
+        // `jwt_header` is a header shunt reads a JWT from; it may not also be
+        // the admin token header. (`[server.auth] header` is checked in
+        // `InboundAuthConfig::resolve`.)
+        if let (Some(jwt_header), Some(admin_auth)) = (&jwt_header, &admin_auth) {
+            if jwt_header == admin_auth.header() {
+                return Err(ConfigError::InvalidInboundJwtSlot {
+                    key: "jwt_header",
+                    message: format!(
+                        "{} is already the [server.admin] header",
+                        admin_auth.header()
+                    ),
+                });
+            }
         }
         // `[server.spend]` authenticates with the admin credential, so it
         // cannot be served without one.
@@ -9765,6 +9821,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: default_auth_header(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let result = config.validate();
         std::env::remove_var(&env);
@@ -9894,6 +9951,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let anthropic = config.providers.get_mut("anthropic").unwrap();
         anthropic.auth = AuthMode::ClaudeOauth;
@@ -9921,6 +9979,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let anthropic = config.providers.get_mut("anthropic").unwrap();
         anthropic.auth = AuthMode::ClaudeOauth;
@@ -9945,6 +10004,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let anthropic = config.providers.get_mut("anthropic").unwrap();
         anthropic.auth = AuthMode::ClaudeOauth;
@@ -14454,6 +14514,7 @@ routes:
             header: default_auth_header(),
             tokens_env: tokens_env.to_string(),
             jwt: entries,
+            ..Default::default()
         }
     }
 
@@ -14488,6 +14549,204 @@ routes:
             auth_with_jwt(Vec::new(), &env).resolve().unwrap_err(),
             ConfigError::MissingClientTokens { .. }
         ));
+    }
+
+    /// `auth_with_jwt` plus the two optional slot keys.
+    fn auth_with_slots(
+        entries: Vec<InboundJwtConfig>,
+        tokens_env: &str,
+        jwt_header: Option<&str>,
+        jwt_cookie: Option<&str>,
+    ) -> InboundAuthConfig {
+        InboundAuthConfig {
+            jwt_header: jwt_header.map(str::to_string),
+            jwt_cookie: jwt_cookie.map(str::to_string),
+            ..auth_with_jwt(entries, tokens_env)
+        }
+    }
+
+    /// The offending key named by an `InvalidInboundJwtSlot`, asserting the
+    /// rendered message names it too.
+    fn slot_error_key(error: ConfigError) -> &'static str {
+        let rendered = error.to_string();
+        match error {
+            ConfigError::InvalidInboundJwtSlot { key, .. } => {
+                assert!(rendered.contains(key), "{rendered}");
+                key
+            }
+            other => panic!("expected InvalidInboundJwtSlot, got {other}"),
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_slots_default_to_none() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_NONE");
+        let resolved = auth_with_jwt(vec![jwt_entry()], &env).resolve().unwrap();
+        assert!(resolved.jwt_header().is_none());
+        assert!(resolved.jwt_cookie().is_none());
+    }
+
+    #[test]
+    fn inbound_jwt_slots_resolve_onto_inbound_auth() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_OK");
+        let resolved = auth_with_slots(
+            vec![jwt_entry()],
+            &env,
+            Some("X-Forwarded-Access-Token"),
+            Some("Proxy_Jwt"),
+        )
+        .resolve()
+        .expect("valid slots resolve");
+        assert_eq!(
+            resolved.jwt_header().map(|name| name.as_str()),
+            Some("x-forwarded-access-token")
+        );
+        // Cookie names are case-sensitive: the configured spelling survives.
+        assert_eq!(resolved.jwt_cookie(), Some("Proxy_Jwt"));
+    }
+
+    #[test]
+    fn inbound_jwt_slots_parse_from_toml() {
+        let auth: InboundAuthConfig =
+            toml::from_str("jwt_header = \"x-iap-jwt\"\njwt_cookie = \"iap\"\n").unwrap();
+        assert_eq!(auth.jwt_header.as_deref(), Some("x-iap-jwt"));
+        assert_eq!(auth.jwt_cookie.as_deref(), Some("iap"));
+        let bare: InboundAuthConfig = toml::from_str("").unwrap();
+        assert!(bare.jwt_header.is_none() && bare.jwt_cookie.is_none());
+        assert_eq!(bare.header, "x-shunt-token");
+    }
+
+    #[test]
+    fn inbound_jwt_slot_without_a_jwt_entry_names_the_key() {
+        // Fires before the tokens check, so no env needs to be set.
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_NO_ENTRY");
+        for (header, cookie, key) in [
+            (Some("x-iap-jwt"), None, "jwt_header"),
+            (None, Some("iap"), "jwt_cookie"),
+            // An empty string is "set", not "unset".
+            (Some(""), None, "jwt_header"),
+            (None, Some(""), "jwt_cookie"),
+        ] {
+            let error = auth_with_slots(Vec::new(), &env, header, cookie)
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), key);
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_header_rejects_unusable_names() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_HEADER");
+        for bad in [
+            "",
+            "   ",
+            " x-iap-jwt",
+            "x-iap-jwt ",
+            "x iap",
+            "x-iap\u{e9}",
+            "Authorization",
+            "X-API-KEY",
+            "Cookie",
+            "X-Shunt-Token",
+            "x-shunt-admin-token",
+            "X-Shunt-Inbound-Client",
+            "Session-Id",
+            "X-Claude-Code-Session-Id",
+            "Content-Type",
+            "content-length",
+            "Content-Encoding",
+            "Transfer-Encoding",
+            "Host",
+            "Origin",
+            "Upgrade",
+            "Connection",
+            "OpenAI-Beta",
+            "Sec-WebSocket-Key",
+            "sec-websocket-protocol",
+            "Thread-Id",
+            "x-client-request-id",
+            "X-Codex-Window-Id",
+            "Originator",
+            "X-Codex-Routing-Hint",
+        ] {
+            let error = auth_with_slots(vec![jwt_entry()], &env, Some(bad), None)
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), "jwt_header", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_header_rejects_the_configured_auth_header() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_STATIC");
+        let mut auth = auth_with_slots(vec![jwt_entry()], &env, Some("X-Custom-Token"), None);
+        auth.header = "x-custom-token".to_string();
+        assert_eq!(slot_error_key(auth.resolve().unwrap_err()), "jwt_header");
+    }
+
+    #[test]
+    fn inbound_jwt_cookie_rejects_invalid_names() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_COOKIE");
+        for bad in [
+            "", "a=b", "a b", "a;b", "a,b", "a\"b", "a(b)", "a/b", " a", "a\tb",
+        ] {
+            let error = auth_with_slots(vec![jwt_entry()], &env, None, Some(bad))
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), "jwt_cookie", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_cookie_rejects_the_admin_session_cookie() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_COOKIE_ADMIN");
+        for bad in ["shunt_admin_session", "Shunt_Admin_Session"] {
+            let error = auth_with_slots(vec![jwt_entry()], &env, None, Some(bad))
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), "jwt_cookie", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_header_equal_to_the_admin_header_fails_validation() {
+        let _env_lock = crate::config::test_env_lock();
+        let tokens_env = format!("SHUNT_TEST_SLOT_ADMIN_{}", std::process::id());
+        std::env::remove_var(&tokens_env);
+        let build = |jwt_header: &str| {
+            let mut config = Config::default();
+            config.server.auth = Some(auth_with_slots(
+                vec![jwt_entry()],
+                &unset_tokens_env("SLOTS_ADMIN"),
+                Some(jwt_header),
+                None,
+            ));
+            config.server.admin = Some(admin_config_with_keys(
+                &tokens_env,
+                vec![admin_key("terraform", ADMIN_KEY_A)],
+                Vec::new(),
+            ));
+            config
+        };
+
+        // Case-insensitive: the admin header is `x-shunt-admin-token`, which is
+        // also a reserved slot, so use a distinct admin header to reach the
+        // admin-specific comparison.
+        let mut config = build("X-Admin-Proxy");
+        config.server.admin.as_mut().unwrap().header = "x-admin-proxy".to_string();
+        assert_eq!(slot_error_key(config.validate().unwrap_err()), "jwt_header");
+
+        // A different name validates.
+        build("x-iap-jwt")
+            .validate()
+            .expect("a distinct jwt_header validates alongside [server.admin]");
     }
 
     #[test]
