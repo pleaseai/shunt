@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.62.0](https://github.com/pleaseai/shunt/compare/v0.61.0...v0.62.0) (2026-10-30)
+
+
+### Features
+
+* add chatgpt-plan provider via Sign in with ChatGPT ([#871](https://github.com/pleaseai/shunt/issues/871)) ([48b24ec](https://github.com/pleaseai/shunt/commit/48b24ec5ba466c829ee6fcb5ecf0b61a0259eaf5))
+* **admin:** give the dashboard a favicon ([#842](https://github.com/pleaseai/shunt/issues/842)) ([6f6f7b1](https://github.com/pleaseai/shunt/commit/6f6f7b1ff049011e38b641d7cca0b3c5ea1477ed))
+* **admin:** keep the usage table current and show the next quota check ([#846](https://github.com/pleaseai/shunt/issues/846)) ([a33fc90](https://github.com/pleaseai/shunt/commit/a33fc9095e54ad70b455426761dbb85c574977e9))
+* **config:** add the Cheaper Inference preset ([#845](https://github.com/pleaseai/shunt/issues/845)) ([86fce6b](https://github.com/pleaseai/shunt/commit/86fce6b4d9871b0799a84dcbd53f581a6b09065d))
+
+
+### Bug Fixes
+
+* **proxy:** refuse cross-origin browser requests without inbound auth ([#840](https://github.com/pleaseai/shunt/issues/840)) ([1bb4360](https://github.com/pleaseai/shunt/commit/1bb4360e7433a1befa828c031779cda16e48743c))
+
 ## [0.61.0](https://github.com/pleaseai/shunt/compare/v0.60.0...v0.61.0) (2026-10-30)
 
 
