@@ -120,6 +120,7 @@ Everything under spec `## Out of Scope`. Considered and not built:
   Evidence: `cargo +1.98.1 test --test inbound_codex_jwt_slots` -> 8 passed, 0 failed, 3.9s (no `--all-features`: `ui/dist` and a Python env are absent here); clippy `--all-targets -D warnings` clean; `cargo +1.98.1 test --workspace` -> 60 suites, 4446 passed, 0 failed
 - [x] (2026-10-30 KST) T006 Document Codex gateway OAuth via `jwt_header` / `jwt_cookie`
   Evidence: `cd site && bun run build` -> exit 0, 217 pages; new section present in dist/{,ko/,ja/,zh-cn/}guides/connect-codex-cli (7. gateway OAuth + Entra pitfalls) and `jwt_header` in all four configuration pages; every fragment link in the four edited locale page sets resolves to an id in the built HTML; `cargo fmt --all --check` clean. READMEs: one capability-row clause added to all four (no Decision Log entry needed). Also edited: docs/inbound-jwt-auth.md, shunt.toml.example, the 4 README files, inbound-codex-endpoint pointer x4
+- [x] (2026-10-30 KST) Review-stage commits (SHA: `5f50908d`, `7c2333c9`, `43294b1e`, `db4b1b9c`, `0061570c`, `5c67df71`)
 
 ## Decision Log
 
@@ -139,3 +140,27 @@ Everything under spec `## Out of Scope`. Considered and not built:
 
 - Observation: the FR-12 STOP condition (Codex CLI sending `Origin`) does not hold for current Codex. In `openai/codex` `main`, `ORIGIN` appears only in server-side middleware that rejects requests carrying it (`codex-rs/otel-trace-websocket`, `exec-server`, `app-server-transport`) and in tests that inject it to exercise that rejection; no client code sets it, and the client stacks (`reqwest`, `tokio-tungstenite` via `codex-rs/websocket-client/src/dialer.rs`) add none on their own.
   Evidence: grep.app search of `openai/codex` Rust sources for `ORIGIN` / `header::ORIGIN` / `connect_async` (2026-10-30). Source-level only; the plan's manual Codex CLI run still confirms it end to end.
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+
+Two optional `[server.auth]` keys, `jwt_header` and `jwt_cookie`, let the Codex CLI's `gateway_oauth` sign in to the inbound Codex endpoint. The Codex gate (`Slots::Codex`) scans static token → `Authorization: Bearer` JWT → header → cookie, verifies with the existing `[[server.auth.jwt]]` rules, stops at a repeated slot, and keeps the 401/503 split. The cookie is read only with no `Origin` or a same-origin one (FR-12). The configured header and every `cookie` field are stripped at the single forward strip point, and the WebSocket path re-strips the upgrade-time header name each turn. Startup rejects reserved names, the static and admin headers, and every header shunt reads or rewrites on the Codex path. Docs cover the keys, slot order, the Origin rule, and a Microsoft Entra ID walkthrough in English, `ko`, `ja`, and `zh-cn`.
+
+### What Went Well
+
+- The single strip point (`ShuntCredentials::from_state`) meant one edit covered pool passthrough, routed allowlists, failover, and judge forwarding.
+- Mutation checks in the executor review (Origin rule disabled, header strip removed, repeated slot `break` → `continue`) proved the new tests fail on regression; the third one exposed a missing test, fixed before review.
+- The FR-12 STOP condition was settled from `openai/codex` source instead of being left to the manual run.
+
+### What Could Improve
+
+- The FR-8 reject list was drafted from shunt's credential slots only. The ensemble review found that `jwt_header` could name a header shunt itself reads (`session-id`, leaking the JWT into the session id and upstream affinity headers) or rewrites on the WebSocket bridge. A reject list for an operator-named header should be derived from every place the request's headers are read, not only from the credential slots.
+- Two of the four configured review engines never ran: greptile's CLI is not installed here, and cubic exited 1 on every run (disposal error, then a provider usage-policy rejection, then bare exit 1). Only gpt and ocr reviewed the diff.
+- The real-time cookie-expiry test needed two rounds: the first widening still assumed the test's clock read and the claims' own read were within a second.
+- `--all-features` cannot build in this environment (missing `ui/dist`, Python), so local verification ran on default features only; CI covers the rest.
+
+### Tech Debt Created
+
+- `CODEX_PATH_HEADERS` in `src/auth/jwt_slots.rs` is maintained by hand; a header the Codex endpoint or WebSocket bridge starts reading or rewriting later must be added there too (TD-023).
+- `tests/inbound_codex_jwt_slots.rs` is 558 lines, over the 500-line guideline (TD-024).
