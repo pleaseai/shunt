@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-Inbound credential flow: `auth::gate::authenticate(auth, jwks, headers, Slots)` is the single gate. `Slots::Bearer` is used only by the Codex endpoint (`codex_endpoint::authenticate_inbound`, `codex_analytics::post`); `Slots::Client` by discovery/usage/oauth_usage/failover.
+Inbound credential flow: `auth::gate::authenticate(auth, jwks, headers, Slots)` is the single gate. `Slots::Codex` is used only by the Codex endpoint (`codex_endpoint::authenticate_inbound`, `codex_analytics::post`); `Slots::Client` by discovery/usage/oauth_usage/failover.
 
 Forward-side stripping is centralised in `auth::slots::ShuntCredentials::from_state(..).strip_reserved_slots` (RESERVED_SLOTS includes `cookie`). WS turns capture auth/admin header names at upgrade (`websocket.rs` get -> `TurnContext`) because a reload can rename them before the turn forwards.
 
@@ -13,7 +13,7 @@ WS per-turn re-auth reuses the handshake headers (clone), so a header/cookie cre
 
 No middleware (concurrency limiter, http_tuning) drops `cookie`; there is no TraceLayer/compression layer; no code Debug-logs a HeaderMap.
 
-`InboundAuthConfig { .. }` is a struct literal in ~55 sites with no Default; clippy `needless_update` means `..Default::default()` only works once new fields exist.
+`InboundAuthConfig` implements `Default` (src/config.rs), but it is still built as a struct literal in many sites; clippy `needless_update` rejects `..Default::default()` on a literal that already names every field.
 
 **Why:** saves re-deriving this when touching auth or header-forwarding.
 **How to apply:** re-verify file:line before relying on it; code moves.
