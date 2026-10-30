@@ -25,7 +25,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 ## HTTP 튜닝 테이블
 
-`[server.access_control]`은 `allow_cidrs = []`, `deny_cidrs = []`, `trust_forwarded_for = false`를 제공합니다. deny 규칙이 우선하며 `/`와 `/health`에도 적용됩니다. allow 목록이 비어 있지 않으면 기본 거부가 되지만 두 상태 경로는 allow 검사만 면제됩니다. 전달 헤더 신뢰는 클라이언트가 보낸 값을 덮어쓰는 신뢰할 수 있는 프록시 뒤에서만 활성화하세요. 변경 후 재시작해야 합니다.
+`[server.access_control]`은 `allow_cidrs = []`, `deny_cidrs = []`, `trust_forwarded_for = false`를 제공합니다. deny 규칙이 우선하며 `/`와 `/health`에도 적용됩니다. allow 목록이 비어 있지 않으면 기본 거부가 되지만 두 상태 경로는 allow 검사만 면제됩니다. 전달 헤더 신뢰는 클라이언트가 보낸 값을 덮어쓰는 신뢰할 수 있는 프록시 뒤에서만 활성화하세요. `allowed_hosts = []`는 `Host` 헤더 검사(DNS 리바인딩 방지)를 조정합니다. 루프백 bind에서는 IP 리터럴, `localhost`, `*.localhost`, 설정된 `[server.gateway]`·`[server.admin.oidc]` `public_url` 호스트가 아닌 이름으로 온 요청을 `403`으로 거부합니다(`/`와 `/health`는 제외). 비어 있지 않은 목록은 이름을 추가하고 어떤 bind에서도 검사를 적용하며, `["*"]`는 검사를 끕니다. 원래 `Host`를 유지하는 리버스 프록시나 터널, 또는 컨테이너의 `host.docker.internal`처럼 다른 이름으로 루프백의 shunt에 접근한다면 그 이름을 추가하세요. 변경 후 재시작해야 합니다.
 
 이 `trust_forwarded_for` 설정은 `[server.gateway] trust_forwarded_for`와 독립적입니다. access-control 설정은 CIDR 허용/거부 규칙에만 적용되고 gateway 설정은 디바이스 플로 속도 제한에만 적용됩니다. 두 표면 모두 신뢰할 수 있는 리버스 프록시 뒤에서 실행한다면 두 설정을 모두 활성화해야 합니다. 하나만 설정하면 다른 표면은 소켓 피어 주소를 계속 사용합니다.
 
