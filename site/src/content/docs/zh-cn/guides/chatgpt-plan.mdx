@@ -1,0 +1,193 @@
+---
+title: ChatGPT 套餐(Sign in with ChatGPT)
+description: 通过 OpenAI 的 "Sign in with ChatGPT" 令牌共享预览,把 Claude Code 的推理路由到你的 ChatGPT 套餐 —— 登录、汇集多个账户、登出,以及预览的限制。
+---
+
+内置的 **`chatgpt-plan`** 提供方通过 OpenAI 的 "Sign in with ChatGPT"(SIWC)令牌共享预览,消耗你的
+**ChatGPT 套餐**用量。首次登录时 shunt 会把自己注册为代理客户端,之后用套餐用量对应的访问令牌而不是
+API 密钥调用公开端点 `api.openai.com/v1/responses`。
+
+它是一个 **`kind = "responses"`** 提供方,因此与 [Codex](/zh-cn/guides/codex/) 和
+[xAI](/zh-cn/guides/xai/) 共用同一条转换路径。但它**独立于 `codex` 提供方**:
+
+| | `chatgpt-plan` | `codex` |
+| :-- | :-- | :-- |
+| 登录 | `shunt login chatgpt-plan --name <account>` —— OpenAI 面向第三方工具的官方预览 | 复用 Codex CLI 登录(`~/.codex/auth.json`) |
+| 后端 | `api.openai.com/v1/responses` | `chatgpt.com/backend-api` |
+| 凭据 | `~/.shunt/accounts/chatgpt-plan/<name>.json`,每个命名账户一个文件 | `~/.codex/auth.json` 或 `~/.shunt/accounts/codex/` |
+| 预览限制 | 有 —— 见下文"预览限制" | 无 |
+
+两者不共享凭据或设置,可以同时配置。
+
+<Aside type="note" title="你需要什么">
+
+一个 OpenAI 已为其开通令牌共享预览的 ChatGPT 套餐、一个浏览器,以及 `shunt.toml` 里的路由。是否有资格由
+OpenAI 决定。没有资格的账户在每个请求上都会得到 `permission_error`(见下文"错误含义")。
+
+</Aside>
+
+## 设置
+
+### 1. 登录
+
+```bash
+shunt login chatgpt-plan --name work
+```
+
+shunt 会打印授权 URL 并打开浏览器。请批准该请求,包括套餐用量。浏览器被重定向到 shunt 正在监听的
+`http://127.0.0.1:1455/auth/callback` 后,命令会自行结束:
+
+```text
+ChatGPT plan account "work" signed in as you@example.com.
+Scopes granted: openid profile email offline_access resource.invoke chatgpt.tokens.use.direct
+```
+
+存储任何内容之前,shunt 会检查回调的 state、交换授权码,并用 OpenAI 公布的密钥验证 ID 令牌。未通过
+检查的登录不会存储任何凭据。
+
+某个名称的首次登录会向 OpenAI 注册一个客户端 ID(`oaiapp_…`)并随账户保存。再次用同一名称登录会复用
+它。`--long-lived`、`--mode` 和 `--manual` 会被拒绝:套餐令牌始终可刷新,而粘贴回调始终可用(见下一节)。
+参见 [`shunt login chatgpt-plan`](/zh-cn/reference/cli/#shunt-login-chatgpt-plan)。
+
+### 2. 添加提供方和路由
+
+```toml
+[providers.chatgpt-plan]
+kind = "responses"
+base_url = "https://api.openai.com/v1"   # shunt 会追加 /responses
+auth = "chatgpt_plan_oauth"
+
+[[routes]]
+model = "gpt-6.1-sol"
+provider = "chatgpt-plan"
+```
+
+路由你想用的模型 ID。shunt 不会列出账户的模型,而是原样提供你映射的 ID。在有序的 `[[upstreams]]`
+列表中,`provider = "chatgpt-plan"` 会补全这三个提供方键。
+
+检查文件并启动网关:
+
+```bash
+shunt check
+shunt run
+```
+
+`shunt check` 会拒绝 `kind` 不是 `responses`、`base_url` 不是 HTTPS、或主机不是 `api.openai.com` 的
+`chatgpt_plan_oauth` 提供方,也会拒绝名为 `chatgpt-plan` 却使用其他 `auth` 的提供方,并指出出问题的键。
+shunt 绝不会把套餐令牌发送到其他主机。
+
+## 远程与无头主机
+
+浏览器回调会发往**运行登录命令的那台机器上的** `127.0.0.1:1455`。浏览器在别处时,用下面任一方式:
+
+- **粘贴回调。** 在任意浏览器中批准。最后一次重定向无法加载(这是预期的),但地址栏里有以
+  `http://127.0.0.1:1455/auth/callback?code=…` 开头的完整 URL。复制它并粘贴到正在等待的终端里。前后的
+  空白或引号都没关系。shunt 在交换授权码之前会检查该 URL 属于本次登录尝试。
+- **转发端口。** 通过 SSH 运行 `ssh -L 1455:127.0.0.1:1455 <host>`,然后照常登录。浏览器的回调就会到达远程
+  主机上的 shunt。
+
+如果 1455 端口已被占用,shunt 会说明并以仅粘贴模式继续。等待在五分钟后结束。
+
+## 多个账户
+
+用各自的名称分别登录每个账户:
+
+```bash
+shunt login chatgpt-plan --name work
+shunt login chatgpt-plan --name personal
+```
+
+每个账户是 `~/.shunt/accounts/chatgpt-plan/<name>.json`(`0600`,位于 `0700` 目录中;可用
+`$SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` 改变目录)。两个名称可以使用同一个邮箱地址,各自保留独立的记录和
+客户端 ID。没有其他配置时,提供方使用目录中的所有账户。要只选其中一些,或优先使用某一个:
+
+```toml
+[[providers.chatgpt-plan.accounts]]
+name = "work"
+
+[[providers.chatgpt-plan.accounts]]
+name = "personal"
+priority = 200          # 可选: 越小越优先(默认 100)
+```
+
+shunt 会把一个会话(`x-claude-code-session-id`)固定在同一个账户上,其余请求轮换。提供服务的账户会出现在
+`x-shunt-account` 响应头中。主机标识符(同一目录中的 `.host-id`)只创建一次,并随每次登录发送,请保留它。
+
+## 登出
+
+```bash
+shunt logout chatgpt-plan --name work
+```
+
+shunt 会在 OpenAI 的撤销(revocation)端点撤销该账户的 refresh 令牌,然后清除账户的访问、refresh 和 ID
+令牌。它会**保留已注册的客户端 ID**以及主机 ID,因此再次登录会复用同一注册。
+
+| 结果 | 含义 |
+| :-- | :-- |
+| `… signed out; remote revocation confirmed.` | OpenAI 返回了 200。会话已被撤销。 |
+| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | 网络失败,或尝试几次后 OpenAI 仍返回 5xx。本机的令牌已清除,但 OpenAI 那边的会话可能仍然有效。请在 ChatGPT 设置中移除它。 |
+| `… is already signed out.` | 该账户没有令牌。没有发送任何内容。 |
+
+运行中的网关会把已登出的账户视为需要登录。参见
+[`shunt logout chatgpt-plan`](/zh-cn/reference/cli/#shunt-logout-chatgpt-plan)。
+
+## 请求的行为
+
+- **刷新。** shunt 会在访问令牌到期前不久刷新它,不会早于 OpenAI 允许的时间,并保存替换后的 refresh
+  令牌。你无需自己管理令牌。
+- **用量上限。** 账户报告套餐用量上限时(HTTP 429,或输出之前的流内失败),shunt 会让该账户进入冷却,并用
+  另一个账户处理同一请求。所有账户都在冷却时,Claude Code 会得到一个指向
+  [chatgpt.com/settings/usage](https://chatgpt.com/settings/usage) 的 `rate_limit_error`。
+- **登录过期。** 遇到 `401` 时,shunt 会刷新一次令牌并重试。刷新失败则账户被标记为需要登录,并在健康账户
+  提供服务期间休息几分钟。请再次运行 `shunt login chatgpt-plan --name <account>`。
+- **无资格或路由不受支持。** `403` 会作为 `permission_error` 原样转发,不重试,也不提示登录。
+- **暂时不可用。** `503` 会保留凭据并轮换到下一个账户。如果所有账户都返回 `503`,Claude Code 会得到
+  `overloaded_error`。
+
+## 预览限制
+
+- **被拒绝的参数。** 预览会拒绝 `temperature`、`metadata` 和 `prompt_cache_retention`。shunt 从不发送
+  它们。即使 Claude Code 要求非流式响应,shunt 也始终发送 `store: false` 和 `stream: true`,然后返回一条
+  完整的消息。
+- **工具。** 普通函数工具可用。由于预览会拒绝原生 `tool_search`,无论 `tool_search` 如何设置,它在此提供方
+  上都是关闭的。托管的 `web_search` 会直接透传。
+- **输出开始之后的上限。** 如果用量上限在答复的一部分已经送达 Claude Code 之后才出现,该轮对话就无法转移
+  到另一个账户。流会以 `rate_limit_error` 结束,账户进入冷却。下一个请求会使用另一个账户。
+- **升级与 advisor 调用。** 这些调用在 idle 限制下运行,shunt 会为它们跳过输出前检查。此类调用上流内的用量
+  上限会让调用以该错误结束,并且不会轮换到另一个账户。账户仍会进入冷却,因此下一次调用会使用别的账户。
+  以 HTTP 429 形式出现的用量上限仍照常轮换。参见[升级路由](/zh-cn/guides/escalation/)和
+  [advisor 门控](/zh-cn/guides/advisor/)。
+- **被截断的回复。** 因 `max_tokens` 被截断的回复目前以 `end_turn` 而不是 `max_tokens` 结束。这适用于所有
+  Responses 提供方,在 [issue #868](https://github.com/pleaseai/shunt/issues/868) 中跟踪。
+- **模型。** shunt 原样转发你路由的 ID。套餐能使用哪些模型由 OpenAI 决定;账户无法使用的模型会以上游错误
+  返回。
+
+## 错误含义
+
+| 上游代码 | 状态 | Claude Code 看到的 | 含义与处理 |
+| :-- | :-- | :-- | :-- |
+| `subscription_sharing_usage_limit_exceeded` | 429 | `rate_limit_error` | 账户用完了套餐用量。shunt 会尝试另一个账户;没有账户可用时,请等待或查看[用量设置](https://chatgpt.com/settings/usage)。 |
+| `subscription_sharing_usage_unavailable` | 503 | `overloaded_error` | OpenAI 暂时无法读取该账户的用量。凭据保留;请稍后重试。 |
+| `subscription_sharing_user_unavailable` | 503 | `overloaded_error` | OpenAI 暂时无法为该用户提供服务。凭据保留;请稍后重试。 |
+| `subscription_sharing_unsupported_capability` | 400 | `invalid_request_error` | 请求使用了预览不支持的内容。消息末尾带有 `(parameter: <name>)`,例如 `tools`。 |
+| `subscription_sharing_user_not_eligible` | 403 | `permission_error` | 该 ChatGPT 用户没有令牌共享资格。不重试。 |
+| `subscription_sharing_route_not_supported` | 403 | `permission_error` | 预览不支持该账户使用此路由。不重试。 |
+| `chatpass_v2_*`(例如 `chatpass_v2_scope_not_authorized`) | 403 | `permission_error` | 令牌缺少该调用所需的授权。请重新登录并批准套餐用量。不重试。 |
+| `subscription_sharing_invalid_user` | 401 | `authentication_error` | 令牌被拒绝。shunt 会刷新一次并重试;仍失败则运行 `shunt login chatgpt-plan --name <account>`。 |
+| `{"detail": "Unsupported parameter: …"}` | 400 | `invalid_request_error` | 预览拒绝的参数被发送了出去。请提交 issue;shunt 不应发送它。 |
+
+同样的代码也可能作为 `200 OK` 响应中的流内失败出现,映射方式相同。不在此表中的代码按 HTTP 状态映射,和
+其他提供方的错误一样。
+
+## 故障排查
+
+| 现象 | 原因 / 解决 |
+| :-- | :-- |
+| `plan usage was not granted … chatgpt.tokens.use.direct` | 你没有批准套餐用量。账户保持登出状态,但保留其客户端 ID。重新运行登录并批准。 |
+| `registration incomplete: the authorization did not issue a client id` | 首次登录的回调没有携带客户端 ID。没有存储任何内容;请重新运行登录。 |
+| `the authorization returned a different client id than this account's saved registration` | 已保存的账户文件是用另一个客户端 ID 注册的。文件未被更改。请用新的 `--name` 登录,或删除账户文件后重新注册。 |
+| `the ChatGPT sign-in failed validation` | ID 令牌未通过检查(nonce、audience、有效期或签名)。没有存储任何内容。如果反复出现,请检查主机时钟。 |
+| `the pasted callback belongs to a different sign-in attempt` | 你粘贴的是之前尝试的 URL。请粘贴当前尝试对应浏览器标签页中的 URL。 |
+| 错误消息中的 `run shunt login chatgpt-plan --name <account>` | 账户已登出或刷新失败。请重新登录。 |
+
+更多内容见完整的[故障排查](/zh-cn/reference/troubleshooting/)参考。

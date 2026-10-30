@@ -139,7 +139,9 @@ codex-fallback = "gpt-5.6-sol"
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — HTTP로 통신하는 Google Antigravity 백엔드, `~/.shunt/antigravity-auth.json`(`shunt login antigravity`)을 사용(또는 `shunt login antigravity --name`으로 `~/.shunt/accounts/antigravity` 아래 이름 지정 계정을 만들어 `accounts = [...]`로 선택) |
 | `antigravity-cli` | `antigravity_cli` | 없음(로컬 CLI) | **Deprecated.** 로컬 `agy` 바이너리 — 서브프로세스로 동일한 백엔드를 사용하며, 위의 `antigravity`로 대체되었습니다 |
 
-순서가 있는 `[[upstreams]]` 항목은 여기에 더해 `kimi`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode` 프리셋도 받으며, 각 백엔드의 `kind`, `base_url`, 기본 인증을 채워 넣습니다.
+순서가 있는 `[[upstreams]]` 항목은 여기에 더해 `kimi`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode`, `chatgpt-plan` 프리셋도 받으며, 각 백엔드의 `kind`, `base_url`, 기본 인증을 채워 넣습니다.
+
+**ChatGPT 플랜(Sign in with ChatGPT).** `chatgpt-plan` 프리셋은 `api.openai.com/v1/responses`에서 OpenAI의 "Sign in with ChatGPT" 토큰 공유 프리뷰를 통해 ChatGPT 플랜을 사용하며, 위의 `codex` 프로바이더와는 별개입니다. `shunt login chatgpt-plan --name <account>`로 로그인하고(`127.0.0.1:1455`로의 브라우저 콜백, 또는 원격 호스트에서는 콜백 URL 붙여넣기), `auth = "chatgpt_plan_oauth"`인 `[providers.chatgpt-plan]`을 선언한 뒤 모델을 라우팅합니다. 이름 있는 여러 계정은 풀을 이루어 한 계정이 플랜 사용량 한도에 닿으면 순환하며, `shunt logout chatgpt-plan --name <account>`는 계정 하나를 폐기하고 지웁니다. 프리뷰는 일부 요청 파라미터를 거부하고, 출력이 시작된 뒤 사용량 한도에 닿으면 순환하지 않고 스트림이 끝납니다. [ChatGPT 플랜 가이드](https://shunt.sh/ko/guides/chatgpt-plan/)를 참고하세요.
 
 프로바이더별 설정과 모델 id, 주의 사항은 [프로바이더](https://shunt.sh/ko/guides/providers/)에 정리되어 있습니다. xAI의 OAuth 등급 제한([xAI / Grok](https://shunt.sh/ko/guides/xai/)), Cursor의 에이전트 모드 프리픽스([Cursor](https://shunt.sh/ko/providers/cursor/)), Antigravity의 두 가지 전송 방식과 `kind = "antigravity"` 마이그레이션([Antigravity](https://shunt.sh/ko/providers/antigravity/))도 그곳에 있습니다.
 

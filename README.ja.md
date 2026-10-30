@@ -138,7 +138,9 @@ codex-fallback = "gpt-5.6-sol"
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — HTTP 経由の Google Antigravity バックエンド、`~/.shunt/antigravity-auth.json`（`shunt login antigravity`）を使用（または `shunt login antigravity --name` で `~/.shunt/accounts/antigravity` 以下に名前付きアカウントを作成し `accounts = [...]` で選択） |
 | `antigravity-cli` | `antigravity_cli` | なし（ローカル CLI） | **非推奨。** ローカルの `agy` バイナリ — サブプロセス経由で同じバックエンドを利用。上記の `antigravity` に置き換えられました |
 
-順序付きの `[[upstreams]]` エントリーはこれに加えて `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode` のプリセットも受け付け、各バックエンドの `kind`、`base_url`、デフォルト認証を補完します。
+順序付きの `[[upstreams]]` エントリーはこれに加えて `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode`、`chatgpt-plan` のプリセットも受け付け、各バックエンドの `kind`、`base_url`、デフォルト認証を補完します。
+
+**ChatGPT プラン（Sign in with ChatGPT）。** `chatgpt-plan` プリセットは、`api.openai.com/v1/responses` 上の OpenAI「Sign in with ChatGPT」トークン共有プレビューを通じて ChatGPT プランを消費します。上の `codex` プロバイダーとは別物です。`shunt login chatgpt-plan --name <account>` でサインインし（`127.0.0.1:1455` へのブラウザーコールバック、リモートホストではコールバック URL の貼り付け）、`auth = "chatgpt_plan_oauth"` で `[providers.chatgpt-plan]` を宣言して、モデルをルーティングします。名前付きの複数アカウントはプールとなり、1 つがプランの使用量上限に達するとローテーションします。`shunt logout chatgpt-plan --name <account>` は 1 つのアカウントを失効させて消去します。プレビューは一部のリクエストパラメーターを拒否し、出力開始後に使用量上限に達した場合はローテーションせずストリームが終了します。詳しくは [ChatGPT プランのガイド](https://shunt.sh/ja/guides/chatgpt-plan/)を参照してください。
 
 プロバイダーごとのセットアップ、モデル id、注意点は[プロバイダー](https://shunt.sh/ja/guides/providers/)にまとまっています。xAI の OAuth ティア制限（[xAI / Grok](https://shunt.sh/ja/guides/xai/)）、Cursor のエージェントモードのプレフィックス（[Cursor](https://shunt.sh/ja/providers/cursor/)）、Antigravity の 2 つのトランスポートと `kind = "antigravity"` の移行（[Antigravity](https://shunt.sh/ja/providers/antigravity/)）もそこにあります。
 

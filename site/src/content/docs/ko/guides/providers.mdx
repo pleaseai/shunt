@@ -21,6 +21,7 @@ description: 내장 프로바이더와 TOML 테이블로 Anthropic 호환 백엔
 | [`codex`](/ko/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — `~/.codex/auth.json` 재사용 |
 | [`xai`](/ko/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — xAI 개발자 API |
 | [`grok`](/ko/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai`를 통한 SuperGrok / X Premium+ 구독, 또는 `~/.shunt/accounts/xai/`의 이름 있는 로그인을 풀로 묶음(`shunt login xai --name`) |
+| [`chatgpt-plan`](/ko/guides/chatgpt-plan/) | `responses` | `chatgpt_plan_oauth` | `api.openai.com/v1` — "Sign in with ChatGPT" 프리뷰를 통한 ChatGPT 플랜; 프리셋이며 기본으로 심어지지 않으므로 `[providers.chatgpt-plan]`을 선언해야 함(`shunt login chatgpt-plan --name`) |
 | [`cursor`](/ko/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json` 재사용 (`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — `~/.gemini/oauth_creds.json` 재사용 |
 | [`antigravity`](/ko/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` — `~/.shunt/antigravity-auth.json` 재사용 (`shunt login antigravity`) |
@@ -199,6 +200,23 @@ OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`
 [xAI / Grok 가이드](/ko/guides/xai/)를 참고하세요.
 
 여러 SuperGrok 계정을 풀로 묶으려면 각 계정을 `shunt login xai --name <name>`으로 로그인하세요. 자세한 내용은 [xAI / Grok](/ko/guides/xai/) 페이지를 참고하세요.
+
+### chatgpt-plan 프로바이더 (ChatGPT 플랜, Sign in with ChatGPT)
+
+이름 있는 계정을 하나 이상 로그인한 뒤, 프로바이더를 선언하고 모델을 라우팅합니다:
+
+```bash
+shunt login chatgpt-plan --name work
+```
+
+```toml
+[providers.chatgpt-plan]
+kind = "responses"
+base_url = "https://api.openai.com/v1"
+auth = "chatgpt_plan_oauth"
+```
+
+이 프로바이더는 `api.openai.com`의 OpenAI "Sign in with ChatGPT" 토큰 공유 프리뷰를 사용하며, 위의 `codex` 프로바이더와는 별개입니다. 프리뷰는 일부 파라미터를 거부하고 자체 오류 코드를 가집니다. 원격 호스트의 붙여넣기 대안, 로그아웃, 프리뷰 제한, 각 오류의 의미는 [ChatGPT 플랜 가이드](/ko/guides/chatgpt-plan/)를 참고하세요.
 
 ## Anthropic 호환 백엔드 추가
 

@@ -47,6 +47,7 @@ export const NAVIGATION: NavigationEntry[] = [
       { label: "OpenAI", slug: "providers/openai" },
       { label: "ChatGPT / Codex", translations: { ko: "ChatGPT / Codex", ja: "ChatGPT / Codex", "zh-cn": "ChatGPT / Codex" }, slug: "guides/codex" },
       { label: "xAI / Grok", translations: { ko: "xAI / Grok", ja: "xAI / Grok", "zh-cn": "xAI / Grok" }, slug: "guides/xai" },
+      { label: "ChatGPT Plan", translations: { ko: "ChatGPT 플랜", ja: "ChatGPT プラン", "zh-cn": "ChatGPT 套餐" }, slug: "guides/chatgpt-plan" },
       { label: "Cursor", slug: "providers/cursor" },
       { label: "Antigravity (Google)", slug: "providers/antigravity" },
       { label: "Kimi (Moonshot)", slug: "providers/kimi" },

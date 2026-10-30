@@ -136,7 +136,9 @@ codex-fallback = "gpt-5.6-sol"
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` —— 通过 HTTP 访问的 Google Antigravity 后端,使用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`;或用 `shunt login antigravity --name` 在 `~/.shunt/accounts/antigravity` 下使用具名账号,通过 `accounts = [...]` 选择) |
 | `antigravity-cli` | `antigravity_cli` | 无(本地 CLI) | **已弃用。** 本地 `agy` 二进制 —— 通过子进程访问同一后端,已被上面的 `antigravity` 取代 |
 
-有序的 `[[upstreams]]` 条目还接受 `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode` 预设,它们会补齐对应后端的 `kind`、`base_url` 和默认认证。
+有序的 `[[upstreams]]` 条目还接受 `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode`、`chatgpt-plan` 预设,它们会补齐对应后端的 `kind`、`base_url` 和默认认证。
+
+**ChatGPT 套餐(Sign in with ChatGPT)。** `chatgpt-plan` 预设通过 `api.openai.com/v1/responses` 上 OpenAI 的 "Sign in with ChatGPT" 令牌共享预览使用 ChatGPT 套餐,与上面的 `codex` 提供方相互独立。用 `shunt login chatgpt-plan --name <account>` 登录(浏览器回调到 `127.0.0.1:1455`,远程主机上则粘贴回调 URL),声明 `auth = "chatgpt_plan_oauth"` 的 `[providers.chatgpt-plan]`,再把模型路由给它。多个命名账户组成账户池,某个账户触达套餐用量上限时会轮换;`shunt logout chatgpt-plan --name <account>` 会撤销并清除一个账户。预览会拒绝一些请求参数,输出开始后触达用量上限时流会直接结束而不是轮换。详见 [ChatGPT 套餐指南](https://shunt.sh/zh-cn/guides/chatgpt-plan/)。
 
 各提供方的设置、模型 id 和注意事项都在[提供方](https://shunt.sh/zh-cn/guides/providers/)下,包括 xAI 的 OAuth 层级限制（[xAI / Grok](https://shunt.sh/zh-cn/guides/xai/)）、Cursor 的 agent 模式前缀（[Cursor](https://shunt.sh/zh-cn/providers/cursor/)）以及 Antigravity 的两种传输方式和 `kind = "antigravity"` 迁移（[Antigravity](https://shunt.sh/zh-cn/providers/antigravity/)）。
 

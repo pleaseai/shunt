@@ -76,7 +76,7 @@ shunt init --root /path/to/project
 shunt init --force
 ```
 
-不指定 upstream 时，starter 完全由注释组成，加载后使用 shunt 的默认 passthrough 配置。重复使用 `--upstream` 可按 failover 顺序添加 preset 条目；可用名称为 `anthropic`、`codex`、`openai`、`xai`、`grok`、`kimi`、`cursor`、`kimi-code`、`zhipu`、`minimax-cn` 和 `opencode`。Starter 不设置 `server.default_provider`，因此未映射流量仍使用默认 Anthropic passthrough。指定 preset 时，会在末尾自动追加一个 `anthropic` passthrough upstream（除非你自己指定了 `anthropic`），使生成的文件既能通过 `shunt check`，又能保留该 fallback。
+不指定 upstream 时，starter 完全由注释组成，加载后使用 shunt 的默认 passthrough 配置。重复使用 `--upstream` 可按 failover 顺序添加 preset 条目；可用名称为 `anthropic`、`codex`、`openai`、`xai`、`grok`、`kimi`、`cursor`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode` 和 `chatgpt-plan`。Starter 不设置 `server.default_provider`，因此未映射流量仍使用默认 Anthropic passthrough。指定 preset 时，会在末尾自动追加一个 `anthropic` passthrough upstream（除非你自己指定了 `anthropic`），使生成的文件既能通过 `shunt check`，又能保留该 fallback。
 
 Root 默认为当前目录，并且必须已经存在。如果其中已有 `shunt.toml`、`shunt.yaml` 或 `shunt.yml`，则不带 `--force` 时会停止且不写入任何内容。强制 init 只覆盖 `shunt.toml`；YAML variant 保持不变，config discovery 会优先使用新的 TOML 文件。
 
@@ -269,6 +269,36 @@ Kimi 在每次刷新时都会轮换 refresh token,而且签发的 access token �
 
 完整的 upstream 配置见 [Kimi](/zh-cn/providers/kimi/#kimi-codeoauth-订阅)。
 
+## `shunt login chatgpt-plan`
+
+通过 OpenAI 的 "Sign in with ChatGPT" 令牌共享预览登录 ChatGPT 套餐账户,并保存其可刷新的 credential:
+
+```bash
+shunt login chatgpt-plan --name <account-name>
+```
+
+`--name` 为必填。credential 保存到 `~/.shunt/accounts/chatgpt-plan/<account-name>.json`(0600,位于 0700 目录中;可用 `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` 覆盖目录)。重复使用同一名称会让该账户重新登录,并保留其已注册的客户端 ID。套餐令牌始终可刷新,因此 `--long-lived` 和 `--mode` 会被拒绝;粘贴回调始终可用,因此 `--manual` 也会被拒绝。
+
+shunt 会打印授权 URL、打开浏览器,并在 `127.0.0.1:1455` 上监听重定向。你也可以改为把完整的回调 URL(`http://127.0.0.1:1455/auth/callback?code=…`)粘贴到终端中;先到达的一方生效,粘贴的 URL 必须属于本次尝试。如果端口被占用,登录会以仅粘贴模式继续。等待在五分钟后结束。未通过检查(state、客户端 ID、ID 令牌或 `chatgpt.tokens.use.direct` 范围)的登录不会存储任何令牌。某个名称的首次登录会向 OpenAI 注册客户端 ID,并保留供之后的登录使用。
+
+通过 `auth = "chatgpt_plan_oauth"` 的提供方使用该账户;配置、账户池和预览的限制见 [ChatGPT 套餐指南](/zh-cn/guides/chatgpt-plan/)。
+
+## `shunt logout chatgpt-plan`
+
+登出一个 ChatGPT 套餐账户:
+
+```bash
+shunt logout chatgpt-plan --name <account-name>
+```
+
+`--name` 为必填,且 `logout` 只支持 `chatgpt-plan` 这一个提供方。shunt 会在 OpenAI 的撤销端点撤销该账户的 refresh 令牌(网络和 5xx 失败会重试几次),然后清除访问、refresh 和 ID 令牌。它保留已注册的客户端 ID 和主机 ID,因此之后的 `shunt login chatgpt-plan --name <account-name>` 会复用同一注册。
+
+| 输出 | 含义 |
+| :-- | :-- |
+| `ChatGPT plan account "<name>" signed out; remote revocation confirmed.` | OpenAI 返回了 200;会话已被撤销。 |
+| `ChatGPT plan account "<name>" signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | 令牌已在本机清除,但无法确认撤销。请在 ChatGPT 设置中移除该会话。 |
+| `ChatGPT plan account "<name>" is already signed out.` | 没有需要撤销的令牌。 |
+
 ## Anthropic 账户池认证
 
 对于 `auth = "claude_oauth"` 的 Anthropic provider,账户可以使用只带名称的存储条目、`credentials = "~/.claude/.credentials.json"` 或 `token_env = "YOUR_ENV_NAME"`。存储条目可由上面的 Full OAuth、Claude Code 登录导入或 setup-token 流程创建。完整配置和 failover 规则见 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/)。
@@ -287,5 +317,6 @@ Kimi 在每次刷新时都会轮换 refresh token,而且签发的 access token �
 | `SHUNT_KIMI_ACCOUNTS_DIR` | shunt 管理的 Kimi Code 账户存储的备用目录 |
 | `SHUNT_XAI_AUTH_FILE` | 不带 `--name` 的 `shunt login xai` 所用的备用 credential 文件(默认 `~/.shunt/xai-auth.json`) |
 | `SHUNT_XAI_ACCOUNTS_DIR` | shunt 管理的 xAI 账户存储的备用目录 |
+| `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` | shunt 管理的 ChatGPT 套餐账户存储的备用目录(默认 `~/.shunt/accounts/chatgpt-plan`;安装的 `.host-id` 也在其中) |
 | 由 `token_env` 指定的按账户变量 | Anthropic `claude_oauth` 池条目的 setup token;原样使用 |
 | `OPENAI_API_KEY` | `openai` 提供方的默认密钥环境变量(每个提供方通过 `api_key_env`) |

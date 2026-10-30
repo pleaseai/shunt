@@ -1,0 +1,210 @@
+---
+title: ChatGPT plan (Sign in with ChatGPT)
+description: Route Claude Code inference to your ChatGPT plan through OpenAI's "Sign in with ChatGPT" token-sharing preview — sign in, pool several accounts, sign out, and what the preview limits.
+---
+
+The built-in **`chatgpt-plan`** provider spends your **ChatGPT plan** usage through OpenAI's
+"Sign in with ChatGPT" (SIWC) token-sharing preview. shunt registers itself as an agent client the
+first time you sign in, then calls the public `api.openai.com/v1/responses` endpoint with your
+plan-usage access token instead of an API key.
+
+It is a **`kind = "responses"`** provider, so it shares the translation path of
+[Codex](/guides/codex/) and [xAI](/guides/xai/). It is **separate from the `codex` provider**:
+
+| | `chatgpt-plan` | `codex` |
+| :-- | :-- | :-- |
+| Sign-in | `shunt login chatgpt-plan --name <account>` — OpenAI's sanctioned preview for third-party tools | Reuses the Codex CLI login (`~/.codex/auth.json`) |
+| Backend | `api.openai.com/v1/responses` | `chatgpt.com/backend-api` |
+| Credentials | `~/.shunt/accounts/chatgpt-plan/<name>.json`, one file per named account | `~/.codex/auth.json` or `~/.shunt/accounts/codex/` |
+| Preview limits | Yes — see [Preview limits](#preview-limits) | No |
+
+The two do not share credentials or settings; you can configure both.
+
+<Aside type="note" title="What you need">
+
+A ChatGPT plan that OpenAI has enabled for the token-sharing preview, a browser, and a route in
+`shunt.toml`. Eligibility is OpenAI's decision. An account that is not eligible gets a
+`permission_error` on every request (see [What the errors mean](#what-the-errors-mean)).
+
+</Aside>
+
+## Set up
+
+### 1. Sign in
+
+```bash
+shunt login chatgpt-plan --name work
+```
+
+shunt prints an authorization URL and opens your browser. Approve the request, including plan usage.
+The browser is redirected to `http://127.0.0.1:1455/auth/callback`, where shunt is listening, and the
+command finishes on its own:
+
+```text
+ChatGPT plan account "work" signed in as you@example.com.
+Scopes granted: openid profile email offline_access resource.invoke chatgpt.tokens.use.direct
+```
+
+Before it stores anything, shunt checks the callback's state, exchanges the code, and validates the
+ID token against OpenAI's published keys. A sign-in that fails a check stores no credential.
+
+The first sign-in of a name registers a client id (`oaiapp_…`) with OpenAI and saves it with the
+account. Signing in again with the same name reuses it. `--long-lived`, `--mode`, and `--manual` are
+rejected: plan tokens are always refreshable, and pasting the callback is always available (next
+section). See [`shunt login chatgpt-plan`](/reference/cli/#shunt-login-chatgpt-plan).
+
+### 2. Add the provider and a route
+
+```toml
+[providers.chatgpt-plan]
+kind = "responses"
+base_url = "https://api.openai.com/v1"   # shunt appends /responses
+auth = "chatgpt_plan_oauth"
+
+[[routes]]
+model = "gpt-6.1-sol"
+provider = "chatgpt-plan"
+```
+
+Route the model ids you want; shunt does not list the account's models, it serves the ids you map.
+In an ordered `[[upstreams]]` list, `provider = "chatgpt-plan"` fills in the three provider keys.
+
+Check the file and start the gateway:
+
+```bash
+shunt check
+shunt run
+```
+
+`shunt check` refuses a `chatgpt_plan_oauth` provider whose `kind` is not `responses`, whose
+`base_url` is not HTTPS, or whose host is not `api.openai.com`, and a provider named `chatgpt-plan`
+that uses any other `auth`. It names the offending key. shunt never sends a plan token to another
+host.
+
+## Remote and headless hosts
+
+The browser callback goes to `127.0.0.1:1455` **on the machine where you run the login**. When the
+browser is elsewhere, use either fallback:
+
+- **Paste the callback.** Approve in any browser. The final redirect fails to load — that is
+  expected — but the address bar holds the full URL, starting `http://127.0.0.1:1455/auth/callback?code=…`.
+  Copy it and paste it into the waiting terminal. Surrounding whitespace or quotes are fine. shunt
+  checks that the URL belongs to this sign-in attempt before it exchanges the code.
+- **Forward the port.** Over SSH, run `ssh -L 1455:127.0.0.1:1455 <host>` and sign in as usual. The
+  browser's callback then reaches shunt on the remote host.
+
+If port 1455 is already taken, shunt says so and continues in paste-only mode. The wait ends after
+five minutes.
+
+## Several accounts
+
+Sign in each account under its own name:
+
+```bash
+shunt login chatgpt-plan --name work
+shunt login chatgpt-plan --name personal
+```
+
+Each account is `~/.shunt/accounts/chatgpt-plan/<name>.json` (`0600`, in a `0700` directory;
+`$SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` overrides the directory). Two names can share an email address;
+each keeps its own record and client id. With no further config the provider uses every account in
+the directory. To pick some, or to prefer one:
+
+```toml
+[[providers.chatgpt-plan.accounts]]
+name = "work"
+
+[[providers.chatgpt-plan.accounts]]
+name = "personal"
+priority = 200          # optional: lower is preferred (default 100)
+```
+
+shunt keeps a session (`x-claude-code-session-id`) on one account and rotates otherwise. The serving
+account is named in the `x-shunt-account` response header. A host identifier (`.host-id`, in the
+same directory) is created once and sent with every sign-in; leave it in place.
+
+## Sign out
+
+```bash
+shunt logout chatgpt-plan --name work
+```
+
+shunt revokes the account's refresh token at OpenAI's revocation endpoint, then clears the account's
+access, refresh, and ID tokens. It **keeps the registered client id** and the host id, so signing in
+again reuses the registration.
+
+| Result | What it means |
+| :-- | :-- |
+| `… signed out; remote revocation confirmed.` | OpenAI answered 200. The session is revoked. |
+| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | The network failed or OpenAI answered 5xx after a few tries. The tokens are cleared on this machine, but the session may still be live at OpenAI. Remove it in your ChatGPT settings. |
+| `… is already signed out.` | The account had no tokens. Nothing was sent. |
+
+A running gateway treats a signed-out account as needing sign-in. See
+[`shunt logout chatgpt-plan`](/reference/cli/#shunt-logout-chatgpt-plan).
+
+## How requests behave
+
+- **Refresh.** shunt renews an access token shortly before it expires, never earlier than the time
+  OpenAI allows, and saves the replacement refresh token. You do not manage tokens.
+- **Usage limit.** When an account reports its plan usage limit — as an HTTP 429, or as an in-stream
+  failure before any output — shunt cools that account down and serves the same request from another
+  account. When every account is cooling down, Claude Code gets a `rate_limit_error` that points to
+  [chatgpt.com/settings/usage](https://chatgpt.com/settings/usage).
+- **Expired sign-in.** A `401` makes shunt refresh the token once and retry. If the refresh fails, the
+  account is marked as needing sign-in and rests for a few minutes while healthy accounts serve.
+  Run `shunt login chatgpt-plan --name <account>` again.
+- **Not eligible, or route not supported.** A `403` is relayed as a `permission_error`, with no retry
+  and no sign-in prompt.
+- **Temporarily unavailable.** A `503` rotates to the next account and keeps the credentials. If every
+  account answers `503`, Claude Code gets an `overloaded_error`.
+
+## Preview limits
+
+- **Rejected parameters.** The preview rejects `temperature`, `metadata`, and `prompt_cache_retention`.
+  shunt never sends them. It always sends `store: false` and `stream: true`, even when Claude Code asked
+  for a non-streaming reply; shunt then returns one complete message.
+- **Tools.** Plain function tools work. Native `tool_search` is off for this provider, whatever the
+  `tool_search` setting says, because the preview rejects it. Hosted `web_search` passes through.
+- **Limit after output starts.** If the usage limit arrives after part of the answer has reached
+  Claude Code, the turn cannot move to another account. The stream ends with a `rate_limit_error` and
+  the account is cooled down. The next request uses another account.
+- **Escalation and advisor calls.** These calls run under an idle bound, and shunt skips the
+  pre-output check for them. A usage limit that arrives in-stream on such a call ends the call with the
+  error and does not rotate to another account. The account is still cooled down, so the next call
+  uses another one. A usage limit as an HTTP 429 rotates as usual. See
+  [Escalation](/guides/escalation/) and [Advisor Gate](/guides/advisor/).
+- **Capped replies.** A reply cut off by `max_tokens` currently ends as `end_turn`, not `max_tokens`.
+  This applies to every Responses provider and is tracked in
+  [issue #868](https://github.com/pleaseai/shunt/issues/868).
+- **Models.** shunt forwards the ids you route. OpenAI decides which models a plan can use; a model
+  the account cannot use comes back as an upstream error.
+
+## What the errors mean
+
+| Upstream code | Status | Claude Code sees | What it means and what to do |
+| :-- | :-- | :-- | :-- |
+| `subscription_sharing_usage_limit_exceeded` | 429 | `rate_limit_error` | The account used up its plan usage. shunt tries another account; with none left, wait or check [usage settings](https://chatgpt.com/settings/usage). |
+| `subscription_sharing_usage_unavailable` | 503 | `overloaded_error` | OpenAI cannot read the account's usage right now. Credentials are kept; retry shortly. |
+| `subscription_sharing_user_unavailable` | 503 | `overloaded_error` | OpenAI cannot serve this user right now. Credentials are kept; retry shortly. |
+| `subscription_sharing_unsupported_capability` | 400 | `invalid_request_error` | The request used something the preview does not support. The message ends with `(parameter: <name>)`, for example `tools`. |
+| `subscription_sharing_user_not_eligible` | 403 | `permission_error` | The ChatGPT user is not eligible for token sharing. Not retried. |
+| `subscription_sharing_route_not_supported` | 403 | `permission_error` | The preview does not support this route for the account. Not retried. |
+| `chatpass_v2_*` (for example `chatpass_v2_scope_not_authorized`) | 403 | `permission_error` | The token lacks an authorization the call needs. Sign in again and approve plan usage. Not retried. |
+| `subscription_sharing_invalid_user` | 401 | `authentication_error` | The token was rejected. shunt refreshes once and retries; if that fails, run `shunt login chatgpt-plan --name <account>`. |
+| `{"detail": "Unsupported parameter: …"}` | 400 | `invalid_request_error` | A parameter the preview rejects reached it. Open an issue; shunt should not send it. |
+
+The same codes can also arrive as an in-stream failure on a `200 OK` response; they map the same way.
+A code that is not in this table maps by its HTTP status, like other providers' errors.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+| :-- | :-- |
+| `plan usage was not granted … chatgpt.tokens.use.direct` | You did not approve plan usage. The account stays signed out but keeps its client id. Run the login again and approve it. |
+| `registration incomplete: the authorization did not issue a client id` | The first sign-in's callback carried no client id. Nothing was stored; run the login again. |
+| `the authorization returned a different client id than this account's saved registration` | The saved account file was registered under another client id. The file is unchanged. Sign in under a new `--name`, or remove the account file to register again. |
+| `the ChatGPT sign-in failed validation` | The ID token failed a check (nonce, audience, expiry, or signature). Nothing was stored. If it repeats, check the host clock. |
+| `the pasted callback belongs to a different sign-in attempt` | You pasted a URL from an earlier attempt. Paste the URL from the browser tab of the current attempt. |
+| `run shunt login chatgpt-plan --name <account>` in an error message | The account is signed out or its refresh failed. Sign it in again. |
+
+See the full [Troubleshooting](/reference/troubleshooting/) reference for more.

@@ -76,7 +76,7 @@ shunt init --root /path/to/project
 shunt init --force
 ```
 
-Upstream을 지정하지 않으면 starter 전체가 주석으로 구성되어 shunt의 기본 passthrough 설정으로 로드됩니다. `--upstream`을 반복하면 failover 순서대로 preset 항목을 추가합니다. 사용할 수 있는 이름은 `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, `cursor`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode`입니다. Starter는 `server.default_provider`를 설정하지 않으므로 매핑되지 않은 트래픽은 기본 Anthropic passthrough를 유지합니다. Preset을 지정하면 생성된 파일이 `shunt check`를 통과하면서도 이 fallback을 유지하도록 마지막에 `anthropic` passthrough upstream이 자동으로 추가됩니다(직접 `anthropic`을 지정한 경우는 제외).
+Upstream을 지정하지 않으면 starter 전체가 주석으로 구성되어 shunt의 기본 passthrough 설정으로 로드됩니다. `--upstream`을 반복하면 failover 순서대로 preset 항목을 추가합니다. 사용할 수 있는 이름은 `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, `cursor`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode`, `chatgpt-plan`입니다. Starter는 `server.default_provider`를 설정하지 않으므로 매핑되지 않은 트래픽은 기본 Anthropic passthrough를 유지합니다. Preset을 지정하면 생성된 파일이 `shunt check`를 통과하면서도 이 fallback을 유지하도록 마지막에 `anthropic` passthrough upstream이 자동으로 추가됩니다(직접 `anthropic`을 지정한 경우는 제외).
 
 Root의 기본값은 현재 디렉터리이며 이미 존재해야 합니다. 그 안에 `shunt.toml`, `shunt.yaml`, `shunt.yml` 중 하나가 있으면 `--force` 없이는 아무것도 쓰지 않고 중단합니다. 강제 init은 `shunt.toml`만 덮어씁니다. YAML variant는 그대로 남고, config discovery에서는 새 TOML 파일이 우선합니다.
 
@@ -269,6 +269,36 @@ Kimi는 갱신할 때마다 refresh token을 회전시키며, 발급되는 acces
 
 전체 upstream 구성은 [Kimi](/ko/providers/kimi/#kimi-code-oauth-구독)를 참고하세요.
 
+## `shunt login chatgpt-plan`
+
+OpenAI의 "Sign in with ChatGPT" 토큰 공유 프리뷰로 ChatGPT 플랜 계정에 로그인하고, 갱신 가능한 credential을 저장합니다:
+
+```bash
+shunt login chatgpt-plan --name <account-name>
+```
+
+`--name`은 필수입니다. credential은 `~/.shunt/accounts/chatgpt-plan/<account-name>.json`(0600, 0700 디렉터리 안; `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR`로 디렉터리 재정의)에 저장됩니다. 같은 이름을 다시 쓰면 그 계정에 다시 로그인하며 등록된 클라이언트 ID는 유지됩니다. 플랜 토큰은 항상 갱신 가능하므로 `--long-lived`와 `--mode`는 거부되고, 콜백 붙여넣기를 언제나 쓸 수 있으므로 `--manual`도 거부됩니다.
+
+shunt는 인증 URL을 출력하고 브라우저를 연 뒤, 리디렉션을 받기 위해 `127.0.0.1:1455`에서 대기합니다. 대신 전체 콜백 URL(`http://127.0.0.1:1455/auth/callback?code=…`)을 터미널에 붙여넣을 수도 있으며, 먼저 도착한 쪽이 사용됩니다. 붙여넣은 URL은 이번 시도의 것이어야 합니다. 포트가 사용 중이면 로그인은 붙여넣기 전용 모드로 계속됩니다. 대기는 5분 뒤에 끝납니다. 검사(state, 클라이언트 ID, ID 토큰, `chatgpt.tokens.use.direct` 스코프)에 실패한 로그인은 토큰을 저장하지 않습니다. 어떤 이름의 첫 로그인은 OpenAI에 클라이언트 ID를 등록하고 이후 로그인을 위해 보관합니다.
+
+`auth = "chatgpt_plan_oauth"`인 프로바이더에서 이 계정을 사용합니다. 구성, 풀, 프리뷰의 제한은 [ChatGPT 플랜 가이드](/ko/guides/chatgpt-plan/)를 참고하세요.
+
+## `shunt logout chatgpt-plan`
+
+ChatGPT 플랜 계정을 로그아웃합니다:
+
+```bash
+shunt logout chatgpt-plan --name <account-name>
+```
+
+`--name`은 필수이며, `logout`이 지원하는 프로바이더는 `chatgpt-plan`뿐입니다. shunt는 OpenAI의 폐기 엔드포인트에서 계정의 refresh 토큰을 폐기하고(네트워크와 5xx 실패는 몇 번 재시도), 액세스, refresh, ID 토큰을 지웁니다. 등록된 클라이언트 ID와 호스트 ID는 유지하므로, 이후 `shunt login chatgpt-plan --name <account-name>`은 같은 등록을 재사용합니다.
+
+| 출력 | 의미 |
+| :-- | :-- |
+| `ChatGPT plan account "<name>" signed out; remote revocation confirmed.` | OpenAI가 200으로 응답했습니다. 세션이 폐기되었습니다. |
+| `ChatGPT plan account "<name>" signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | 토큰은 이 머신에서 지워졌지만 폐기를 확인하지 못했습니다. ChatGPT 설정에서 세션을 제거하세요. |
+| `ChatGPT plan account "<name>" is already signed out.` | 폐기할 토큰이 없었습니다. |
+
 ## Anthropic 계정 풀 인증
 
 `auth = "claude_oauth"`인 Anthropic provider에서 계정은 이름만 있는 스토어 항목, `credentials = "~/.claude/.credentials.json"`, 또는 `token_env = "YOUR_ENV_NAME"`을 사용할 수 있습니다. 스토어 항목은 위의 Full OAuth, Claude Code 로그인 가져오기, setup-token 플로우 중 하나로 만들 수 있습니다. 전체 구성과 failover 규칙은 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/)을 참고하세요.
@@ -287,5 +317,6 @@ Kimi는 갱신할 때마다 refresh token을 회전시키며, 발급되는 acces
 | `SHUNT_KIMI_ACCOUNTS_DIR` | shunt가 관리하는 Kimi Code 계정 스토어의 대체 디렉터리 |
 | `SHUNT_XAI_AUTH_FILE` | `shunt login xai`(`--name` 없음)의 대체 credential 파일(기본값 `~/.shunt/xai-auth.json`) |
 | `SHUNT_XAI_ACCOUNTS_DIR` | shunt가 관리하는 xAI 계정 스토어의 대체 디렉터리 |
+| `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` | shunt가 관리하는 ChatGPT 플랜 계정 스토어의 대체 디렉터리(기본값 `~/.shunt/accounts/chatgpt-plan`; 설치의 `.host-id`도 여기에 있음) |
 | `token_env`로 지정한 계정별 변수 | Anthropic `claude_oauth` 풀 항목의 setup token; 변경 없이 그대로 사용 |
 | `OPENAI_API_KEY` | `openai` 프로바이더용 기본 키 env(프로바이더별로 `api_key_env`를 통해) |
