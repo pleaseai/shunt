@@ -55,7 +55,7 @@ Considered and not built:
 - [x] T001 Move the shared Codex JWT test harness into `tests/common` (file: tests/common/codex_jwt.rs)
   Validation: `tests/inbound_codex_jwt_slots.rs` uses the shared gateway, config, and token helpers instead of defining them, and its tests pass with the same names, count, and assertions.
   Method: `cargo test --test inbound_codex_jwt_slots`, with the same pass count before and after
-- [ ] T002 Codex-shaped discovery reads the `jwt_header` / `jwt_cookie` slots (file: src/auth/gate.rs) (depends on T001) [FR-1, FR-2, FR-3, FR-4, FR-5, NFR-1, NFR-2, AC-001, AC-002, AC-003, AC-004, AC-005, AC-006, AC-007, AC-008, AC-009]
+- [x] T002 Codex-shaped discovery reads the `jwt_header` / `jwt_cookie` slots (file: src/auth/gate.rs) (depends on T001) [FR-1, FR-2, FR-3, FR-4, FR-5, NFR-1, NFR-2, AC-001, AC-002, AC-003, AC-004, AC-005, AC-006, AC-007, AC-008, AC-009]
   Validation: AC-001 through AC-009 pass end to end on `/models`, `/backend-api/codex/models`, and `/v1/models?client_version=…`. The slot posture follows exactly the `client_version` detection that picks the Codex shape, including a key with an empty value. A valid `x-api-key` static token wins over a repeated `jwt_header`. The doc comments and log text no longer call the slots inbound-Codex-endpoint-only.
   Method: new `tests/inbound_codex_jwt_discovery.rs` via `cargo test --test inbound_codex_jwt_discovery`, then `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --all --check`
   STOP: the cookie `Origin` rule or repeated-slot handling needs request data beyond the discovery handler's `HeaderMap`
@@ -91,6 +91,8 @@ Considered and not built:
   Evidence: `cargo +1.98.1 test --test inbound_codex_jwt_slots` → 9 passed, 0 failed (9 before the move); `cargo +1.98.1 clippy --all-targets -- -D warnings` and `cargo fmt --all --check` clean (default features; `--all-features` not run)
 - [x] (2026-10-30 17:05 KST) T003 Document that Codex model discovery accepts the configured header and cookie
   Evidence: `cd site && bun --bun run build` → 217 pages built (plain `bun run build` needs Node ≥ 22; default Node is 18.20.8); all 111 fragment links in the edited guide/reference pages across en/ko/ja/zh-cn resolve in `site/dist`; `rg` for the stale bearer-only discovery wording in all four locales → no hits. Commit 6f60b322 (worktree), merged in c5b3bb57
+- [x] (2026-10-31 10:00 KST) T002 Codex-shaped discovery reads the `jwt_header` / `jwt_cookie` slots
+  Evidence: `cargo +1.98.1 test --test inbound_codex_jwt_discovery` → 9 passed, 0 failed (one test per AC-001..AC-009; AC-001 also covers `?client_version` empty and `?foo=1&client_version=x`, AC-006 covers `x-api-key` + repeated `jwt_header` → 200). Against the pre-change `src/` 4 failed (AC-001/002/003/008); reverting only the gateway-before-503 reorder fails AC-009; routing `CodexDiscovery` through `authenticate_bearer` fails AC-006. `cargo +1.98.1 test --workspace` → 61 suites, 4459 passed, 0 failed, 2 ignored; `cargo +1.98.1 clippy --all-targets -- -D warnings` and `cargo +1.98.1 fmt --all --check` exit 0 (default features; `--all-features` not run)
 
 ## Decision Log
 
