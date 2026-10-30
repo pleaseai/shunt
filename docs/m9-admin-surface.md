@@ -468,9 +468,18 @@ managed state (`available`/`unseen`), which is the "Needs login" case this
 matching was built for.
 
 Within the managed states both tables run one ladder — `disabled`,
-`needs_relogin`, `!has_state`, account-wide cooldown, `near_quota`, Fable-only
-cooldown — so the same account cannot read `near quota` in the managed-pool
-table while the Accounts table calls it `Cooling` (issue #512). The cooldown is
+`needs_relogin`, `!has_state`, hard cap, used-up window, account-wide cooldown,
+`near_quota`, Fable cap, Fable-only cooldown — so the same account cannot read
+`near quota` in the managed-pool table while the Accounts table calls it
+`Cooling` (issue #512). A used-up window gets its own `exhausted` state
+("Exhausted", noted `Quota used up · clears when the window resets`), read from
+the pool snapshot's `exhausted` flag: the 5-hour or weekly window was rejected or
+reached 100% utilization. The rejection test is selection's own, so a stale
+aggregate `status` counts only when no per-window status has been recorded, and
+a Fable-only (`7d_oi`) rejection does not count. `near_quota` cannot carry that
+on its own, since the pool also sets it at the switch threshold (98% by default)
+while the account can still serve. Like a hard cap, it lasts until its window resets, so it
+sits above the short cooldown. The cooldown is
 tested before `near_quota` because it is the fact that *all* of the account's
 traffic is gated right now, while `near_quota` warns about what is coming. When
 both cooldowns are running the row's state is the account-wide one, and its note

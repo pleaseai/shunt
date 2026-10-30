@@ -107,6 +107,11 @@ function managedState(account: PoolAccount): string {
   if (!account.has_state) return 'unseen';
   // A hard cap lasts until its window resets, so it outranks the short cooldown.
   if (account.capped) return 'capped';
+  // So does a used-up window, and it is the fact `near_quota` would hide. Like
+  // every state on this ladder it is the pool's own view: a coalesced row may
+  // display the local client's fresher windows, but the state says what the
+  // pool will do with the account.
+  if (account.exhausted) return 'exhausted';
   if (account.cooldown_secs_remaining) return 'cooling';
   if (account.near_quota) return 'near-quota';
   if (account.capped_fable) return 'capped-fable';
@@ -329,6 +334,7 @@ export function effectiveState(row: AccountRow): string {
     row.state === 'needs-relogin' ||
     row.state === 'capped' ||
     row.state === 'capped-fable' ||
+    row.state === 'exhausted' ||
     row.state === 'cooling' ||
     row.state === 'near-quota' ||
     row.state === 'cooling-fable'
@@ -363,6 +369,8 @@ export function rowStatusText(state: string): string {
       return 'Capped';
     case 'capped-fable':
       return 'Capped (Fable)';
+    case 'exhausted':
+      return 'Exhausted';
     case 'cooling':
       return 'Cooling';
     case 'cooling-fable':
