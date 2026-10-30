@@ -138,7 +138,24 @@ These providers are seeded by default, so `provider = "<name>"` routes to them w
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — Google Antigravity backend over HTTP; uses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`), or named accounts under `~/.shunt/accounts/antigravity` (`shunt login antigravity --name`, selected via `accounts = [...]`) |
 | `antigravity-cli` | `antigravity_cli` | None (local CLI) | **Deprecated.** Local `agy` binary — same backend via subprocess; superseded by `antigravity` above |
 
-Ordered `[[upstreams]]` entries additionally accept the presets `kimi`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode`, and `cheaperinference`, which fill in `kind`, `base_url`, and the default auth for those backends.
+Ordered `[[upstreams]]` entries additionally accept the presets `kimi`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode`, `cheaperinference`, and `chatgpt-plan`, which fill in `kind`, `base_url`, and the default auth for those backends.
+
+**ChatGPT plan (Sign in with ChatGPT).** The `chatgpt-plan` preset spends a ChatGPT plan through OpenAI's "Sign in with ChatGPT" token-sharing preview on `api.openai.com/v1/responses`, separate from the `codex` provider above. Sign in with `shunt login chatgpt-plan --name <account>` (a browser callback on `127.0.0.1:1455`, or paste the callback URL on a remote host), add an ordered `[[upstreams]]` entry with `provider = "chatgpt-plan"` (the preset fills in `kind`, `base_url`, and `auth = "chatgpt_plan_oauth"`) and map a model to it, as below. Several named accounts form a pool that rotates when one hits its plan usage limit, and `shunt logout chatgpt-plan --name <account>` revokes and clears one. The preview rejects some request parameters and a usage limit hit after output starts ends the stream instead of rotating; see the [ChatGPT plan guide](https://shunt.sh/guides/chatgpt-plan/).
+
+```toml
+[[upstreams]]
+name = "anthropic"
+provider = "anthropic" # preset: Claude models pass through to Anthropic
+
+[[upstreams]]
+name = "chatgpt-plan"
+provider = "chatgpt-plan" # preset: kind, base_url, and auth = "chatgpt_plan_oauth"
+
+[[models]]
+id = "gpt-6.1-sol"
+[models.upstream_model]
+chatgpt-plan = "gpt-6.1-sol"
+```
 
 Per-provider setup, model ids, and caveats live under [Providers](https://shunt.sh/guides/providers/) — including xAI's OAuth tier gate ([xAI / Grok](https://shunt.sh/guides/xai/)), Cursor's agent-mode prefixes ([Cursor](https://shunt.sh/providers/cursor/)), and Antigravity's two transports and the `kind = "antigravity"` migration ([Antigravity](https://shunt.sh/providers/antigravity/)).
 

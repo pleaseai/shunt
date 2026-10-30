@@ -201,7 +201,7 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # adding a table — no code change. Every provider has these keys:
 #   kind           = "anthropic" | "responses" | "cursor" (which upstream protocol)
 #   base_url       = "https://…"                  (Claude Code appends /v1/messages)
-#   auth           = "passthrough" | "api_key" | "chatgpt_oauth" | "cursor_oauth"
+#   auth           = "passthrough" | "api_key" | "chatgpt_oauth" | "chatgpt_plan_oauth" | "cursor_oauth"
 #   api_key_env    = "ENV_NAME"                   (when auth = "api_key")
 #   api_key_header = "bearer" | "x_api_key"       (default bearer)
 #   effort         = "low|medium|high|xhigh|max"  (optional; responses providers)
@@ -263,6 +263,32 @@ auth = "chatgpt_oauth"         # reads + auto-refreshes ~/.codex/auth.json
 # [[providers.codex.accounts]]
 # name = "backup"
 # token_env = "CODEX_BACKUP_ACCESS_TOKEN"  # raw ChatGPT access token, used verbatim (not refreshed)
+
+# ChatGPT plan via OpenAI's "Sign in with ChatGPT" token-sharing preview on
+# api.openai.com — separate from [providers.codex] above. Sign in each account
+# with `shunt login chatgpt-plan --name <account>` (browser callback on
+# 127.0.0.1:1455, or paste the callback URL on a remote host); accounts live in
+# ~/.shunt/accounts/chatgpt-plan/ (SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR overrides).
+# `shunt logout chatgpt-plan --name <account>` revokes and clears one. Several
+# accounts form a pool that rotates when one hits its plan usage limit. The
+# preview rejects temperature/metadata/prompt_cache_retention (shunt never sends
+# them), turns native tool_search off, and does not rotate a usage limit that
+# arrives after output started. See docs/m19-chatgpt-plan-provider.md.
+# [providers.chatgpt-plan]
+# kind = "responses"
+# base_url = "https://api.openai.com/v1"   # must be api.openai.com over https
+# auth = "chatgpt_plan_oauth"
+#
+# [[providers.chatgpt-plan.accounts]]      # optional: omit to use every stored account
+# name = "work"
+#
+# [[providers.chatgpt-plan.accounts]]
+# name = "personal"
+# priority = 200                           # lower is preferred (default 100)
+#
+# [[routes]]
+# model = "gpt-6.1-sol"
+# provider = "chatgpt-plan"
 
 # Cursor subscription via ConnectRPC. Run `shunt login cursor`; credentials are
 # stored in ~/.shunt/cursor-auth.json and refreshed automatically.

@@ -52,7 +52,23 @@ impl CallbackConfig {
     }
 }
 
-type CallbackResult = anyhow::Result<String>;
+/// Longest `client_id` / `scope` value accepted from a callback. Real values are
+/// a few dozen bytes; the cap keeps a hostile local request from pushing
+/// unbounded data through the channel.
+const MAX_PARAM_LEN: usize = 512;
+
+/// What a state-matched callback carried. Only these params are captured; any
+/// other query params are ignored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CallbackParams {
+    pub code: String,
+    /// Issued client id, for flows (Sign in with ChatGPT) that learn it only
+    /// from the callback.
+    pub client_id: Option<String>,
+    pub scope: Option<String>,
+}
+
+type CallbackResult = anyhow::Result<CallbackParams>;
 type CallbackSender = oneshot::Sender<CallbackResult>;
 
 #[derive(Clone)]
@@ -85,6 +101,10 @@ struct CallbackQuery {
     /// whatever string the provider sends is surfaced verbatim in the error.
     #[serde(default)]
     error: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 async fn callback(
@@ -122,7 +142,23 @@ async fn callback(
     let Some(code) = query.code.filter(|code| !code.is_empty()) else {
         return (StatusCode::BAD_REQUEST, Html(ERROR_PAGE)).into_response();
     };
-    if !callback.complete(Ok(code)) {
+    // An oversized value is a malformed callback: reject it like any other
+    // stray hit and keep waiting rather than cancel the pending login.
+    let client_id = query.client_id.filter(|value| !value.is_empty());
+    let scope = query.scope.filter(|value| !value.is_empty());
+    if [&client_id, &scope]
+        .into_iter()
+        .flatten()
+        .any(|value| value.len() > MAX_PARAM_LEN)
+    {
+        return (StatusCode::BAD_REQUEST, Html(ERROR_PAGE)).into_response();
+    }
+    let params = CallbackParams {
+        code,
+        client_id,
+        scope,
+    };
+    if !callback.complete(Ok(params)) {
         return (StatusCode::BAD_REQUEST, Html(ERROR_PAGE)).into_response();
     }
     (StatusCode::OK, Html(SUCCESS_PAGE)).into_response()
@@ -246,7 +282,16 @@ impl CallbackServer {
         self.addr
     }
 
-    pub(crate) async fn wait_for_code(mut self, wait: Duration) -> anyhow::Result<String> {
+    pub(crate) async fn wait_for_code(self, wait: Duration) -> anyhow::Result<String> {
+        self.wait_for_callback(wait).await.map(|params| params.code)
+    }
+
+    /// Like [`Self::wait_for_code`], but also surfaces the callback's
+    /// `client_id` and `scope` when present.
+    pub(crate) async fn wait_for_callback(
+        mut self,
+        wait: Duration,
+    ) -> anyhow::Result<CallbackParams> {
         let label = self.config.label;
         let receiver = self
             .receiver
@@ -560,5 +605,74 @@ mod tests {
                 assert_eq!(waiting.await.unwrap().unwrap(), "v4-code");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn callback_surfaces_client_id_and_scope() {
+        let server = CallbackServer::bind(CLAUDE, "expected-state".to_string())
+            .await
+            .unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/callback?code=c&state=expected-state\
+             &client_id=oaiapp_x&scope=openid%20profile&extra=ignored",
+            server.addr().port()
+        );
+        let waiting = tokio::spawn(server.wait_for_callback(Duration::from_secs(2)));
+        let response = reqwest::get(url).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("oaiapp_x"));
+        assert_eq!(
+            waiting.await.unwrap().unwrap(),
+            CallbackParams {
+                code: "c".to_string(),
+                client_id: Some("oaiapp_x".to_string()),
+                scope: Some("openid profile".to_string()),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn absent_client_id_and_scope_are_none() {
+        let server = CallbackServer::bind(CLAUDE, "expected-state".to_string())
+            .await
+            .unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/callback?code=c&state=expected-state&client_id=",
+            server.addr().port()
+        );
+        let waiting = tokio::spawn(server.wait_for_callback(Duration::from_secs(2)));
+        reqwest::get(url).await.unwrap();
+        let params = waiting.await.unwrap().unwrap();
+        assert_eq!(params.client_id, None);
+        assert_eq!(params.scope, None);
+    }
+
+    #[tokio::test]
+    async fn oversized_client_id_or_scope_is_rejected_but_keeps_waiting() {
+        let server = CallbackServer::bind(CLAUDE, "expected-state".to_string())
+            .await
+            .unwrap();
+        let port = server.addr().port();
+        let big = "a".repeat(MAX_PARAM_LEN + 1);
+        let waiting = tokio::spawn(server.wait_for_callback(Duration::from_secs(2)));
+        for param in ["client_id", "scope"] {
+            let response = reqwest::get(format!(
+                "http://127.0.0.1:{port}/callback?code=c&state=expected-state&{param}={big}"
+            ))
+            .await
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{param}");
+        }
+        // A value exactly at the cap is accepted and completes the wait.
+        let at_cap = "b".repeat(MAX_PARAM_LEN);
+        let response = reqwest::get(format!(
+            "http://127.0.0.1:{port}/callback?code=c&state=expected-state&scope={at_cap}"
+        ))
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let params = waiting.await.unwrap().unwrap();
+        assert_eq!(params.scope.as_deref(), Some(at_cap.as_str()));
     }
 }

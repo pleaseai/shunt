@@ -11,6 +11,7 @@ use crate::{
 
 pub mod antigravity;
 pub(crate) mod callback;
+pub mod chatgpt_plan;
 pub mod claude;
 pub mod codex;
 pub mod cursor;
@@ -41,6 +42,8 @@ pub enum Credential {
     },
     /// xAI subscription OAuth: bearer only, no account-id header.
     XaiOauth { access_token: String },
+    /// ChatGPT-plan OAuth for `api.openai.com`: bearer only, no account-id header.
+    ChatgptPlanOauth { access_token: String },
     /// Cursor OAuth bearer.
     CursorOauth { access_token: String },
     /// Google OAuth bearer & project ID (Gemini Code Assist / Google One AI Pro).
@@ -116,6 +119,10 @@ pub async fn resolve_credential(
                     access_token: credential.access_token,
                 })
         }
+        AuthMode::ChatgptPlanOauth => Err(auth_error(
+            "chatgpt_plan_oauth is resolved per-account by the account pool, not resolve_credential; \
+             run `shunt login chatgpt-plan --name <account>` to add an account",
+        )),
         AuthMode::ClaudeOauth => Err(auth_error(
             "claude_oauth is resolved per-account by the account pool, not resolve_credential",
         )),

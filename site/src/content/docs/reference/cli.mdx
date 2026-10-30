@@ -76,7 +76,7 @@ shunt init --root /path/to/project
 shunt init --force
 ```
 
-With no upstreams, the starter is fully commented and loads to shunt's passthrough defaults. Repeat `--upstream` to add preset entries in failover order; accepted names are `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, `cursor`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode`, and `cheaperinference`. Unmapped traffic remains on the default Anthropic passthrough because the starter does not set `server.default_provider`. When you request presets, a trailing `anthropic` passthrough upstream is appended automatically (unless you name `anthropic` yourself) so the generated file passes `shunt check` while keeping that fallback.
+With no upstreams, the starter is fully commented and loads to shunt's passthrough defaults. Repeat `--upstream` to add preset entries in failover order; accepted names are `anthropic`, `codex`, `openai`, `xai`, `grok`, `kimi`, `cursor`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode`, `cheaperinference`, and `chatgpt-plan`. Unmapped traffic remains on the default Anthropic passthrough because the starter does not set `server.default_provider`. When you request presets, a trailing `anthropic` passthrough upstream is appended automatically (unless you name `anthropic` yourself) so the generated file passes `shunt check` while keeping that fallback.
 
 The root defaults to the current directory and must already exist. If `shunt.toml`, `shunt.yaml`, or `shunt.yml` exists there, init stops without writing unless `--force` is set. Forced init overwrites only `shunt.toml`; YAML variants stay untouched, and the new TOML file takes precedence during config discovery.
 
@@ -345,6 +345,36 @@ Kimi rotates the refresh token on every refresh, and the access token it issues 
 
 See [Kimi](/providers/kimi/#kimi-code-oauth-subscription) for complete upstream configuration.
 
+## `shunt login chatgpt-plan`
+
+Sign in a ChatGPT plan account through OpenAI's "Sign in with ChatGPT" token-sharing preview and save its refreshable credential:
+
+```bash
+shunt login chatgpt-plan --name <account-name>
+```
+
+`--name` is required. The credential lands at `~/.shunt/accounts/chatgpt-plan/<account-name>.json` (0600; `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` overrides the directory). A directory that shunt creates is made 0700, but an existing override directory keeps its own permissions. Reusing a name signs that account in again and keeps its registered client id. `--long-lived` and `--mode` are rejected, since plan tokens are always refreshable, and `--manual` is rejected because pasting the callback is always available.
+
+shunt prints an authorization URL, opens your browser, and listens on `127.0.0.1:1455` for the redirect. You can instead paste the full callback URL (`http://127.0.0.1:1455/auth/callback?code=…`) into the terminal; whichever arrives first wins, and a pasted URL must belong to this attempt. If the port is taken, the login continues in paste-only mode. The wait ends after five minutes. A sign-in that fails a check (state, client id, ID token, or the `chatgpt.tokens.use.direct` scope) stores no tokens. The first sign-in of a name registers a client id with OpenAI and keeps it for later sign-ins.
+
+Use the account from a provider with `auth = "chatgpt_plan_oauth"`; see the [ChatGPT plan guide](/guides/chatgpt-plan/) for the config, the pool, and the preview's limits.
+
+## `shunt logout chatgpt-plan`
+
+Sign out a ChatGPT plan account:
+
+```bash
+shunt logout chatgpt-plan --name <account-name>
+```
+
+`--name` is required, and `chatgpt-plan` is the only provider `logout` supports. shunt revokes the account's refresh token at OpenAI's revocation endpoint (retrying network and 5xx failures a few times), then clears the access, refresh, and ID tokens. It keeps the registered client id and the host id, so a later `shunt login chatgpt-plan --name <account-name>` reuses the registration.
+
+| Output | Meaning |
+| :-- | :-- |
+| `ChatGPT plan account "<name>" signed out; remote revocation confirmed.` | OpenAI answered 200; the session is revoked. |
+| `ChatGPT plan account "<name>" signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | The tokens are cleared here, but the revocation could not be confirmed. Remove the session in ChatGPT settings. |
+| `ChatGPT plan account "<name>" is already signed out.` | There were no tokens to revoke. |
+
 ## Anthropic account-pool authentication
 
 For an Anthropic provider with `auth = "claude_oauth"`, an account can use a name-only store entry, `credentials = "~/.claude/.credentials.json"`, or `token_env = "YOUR_ENV_NAME"`. The store entry can come from full OAuth, an imported Claude Code login, or the setup-token flow described above. See [Anthropic Multi-Account](/guides/anthropic-multi-account/) for complete configuration and failover rules.
@@ -363,6 +393,7 @@ For an Anthropic provider with `auth = "claude_oauth"`, an account can use a nam
 | `SHUNT_KIMI_ACCOUNTS_DIR` | Alternate shunt-managed Kimi Code account-store directory |
 | `SHUNT_XAI_AUTH_FILE` | Alternate credential file for `shunt login xai` without `--name` (default `~/.shunt/xai-auth.json`) |
 | `SHUNT_XAI_ACCOUNTS_DIR` | Alternate shunt-managed xAI account-store directory |
+| `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` | Alternate shunt-managed ChatGPT plan account-store directory (default `~/.shunt/accounts/chatgpt-plan`; the installation's `.host-id` lives there too) |
 | `SHUNT_ANTIGRAVITY_AUTH_FILE` | Alternate credential file for `shunt login antigravity` (default `~/.shunt/antigravity-auth.json`) |
 | `SHUNT_ANTIGRAVITY_ACCOUNTS_DIR` | Alternate shunt-managed Antigravity account-store directory |
 | Account-specific variable named by `token_env` | Setup token for an Anthropic `claude_oauth` pool entry; used verbatim |

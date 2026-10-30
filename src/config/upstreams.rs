@@ -110,6 +110,15 @@ pub enum AuthMap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         accounts: Option<Vec<AccountSelection>>,
     },
+    /// ChatGPT-plan subscription OAuth for `api.openai.com`. Same
+    /// `account`/`accounts` scope as `XaiOauth`; omitting both scans the whole
+    /// `~/.shunt/accounts/chatgpt-plan/` store.
+    ChatgptPlanOauth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accounts: Option<Vec<AccountSelection>>,
+    },
     CursorOauth {},
     AntigravityOauth {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,6 +170,15 @@ impl UpstreamAuth {
             }
             Self::Map(AuthMap::XaiOauth { account, accounts }) => {
                 absorb_oauth_scope(upstream, AuthMode::XaiOauth, account, accounts, provider)?;
+            }
+            Self::Map(AuthMap::ChatgptPlanOauth { account, accounts }) => {
+                absorb_oauth_scope(
+                    upstream,
+                    AuthMode::ChatgptPlanOauth,
+                    account,
+                    accounts,
+                    provider,
+                )?;
             }
             Self::Map(AuthMap::CursorOauth {}) => provider.auth = AuthMode::CursorOauth,
             Self::Map(AuthMap::AntigravityOauth { account, accounts }) => {

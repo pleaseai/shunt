@@ -27,8 +27,8 @@ use super::body::{prepare_body, PreparedBody};
 use super::codex_ws::KEY_COMPONENT_SEPARATOR;
 use super::context::{CredentialSource, ForwardOptions, PoolForward, RelayOptions, TurnOptions};
 use super::early_stream::{
-    estimated_machine_factory, http_events_stream, parsed_events, pool_streaming_response,
-    HttpSendContext, InputEstimate, PoolEvent, PoolItem,
+    estimated_machine_factory, http_events_stream, pool_streaming_response, HttpSendContext,
+    InputEstimate, PoolEvent, PoolItem,
 };
 use super::error::{
     adapter_error_envelope, mapped_upstream_error, mapped_upstream_error_within, own_error,
@@ -760,8 +760,12 @@ pub(super) fn pool_events_stream(
                                     );
                                     if status.is_success() {
                                         record(StatusCode::OK);
-                                        let parsed: Parsed =
-                                            Box::pin(parsed_events(upstream.bytes_stream()));
+                                        let parsed: Parsed = super::pool_plan::relay_events(
+                                            &state,
+                                            &route,
+                                            account,
+                                            upstream.bytes_stream(),
+                                        );
                                         phase = Phase::Relay {
                                             parsed,
                                             guard: admission,
@@ -921,8 +925,12 @@ pub(super) fn pool_events_stream(
                                                     true,
                                                 );
                                                 record(StatusCode::OK);
-                                                let parsed: Parsed =
-                                                    Box::pin(parsed_events(retry.bytes_stream()));
+                                                let parsed: Parsed = super::pool_plan::relay_events(
+                                                    &state,
+                                                    &route,
+                                                    account,
+                                                    retry.bytes_stream(),
+                                                );
                                                 phase = Phase::Relay {
                                                     parsed,
                                                     guard: admission,
@@ -1289,7 +1297,9 @@ pub(super) async fn forward_chatgpt_oauth(
                         turn.response_bounds,
                         idle_since,
                     )
-                    .await?;
+                    .await;
+                    super::pool_plan::cool_on_relayed_limit(&state, &route, account, &response);
+                    let response = response?;
                     let response = crate::adapters::with_admission(
                         with_account_header(response, &account.name),
                         admission,
@@ -1387,7 +1397,11 @@ pub(super) async fn forward_chatgpt_oauth(
                                 turn.response_bounds,
                                 retry_since,
                             )
-                            .await?;
+                            .await;
+                            super::pool_plan::cool_on_relayed_limit(
+                                &state, &route, account, &response,
+                            );
+                            let response = response?;
                             let response = crate::adapters::with_admission(
                                 with_account_header(response, &account.name),
                                 admission,
@@ -1465,6 +1479,9 @@ fn provider_auth(state: &AppState, route: &Route) -> AuthMode {
 pub(super) fn no_upstream_response_message(auth: AuthMode) -> &'static str {
     match auth {
         AuthMode::XaiOauth => "all xAI OAuth accounts failed before receiving an upstream response",
+        AuthMode::ChatgptPlanOauth => {
+            "all ChatGPT plan accounts failed before receiving an upstream response"
+        }
         _ => "all Codex OAuth accounts failed before receiving an upstream response",
     }
 }
@@ -1611,6 +1628,9 @@ pub(super) async fn resolve_or_cooldown(
     if account.store_family == Some(accounts::StoreFamily::Xai) {
         return resolve_xai_or_cooldown(state, route, account).await.ok();
     }
+    if super::pool_plan::is_plan_account(account) {
+        return super::pool_plan::resolve_plan_or_cooldown(state, route, account).await;
+    }
     match resolve_chatgpt_account(account, &state.http_client).await {
         Ok(credential) => Some(credential),
         Err(error) => {
@@ -1692,6 +1712,10 @@ pub(super) async fn force_refresh_or_cooldown(
     account: &AccountConfig,
     credential: &Credential,
 ) -> Option<Credential> {
+    if super::pool_plan::is_plan_account(account) {
+        return super::pool_plan::force_refresh_plan_or_cooldown(state, route, account, credential)
+            .await;
+    }
     if account.token_env.is_some() {
         state.accounts.cooldown(
             &route.provider,
@@ -1844,7 +1868,10 @@ pub(super) enum FirstOutcome {
 /// the passthrough relays verbatim). A 400 model refusal rotates instead
 /// ([`rotate_on_model_refusal`]); `clock` (the gated idle gap and the send it
 /// runs from) bounds that body read and its trip is the only `Err`, and `verbatim` (the passthrough) keeps an unjudged 400's body
-/// intact rather than falling back ([`buffer_error_body`]).
+/// intact rather than falling back ([`buffer_error_body`]). A chatgpt-plan
+/// account's 2xx answer first passes the pre-content check
+/// ([`super::pool_plan::peek_if_plan`]), so an early in-stream SIWC failure is
+/// classified here as its mapped status.
 pub(super) async fn classify_first(
     state: &AppState,
     route: &Route,
@@ -1856,6 +1883,7 @@ pub(super) async fn classify_first(
     if account.store_family == Some(accounts::StoreFamily::Xai) {
         return Ok(classify_first_xai(state, route, account, upstream));
     }
+    let upstream = super::pool_plan::peek_if_plan(account, upstream, clock).await;
     let status = upstream.status();
     match accounts::classify_codex(status, upstream.headers()) {
         FailoverAction::Relay => {
@@ -1944,7 +1972,8 @@ pub(super) enum RetryOutcome {
 /// only that model ([`rotate_on_model_refusal`]). `classify_codex` returns
 /// `RefreshRetry` only for 401 (handled above) and never `PauseSame`, so only
 /// `Relay` and `Rotate` are live — the others ride `Rotate`'s arm as a defensive
-/// no-op.
+/// no-op. A chatgpt-plan retry passes the same pre-content check as
+/// [`classify_first`].
 pub(super) async fn classify_retry(
     state: &AppState,
     route: &Route,
@@ -1953,6 +1982,7 @@ pub(super) async fn classify_retry(
     clock: Option<(Duration, tokio::time::Instant)>,
     verbatim: bool,
 ) -> Result<RetryOutcome, AdapterError> {
+    let retry = super::pool_plan::peek_if_plan(account, retry, clock).await;
     let retry_status = retry.status();
     if retry_status == StatusCode::UNAUTHORIZED {
         state.accounts.cooldown(

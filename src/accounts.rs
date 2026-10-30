@@ -32,6 +32,7 @@ pub enum StoreFamily {
     Kimi,
     Antigravity,
     Xai,
+    ChatgptPlan,
 }
 
 /// Stable physical-account identity used by every runtime state map.

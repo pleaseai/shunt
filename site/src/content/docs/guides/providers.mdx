@@ -21,6 +21,7 @@ Providers are a **name → config map**. Anthropic-compatible and Responses-comp
 | [`codex`](/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — reuses `~/.codex/auth.json` |
 | [`xai`](/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — the developer API, billed per token |
 | [`grok`](/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — the Grok CLI proxy; reuses `~/.shunt/xai-auth.json`, or pools named logins under `~/.shunt/accounts/xai/` (`shunt login xai --name`) |
+| [`chatgpt-plan`](/guides/chatgpt-plan/) | `responses` | `chatgpt_plan_oauth` | `api.openai.com/v1` — your ChatGPT plan through the "Sign in with ChatGPT" preview; a preset, not seeded, so declare `[providers.chatgpt-plan]` (`shunt login chatgpt-plan --name <account>`) |
 | [`cursor`](/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — reuses `~/.shunt/cursor-auth.json` (`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — reuses `~/.gemini/oauth_creds.json` |
 | [`antigravity`](/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` — reuses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`) |
@@ -308,6 +309,27 @@ key are **not** interchangeable — each works only against its own provider.
 
 For the full setup — login, both provider blocks, model slugs, the opt-in effort dial, and the
 entitlement gotchas — see the dedicated [xAI / Grok guide](/guides/xai/).
+
+### The chatgpt-plan provider (ChatGPT plan, Sign in with ChatGPT)
+
+Sign in one or more named accounts, then declare the provider and route a model to it:
+
+```bash
+shunt login chatgpt-plan --name work
+```
+
+```toml
+[providers.chatgpt-plan]
+kind = "responses"
+base_url = "https://api.openai.com/v1"
+auth = "chatgpt_plan_oauth"
+
+[[routes]]
+model = "gpt-6.1-sol"
+provider = "chatgpt-plan"
+```
+
+This uses OpenAI's "Sign in with ChatGPT" token-sharing preview on `api.openai.com`, and is separate from the `codex` provider above. The preview rejects some parameters and has its own error codes. For the paste fallback on remote hosts, sign-out, the preview limits, and what each error means, see the [ChatGPT plan guide](/guides/chatgpt-plan/).
 
 ## Adding an Anthropic-compatible backend
 

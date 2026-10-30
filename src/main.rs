@@ -94,14 +94,14 @@ enum Command {
         print: bool,
     },
     /// Log in to a subscription provider and save its credential for shunt to
-    /// inject. Supports `xai`, `cursor`, `claude`, `codex`, `antigravity`, and
-    /// `kimi`.
+    /// inject. Supports `xai`, `cursor`, `claude`, `codex`, `chatgpt-plan`,
+    /// `antigravity`, and `kimi`.
     Login {
         /// Provider to log in to (`xai`, `cursor`, `claude`, `codex`,
-        /// `antigravity`, or `kimi`).
+        /// `chatgpt-plan`, `antigravity`, or `kimi`).
         provider: String,
         /// Stable account name used by a name-only pool entry (`claude`,
-        /// `codex`, `kimi`, `antigravity`, and `xai` only).
+        /// `codex`, `chatgpt-plan`, `kimi`, `antigravity`, and `xai` only).
         #[arg(long)]
         name: Option<String>,
         /// Generate and store a one-year `claude setup-token` value (`claude`
@@ -117,6 +117,15 @@ enum Command {
         /// For `--mode oauth`: skip the browser callback and paste the code manually.
         #[arg(long)]
         manual: bool,
+    },
+    /// Sign out of a subscription provider account and clear its saved tokens.
+    /// Supports `chatgpt-plan`.
+    Logout {
+        /// Provider to sign out of (`chatgpt-plan`).
+        provider: String,
+        /// Account name given at login (required for `chatgpt-plan`).
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Set up and inspect the admin usage dashboard.
     Dashboard {
@@ -220,6 +229,7 @@ fn main() -> anyhow::Result<()> {
             manual,
             cli.config.as_deref(),
         ),
+        Some(Command::Logout { provider, name }) => logout(&provider, name.as_deref()),
         Some(Command::Dashboard { action }) => dashboard(action, cli.config),
         Some(Command::Gateway { action }) => gateway(action, cli.config.as_deref()),
         None if cli.check => check(cli.config),
@@ -493,6 +503,22 @@ fn login(
             })?;
             runtime()?.block_on(shunt::auth::codex::login::run(name))
         }
+        "chatgpt-plan" if long_lived => {
+            anyhow::bail!(
+                "--long-lived is not supported for `shunt login chatgpt-plan`; ChatGPT plan tokens are always refreshable"
+            )
+        }
+        "chatgpt-plan" if mode.is_some() => {
+            anyhow::bail!(
+                "--mode is not supported for `shunt login chatgpt-plan`; ChatGPT plan tokens are always refreshable"
+            )
+        }
+        "chatgpt-plan" => {
+            let name = name.ok_or_else(|| {
+                anyhow::anyhow!("`shunt login chatgpt-plan` requires --name <account-name>")
+            })?;
+            runtime()?.block_on(shunt::auth::chatgpt_plan::login::run(name))
+        }
         "kimi" if long_lived => {
             anyhow::bail!(
                 "--long-lived is not supported for `shunt login kimi`; Kimi Code OAuth tokens are always refreshable"
@@ -511,8 +537,22 @@ fn login(
         }
         _ => {
             anyhow::bail!(
-                "unknown login provider {provider:?}; supported: antigravity, claude, codex, cursor, kimi, xai"
+                "unknown login provider {provider:?}; supported: antigravity, chatgpt-plan, claude, codex, cursor, kimi, xai"
             )
+        }
+    }
+}
+
+fn logout(provider: &str, name: Option<&str>) -> anyhow::Result<()> {
+    match provider {
+        "chatgpt-plan" => {
+            let name = name.ok_or_else(|| {
+                anyhow::anyhow!("`shunt logout chatgpt-plan` requires --name <account-name>")
+            })?;
+            runtime()?.block_on(shunt::auth::chatgpt_plan::logout::run(name))
+        }
+        _ => {
+            anyhow::bail!("unknown logout provider {provider:?}; supported: chatgpt-plan")
         }
     }
 }
@@ -1374,6 +1414,57 @@ mod tests {
             resolve_claude_mode(None, true).unwrap(),
             LoginMode::SetupToken
         );
+    }
+
+    #[test]
+    fn chatgpt_plan_logout_parses_and_rejects_missing_name_and_unknown_provider() {
+        let parsed =
+            Cli::try_parse_from(["shunt", "logout", "chatgpt-plan", "--name", "work"]).unwrap();
+        let Some(Command::Logout { provider, name }) = parsed.command else {
+            panic!("expected logout");
+        };
+        assert_eq!(provider, "chatgpt-plan");
+        assert_eq!(name.as_deref(), Some("work"));
+
+        assert!(Cli::try_parse_from(["shunt", "logout"]).is_err());
+        let error = logout("chatgpt-plan", None).unwrap_err();
+        assert!(error.to_string().contains("requires --name"), "{error}");
+        let error = logout("nope", Some("work")).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown logout provider"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn chatgpt_plan_login_parses_name_and_rejects_missing_name_and_unsupported_flags() {
+        let parsed =
+            Cli::try_parse_from(["shunt", "login", "chatgpt-plan", "--name", "work"]).unwrap();
+        let Some(Command::Login { provider, name, .. }) = parsed.command else {
+            panic!("expected login command");
+        };
+        assert_eq!(provider, "chatgpt-plan");
+        assert_eq!(name.as_deref(), Some("work"));
+
+        let error = login("chatgpt-plan", None, false, None, false, None)
+            .expect_err("missing --name must fail");
+        assert!(error.to_string().contains("requires --name"));
+        let error = login("chatgpt-plan", Some("work"), true, None, false, None)
+            .expect_err("--long-lived must be rejected");
+        assert!(error.to_string().contains("--long-lived is not supported"));
+        let error = login(
+            "chatgpt-plan",
+            Some("work"),
+            false,
+            Some(LoginMode::Oauth),
+            false,
+            None,
+        )
+        .expect_err("--mode must be rejected");
+        assert!(error.to_string().contains("--mode is not supported"));
+        let error = login("chatgpt-plan", Some("work"), false, None, true, None)
+            .expect_err("--manual must be rejected");
+        assert!(error.to_string().contains("--manual is only valid"));
     }
 
     #[test]

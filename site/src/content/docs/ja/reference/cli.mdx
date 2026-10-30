@@ -76,7 +76,7 @@ shunt init --root /path/to/project
 shunt init --force
 ```
 
-Upstream を指定しない場合、starter はすべてコメントで構成され、shunt のデフォルト passthrough 設定として読み込まれます。`--upstream` を繰り返すと、failover 順に preset エントリを追加できます。指定できる名前は `anthropic`、`codex`、`openai`、`xai`、`grok`、`kimi`、`cursor`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode`、`cheaperinference` です。Starter は `server.default_provider` を設定しないため、マッピングされていないトラフィックはデフォルトの Anthropic passthrough のままです。preset を指定すると、生成されたファイルが `shunt check` を通過しつつこの fallback を維持できるよう、末尾に `anthropic` passthrough upstream が自動的に追加されます（自分で `anthropic` を指定した場合を除く）。
+Upstream を指定しない場合、starter はすべてコメントで構成され、shunt のデフォルト passthrough 設定として読み込まれます。`--upstream` を繰り返すと、failover 順に preset エントリを追加できます。指定できる名前は `anthropic`、`codex`、`openai`、`xai`、`grok`、`kimi`、`cursor`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode`、`cheaperinference`、`chatgpt-plan` です。Starter は `server.default_provider` を設定しないため、マッピングされていないトラフィックはデフォルトの Anthropic passthrough のままです。preset を指定すると、生成されたファイルが `shunt check` を通過しつつこの fallback を維持できるよう、末尾に `anthropic` passthrough upstream が自動的に追加されます（自分で `anthropic` を指定した場合を除く）。
 
 Root のデフォルトは現在のディレクトリで、あらかじめ存在している必要があります。そこに `shunt.toml`、`shunt.yaml`、`shunt.yml` のいずれかがある場合、`--force` なしでは何も書き込まず停止します。強制 init が上書きするのは `shunt.toml` だけです。YAML variant はそのまま残り、config discovery では新しい TOML ファイルが優先されます。
 
@@ -269,6 +269,36 @@ Kimi はリフレッシュのたびに refresh token をローテーションし
 
 完全な upstream 設定は [Kimi](/ja/providers/kimi/#kimi-codeoauth-サブスクリプション) を参照してください。
 
+## `shunt login chatgpt-plan`
+
+OpenAI の「Sign in with ChatGPT」トークン共有プレビューで ChatGPT プランのアカウントにサインインし、更新可能な credential を保存します。
+
+```bash
+shunt login chatgpt-plan --name <account-name>
+```
+
+`--name` は必須です。credential は `~/.shunt/accounts/chatgpt-plan/<account-name>.json`（0600。`SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` でディレクトリを上書き）に保存されます。shunt が作成するディレクトリは 0700 ですが、既存の上書き先ディレクトリは元の権限のままです。同じ名前を再利用するとそのアカウントに再度サインインし、登録済みのクライアント ID は保持されます。プランのトークンは常に更新可能なので `--long-lived` と `--mode` は拒否され、コールバックの貼り付けが常に使えるため `--manual` も拒否されます。
+
+shunt は認可 URL を表示してブラウザーを開き、リダイレクトを受けるために `127.0.0.1:1455` で待ち受けます。代わりに、完全なコールバック URL（`http://127.0.0.1:1455/auth/callback?code=…`）をターミナルに貼り付けることもでき、先に届いた方が採用されます。貼り付ける URL は今回の試行のものでなければなりません。ポートが使用中の場合、ログインは貼り付け専用モードで続行します。待機は 5 分で終了します。チェック（state、クライアント ID、ID トークン、`chatgpt.tokens.use.direct` スコープ）に失敗したサインインはトークンを保存しません。ある名前での初回サインインは OpenAI にクライアント ID を登録し、以後のサインインのために保持します。
+
+`auth = "chatgpt_plan_oauth"` のプロバイダーからこのアカウントを使います。設定、プール、プレビューの制限については [ChatGPT プランのガイド](/ja/guides/chatgpt-plan/)を参照してください。
+
+## `shunt logout chatgpt-plan`
+
+ChatGPT プランのアカウントをサインアウトします。
+
+```bash
+shunt logout chatgpt-plan --name <account-name>
+```
+
+`--name` は必須で、`logout` が対応するプロバイダーは `chatgpt-plan` のみです。shunt は OpenAI の失効エンドポイントでアカウントの refresh トークンを失効させ（ネットワークと 5xx の失敗は数回再試行）、アクセス、refresh、ID トークンを消去します。登録済みのクライアント ID とホスト ID は保持するため、後で `shunt login chatgpt-plan --name <account-name>` を実行すると同じ登録を再利用します。
+
+| 出力 | 意味 |
+| :-- | :-- |
+| `ChatGPT plan account "<name>" signed out; remote revocation confirmed.` | OpenAI が 200 を返しました。セッションは失効しました。 |
+| `ChatGPT plan account "<name>" signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | トークンはこのマシンで消去されましたが、失効は確認できませんでした。ChatGPT の設定でセッションを削除してください。 |
+| `ChatGPT plan account "<name>" is already signed out.` | 失効するトークンがありませんでした。 |
+
 ## Anthropic アカウントプール認証
 
 `auth = "claude_oauth"` の Anthropic provider では、アカウントに名前だけのストアエントリー、`credentials = "~/.claude/.credentials.json"`、または `token_env = "YOUR_ENV_NAME"` を使えます。ストアエントリーは、上記の Full OAuth、Claude Code ログインのインポート、setup-token フローのいずれかで作成できます。完全な設定と failover ルールは [Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/) を参照してください。
@@ -287,5 +317,6 @@ Kimi はリフレッシュのたびに refresh token をローテーションし
 | `SHUNT_KIMI_ACCOUNTS_DIR` | shunt 管理の Kimi Code アカウントストア用の代替ディレクトリ |
 | `SHUNT_XAI_AUTH_FILE` | `--name` なしの `shunt login xai` 向けの代替 credential ファイル（既定 `~/.shunt/xai-auth.json`） |
 | `SHUNT_XAI_ACCOUNTS_DIR` | shunt 管理の xAI アカウントストア用の代替ディレクトリ |
+| `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` | shunt 管理の ChatGPT プランのアカウントストア用の代替ディレクトリ（デフォルトは `~/.shunt/accounts/chatgpt-plan`。インストールの `.host-id` もここにあります） |
 | `token_env` で指定するアカウント別変数 | Anthropic `claude_oauth` プールエントリーの setup token。値を変更せずに使用 |
 | `OPENAI_API_KEY` | `openai` プロバイダーのデフォルトキー環境変数（プロバイダーごとに `api_key_env` で） |

@@ -523,6 +523,7 @@ pub(super) fn apply_credential(
             .header("chatgpt-account-id", account_id),
         Credential::ApiKey { value, .. } => request.bearer_auth(value),
         Credential::XaiOauth { access_token }
+        | Credential::ChatgptPlanOauth { access_token }
         | Credential::ClaudeOauth { access_token, .. }
         | Credential::GoogleOauth { access_token, .. } => request.bearer_auth(access_token),
         // Send nothing rather than bearer an off-origin subscription token:

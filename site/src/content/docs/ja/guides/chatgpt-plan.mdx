@@ -1,0 +1,214 @@
+---
+title: ChatGPT プラン（Sign in with ChatGPT）
+description: OpenAI の「Sign in with ChatGPT」トークン共有プレビューを通じて Claude Code の推論を ChatGPT プランにルーティングする — サインイン、複数アカウントのプール、サインアウト、プレビューの制限。
+---
+
+組み込みの **`chatgpt-plan`** プロバイダーは、OpenAI の「Sign in with ChatGPT」（SIWC）トークン共有
+プレビューを通じて、あなたの **ChatGPT プラン** の使用量を消費します。初回サインイン時に shunt が自身を
+エージェントクライアントとして登録し、以後は API キーの代わりにプラン使用量用のアクセストークンで、
+公開エンドポイント `api.openai.com/v1/responses` を呼び出します。
+
+これは **`kind = "responses"`** のプロバイダーなので、[Codex](/ja/guides/codex/) や
+[xAI](/ja/guides/xai/) と変換経路を共有します。ただし **`codex` プロバイダーとは別物**です。
+
+| | `chatgpt-plan` | `codex` |
+| :-- | :-- | :-- |
+| サインイン | `shunt login chatgpt-plan --name <account>` — サードパーティツール向けの OpenAI 公式プレビュー | Codex CLI のログイン（`~/.codex/auth.json`）を再利用 |
+| バックエンド | `api.openai.com/v1/responses` | `chatgpt.com/backend-api` |
+| 認証情報 | `~/.shunt/accounts/chatgpt-plan/<name>.json`、名前付きアカウントごとに 1 ファイル | `~/.codex/auth.json` または `~/.shunt/accounts/codex/` |
+| プレビューの制限 | あり — 下の「プレビューの制限」を参照 | なし |
+
+両者は認証情報も設定も共有しないため、同時に設定できます。
+
+<Aside type="note" title="必要なもの">
+
+OpenAI がトークン共有プレビューを有効にした ChatGPT プラン、ブラウザー、そして `shunt.toml` の
+ルートが必要です。対象になるかどうかは OpenAI が決めます。対象外のアカウントは、すべてのリクエストで
+`permission_error` になります（下の「エラーの意味」を参照）。
+
+</Aside>
+
+## セットアップ
+
+### 1. サインインする
+
+```bash
+shunt login chatgpt-plan --name work
+```
+
+shunt が認可 URL を表示し、ブラウザーを開きます。プラン使用量を含めてリクエストを承認してください。
+ブラウザーが shunt の待ち受ける `http://127.0.0.1:1455/auth/callback` にリダイレクトされると、
+コマンドは自動で完了します。
+
+```text
+ChatGPT plan account "work" signed in as you@example.com.
+Scopes granted: openid profile email offline_access resource.invoke chatgpt.tokens.use.direct
+```
+
+何かを保存する前に、shunt はコールバックの state を確認し、コードを交換し、OpenAI が公開している鍵で
+ID トークンを検証します。検証に失敗したサインインは認証情報を保存しません。
+
+ある名前での初回サインインでは、OpenAI にクライアント ID（`oaiapp_…`）を登録し、アカウントとともに
+保存します。同じ名前で再度サインインすると、それを再利用します。`--long-lived`、`--mode`、`--manual`
+は拒否されます。プランのトークンは常に更新可能で、コールバックの貼り付けは常に使えるためです
+（次のセクション）。詳しくは
+[`shunt login chatgpt-plan`](/ja/reference/cli/#shunt-login-chatgpt-plan) を参照してください。
+
+### 2. プロバイダーとルートを追加する
+
+```toml
+[providers.chatgpt-plan]
+kind = "responses"
+base_url = "https://api.openai.com/v1"   # shunt が /responses を付加
+auth = "chatgpt_plan_oauth"
+
+[[routes]]
+model = "gpt-6.1-sol"
+provider = "chatgpt-plan"
+```
+
+使いたいモデル ID をルーティングします。shunt はアカウントのモデル一覧を取得せず、マッピングした ID を
+そのまま提供します。順序付きの `[[upstreams]]` リストでは、`provider = "chatgpt-plan"` が 3 つの
+プロバイダーキーを補います。
+
+ファイルを検証し、ゲートウェイを起動します。
+
+```bash
+shunt check
+shunt run
+```
+
+`shunt check` は、`kind` が `responses` でない、`base_url` が HTTPS でない、ホストが
+`api.openai.com` でない `chatgpt_plan_oauth` プロバイダーを拒否します。また `chatgpt-plan` という名前の
+プロバイダーが別の `auth` を使う場合も拒否し、問題のキー名を示します。shunt はプランのトークンを
+他のホストに送りません。唯一の例外はループバックホスト（`localhost`、`127.0.0.1`、`[::1]`）で、ローカルの
+モックを指せるよう、平文の `http` と任意のポートを使えます。
+
+## リモートホストとヘッドレスホスト
+
+ブラウザーのコールバックは、**ログインを実行したマシンの** `127.0.0.1:1455` に届きます。ブラウザーが
+別の場所にある場合は、次のどちらかを使います。
+
+- **コールバックを貼り付ける。** 任意のブラウザーで承認します。最後のリダイレクトは読み込めませんが
+  （想定どおりです）、アドレスバーには `http://127.0.0.1:1455/auth/callback?code=…` で始まる完全な URL が
+  残っています。これをコピーして、待機中のターミナルに貼り付けます。前後の空白や引用符は問題ありません。
+  shunt はコードを交換する前に、その URL が今回のサインイン試行のものであることを確認します。
+- **ポートを転送する。** SSH で `ssh -L 1455:127.0.0.1:1455 <host>` を実行してから、通常どおり
+  サインインします。ブラウザーのコールバックがリモートホスト上の shunt に届きます。
+
+ポート 1455 がすでに使用中の場合、shunt はそれを知らせ、貼り付け専用モードで続行します。待機は 5 分で
+終了します。
+
+## 複数アカウント
+
+各アカウントを別々の名前でサインインします。
+
+```bash
+shunt login chatgpt-plan --name work
+shunt login chatgpt-plan --name personal
+```
+
+各アカウントは `~/.shunt/accounts/chatgpt-plan/<name>.json`（`0600`。
+`$SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` でディレクトリを変更可能）です。shunt が作成するディレクトリは `0700` で、既存の上書き先ディレクトリは元の権限のままです。2 つの名前が同じメールアドレスを
+持つこともでき、それぞれ独自のレコードとクライアント ID を保持します。追加設定がなければ、プロバイダーは
+ディレクトリ内のすべてのアカウントを使います。一部だけを選ぶ、または 1 つを優先するには次のようにします。
+
+```toml
+[[providers.chatgpt-plan.accounts]]
+name = "work"
+
+[[providers.chatgpt-plan.accounts]]
+name = "personal"
+priority = 200          # 任意: 小さいほど優先（デフォルト 100）
+```
+
+shunt はセッション（`x-claude-code-session-id`）を 1 つのアカウントに固定し、それ以外はローテーション
+します。応答したアカウントは非ストリーミング応答では `x-shunt-account` レスポンスヘッダーに、ストリーミング応答では `account` SSE イベントに示されます。ホスト識別子（同じ
+ディレクトリの `.host-id`）は一度だけ作られ、すべてのサインインで送信されるので、そのままにしてください。
+
+## サインアウト
+
+```bash
+shunt logout chatgpt-plan --name work
+```
+
+shunt は OpenAI の失効（revocation）エンドポイントでアカウントの refresh トークンを失効させ、その後
+アカウントのアクセス、refresh、ID トークンを消去します。**登録済みのクライアント ID は保持**され、
+ホスト ID も保持されるため、再度サインインすると同じ登録を再利用します。
+
+| 結果 | 意味 |
+| :-- | :-- |
+| `… signed out; remote revocation confirmed.` | OpenAI が 200 を返しました。セッションは失効しました。 |
+| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | OpenAI が 200 を返しませんでした。ネットワークが失敗した、数回試しても 5xx が返った、それ以外の 200 でないステータス（例: 再試行しない 4xx）が返った、または失効エンドポイントが見つからなかった場合です。サインアウト中にアカウントのトークンが変わった場合(ゲートウェイが更新したか、新しいサインインが保存された)は新しいトークンも失効させるため、このメッセージは二つの失効のどちらかが失敗したことを意味します。このマシンのトークンは消去されましたが、OpenAI 側のセッションはまだ有効な可能性があります。ChatGPT の設定から削除してください。 |
+| `… is already signed out.` | アカウントにトークンがありませんでした。何も送信していません。 |
+
+実行中のゲートウェイは、サインアウトしたアカウントを再サインインが必要なものとして扱います。詳しくは
+[`shunt logout chatgpt-plan`](/ja/reference/cli/#shunt-logout-chatgpt-plan) を参照してください。
+
+## リクエストの挙動
+
+- **更新。** shunt はアクセストークンの期限が切れる少し前に更新します。OpenAI が許可する時刻より早く
+  更新することはなく、新しい refresh トークンを保存します。トークンを自分で管理する必要はありません。
+- **使用量上限。** アカウントがプランの使用量上限を報告すると（HTTP 429、または出力前のストリーム内
+  失敗）、shunt はそのアカウントをクールダウンし、同じリクエストを別のアカウントで処理します。すべての
+  アカウントがクールダウン中なら、Claude Code は
+  [chatgpt.com/settings/usage](https://chatgpt.com/settings/usage) を示す `rate_limit_error` を受け取ります。
+- **サインインの期限切れ。** `401` では、shunt がトークンを一度更新して再試行します。更新が失敗すると、
+  アカウントは再サインインが必要としてマークされ、正常なアカウントがリクエストを処理する間、数分間休止
+  します。`shunt login chatgpt-plan --name <account>` を再度実行してください。
+- **対象外、またはルート非対応。** `403` は再試行もサインインの案内もなしに、`permission_error` として
+  そのまま返されます。
+- **一時的な利用不可。** `503` は認証情報を保持したまま次のアカウントに移ります。すべてのアカウントが
+  `503` を返すと、Claude Code は `overloaded_error` を受け取ります。
+
+## プレビューの制限
+
+- **拒否されるパラメーター。** プレビューは `temperature`、`metadata`、`prompt_cache_retention` を拒否
+  します。shunt はこれらを送りません。Claude Code が非ストリーミング応答を求めた場合でも、常に
+  `store: false` と `stream: true` を送り、shunt が完成したメッセージを 1 つ返します。
+- **ツール。** 通常の関数ツールは動作します。プレビューが拒否するため、このプロバイダーでは `tool_search`
+  の設定にかかわらずネイティブの `tool_search` はオフです。ホスト型の `web_search` はそのまま通過します。
+- **出力開始後の上限。** 回答の一部がすでに Claude Code に届いた後で使用量上限または一時的な利用不可が
+  到着した場合、そのターンを別のアカウントに移すことはできません。ストリームは使用量設定を示す
+  `rate_limit_error`(または `overloaded_error`)で終了し、アカウントはクールダウンされます。次のリクエスト
+  は別のアカウントを使います。
+- **エスカレーションと advisor の呼び出し。** これらの呼び出しは idle 制限の下で実行され、shunt は出力前の
+  チェックを省略します。そうした呼び出しでストリーム内の使用量上限が到着すると、呼び出しはそのエラーで
+  終了し、別のアカウントへはローテーションしません。アカウントはクールダウンされるため、次の呼び出しは
+  別のアカウントを使います。HTTP 429 の使用量上限は通常どおりローテーションします。
+  [エスカレーション](/ja/guides/escalation/)と [advisor ゲート](/ja/guides/advisor/)を参照してください。
+- **途中で切れた応答。** `max_tokens` で打ち切られた応答は、現在 `max_tokens` ではなく `end_turn` で
+  終わります。これはすべての Responses プロバイダーに当てはまり、
+  [issue #868](https://github.com/pleaseai/shunt/issues/868) で追跡しています。
+- **モデル。** shunt はルーティングした ID をそのまま転送します。プランがどのモデルを使えるかは OpenAI が
+  決めており、アカウントが使えないモデルはアップストリームのエラーとして返ります。
+
+## エラーの意味
+
+| アップストリームのコード | ステータス | Claude Code に見える値 | 意味と対処 |
+| :-- | :-- | :-- | :-- |
+| `subscription_sharing_usage_limit_exceeded` | 429 | `rate_limit_error` | アカウントがプランの使用量を使い切りました。shunt は別のアカウントを試します。残りがなければ、待つか[使用量設定](https://chatgpt.com/settings/usage)を確認してください。 |
+| `subscription_sharing_usage_unavailable` | 503 | `overloaded_error` | OpenAI が現在アカウントの使用量を読み取れません。認証情報は保持されます。しばらくして再試行してください。 |
+| `subscription_sharing_user_unavailable` | 503 | `overloaded_error` | OpenAI が現在このユーザーを処理できません。認証情報は保持されます。しばらくして再試行してください。 |
+| `subscription_sharing_unsupported_capability` | 400 | `invalid_request_error` | リクエストがプレビュー非対応の機能を使いました。メッセージの末尾に `(parameter: <name>)`（例: `tools`）が付きます。 |
+| `subscription_sharing_user_not_eligible` | 403 | `permission_error` | この ChatGPT ユーザーはトークン共有の対象外です。再試行しません。 |
+| `subscription_sharing_route_not_supported` | 403 | `permission_error` | プレビューはこのアカウントでこのルートに対応していません。再試行しません。 |
+| `chatpass_v2_*`（例: `chatpass_v2_scope_not_authorized`） | 403 | `permission_error` | トークンに呼び出しに必要な認可がありません。再度サインインし、プラン使用量を承認してください。再試行しません。 |
+| `subscription_sharing_invalid_user` | 401 | `authentication_error` | トークンが拒否されました。shunt は一度更新して再試行します。それでも失敗する場合は `shunt login chatgpt-plan --name <account>` を実行してください。 |
+| `{"detail": "Unsupported parameter: …"}` | 400 | `invalid_request_error` | プレビューが拒否するパラメーターが届きました。issue を起票してください。shunt は送るべきではありません。 |
+
+同じコードが `200 OK` 応答内のストリーム内失敗として届くこともあり、同様にマッピングされます。この表に
+ないコードは、他のプロバイダーのエラーと同様に HTTP ステータスでマッピングされます。
+
+## トラブルシューティング
+
+| 症状 | 原因 / 対処 |
+| :-- | :-- |
+| `plan usage was not granted … chatgpt.tokens.use.direct` | プラン使用量を承認しませんでした。アカウントはサインアウト状態のままですが、クライアント ID は保持されます。ログインを再実行して承認してください。 |
+| `registration incomplete: the authorization did not issue a client id` | 初回サインインのコールバックにクライアント ID がありませんでした。何も保存されていないので、ログインを再実行してください。 |
+| `the authorization returned a different client id than this account's saved registration` | 保存済みのアカウントファイルは別のクライアント ID で登録されています。ファイルは変更されていません。新しい `--name` でサインインするか、アカウントファイルを削除して登録し直してください。 |
+| `the ChatGPT sign-in failed validation` | ID トークンが検証（nonce、audience、有効期限、署名）に失敗しました。何も保存されていません。繰り返す場合はホストの時計を確認してください。 |
+| `the pasted callback belongs to a different sign-in attempt` | 以前の試行の URL を貼り付けました。現在の試行のブラウザータブの URL を貼り付けてください。 |
+| エラーメッセージ内の `run shunt login chatgpt-plan --name <account>` | アカウントがサインアウト状態か、更新に失敗しました。再度サインインしてください。 |
+
+詳細は[トラブルシューティング](/ja/reference/troubleshooting/)リファレンスを参照してください。

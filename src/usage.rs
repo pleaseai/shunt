@@ -453,6 +453,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 | AuthMode::ChatgptOauth
                 | AuthMode::KimiOauth
                 | AuthMode::XaiOauth
+                | AuthMode::ChatgptPlanOauth
         ) {
             continue;
         }
@@ -490,7 +491,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 )
                 .await
             }
-            AuthMode::XaiOauth => provider.resolve_pool_accounts().await,
+            AuthMode::XaiOauth | AuthMode::ChatgptPlanOauth => {
+                provider.resolve_pool_accounts().await
+            }
             _ => unreachable!("provider auth filtered above"),
         };
         let resolved = match resolved {
