@@ -138,13 +138,24 @@ async fn authentication_error(
     headers: &HeaderMap,
     codex_shape: bool,
 ) -> Option<Response> {
+    // The Codex-shaped responses read the `jwt_header` / `jwt_cookie` slots like
+    // the other Codex routes; the Anthropic-shaped one does not.
+    let slots = if codex_shape {
+        gate::Slots::CodexDiscovery
+    } else {
+        gate::Slots::Client
+    };
     let inbound = match &state.inbound_auth {
-        Some(auth) => {
-            gate::authenticate(auth, &state.inbound_jwks, headers, gate::Slots::Client).await
-        }
+        Some(auth) => gate::authenticate(auth, &state.inbound_jwks, headers, slots).await,
         None => gate::Outcome::Rejected,
     };
-    if inbound == gate::Outcome::Unavailable {
+    // A gateway login token is checked before the `Unavailable` verdict: it
+    // needs no issuer, so an unreachable JWKS must not turn it into a 503.
+    let gateway_identity = state
+        .gateway_auth
+        .as_ref()
+        .and_then(|auth| auth.authenticate_bearer(headers));
+    if inbound == gate::Outcome::Unavailable && gateway_identity.is_none() {
         tracing::warn!("GET /v1/models: cannot verify credential, JWT issuer key set unreachable");
         let response = gate::unavailable_response();
         return Some(if codex_shape {
@@ -157,10 +168,6 @@ async fn authentication_error(
         gate::Outcome::Authenticated { client, .. } => Some(client.as_str()),
         _ => None,
     };
-    let gateway_identity = state
-        .gateway_auth
-        .as_ref()
-        .and_then(|auth| auth.authenticate_bearer(headers));
     if (state.inbound_auth.is_some() || state.gateway_auth.is_some())
         && inbound_client.is_none()
         && gateway_identity.is_none()

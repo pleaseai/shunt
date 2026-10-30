@@ -109,7 +109,8 @@ impl InboundAuth {
     /// Bearer) authenticates the same as the configured token header. The `Bearer `
     /// scheme prefix is stripped before the constant-time compare; a non-`Bearer`
     /// scheme is ignored. Used by the inbound Codex endpoint; `x-api-key` is
-    /// deliberately excluded because Codex never sends it.
+    /// deliberately excluded because Codex never sends it. Codex-shaped model
+    /// discovery uses [`Self::authenticate_client`] instead, keeping `x-api-key`.
     pub fn authenticate_bearer(&self, headers: &HeaderMap) -> Option<&str> {
         let bearer = bearer_token(headers);
         self.authenticate_values(
