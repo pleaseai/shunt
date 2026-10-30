@@ -78,6 +78,11 @@ impl Env {
 
     /// Answer the token endpoint with an ID token for `aud`/`nonce`.
     async fn mount_token(&self, aud: &str, nonce: &str, scope: &str) {
+        self.mount_token_with_access(aud, nonce, scope, "ACCESS-SECRET")
+            .await;
+    }
+
+    async fn mount_token_with_access(&self, aud: &str, nonce: &str, scope: &str, access: &str) {
         let iat = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -93,7 +98,7 @@ impl Env {
         Mock::given(method("POST"))
             .and(path("/token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "access_token": "ACCESS-SECRET", "refresh_token": "REFRESH-SECRET",
+                "access_token": access, "refresh_token": "REFRESH-SECRET",
                 "id_token": id_token, "expires_in": 3600, "scope": scope,
                 "earliest_refresh_at": iat + 3000, "token_type": "Bearer",
             })))
@@ -376,6 +381,19 @@ async fn an_id_token_failing_validation_stores_nothing() {
     let env = Env::new("badtoken").await;
     let attempt = Attempt::start(env.endpoints(0)).await;
     env.mount_token("oaiapp_new", "another-attempts-nonce", GRANTED)
+        .await;
+    attempt.deliver("&client_id=oaiapp_new").await;
+    let error = attempt.finish().await.unwrap_err();
+    assert!(error.to_string().contains("failed validation"), "{error:#}");
+    assert!(!format!("{error:#}").contains("SECRET"));
+    assert!(store::read_account(NAME).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn an_empty_access_token_stores_nothing() {
+    let env = Env::new("emptyaccess").await;
+    let attempt = Attempt::start(env.endpoints(0)).await;
+    env.mount_token_with_access("oaiapp_new", &attempt.param("nonce").unwrap(), GRANTED, "")
         .await;
     attempt.deliver("&client_id=oaiapp_new").await;
     let error = attempt.finish().await.unwrap_err();

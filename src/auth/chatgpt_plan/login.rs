@@ -275,6 +275,7 @@ async fn verify(
         .id_token
         .as_deref()
         .filter(|token| !token.is_empty())
+        .filter(|_| !tokens.access_token.is_empty())
         .filter(|_| {
             tokens
                 .refresh_token
