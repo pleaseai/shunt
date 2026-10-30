@@ -90,7 +90,25 @@ fn mapped_error_body(
     let text = text.unwrap_or_else(|| format!("upstream returned {status}"));
     tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
     let value = upstream_error_value(status, &text, auth);
-    Bytes::from(serde_json::to_vec(&map_error_value(&value, status)).unwrap_or_default())
+    let mapped = with_auth_hint(map_error_value(&value, status), status, auth);
+    Bytes::from(serde_json::to_vec(&mapped).unwrap_or_default())
+}
+
+/// Append the auth mode's gateway hint for `status` (see
+/// [`super::pool_plan::error_hint`]) to a mapped envelope's message.
+fn with_auth_hint(mut mapped: Value, status: StatusCode, auth: crate::config::AuthMode) -> Value {
+    let Some(hint) = super::pool_plan::error_hint(status, auth) else {
+        return mapped;
+    };
+    if let Some(message) = mapped.pointer_mut("/error/message") {
+        let text = message.as_str().unwrap_or_default();
+        *message = Value::String(if text.is_empty() {
+            hint
+        } else {
+            format!("{text} ({hint})")
+        });
+    }
+    mapped
 }
 
 fn upstream_error_value(status: StatusCode, text: &str, auth: crate::config::AuthMode) -> Value {
@@ -136,7 +154,8 @@ pub(super) fn build_upstream_error(
     tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
     let value = upstream_error_value(status, &text, auth);
     let shunt_status = crate::model::responses::client_facing_status(status);
-    let mut response = (shunt_status, axum::Json(map_error_value(&value, status))).into_response();
+    let mapped = with_auth_hint(map_error_value(&value, status), status, auth);
+    let mut response = (shunt_status, axum::Json(mapped)).into_response();
     if let Some(retry_after) = retry_after.and_then(|value| value.parse().ok()) {
         response.headers_mut().insert("retry-after", retry_after);
     }

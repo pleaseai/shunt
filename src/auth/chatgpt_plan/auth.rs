@@ -39,6 +39,16 @@ use crate::auth::{
 
 const TOKEN_URL: &str = "https://auth.openai.com/api/accounts/oauth/token";
 
+/// Test seam for the gateway's refresh endpoint; see
+/// [`ChatGptPlanAuthStore::from_env`].
+const TOKEN_URL_ENV: &str = "SHUNT_CHATGPT_PLAN_TOKEN_URL";
+
+/// The refresh endpoint for a raw `SHUNT_CHATGPT_PLAN_TOKEN_URL` value:
+/// [`TOKEN_URL`] unless the value is loopback or https on its host.
+fn resolve_token_url(raw: Option<String>) -> String {
+    shared::sanitize_token_url(raw, TOKEN_URL)
+}
+
 /// An access token is renewed once it is this close to expiry.
 const REFRESH_WINDOW_SECS: u64 = 300;
 
@@ -66,9 +76,19 @@ impl ChatGptPlanAuthStore {
         Self::with_token_url(TOKEN_URL.to_string())
     }
 
+    /// The gateway's store: [`TOKEN_URL`], unless `SHUNT_CHATGPT_PLAN_TOKEN_URL`
+    /// names a loopback URL or https on the same host. That override is a test
+    /// seam (as `SHUNT_CODEX_TOKEN_URL` is for codex), and
+    /// [`shared::sanitize_token_url`] rejects any other value, so it cannot
+    /// redirect the rotating refresh token off-origin or into the clear.
+    pub fn from_env() -> Self {
+        Self::with_token_url(resolve_token_url(std::env::var(TOKEN_URL_ENV).ok()))
+    }
+
     /// A store that refreshes against `token_url` (tests inject a loopback
-    /// mock). There is deliberately no environment override: a redirectable
-    /// token URL would be a refresh-token exfiltration surface.
+    /// mock). Callers outside tests go through [`Self::new`] or
+    /// [`Self::from_env`], never an arbitrary URL: a redirectable token URL
+    /// would be a refresh-token exfiltration surface.
     pub fn with_token_url(token_url: String) -> Self {
         Self {
             token_url,

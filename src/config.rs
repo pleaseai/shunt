@@ -2356,6 +2356,18 @@ pub enum AuthMode {
     None,
 }
 
+impl AuthMode {
+    /// Whether a `responses` provider with this auth serves its turns through
+    /// the Responses account-pool loop (per-account credentials, rotation,
+    /// refresh-on-401) rather than one credential resolved up front.
+    pub fn uses_responses_pool(self) -> bool {
+        matches!(
+            self,
+            AuthMode::ChatgptOauth | AuthMode::XaiOauth | AuthMode::ChatgptPlanOauth
+        )
+    }
+}
+
 /// The dialect of the OpenAI Responses API an upstream speaks. Some backends
 /// reject parameters others require, so translation is gated per flavor rather
 /// than by hardcoded provider names (AGENTS.md table-driven rule).

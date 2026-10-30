@@ -1465,6 +1465,9 @@ fn provider_auth(state: &AppState, route: &Route) -> AuthMode {
 pub(super) fn no_upstream_response_message(auth: AuthMode) -> &'static str {
     match auth {
         AuthMode::XaiOauth => "all xAI OAuth accounts failed before receiving an upstream response",
+        AuthMode::ChatgptPlanOauth => {
+            "all ChatGPT plan accounts failed before receiving an upstream response"
+        }
         _ => "all Codex OAuth accounts failed before receiving an upstream response",
     }
 }
@@ -1611,6 +1614,9 @@ pub(super) async fn resolve_or_cooldown(
     if account.store_family == Some(accounts::StoreFamily::Xai) {
         return resolve_xai_or_cooldown(state, route, account).await.ok();
     }
+    if super::pool_plan::is_plan_account(account) {
+        return super::pool_plan::resolve_plan_or_cooldown(state, route, account).await;
+    }
     match resolve_chatgpt_account(account, &state.http_client).await {
         Ok(credential) => Some(credential),
         Err(error) => {
@@ -1692,6 +1698,10 @@ pub(super) async fn force_refresh_or_cooldown(
     account: &AccountConfig,
     credential: &Credential,
 ) -> Option<Credential> {
+    if super::pool_plan::is_plan_account(account) {
+        return super::pool_plan::force_refresh_plan_or_cooldown(state, route, account, credential)
+            .await;
+    }
     if account.token_env.is_some() {
         state.accounts.cooldown(
             &route.provider,

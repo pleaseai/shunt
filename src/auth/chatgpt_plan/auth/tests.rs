@@ -459,3 +459,22 @@ fn refresh_rule_boundaries() {
     assert!(refresh_needed(&tokens(9000, Some(5000)), Some("a"), 1000));
     assert!(!refresh_needed(&tokens(1000, None), Some("other"), 1000));
 }
+
+#[test]
+fn token_url_override_accepts_only_loopback_or_the_default_host() {
+    assert_eq!(resolve_token_url(None), TOKEN_URL);
+    assert_eq!(resolve_token_url(Some(String::new())), TOKEN_URL);
+    for off_origin in [
+        "http://attacker.test/token",
+        "https://attacker.test/api/accounts/oauth/token",
+        "http://auth.openai.com/api/accounts/oauth/token",
+    ] {
+        assert_eq!(resolve_token_url(Some(off_origin.into())), TOKEN_URL);
+    }
+    for allowed in [
+        "http://127.0.0.1:4010/token",
+        "https://auth.openai.com/api/accounts/oauth/token",
+    ] {
+        assert_eq!(resolve_token_url(Some(allowed.into())), allowed);
+    }
+}
