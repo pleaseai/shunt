@@ -133,6 +133,8 @@ Everything under spec `## Out of Scope`. Considered and not built:
 
 - 2026-10-30 (review): `tests/inbound_codex_jwt_slots.rs` is 551 lines, over the AGENTS.md "preferably under 500" guideline. Kept as one file: it is eight end-to-end tests sharing one mock JWKS + upstream harness, and splitting it would duplicate that harness; neighbouring suites such as `src/auth/inbound_jwt/tests.rs` (1712 lines) are larger.
 
+- 2026-10-30 (review): Extended the FR-8 `jwt_header` reject list to every header shunt reads or rewrites on the Codex endpoint. The ensemble review confirmed two consequences of the original list: `session-id` / `x-claude-code-session-id` are read by `extract_session_id` before the strip, so the IdP JWT became the session id and reached telemetry and synthesized upstream affinity headers (FR-7, NFR-2); and the WebSocket bridge rewrites `content-type`, `openai-beta`, and the hop-by-hop / `sec-websocket-*` headers before per-turn re-auth, so a JWT carried there authenticated the upgrade but no turn. Rejecting the names at startup keeps the fail-closed style of the rest of FR-8 and leaves session extraction and the bridge untouched; the key is new in this PR, so no released configuration changes.
+
 ## Surprises & Discoveries
 
 - Observation: the FR-12 STOP condition (Codex CLI sending `Origin`) does not hold for current Codex. In `openai/codex` `main`, `ORIGIN` appears only in server-side middleware that rejects requests carrying it (`codex-rs/otel-trace-websocket`, `exec-server`, `app-server-transport`) and in tests that inject it to exercise that rejection; no client code sets it, and the client stacks (`reqwest`, `tokio-tungstenite` via `codex-rs/websocket-client/src/dialer.rs`) add none on their own.
