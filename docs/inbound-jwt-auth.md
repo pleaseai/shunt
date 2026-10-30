@@ -302,8 +302,8 @@ Codex discovery paths stay `Authorization: Bearer`-only.
   The scheme is the first `X-Forwarded-Proto` value (`http` or `https`), else `http`, since
   shunt itself listens on plain HTTP; behind a TLS-terminating proxy, have it send
   `X-Forwarded-Proto` or same-origin browser requests lose the cookie slot. A cross-origin
-  (including cross-scheme), `null`, unparseable, or repeated `Origin`, an unrecognised
-  `X-Forwarded-Proto`, or an `Origin` with no `Host`, disables it. The header slot
+  (including cross-scheme), `null`, unparseable, or repeated `Origin`, or an `Origin` on a
+  request with no `Host` or an unrecognised `X-Forwarded-Proto`, disables it. The header slot
   is unaffected. Do not point `jwt_cookie` at a cookie a browser holds for the gateway's
   domain, such as an SSO proxy's (Cloudflare Access `CF_Authorization`).
 - **Forwarding.** The configured header and every `cookie` header are stripped before any
