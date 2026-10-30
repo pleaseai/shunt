@@ -7,6 +7,7 @@ use crate::model::responses_request::TOOL_SEARCH_NAME;
 pub use crate::model::responses_request::{
     encode_reasoning_signature, translate_request, translate_request_value,
 };
+use crate::model::siwc_errors;
 use crate::model::stop_sequences::StopScanner;
 
 #[derive(Debug, Clone)]
@@ -1375,10 +1376,19 @@ pub fn map_error_value(value: &Value, status: StatusCode) -> Value {
     let message = error_message(value);
     let message = context_overflow_message(value, &message).unwrap_or(message);
     let message = misalignment_steer_message(value, &message).unwrap_or(message);
+    // A SIWC code owns its Anthropic type (a 503 unavailable code is
+    // `overloaded_error`, not `api_error`) and names the offending parameter;
+    // every other code keeps the status-derived type.
+    let siwc = siwc_errors::lookup(error_code(value));
+    let message = match siwc {
+        Some(_) => siwc_errors::message_with_param(value, &message).unwrap_or(message),
+        None => message,
+    };
+    let error_type = siwc.map_or_else(|| anthropic_error_type(status), |hit| hit.error_type);
     json!({
         "type": "error",
         "error": {
-            "type": anthropic_error_type(status),
+            "type": error_type,
             "message": message
         }
     })
@@ -1491,6 +1501,8 @@ fn error_code(value: &Value) -> &str {
 ///   not transport-gated: any Responses backend's in-stream error event with a
 ///   top-level status maps the same way (a `401` / `403` passes through as the
 ///   auth envelope, as that out-of-band HTTP status already does).
+/// - A Sign in with ChatGPT code (`subscription_sharing_*`, `chatpass_v2_*`) →
+///   the status in [`siwc_errors::lookup`], checked before everything else.
 /// - Anything else (including `misalignment_policy_violation`, `server_error`,
 ///   and quota codes such as `insufficient_quota`) → the `502` gateway error.
 ///
@@ -1498,6 +1510,9 @@ fn error_code(value: &Value) -> &str {
 /// never re-enters failover (`docs/upstreams-failover.md` §3) and never cools a
 /// pool account down — pool cooldown keys on the upstream HTTP status alone.
 pub fn backend_error_status(value: &Value) -> StatusCode {
+    if let Some(siwc) = siwc_errors::lookup(error_code(value)) {
+        return siwc.status;
+    }
     match error_code(value) {
         "rate_limit_exceeded" | "slow_down" | "flex_unavailable" => StatusCode::TOO_MANY_REQUESTS,
         "server_is_overloaded" => {

@@ -651,4 +651,61 @@ pub(super) mod tests {
             "upstream returned 429 Too Many Requests"
         );
     }
+
+    #[tokio::test]
+    async fn siwc_unavailable_503_becomes_overloaded_error_keeping_status() {
+        let body =
+            r#"{"error":{"message":"try later","code":"subscription_sharing_usage_unavailable"}}"#;
+        let upstream = upstream_response(503, body, &[]).await;
+        let error = mapped_upstream_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            upstream,
+            AuthMode::ChatgptPlanOauth,
+        )
+        .await;
+        assert_eq!(error.response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "overloaded_error");
+        assert_eq!(body["error"]["message"], "try later");
+    }
+
+    #[tokio::test]
+    async fn siwc_unsupported_capability_400_carries_parameter() {
+        let body = r#"{"error":{"message":"tool 'tool_search' is not supported","type":"invalid_request_error","param":"tools","code":"subscription_sharing_unsupported_capability"}}"#;
+        let upstream = upstream_response(400, body, &[]).await;
+        let error = mapped_upstream_error(
+            StatusCode::BAD_REQUEST,
+            upstream,
+            AuthMode::ChatgptPlanOauth,
+        )
+        .await;
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(
+            body["error"]["message"],
+            "tool 'tool_search' is not supported (parameter: tools)"
+        );
+    }
+
+    #[tokio::test]
+    async fn bare_detail_400_maps_to_invalid_request_error() {
+        let upstream = upstream_response(
+            400,
+            r#"{"detail":"Unsupported parameter: temperature"}"#,
+            &[],
+        )
+        .await;
+        let error = mapped_upstream_error(
+            StatusCode::BAD_REQUEST,
+            upstream,
+            AuthMode::ChatgptPlanOauth,
+        )
+        .await;
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(
+            body["error"]["message"],
+            "Unsupported parameter: temperature"
+        );
+    }
 }

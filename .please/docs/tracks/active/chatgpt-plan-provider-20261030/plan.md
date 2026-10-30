@@ -63,7 +63,7 @@ Rejected alternatives are in ADR-0007. Two more: persisting tokens before valida
 
 ## Tasks
 
-- [ ] T001 Register the chatgpt-plan auth mode, preset, and config validation (file: src/config.rs) [FR-1, FR-14, NFR-3, AC-027, AC-028]
+- [x] T001 Register the chatgpt-plan auth mode, preset, and config validation (file: src/config.rs) [FR-1, FR-14, NFR-3, AC-027, AC-028]
   Validation: `auth = "chatgpt_plan_oauth"` with kind `responses` on `https://api.openai.com/v1` passes `shunt check`; a different kind, a plaintext remote URL, a non-`api.openai.com` host, or a provider named `chatgpt-plan` with another auth fails naming the offending key (AC-027); the preset is listed by `shunt init`; native `tool_search` resolves off for this mode; a codex-only config, `Config::default()`, and `upstream_order` are unchanged (AC-028); the crate compiles with the new `AuthMode`, `StoreFamily`, and `Credential` variants wired through every exhaustive match (unresolvable credentials error "run `shunt login chatgpt-plan --name <account>`").
   Method: `cargo test --all-features -- config presets upstreams init` plus `tests/check_cli.rs`, `tests/init_cli.rs`
 - [ ] T002 Map SIWC error codes to Anthropic errors (file: src/model/siwc_errors.rs) [FR-11, AC-017, AC-018, AC-019, AC-020, AC-021]
@@ -150,3 +150,5 @@ Rejected alternatives are in ADR-0007. Two more: persisting tokens before valida
 
 - [x] (2026-10-30 KST) T001 Register the chatgpt-plan auth mode, preset, and config validation
   Evidence: `cargo +1.98.1 test --features bench --workspace` (RUSTFLAGS=-D warnings) → exit 0, lib 3563 passed / 0 failed; clippy and fmt --check clean
+- [x] (2026-10-30 KST) T002 Map SIWC error codes to Anthropic errors
+  Evidence: `cargo +1.98.1 test --features bench` (RUSTFLAGS=-D warnings; --all-features unbuildable here) → exit 0, 4423 passed / 0 failed (lib 3569, responses_translate 123) incl. 3 siwc_errors unit, 7 responses_translate SIWC/detail, 3 error.rs wiremock tests; clippy --all-targets --features bench and fmt --check clean
