@@ -74,7 +74,8 @@ shunt run
 
 `shunt check` 会拒绝 `kind` 不是 `responses`、`base_url` 不是 HTTPS、或主机不是 `api.openai.com` 的
 `chatgpt_plan_oauth` 提供方,也会拒绝名为 `chatgpt-plan` 却使用其他 `auth` 的提供方,并指出出问题的键。
-shunt 绝不会把套餐令牌发送到其他主机。
+shunt 绝不会把套餐令牌发送到其他主机。唯一的例外是回环主机(`localhost`、`127.0.0.1`、`[::1]`):它可以使用明文 `http`
+和任意端口,以便把提供方指向本地模拟服务。
 
 ## 远程与无头主机
 
@@ -97,8 +98,8 @@ shunt login chatgpt-plan --name work
 shunt login chatgpt-plan --name personal
 ```
 
-每个账户是 `~/.shunt/accounts/chatgpt-plan/<name>.json`(`0600`,位于 `0700` 目录中;可用
-`$SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` 改变目录)。两个名称可以使用同一个邮箱地址,各自保留独立的记录和
+每个账户是 `~/.shunt/accounts/chatgpt-plan/<name>.json`(`0600`;可用
+`$SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` 改变目录)。shunt 创建的目录权限为 `0700`,已存在的覆盖目录保留其原有权限。两个名称可以使用同一个邮箱地址,各自保留独立的记录和
 客户端 ID。没有其他配置时,提供方使用目录中的所有账户。要只选其中一些,或优先使用某一个:
 
 ```toml
@@ -125,7 +126,7 @@ shunt 会在 OpenAI 的撤销(revocation)端点撤销该账户的 refresh 令牌
 | 结果 | 含义 |
 | :-- | :-- |
 | `… signed out; remote revocation confirmed.` | OpenAI 返回了 200。会话已被撤销。 |
-| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | 网络失败,或尝试几次后 OpenAI 仍返回 5xx。如果登出期间账户的令牌发生了变化(网关刷新了它,或有新的登录写入),新令牌也会一并撤销,此消息表示两次撤销中有一次失败。本机的令牌已清除,但 OpenAI 那边的会话可能仍然有效。请在 ChatGPT 设置中移除它。 |
+| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | OpenAI 没有返回 200:网络失败、尝试几次后仍返回 5xx、返回了其他非 200 状态(例如不会重试的 4xx),或找不到撤销端点。如果登出期间账户的令牌发生了变化(网关刷新了它,或有新的登录写入),新令牌也会一并撤销,此消息表示两次撤销中有一次失败。本机的令牌已清除,但 OpenAI 那边的会话可能仍然有效。请在 ChatGPT 设置中移除它。 |
 | `… is already signed out.` | 该账户没有令牌。没有发送任何内容。 |
 
 运行中的网关会把已登出的账户视为需要登录。参见
@@ -151,8 +152,9 @@ shunt 会在 OpenAI 的撤销(revocation)端点撤销该账户的 refresh 令牌
   完整的消息。
 - **工具。** 普通函数工具可用。由于预览会拒绝原生 `tool_search`,无论 `tool_search` 如何设置,它在此提供方
   上都是关闭的。托管的 `web_search` 会直接透传。
-- **输出开始之后的上限。** 如果用量上限在答复的一部分已经送达 Claude Code 之后才出现,该轮对话就无法转移
-  到另一个账户。流会以 `rate_limit_error` 结束,账户进入冷却。下一个请求会使用另一个账户。
+- **输出开始之后的上限。** 如果用量上限或暂时不可用在答复的一部分已经送达 Claude Code 之后才出现,该轮
+  对话就无法转移到另一个账户。流会以指向用量设置的 `rate_limit_error`(或 `overloaded_error`)结束,账户
+  进入冷却。下一个请求会使用另一个账户。
 - **升级与 advisor 调用。** 这些调用在 idle 限制下运行,shunt 会为它们跳过输出前检查。此类调用上流内的用量
   上限会让调用以该错误结束,并且不会轮换到另一个账户。账户仍会进入冷却,因此下一次调用会使用别的账户。
   以 HTTP 429 形式出现的用量上限仍照常轮换。参见[升级路由](/zh-cn/guides/escalation/)和

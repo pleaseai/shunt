@@ -64,7 +64,7 @@ unchanged.
 - Credential lookup & refresh in `src/auth/`
 - `rpassword` — interactive credential prompts
 - OAuth / subscription reuse: ChatGPT/Codex (`codex login`), ChatGPT plan via Sign in with
-  ChatGPT (`shunt login chatgpt-plan --name`, `shunt logout chatgpt-plan`), xAI/Grok (`shunt login xai`),
+  ChatGPT (`shunt login chatgpt-plan --name <account>`, `shunt logout chatgpt-plan --name <account>`), xAI/Grok (`shunt login xai`),
   Cursor (`shunt login cursor`), Anthropic passthrough
 - Multi-account pooling + load balancing (Anthropic, Codex, xAI, ChatGPT plan) — reactive rotation
 

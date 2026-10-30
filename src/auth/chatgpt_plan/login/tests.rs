@@ -78,11 +78,18 @@ impl Env {
 
     /// Answer the token endpoint with an ID token for `aud`/`nonce`.
     async fn mount_token(&self, aud: &str, nonce: &str, scope: &str) {
-        self.mount_token_with_access(aud, nonce, scope, "ACCESS-SECRET")
+        self.mount_token_with_access(aud, nonce, Some(scope), "ACCESS-SECRET")
             .await;
     }
 
-    async fn mount_token_with_access(&self, aud: &str, nonce: &str, scope: &str, access: &str) {
+    /// `scope: None` omits the field from the token response.
+    async fn mount_token_with_access(
+        &self,
+        aud: &str,
+        nonce: &str,
+        scope: Option<&str>,
+        access: &str,
+    ) {
         let iat = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -95,13 +102,17 @@ impl Env {
             }),
             KID_ONE,
         );
+        let mut body = json!({
+            "access_token": access, "refresh_token": "REFRESH-SECRET",
+            "id_token": id_token, "expires_in": 3600,
+            "earliest_refresh_at": iat + 3000, "token_type": "Bearer",
+        });
+        if let Some(scope) = scope {
+            body["scope"] = json!(scope);
+        }
         Mock::given(method("POST"))
             .and(path("/token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "access_token": access, "refresh_token": "REFRESH-SECRET",
-                "id_token": id_token, "expires_in": 3600, "scope": scope,
-                "earliest_refresh_at": iat + 3000, "token_type": "Bearer",
-            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
             .mount(&self.server)
             .await;
     }
@@ -393,8 +404,13 @@ async fn an_id_token_failing_validation_stores_nothing() {
 async fn an_empty_access_token_stores_nothing() {
     let env = Env::new("emptyaccess").await;
     let attempt = Attempt::start(env.endpoints(0)).await;
-    env.mount_token_with_access("oaiapp_new", &attempt.param("nonce").unwrap(), GRANTED, "")
-        .await;
+    env.mount_token_with_access(
+        "oaiapp_new",
+        &attempt.param("nonce").unwrap(),
+        Some(GRANTED),
+        "",
+    )
+    .await;
     attempt.deliver("&client_id=oaiapp_new").await;
     let error = attempt.finish().await.unwrap_err();
     assert!(error.to_string().contains("failed validation"), "{error:#}");
@@ -421,6 +437,25 @@ async fn missing_plan_usage_scope_keeps_only_the_registration() {
     let on_disk: serde_json::Value =
         serde_json::from_slice(&std::fs::read(store::account_path(NAME)).unwrap()).unwrap();
     assert_eq!(on_disk, json!({"version": 1, "client_id": "oaiapp_new"}));
+}
+
+#[tokio::test]
+async fn scope_omitted_from_both_responses_means_the_requested_scopes() {
+    let env = Env::new("omitscope").await;
+    let attempt = Attempt::start(env.endpoints(0)).await;
+    env.mount_token_with_access(
+        "oaiapp_new",
+        &attempt.param("nonce").unwrap(),
+        None,
+        "ACCESS-SECRET",
+    )
+    .await;
+    attempt.deliver("&client_id=oaiapp_new").await;
+    let outcome = attempt.finish().await.unwrap();
+    assert_eq!(outcome.scopes.join(" "), GRANTED);
+    let record = store::read_account(NAME).unwrap().expect("stored");
+    assert_eq!(record.scopes.join(" "), GRANTED);
+    assert!(record.tokens.is_some(), "signed in");
 }
 
 #[tokio::test]

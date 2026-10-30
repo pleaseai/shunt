@@ -277,7 +277,7 @@ OpenAI의 "Sign in with ChatGPT" 토큰 공유 프리뷰로 ChatGPT 플랜 계�
 shunt login chatgpt-plan --name <account-name>
 ```
 
-`--name`은 필수입니다. credential은 `~/.shunt/accounts/chatgpt-plan/<account-name>.json`(0600, 0700 디렉터리 안; `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR`로 디렉터리 재정의)에 저장됩니다. 같은 이름을 다시 쓰면 그 계정에 다시 로그인하며 등록된 클라이언트 ID는 유지됩니다. 플랜 토큰은 항상 갱신 가능하므로 `--long-lived`와 `--mode`는 거부되고, 콜백 붙여넣기를 언제나 쓸 수 있으므로 `--manual`도 거부됩니다.
+`--name`은 필수입니다. credential은 `~/.shunt/accounts/chatgpt-plan/<account-name>.json`(0600; `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR`로 디렉터리 재정의)에 저장됩니다. shunt가 생성하는 디렉터리는 0700이지만, 이미 있는 재정의 디렉터리는 기존 권한을 그대로 유지합니다. 같은 이름을 다시 쓰면 그 계정에 다시 로그인하며 등록된 클라이언트 ID는 유지됩니다. 플랜 토큰은 항상 갱신 가능하므로 `--long-lived`와 `--mode`는 거부되고, 콜백 붙여넣기를 언제나 쓸 수 있으므로 `--manual`도 거부됩니다.
 
 shunt는 인증 URL을 출력하고 브라우저를 연 뒤, 리디렉션을 받기 위해 `127.0.0.1:1455`에서 대기합니다. 대신 전체 콜백 URL(`http://127.0.0.1:1455/auth/callback?code=…`)을 터미널에 붙여넣을 수도 있으며, 먼저 도착한 쪽이 사용됩니다. 붙여넣은 URL은 이번 시도의 것이어야 합니다. 포트가 사용 중이면 로그인은 붙여넣기 전용 모드로 계속됩니다. 대기는 5분 뒤에 끝납니다. 검사(state, 클라이언트 ID, ID 토큰, `chatgpt.tokens.use.direct` 스코프)에 실패한 로그인은 토큰을 저장하지 않습니다. 어떤 이름의 첫 로그인은 OpenAI에 클라이언트 ID를 등록하고 이후 로그인을 위해 보관합니다.
 

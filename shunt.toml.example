@@ -201,7 +201,7 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # adding a table — no code change. Every provider has these keys:
 #   kind           = "anthropic" | "responses" | "cursor" (which upstream protocol)
 #   base_url       = "https://…"                  (Claude Code appends /v1/messages)
-#   auth           = "passthrough" | "api_key" | "chatgpt_oauth" | "cursor_oauth"
+#   auth           = "passthrough" | "api_key" | "chatgpt_oauth" | "chatgpt_plan_oauth" | "cursor_oauth"
 #   api_key_env    = "ENV_NAME"                   (when auth = "api_key")
 #   api_key_header = "bearer" | "x_api_key"       (default bearer)
 #   effort         = "low|medium|high|xhigh|max"  (optional; responses providers)

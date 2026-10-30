@@ -21,7 +21,7 @@ description: 組み込みプロバイダーと、TOML テーブルで任意の A
 | [`codex`](/ja/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — `~/.codex/auth.json` を再利用 |
 | [`xai`](/ja/guides/xai/) | `responses` | `api_key`（`XAI_API_KEY`） | `api.x.ai/v1` — xAI 開発者 API |
 | [`grok`](/ja/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai` 経由の SuperGrok / X Premium+ サブスクリプション。または `~/.shunt/accounts/xai/` の名前付きログインをプール（`shunt login xai --name`） |
-| [`chatgpt-plan`](/ja/guides/chatgpt-plan/) | `responses` | `chatgpt_plan_oauth` | `api.openai.com/v1` — 「Sign in with ChatGPT」プレビュー経由の ChatGPT プラン。プリセットでありデフォルトでは組み込まれないため、`[providers.chatgpt-plan]` を宣言する（`shunt login chatgpt-plan --name`） |
+| [`chatgpt-plan`](/ja/guides/chatgpt-plan/) | `responses` | `chatgpt_plan_oauth` | `api.openai.com/v1` — 「Sign in with ChatGPT」プレビュー経由の ChatGPT プラン。プリセットでありデフォルトでは組み込まれないため、`[providers.chatgpt-plan]` を宣言する（`shunt login chatgpt-plan --name <account>`） |
 | [`cursor`](/ja/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json`（`shunt login cursor`）を再利用 |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — `~/.gemini/oauth_creds.json` を再利用 |
 | [`antigravity`](/ja/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` — `~/.shunt/antigravity-auth.json`（`shunt login antigravity`）を再利用 |
@@ -216,6 +216,10 @@ shunt login chatgpt-plan --name work
 kind = "responses"
 base_url = "https://api.openai.com/v1"
 auth = "chatgpt_plan_oauth"
+
+[[routes]]
+model = "gpt-6.1-sol"
+provider = "chatgpt-plan"
 ```
 
 これは `api.openai.com` 上の OpenAI「Sign in with ChatGPT」トークン共有プレビューを使うもので、上の `codex` プロバイダーとは別物です。プレビューは一部のパラメーターを拒否し、独自のエラーコードを持ちます。リモートホストでの貼り付けによる代替手段、サインアウト、プレビューの制限、各エラーの意味については [ChatGPT プランのガイド](/ja/guides/chatgpt-plan/)を参照してください。

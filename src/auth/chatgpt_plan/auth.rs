@@ -256,10 +256,13 @@ async fn refresh_under_file_lock(
     token_url: &str,
     refresh_timeout: Duration,
 ) -> Result<String, ChatGptAuthError> {
+    // Another gateway sharing the account may hold the lock across its own
+    // POST, so wait out that hold rather than cooling a usable account. The
+    // caller's deadline still bounds the caller.
     let guard = file_lock::lock_file(
         &store::account_path(name),
         &ACCOUNT_FILE_LOCK,
-        ACCOUNT_LOCK_TIMEOUT,
+        refresh_timeout + ACCOUNT_LOCK_TIMEOUT,
     )
     .await
     .map_err(|error| ChatGptAuthError::new(format!("{error:#}")))?;

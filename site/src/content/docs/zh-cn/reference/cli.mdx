@@ -277,7 +277,7 @@ Kimi 在每次刷新时都会轮换 refresh token,而且签发的 access token �
 shunt login chatgpt-plan --name <account-name>
 ```
 
-`--name` 为必填。credential 保存到 `~/.shunt/accounts/chatgpt-plan/<account-name>.json`(0600,位于 0700 目录中;可用 `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` 覆盖目录)。重复使用同一名称会让该账户重新登录,并保留其已注册的客户端 ID。套餐令牌始终可刷新,因此 `--long-lived` 和 `--mode` 会被拒绝;粘贴回调始终可用,因此 `--manual` 也会被拒绝。
+`--name` 为必填。credential 保存到 `~/.shunt/accounts/chatgpt-plan/<account-name>.json`(0600;可用 `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` 覆盖目录)。shunt 创建的目录权限为 0700,但已存在的覆盖目录会保留其原有权限。重复使用同一名称会让该账户重新登录,并保留其已注册的客户端 ID。套餐令牌始终可刷新,因此 `--long-lived` 和 `--mode` 会被拒绝;粘贴回调始终可用,因此 `--manual` 也会被拒绝。
 
 shunt 会打印授权 URL、打开浏览器,并在 `127.0.0.1:1455` 上监听重定向。你也可以改为把完整的回调 URL(`http://127.0.0.1:1455/auth/callback?code=…`)粘贴到终端中;先到达的一方生效,粘贴的 URL 必须属于本次尝试。如果端口被占用,登录会以仅粘贴模式继续。等待在五分钟后结束。未通过检查(state、客户端 ID、ID 令牌或 `chatgpt.tokens.use.direct` 范围)的登录不会存储任何令牌。某个名称的首次登录会向 OpenAI 注册客户端 ID,并保留供之后的登录使用。
 

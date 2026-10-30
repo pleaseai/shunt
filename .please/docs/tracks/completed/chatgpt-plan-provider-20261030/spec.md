@@ -40,14 +40,14 @@ does not send for that dialect, or must never send, were rejected.
 - [ ] FR-9: build the upstream request from shunt's existing OpenAI-dialect Responses translation, including plain function tools, `tool_choice`, `parallel_tool_calls`, `reasoning`, `text`, `include`, `max_output_tokens`, and `prompt_cache_key`
 - [ ] FR-10: never send `temperature`, `metadata`, or `prompt_cache_retention` upstream, and always send `store: false` and `stream: true` — including when the Claude Code client asked for a non-streaming response
 - [ ] FR-11: translate the preview's two upstream error shapes — a parameter-validation body `{"detail": "<message>"}` and a structured error with a `subscription_sharing_*` or `chatpass_v2_*` code, whether returned as an HTTP error or as a `response.failed` event mid-stream — into the Anthropic error shape with a matching error type and status
-- [ ] FR-12: pool a provider's named accounts, select among them like the existing pooled providers, and when an account reports its plan usage limit, cool that account down and, if no output has reached the client yet, serve the request from another available account
+- [ ] FR-12: pool a provider's named accounts, select among them like the existing pooled providers, and when an account reports its plan usage limit, cool that account down and, if no output has reached the client yet, serve the request from another available account (idle-gated escalation and advisor calls skip the pre-content check, so for them a usage-limit failure is relayed rather than rotated)
 - [ ] FR-13: let a user sign out a named account (`shunt logout chatgpt-plan --name <account>`): revoke its renewable session at OpenAI's revocation endpoint, clear its access, refresh, and ID tokens, and keep its issued client id and the host identifier for a later sign-in
 - [ ] FR-14: reject at config validation a `chatgpt-plan` provider whose auth mode or upstream host is not the plan-usage combination, with a message naming the offending key
 - [ ] FR-15: document the provider — setup, sign-in (including the paste fallback), sign-out, accepted models, preview limits, and error meanings — on every documentation surface a new provider requires, in English and its maintained translations
 
 ### Non-functional Requirements
 
-- [ ] NFR-1: preserve streaming semantics end to end — upstream SSE events reach a streaming client as they arrive, with no buffering of the stream
+- [ ] NFR-1: preserve streaming semantics end to end — upstream SSE events reach a streaming client as they arrive, with no buffering of the stream beyond a bounded hold of lifecycle-only frames (no model output yet; given up after 64 KiB and replayed byte-identical) that the pre-content usage-limit check needs; model-output frames relay immediately
 - [ ] NFR-2: never print, log, or include in an error message any access token, refresh token, ID token, authorization code, or PKCE verifier
 - [ ] NFR-3: leave the existing `codex` provider's behavior, credential files, and configuration unchanged
 
@@ -75,7 +75,7 @@ does not send for that dialect, or must never send, were rejected.
 - [ ] AC-020 (FR-11): When upstream returns `subscription_sharing_user_not_eligible`, `subscription_sharing_route_not_supported`, or a `chatpass_v2_*` authorization code, the system shall return an Anthropic `permission_error` and shall not retry the request or start a sign-in.
 - [ ] AC-021 (FR-11): When upstream returns `subscription_sharing_usage_unavailable` or `subscription_sharing_user_unavailable`, the system shall keep the account's credentials and return an Anthropic `overloaded_error` once its bounded retries are spent.
 - [ ] AC-022 (FR-11): When upstream returns `subscription_sharing_invalid_user`, the system shall force one token refresh and retry once, and if that also fails, mark the account as needing sign-in.
-- [ ] AC-023 (FR-12): When one pooled account reports `subscription_sharing_usage_limit_exceeded` before any output was streamed, the system shall cool that account down and serve the same request from another available account.
+- [ ] AC-023 (FR-12): When one pooled account reports `subscription_sharing_usage_limit_exceeded` before any output was streamed, the system shall cool that account down and serve the same request from another available account. (Exception: idle-gated escalation and advisor calls skip this pre-content check and relay the usage-limit failure instead.)
 - [ ] AC-024 (FR-12): If every pooled account is cooling down for its usage limit, then the system shall return an Anthropic `rate_limit_error` that points the user to ChatGPT usage settings.
 - [ ] AC-025 (FR-13): When the revocation endpoint answers HTTP 200 (including for an already-invalid token), the system shall clear the account's tokens and report the sign-out as confirmed.
 - [ ] AC-026 (FR-13): If revocation cannot be confirmed after bounded retries on network or 5xx failures, then the system shall still clear the tokens locally and tell the user remote revocation was not confirmed and can be finished in ChatGPT settings.

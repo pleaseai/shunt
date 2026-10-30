@@ -205,6 +205,28 @@ async fn a_transient_5xx_then_200_is_confirmed() {
 }
 
 #[tokio::test]
+async fn a_truncated_discovery_body_is_retried_then_confirmed() {
+    let env = Env::new("truncated").await;
+    store::write_account(NAME, &signed_in()).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{\"revocation_endpo"))
+        .up_to_n_times(1)
+        .mount(&env.server)
+        .await;
+    env.discovery(&format!("{}/revoke", env.server.uri())).await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&env.server)
+        .await;
+
+    let outcome = run_with(NAME, &env.endpoints(), &behavior()).await.unwrap();
+
+    assert_eq!(outcome, Outcome::Confirmed { name: NAME.into() });
+    assert_eq!(env.revoke_posts().await, 1);
+}
+
+#[tokio::test]
 async fn a_network_failure_clears_locally_unconfirmed() {
     let _env = Env::new("net").await;
     store::write_account(NAME, &signed_in()).unwrap();

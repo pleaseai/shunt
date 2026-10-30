@@ -46,12 +46,14 @@ pub fn lookup(code: &str) -> Option<SiwcError> {
 }
 
 /// Append `(parameter: <param>)` to `message` when the payload names the
-/// offending request parameter, at `/error/param` or `/response/error/param`.
+/// offending request parameter, at `/error/param`, `/response/error/param`, or
+/// a bare `error` event's top-level `param` (where `error_code` also looks).
 /// `None` when absent or empty, leaving the message untouched.
 pub fn message_with_param(value: &Value, message: &str) -> Option<String> {
     let param = value
         .pointer("/error/param")
         .or_else(|| value.pointer("/response/error/param"))
+        .or_else(|| value.get("param"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|param| !param.is_empty())?;
@@ -144,5 +146,19 @@ mod tests {
             None
         );
         assert_eq!(message_with_param(&json!({}), "m"), None);
+    }
+
+    #[test]
+    fn param_suffix_reads_a_bare_error_event() {
+        let bare = json!({
+            "type": "error",
+            "code": "subscription_sharing_unsupported_capability",
+            "message": "m",
+            "param": "tools",
+        });
+        assert_eq!(
+            message_with_param(&bare, "m").as_deref(),
+            Some("m (parameter: tools)")
+        );
     }
 }

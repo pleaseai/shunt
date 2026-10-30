@@ -21,7 +21,7 @@ description: 内置的提供方,以及如何用一个 TOML 表添加任意兼容
 | [`codex`](/zh-cn/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` —— 复用 `~/.codex/auth.json` |
 | [`xai`](/zh-cn/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` —— xAI 开发者 API |
 | [`grok`](/zh-cn/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` —— 通过 `shunt login xai` 使用 SuperGrok / X Premium+ 订阅,或汇集 `~/.shunt/accounts/xai/` 下的命名登录(`shunt login xai --name`) |
-| [`chatgpt-plan`](/zh-cn/guides/chatgpt-plan/) | `responses` | `chatgpt_plan_oauth` | `api.openai.com/v1` —— 通过 "Sign in with ChatGPT" 预览使用 ChatGPT 套餐;它是预设而非默认内置,需声明 `[providers.chatgpt-plan]`(`shunt login chatgpt-plan --name`) |
+| [`chatgpt-plan`](/zh-cn/guides/chatgpt-plan/) | `responses` | `chatgpt_plan_oauth` | `api.openai.com/v1` —— 通过 "Sign in with ChatGPT" 预览使用 ChatGPT 套餐;它是预设而非默认内置,需声明 `[providers.chatgpt-plan]`(`shunt login chatgpt-plan --name <account>`) |
 | [`cursor`](/zh-cn/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` —— 复用 `~/.shunt/cursor-auth.json`(`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` —— 复用 `~/.gemini/oauth_creds.json` |
 | [`antigravity`](/zh-cn/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` —— 复用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`) |
@@ -206,6 +206,10 @@ shunt login chatgpt-plan --name work
 kind = "responses"
 base_url = "https://api.openai.com/v1"
 auth = "chatgpt_plan_oauth"
+
+[[routes]]
+model = "gpt-6.1-sol"
+provider = "chatgpt-plan"
 ```
 
 它使用 `api.openai.com` 上 OpenAI 的 "Sign in with ChatGPT" 令牌共享预览,与上面的 `codex` 提供方相互独立。预览会拒绝一些参数,并有自己的错误代码。远程主机上的粘贴回退、登出、预览限制以及各错误的含义,请见 [ChatGPT 套餐指南](/zh-cn/guides/chatgpt-plan/)。

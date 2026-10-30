@@ -32,8 +32,8 @@ Each named account is one file:
 ```
 
 Override the directory with `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` (`src/auth/chatgpt_plan/store.rs`).
-Each file is written `0600` in a `0700` directory, atomically, through the shared account-file
-writer. Two names that share an email address keep two separate records and client ids.
+Each file is written `0600`, atomically, through the shared account-file writer. A directory
+shunt creates is `0700`; an existing override directory keeps its own permissions. Two names that share an email address keep two separate records and client ids.
 
 A signed-in file holds `version`, the issued `client_id`, the validated `sub` and `email`, the granted
 `scopes`, and a `tokens` block (`access_token`, `refresh_token`, `id_token`, `expires_at`,
@@ -151,9 +151,12 @@ A held lifecycle frame carries no model output, so streaming is not delayed for 
 
 Two cases are not rotated:
 
-- A usage limit that arrives **after** output has reached the client ends the client stream with an
-  Anthropic `rate_limit_error` event instead of a normal message stop, and the account is cooled as
-  an HTTP 429 would cool it. The turn cannot move to another account once part of it has been sent.
+- A usage limit (or an unavailable code) that arrives **after** output has reached the client ends
+  the client stream with an Anthropic `rate_limit_error` (or `overloaded_error`) event instead of a
+  normal message stop, and the account is cooled as an HTTP 429 (or 503) would cool it. The event
+  carries the same hint as the HTTP error reply: the usage-settings link on a usage limit, the
+  sign-in command on an invalid user. The turn cannot move to another account once part of it has
+  been sent.
 - An **idle-gated** call (the [escalation](../site/src/content/docs/guides/escalation.mdx) and
   [advisor](../site/src/content/docs/guides/advisor.mdx) calls, which run under an idle bound) skips
   the pre-content check so the read cannot sit outside that bound. A usage limit that arrives
@@ -182,7 +185,7 @@ refresh, and ID tokens. It keeps the issued client id and the host id.
 | Outcome | Message |
 | :-- | :-- |
 | HTTP 200 (also for an already-invalid token) | `ChatGPT plan account "<name>" signed out; remote revocation confirmed.` |
-| Network or 5xx failure after three attempts with backoff, or no usable discovery document. A refresh token that replaced the stored one during the revocation (a gateway refresh or a new sign-in) is revoked as well, and a failure there is not confirmed either | `ChatGPT plan account "<name>" signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` The tokens are cleared locally anyway. |
+| Any answer other than HTTP 200 — a network or 5xx failure after three attempts with backoff, any other non-200 status such as a 4xx (not retried) — or no usable discovery document. A refresh token that replaced the stored one during the revocation (a gateway refresh or a new sign-in) is revoked as well, and a failure there is not confirmed either | `ChatGPT plan account "<name>" signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` The tokens are cleared locally anyway. |
 | The account has no tokens | `ChatGPT plan account "<name>" is already signed out.` |
 
 A 4xx answer from the revocation endpoint is not retried.

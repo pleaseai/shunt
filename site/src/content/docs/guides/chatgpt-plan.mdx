@@ -79,7 +79,8 @@ shunt run
 `shunt check` refuses a `chatgpt_plan_oauth` provider whose `kind` is not `responses`, whose
 `base_url` is not HTTPS, or whose host is not `api.openai.com`, and a provider named `chatgpt-plan`
 that uses any other `auth`. It names the offending key. shunt never sends a plan token to another
-host.
+host. The one exception is a loopback host (`localhost`, `127.0.0.1`, `[::1]`): it may use plain `http` and
+any port, so you can point the provider at a local mock.
 
 ## Remote and headless hosts
 
@@ -105,8 +106,8 @@ shunt login chatgpt-plan --name work
 shunt login chatgpt-plan --name personal
 ```
 
-Each account is `~/.shunt/accounts/chatgpt-plan/<name>.json` (`0600`, in a `0700` directory;
-`$SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` overrides the directory). Two names can share an email address;
+Each account is `~/.shunt/accounts/chatgpt-plan/<name>.json` (`0600`;
+`$SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` overrides the directory). A directory shunt creates is `0700`; an existing override directory keeps its own permissions. Two names can share an email address;
 each keeps its own record and client id. With no further config the provider uses every account in
 the directory. To pick some, or to prefer one:
 
@@ -136,7 +137,7 @@ again reuses the registration.
 | Result | What it means |
 | :-- | :-- |
 | `… signed out; remote revocation confirmed.` | OpenAI answered 200. The session is revoked. |
-| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | The network failed or OpenAI answered 5xx after a few tries. If the account's token changed during sign-out (the gateway refreshed it, or a new sign-in landed), the new token is revoked too, and this message means one of the two revocations failed. The tokens are cleared on this machine, but the session may still be live at OpenAI. Remove it in your ChatGPT settings. |
+| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | OpenAI did not answer 200: the network failed or it answered 5xx after a few tries, it answered any other non-200 status (for example a 4xx, which is not retried), or no revocation endpoint could be found. If the account's token changed during sign-out (the gateway refreshed it, or a new sign-in landed), the new token is revoked too, and this message means one of the two revocations failed. The tokens are cleared on this machine, but the session may still be live at OpenAI. Remove it in your ChatGPT settings. |
 | `… is already signed out.` | The account had no tokens. Nothing was sent. |
 
 A running gateway treats a signed-out account as needing sign-in. See
@@ -165,9 +166,10 @@ A running gateway treats a signed-out account as needing sign-in. See
   for a non-streaming reply; shunt then returns one complete message.
 - **Tools.** Plain function tools work. Native `tool_search` is off for this provider, whatever the
   `tool_search` setting says, because the preview rejects it. Hosted `web_search` passes through.
-- **Limit after output starts.** If the usage limit arrives after part of the answer has reached
-  Claude Code, the turn cannot move to another account. The stream ends with a `rate_limit_error` and
-  the account is cooled down. The next request uses another account.
+- **Limit after output starts.** If the usage limit, or a temporary unavailability, arrives after
+  part of the answer has reached Claude Code, the turn cannot move to another account. The stream ends
+  with a `rate_limit_error` that points to the usage settings (or an `overloaded_error`), and the
+  account is cooled down. The next request uses another account.
 - **Escalation and advisor calls.** These calls run under an idle bound, and shunt skips the
   pre-output check for them. A usage limit that arrives in-stream on such a call ends the call with the
   error and does not rotate to another account. The account is still cooled down, so the next call

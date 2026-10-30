@@ -550,6 +550,31 @@ async fn a_usage_limit_after_content_ends_the_stream_and_cools_the_account() {
     server.verify().await;
 }
 
+/// A streamed usage limit after content carries the hint an HTTP 429 reply
+/// for a plan account gets: where to check the plan's usage.
+#[tokio::test]
+async fn a_streamed_usage_limit_after_content_points_to_usage_settings() {
+    let pool = two_accounts();
+    let server = MockServer::start().await;
+    let late = format!(
+        "{CREATED}{DELTA}{}",
+        failed("subscription_sharing_usage_limit_exceeded")
+    );
+    mount(&server, "plan-a", sse_ok(late), 1).await;
+    let state = plan_state(&server.uri());
+    let (_, response) = forward_chatgpt_oauth(
+        state,
+        plan_route(),
+        plan_turn(vec![pool.a.clone()], true, None),
+    )
+    .await
+    .expect("committed stream");
+    let text = body_text(response).await;
+    let error_at = text.find("event: error").expect("error event");
+    assert!(text[error_at..].contains(USAGE_SETTINGS_URL), "{text}");
+    server.verify().await;
+}
+
 /// The same late usage limit on the non-streaming loop: the reply is the
 /// mapped 429 and the account cools, with no rotation.
 #[tokio::test]
@@ -577,6 +602,50 @@ async fn a_usage_limit_after_content_cools_on_the_non_streaming_loop() {
         .contains("rate_limit_error"));
     assert!(cooldown_secs(&state, &pool.a).is_some());
     server.verify().await;
+}
+
+/// FR-12 for an unavailable code in both loops: after content it is not
+/// rotated, the reply carries the mapped `overloaded_error`, and the account
+/// cools as the pre-content path cools an HTTP 503.
+#[tokio::test]
+async fn an_unavailable_code_after_content_cools_in_both_loops() {
+    for stream in [false, true] {
+        let pool = two_accounts();
+        let server = MockServer::start().await;
+        let late = format!(
+            "{CREATED}{DELTA}{}",
+            failed("subscription_sharing_usage_unavailable")
+        );
+        mount(&server, "plan-a", sse_ok(late), 1).await;
+        mount(&server, "plan-b", sse_ok(completed_turn("from b")), 0).await;
+        let state = plan_state(&server.uri());
+        let accounts = vec![pool.a.clone(), pool.b.clone()];
+        let served = forward_chatgpt_oauth(
+            state.clone(),
+            plan_route(),
+            plan_turn(accounts, stream, None),
+        )
+        .await;
+        let text = match served {
+            Ok((status, response)) => {
+                assert!(stream, "the non-streaming reply is the mapped error");
+                assert_eq!(status, StatusCode::OK);
+                body_text(response).await
+            }
+            Err(error) => {
+                assert!(!stream, "the stream was committed");
+                assert_eq!(error.response.status(), StatusCode::SERVICE_UNAVAILABLE);
+                body_text(*error.response).await
+            }
+        };
+        assert!(text.contains("overloaded_error"), "stream={stream}: {text}");
+        let cooling = cooldown_secs(&state, &pool.a).expect("a is cooling");
+        assert!(
+            (25..=30).contains(&cooling),
+            "stream={stream}: HTTP 503 cooldown, got {cooling}"
+        );
+        server.verify().await;
+    }
 }
 
 /// An idle-gated call skips the check: a pre-content usage limit keeps the
@@ -674,22 +743,31 @@ async fn a_content_delta_reaches_the_client_while_the_upstream_stalls() {
         drop(socket);
     });
     let state = plan_state(&format!("http://{addr}"));
-    let (_, response) = forward_chatgpt_oauth(
-        state,
-        plan_route(),
-        plan_turn(vec![pool.a.clone()], true, None),
-    )
-    .await
-    .expect("committed stream");
-    let mut body = response.into_body().into_data_stream();
+    // One bound covers the commit and the delta, so a regression that waits
+    // on later frames fails in 5 s instead of hanging on the silent upstream.
     let mut seen = String::new();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    let delivered = tokio::time::timeout(Duration::from_secs(5), async {
+        let (_, response) = forward_chatgpt_oauth(
+            state,
+            plan_route(),
+            plan_turn(vec![pool.a.clone()], true, None),
+        )
+        .await
+        .map_err(|_| "the stream was not committed")?;
+        let mut body = response.into_body().into_data_stream();
         while !seen.contains("\"text\":\"hi\"") {
-            let chunk = body.next().await.expect("stream open").expect("chunk");
-            seen.push_str(&String::from_utf8_lossy(&chunk));
+            match body.next().await {
+                Some(Ok(chunk)) => seen.push_str(&String::from_utf8_lossy(&chunk)),
+                _ => return Err("the stream ended before the delta"),
+            }
         }
+        Ok(())
     })
-    .await
-    .unwrap_or_else(|_| panic!("the delta waited on later frames; got: {seen}"));
+    .await;
     upstream.abort();
+    match delivered {
+        Ok(Ok(())) => {}
+        Ok(Err(reason)) => panic!("{reason}; got: {seen}"),
+        Err(_) => panic!("the delta waited on later frames; got: {seen}"),
+    }
 }

@@ -353,7 +353,7 @@ Sign in a ChatGPT plan account through OpenAI's "Sign in with ChatGPT" token-sha
 shunt login chatgpt-plan --name <account-name>
 ```
 
-`--name` is required. The credential lands at `~/.shunt/accounts/chatgpt-plan/<account-name>.json` (0600, in a 0700 directory; `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` overrides the directory). Reusing a name signs that account in again and keeps its registered client id. `--long-lived` and `--mode` are rejected, since plan tokens are always refreshable, and `--manual` is rejected because pasting the callback is always available.
+`--name` is required. The credential lands at `~/.shunt/accounts/chatgpt-plan/<account-name>.json` (0600; `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` overrides the directory). A directory that shunt creates is made 0700, but an existing override directory keeps its own permissions. Reusing a name signs that account in again and keeps its registered client id. `--long-lived` and `--mode` are rejected, since plan tokens are always refreshable, and `--manual` is rejected because pasting the callback is always available.
 
 shunt prints an authorization URL, opens your browser, and listens on `127.0.0.1:1455` for the redirect. You can instead paste the full callback URL (`http://127.0.0.1:1455/auth/callback?code=…`) into the terminal; whichever arrives first wins, and a pasted URL must belong to this attempt. If the port is taken, the login continues in paste-only mode. The wait ends after five minutes. A sign-in that fails a check (state, client id, ID token, or the `chatgpt.tokens.use.direct` scope) stores no tokens. The first sign-in of a name registers a client id with OpenAI and keeps it for later sign-ins.
 

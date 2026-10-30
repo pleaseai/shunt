@@ -22,8 +22,9 @@
 //! classification when it arrives before any output
 //! ([`peek_if_plan`], `pool_plan_peek.rs`). One that arrives after output has
 //! reached the client is not rotated: the relay ends the client stream with
-//! the mapped error, and the account is cooled as an HTTP 429 would cool it
-//! ([`relay_events`], [`cool_on_relayed_limit`]).
+//! the mapped error, and a usage limit (429) or an unavailable code (503) cools
+//! the account as that HTTP status would ([`relay_events`],
+//! [`cool_on_relayed_limit`]).
 
 use std::{pin::Pin, time::Duration};
 
@@ -37,7 +38,7 @@ use crate::{
     adapters::AdapterError,
     auth::{chatgpt_plan::auth::ChatGptPlanAuthStore, codex::auth::ChatGptAuthError, Credential},
     config::{AccountConfig, AuthMode},
-    model::responses::{backend_error_status, ResponseEvent},
+    model::responses::{append_error_hint, backend_error_status, ResponseEvent},
     routing::Route,
     server::AppState,
 };
@@ -229,9 +230,10 @@ pub(super) async fn peek_if_plan(
 }
 
 /// The parsed event stream the pool's streaming relay serves from a winning
-/// account. For a plan account it also cools the account on a usage limit
-/// that arrives after output started (FR-12); the event itself still ends the
-/// client stream with the mapped `rate_limit_error` (AC-019).
+/// account. For a plan account it also cools the account on a usage limit or
+/// an unavailable code that arrives after output started (FR-12); the event
+/// itself still ends the client stream with the mapped error (AC-019), carrying
+/// the same [`error_hint`] an HTTP error reply for the account gets.
 pub(super) fn relay_events(
     state: &AppState,
     route: &Route,
@@ -245,18 +247,24 @@ pub(super) fn relay_events(
     let state = state.clone();
     let provider = route.provider.clone();
     let account = account.clone();
-    Box::pin(parsed.inspect(move |item| {
-        if let Ok(event) = item {
-            if in_stream_status(event) == Some(StatusCode::TOO_MANY_REQUESTS) {
-                cool_usage_limit(&state, &provider, &account);
+    Box::pin(parsed.map(move |mut item| {
+        if let Ok(event) = &mut item {
+            if let Some(status) = in_stream_status(event) {
+                if cools(status) {
+                    cool_after_output(&state, &provider, &account, status);
+                }
+                if let Some(hint) = error_hint(status, AuthMode::ChatgptPlanOauth) {
+                    append_error_hint(&mut event.data, &hint);
+                }
             }
         }
+        item
     }))
 }
 
 /// [`relay_events`] for the pool's non-streaming relay, which turns a
-/// backend error event into an error reply of its mapped status: a 429 there
-/// is an in-stream usage limit the pre-content check did not rotate, so cool
+/// backend error event into an error reply of its mapped status: a 429 or 503
+/// there is an in-stream failure the pre-content check did not rotate, so cool
 /// the account.
 pub(super) fn cool_on_relayed_limit(
     state: &AppState,
@@ -268,9 +276,18 @@ pub(super) fn cool_on_relayed_limit(
         Ok(response) => response.status(),
         Err(error) => error.response.status(),
     };
-    if is_plan_account(account) && status == StatusCode::TOO_MANY_REQUESTS {
-        cool_usage_limit(state, &route.provider, account);
+    if is_plan_account(account) && cools(status) {
+        cool_after_output(state, &route.provider, account, status);
     }
+}
+
+/// The relayed statuses that cool a plan account: those the pre-content path
+/// rotates on with a cooldown.
+fn cools(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+    )
 }
 
 /// The client-facing status of a backend `error` / `response.failed` event,
@@ -283,9 +300,14 @@ fn in_stream_status(event: &ResponseEvent) -> Option<StatusCode> {
     matches!(name, "error" | "response.failed").then(|| backend_error_status(&event.data))
 }
 
-/// Cool `account` as the pool cools it on an HTTP 429 without `retry-after`.
-fn cool_usage_limit(state: &AppState, provider: &str, account: &AccountConfig) {
-    let status = StatusCode::TOO_MANY_REQUESTS;
+/// Cool `account` as the pool cools it on an HTTP `status` without
+/// `retry-after`.
+fn cool_after_output(
+    state: &AppState,
+    provider: &str,
+    account: &AccountConfig,
+    status: StatusCode,
+) {
     let headers = reqwest::header::HeaderMap::new();
     state.accounts.cooldown(
         provider,
@@ -296,7 +318,8 @@ fn cool_usage_limit(state: &AppState, provider: &str, account: &AccountConfig) {
     tracing::warn!(
         provider = %provider,
         account = %account.name,
-        "ChatGPT plan account hit its usage limit after output started; cooling it down"
+        status = status.as_u16(),
+        "ChatGPT plan account failed after output started; cooling it down"
     );
 }
 

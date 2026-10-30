@@ -186,11 +186,12 @@ pub async fn run_with(
     .await?;
     let identity = verify(endpoints, &client_id, &nonce, &tokens).await?;
 
+    // RFC 6749 §5.1: a response that omits `scope` granted the requested ones.
     let scopes: Vec<String> = tokens
         .scope
         .as_deref()
         .or(received.scope.as_deref())
-        .unwrap_or_default()
+        .unwrap_or(authorize::SCOPES)
         .split_whitespace()
         .map(str::to_string)
         .collect();

@@ -168,14 +168,24 @@ async fn discover(endpoints: &Endpoints, behavior: &Behavior) -> Option<Url> {
         "{}/.well-known/openid-configuration",
         endpoints.issuer.trim_end_matches('/')
     );
-    let response = with_retries(behavior, || token_refresh_client().get(&url).send()).await?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let body: serde_json::Value = tokio::time::timeout(behavior.attempt_timeout, response.json())
-        .await
-        .ok()?
-        .ok()?;
+    // The body read is part of the attempt: a stalled or truncated body is
+    // retried like a network error.
+    let body = retry_attempts(behavior, || async {
+        let Ok(response) = token_refresh_client().get(&url).send().await else {
+            return Attempt::Retry;
+        };
+        if response.status().is_server_error() {
+            return Attempt::Retry;
+        }
+        if !response.status().is_success() {
+            return Attempt::Final(None);
+        }
+        match response.json::<serde_json::Value>().await {
+            Ok(body) => Attempt::Final(Some(body)),
+            Err(_) => Attempt::Retry,
+        }
+    })
+    .await??;
     let endpoint = body.get("revocation_endpoint")?.as_str()?;
     accept_endpoint(endpoint, &endpoints.issuer, behavior.allow_http)
 }
@@ -197,11 +207,37 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = reqwest::Result<reqwest::Response>>,
 {
+    retry_attempts(behavior, || {
+        let sent = send();
+        async move {
+            match sent.await {
+                Ok(response) if !response.status().is_server_error() => Attempt::Final(response),
+                _ => Attempt::Retry,
+            }
+        }
+    })
+    .await
+}
+
+/// One try's verdict for [`retry_attempts`].
+enum Attempt<T> {
+    Final(T),
+    Retry,
+}
+
+/// Run `attempt` until it is final or the attempts run out, each try bounded
+/// by `attempt_timeout` (expiry is a retry), sleeping a doubling backoff
+/// between tries.
+async fn retry_attempts<T, F, Fut>(behavior: &Behavior, mut attempt: F) -> Option<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Attempt<T>>,
+{
     let mut delay = behavior.backoff;
-    for attempt in 1..=behavior.attempts.max(1) {
-        match tokio::time::timeout(behavior.attempt_timeout, send()).await {
-            Ok(Ok(response)) if !response.status().is_server_error() => return Some(response),
-            _ if attempt == behavior.attempts.max(1) => return None,
+    for tried in 1..=behavior.attempts.max(1) {
+        match tokio::time::timeout(behavior.attempt_timeout, attempt()).await {
+            Ok(Attempt::Final(value)) => return Some(value),
+            _ if tried == behavior.attempts.max(1) => return None,
             _ => {
                 tokio::time::sleep(delay).await;
                 delay = delay.saturating_mul(2);

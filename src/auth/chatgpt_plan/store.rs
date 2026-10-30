@@ -38,8 +38,10 @@ pub static ACCOUNT_FILE_LOCK: FileLockKind = FileLockKind {
     warned: std::sync::Once::new(),
 };
 
-/// How long the gateway's refresh waits for [`ACCOUNT_FILE_LOCK`]. Every other
-/// holder keeps it for one read plus one atomic write of a small file.
+/// How long a holder that only reads and atomically writes a small file keeps
+/// [`ACCOUNT_FILE_LOCK`]. The host-id writer waits this long; the gateway's
+/// refresh waits this much beyond its own `refresh_timeout`, since another
+/// process's refresh holds the lock across a token POST bounded by that.
 pub const ACCOUNT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long the CLI (`shunt login`, `shunt logout`) waits for
@@ -275,6 +277,8 @@ mod tests {
         host_id().unwrap();
         write_signed_out("primary", "oaiapp_one").unwrap();
         assert!(dir.join(".host-id").is_file());
+        // Only the Unix advisory lock creates a sibling lock file.
+        #[cfg(unix)]
         assert!(dir.join("primary.json.lock").is_file());
         assert_eq!(names(scan_accounts().unwrap()), ["primary"]);
         let _ = fs::remove_dir_all(dir);

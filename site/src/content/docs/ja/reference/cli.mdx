@@ -277,7 +277,7 @@ OpenAI の「Sign in with ChatGPT」トークン共有プレビューで ChatGPT
 shunt login chatgpt-plan --name <account-name>
 ```
 
-`--name` は必須です。credential は `~/.shunt/accounts/chatgpt-plan/<account-name>.json`（0600、0700 のディレクトリ内。`SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` でディレクトリを上書き）に保存されます。同じ名前を再利用するとそのアカウントに再度サインインし、登録済みのクライアント ID は保持されます。プランのトークンは常に更新可能なので `--long-lived` と `--mode` は拒否され、コールバックの貼り付けが常に使えるため `--manual` も拒否されます。
+`--name` は必須です。credential は `~/.shunt/accounts/chatgpt-plan/<account-name>.json`（0600。`SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` でディレクトリを上書き）に保存されます。shunt が作成するディレクトリは 0700 ですが、既存の上書き先ディレクトリは元の権限のままです。同じ名前を再利用するとそのアカウントに再度サインインし、登録済みのクライアント ID は保持されます。プランのトークンは常に更新可能なので `--long-lived` と `--mode` は拒否され、コールバックの貼り付けが常に使えるため `--manual` も拒否されます。
 
 shunt は認可 URL を表示してブラウザーを開き、リダイレクトを受けるために `127.0.0.1:1455` で待ち受けます。代わりに、完全なコールバック URL（`http://127.0.0.1:1455/auth/callback?code=…`）をターミナルに貼り付けることもでき、先に届いた方が採用されます。貼り付ける URL は今回の試行のものでなければなりません。ポートが使用中の場合、ログインは貼り付け専用モードで続行します。待機は 5 分で終了します。チェック（state、クライアント ID、ID トークン、`chatgpt.tokens.use.direct` スコープ）に失敗したサインインはトークンを保存しません。ある名前での初回サインインは OpenAI にクライアント ID を登録し、以後のサインインのために保持します。
 

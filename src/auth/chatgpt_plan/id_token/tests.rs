@@ -218,9 +218,24 @@ async fn an_unreachable_key_set_is_reported_as_unavailable() {
 
 #[tokio::test]
 async fn errors_never_carry_the_token() {
-    let server = issuer().await;
-    let token = sign(&claims(&server.uri()), KID_ONE);
-    for error in [IdTokenError::Rejected, IdTokenError::KeysUnavailable] {
-        assert!(!format!("{error} {error:?}").contains(&token));
+    // One error from the real check (a token for another client is rejected),
+    // one from an issuer that serves no keys.
+    let keyed = issuer().await;
+    let keyless = MockServer::start().await;
+    for (server, audience, expected) in [
+        (&keyed, "another-client", IdTokenError::Rejected),
+        (&keyless, CLIENT_ID, IdTokenError::KeysUnavailable),
+    ] {
+        let mut body = claims(&server.uri());
+        body["aud"] = json!([audience]);
+        let token = sign(&body, KID_ONE);
+        let error = verify_id_token(&JwksCache::new(), &server.uri(), CLIENT_ID, NONCE, &token)
+            .await
+            .unwrap_err();
+        assert_eq!(error, expected);
+        let rendered = format!("{error} {error:?}");
+        for part in std::iter::once(token.as_str()).chain(token.split('.')) {
+            assert!(!rendered.contains(part), "{expected:?} leaked: {rendered}");
+        }
     }
 }

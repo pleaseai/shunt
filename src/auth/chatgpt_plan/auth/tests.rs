@@ -440,6 +440,41 @@ async fn account_file_lock_is_held_across_the_post() {
     .unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn refresh_waits_out_another_process_holding_the_lock_across_its_post() {
+    let env = Env::new("longhold").await;
+    store::write_account(NAME, &account(100, None)).unwrap();
+    mount(&env, ResponseTemplate::new(500)).await;
+    // Stands in for another gateway whose refresh POST outlasts the 5 s a
+    // read-and-write holder needs, then writes the token it obtained.
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let guard = file_lock::lock_file_blocking(
+            &store::account_path(NAME),
+            &ACCOUNT_FILE_LOCK,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(ACCOUNT_LOCK_TIMEOUT + Duration::from_millis(500));
+        let mut record = account(3600, None);
+        record.tokens.as_mut().unwrap().access_token = "access-other".into();
+        store::write_account_locked(&guard, NAME, &record).unwrap();
+    });
+    locked_rx.recv().unwrap();
+
+    let token = env
+        .store()
+        .with_refresh_timeout(Duration::from_secs(10))
+        .get_valid(NAME)
+        .await
+        .unwrap();
+    holder.join().unwrap();
+    assert_eq!(token, "access-other");
+    assert_eq!(env.posts().await, 0);
+}
+
 #[test]
 fn refresh_rule_boundaries() {
     let tokens = |expires_at, earliest| TokenBlock {

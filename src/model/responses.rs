@@ -1586,6 +1586,26 @@ fn error_message(value: &Value) -> String {
         .to_string()
 }
 
+/// Append ` ({hint})` to the message [`error_message`] reads from a backend
+/// error event, so a gateway hint reaches the client through the in-stream
+/// mapping as `with_auth_hint` adds it to an HTTP error reply. Written at
+/// `/error/message`, which [`error_message`] reads first; a payload whose
+/// `error` is not an object is left alone.
+pub(crate) fn append_error_hint(value: &mut Value, hint: &str) {
+    let message = format!("{} ({hint})", error_message(value));
+    match value.get_mut("error") {
+        Some(Value::Object(error)) => {
+            error.insert("message".to_string(), Value::String(message));
+        }
+        None => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("error".to_string(), json!({ "message": message }));
+            }
+        }
+        Some(_) => {}
+    }
+}
+
 /// Rewrite upstream context-overflow errors into Anthropic's wording.
 ///
 /// Claude Code's automatic compact-and-retry only fires when the error

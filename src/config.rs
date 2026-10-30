@@ -2916,7 +2916,7 @@ pub enum ConfigError {
     AntigravityLegacyTableMissingAuth,
     #[error("{0}")]
     AntigravityMigrationRequired(String),
-    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", \"kimi_oauth\", \"xai_oauth\", or \"antigravity_oauth\"")]
+    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", \"kimi_oauth\", \"xai_oauth\", \"chatgpt_plan_oauth\", or \"antigravity_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
     #[error("providers.{provider}.classifier_model requires kind = \"anthropic\"; it remaps Claude Code's auto-mode classifier request within the provider, and only the anthropic adapter carries that request shape")]
     ClassifierModelWrongKind { provider: String },
@@ -5122,10 +5122,13 @@ impl Config {
                             provider: name.clone(),
                         });
                     }
-                    if host != "api.openai.com" {
+                    if host != "api.openai.com" || url.port_or_known_default() != Some(443) {
                         return Err(ConfigError::ChatgptPlanOauthNonOpenaiHost {
                             provider: name.clone(),
-                            host: host.to_string(),
+                            host: match url.port() {
+                                Some(port) => format!("{host}:{port}"),
+                                None => host.to_string(),
+                            },
                         });
                     }
                 }
@@ -7881,6 +7884,21 @@ confidence_threshold = 0.6
                 .to_string()
                 .contains("providers.chatgpt-plan.base_url"));
         }
+    }
+
+    #[test]
+    fn chatgpt_plan_oauth_rejects_a_non_default_port_on_the_openai_host() {
+        let config =
+            chatgpt_plan_config(|p| p.base_url = "https://api.openai.com:8443/v1".to_string());
+        let error = config.validate().unwrap_err();
+        assert!(
+            matches!(error, ConfigError::ChatgptPlanOauthNonOpenaiHost { .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("api.openai.com:8443"), "{error}");
+        let config =
+            chatgpt_plan_config(|p| p.base_url = "https://api.openai.com:443/v1".to_string());
+        config.validate().unwrap();
     }
 
     #[test]
@@ -13079,6 +13097,7 @@ target = "judge-alias"
             provider: "anthropic".into(),
         };
         assert!(error.to_string().contains("xai_oauth"));
+        assert!(error.to_string().contains("chatgpt_plan_oauth"));
     }
 
     /// zstd request compression is on by default, but only on the ChatGPT/Codex
