@@ -1236,6 +1236,13 @@ async fn relay_response(
     }
     for (name, value) in response_headers {
         if let Some(name) = name {
+            // A pool response carries its own label alone. One the upstream
+            // sent (a chained shunt, say) would otherwise come first, and a
+            // reader of the first value, the `proxied request` log line
+            // among them, would name the wrong account.
+            if account_name.is_some() && name == "x-shunt-account" {
+                continue;
+            }
             builder = builder.header(name, value);
         }
     }

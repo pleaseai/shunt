@@ -283,7 +283,7 @@ anthropic-beta: ...,oauth-2025-04-20
 x-shunt-account: backup
 ```
 
-在共享网关上请使用中性的账户名。该头部会把配置的标签暴露给收到响应的每个已授权客户端。池耗尽后对最后一个上游响应的中继会省略 `x-shunt-account`。
+在共享网关上请使用中性的账户名。该头部会把配置的标签暴露给收到响应的每个已授权客户端。池耗尽后对最后一个上游响应的中继不会添加标签,因此只有上游自己发送了 `x-shunt-account`(例如串联的另一个 shunt)时它才会出现。其他经过池的响应中,池的标签会替换上游发送的值。shunt 的 `proxied request` 日志行也会以 `account` 字段记录同一个标签,因此可以从日志看出每个请求由哪个账户处理。再结合该行的 `session_id`(当 OpenTelemetry 或 Sentry 的 span 导出在未设置 `include_session_id` 的情况下运行时为空),还能看出会话何时换到了另一个账户。在选定账户之前就提交响应的 Codex/ChatGPT 池流式响应会用 `event: account` 帧告知账户,因此其日志行没有 `account`。
 
 ### `account_uuid`
 
