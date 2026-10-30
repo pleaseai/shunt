@@ -94,7 +94,9 @@ Validation (`shunt check`) rejects, naming the offending key:
 - a `chatgpt_plan_oauth` provider whose `kind` is not `responses`;
 - a `base_url` that is plaintext `http` on a non-loopback host;
 - a `base_url` host other than `api.openai.com` (loopback hosts are allowed for local mocks);
-- a provider named `chatgpt-plan` with any other `auth`.
+- a provider named `chatgpt-plan` with any other `auth`;
+- an account that sets `credentials` (chatgpt-plan accounts are signed in with
+  `shunt login chatgpt-plan --name <account>`).
 
 Native `tool_search` resolves off for this auth mode, whatever the `tool_search` setting says, because
 the preview rejects the tool. Hosted `web_search` passes through the existing translation unchanged.

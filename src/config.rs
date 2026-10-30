@@ -2914,6 +2914,8 @@ pub enum ConfigError {
     InvalidAccountName { provider: String, name: String },
     #[error("providers.{provider}.accounts account \"{name}\" sets both credentials and token_env; set at most one credential source")]
     AccountMultipleCredentialSources { provider: String, name: String },
+    #[error("providers.{provider}.accounts account \"{name}\" sets credentials, but chatgpt-plan accounts are signed in with `shunt login chatgpt-plan --name {name}`, not `credentials`")]
+    ChatgptPlanAccountCredentials { provider: String, name: String },
     #[error("providers.{provider}.accounts account \"{name}\" sets token_env, but Antigravity accounts require a credential file containing a project id; use `credentials`, or omit the account entirely to use the default account store")]
     AntigravityAccountTokenEnv { provider: String, name: String },
     #[error("server.pool.{key} must be between 0.0 and 1.0, got {value}")]
@@ -4993,6 +4995,12 @@ impl Config {
                 }
             }
             for account in &provider.accounts {
+                if provider.auth == AuthMode::ChatgptPlanOauth && account.credentials.is_some() {
+                    return Err(ConfigError::ChatgptPlanAccountCredentials {
+                        provider: name.clone(),
+                        name: account.name.clone(),
+                    });
+                }
                 if account.credentials.is_some() && account.token_env.is_some() {
                     return Err(ConfigError::AccountMultipleCredentialSources {
                         provider: name.clone(),
@@ -7836,6 +7844,23 @@ confidence_threshold = 0.6
             ConfigError::ChatgptPlanNameRequiresOauth { .. }
         ));
         assert!(error.to_string().contains("providers.chatgpt-plan.auth"));
+    }
+
+    #[test]
+    fn chatgpt_plan_oauth_rejects_account_credentials() {
+        let config = chatgpt_plan_config(|p| {
+            let mut work = account("work");
+            work.credentials = Some("~/.shunt/work.json".into());
+            p.accounts.push(work);
+        });
+        let error = config.validate().unwrap_err();
+        assert!(
+            matches!(error, ConfigError::ChatgptPlanAccountCredentials { .. }),
+            "{error}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("providers.chatgpt-plan.accounts"));
+        assert!(message.contains("shunt login chatgpt-plan --name work"));
     }
 
     #[test]

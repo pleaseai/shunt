@@ -174,12 +174,7 @@ pub async fn run_with(
         }
     }
 
-    let terminal = paste::TerminalGuard::capture();
-    let race = await_callback(listener, start_paste(), &state, behavior.timeout).await;
-    // Reapply the terminal settings on every outcome of the race, before the
-    // token exchange: a paste reader still blocked will not restore them.
-    drop(terminal);
-    let received = race?;
+    let received = await_callback(listener, start_paste(), &state, behavior.timeout).await?;
     let client_id = authorize::bind_client_id(saved.client_id(), received.client_id.as_deref())?;
     let tokens = exchange::exchange_code(
         &endpoints.token_url,
