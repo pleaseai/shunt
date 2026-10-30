@@ -87,6 +87,8 @@ Considered and not built:
 
 ## Progress
 
+- [x] (2026-10-30 17:00 KST) T001 Move the shared Codex JWT test harness into `tests/common`
+  Evidence: `cargo +1.98.1 test --test inbound_codex_jwt_slots` → 9 passed, 0 failed (9 before the move); `cargo +1.98.1 clippy --all-targets -- -D warnings` and `cargo fmt --all --check` clean (default features; `--all-features` not run)
 ## Decision Log
 
 - 2026-10-30: The plan risk guard (inbound authentication path) promoted the plan depth from the requested `lightweight` to `standard`.

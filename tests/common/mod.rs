@@ -8,6 +8,7 @@
 // it is code this binary happens not to need.
 #![allow(dead_code)]
 
+pub mod codex_jwt;
 pub mod jwt;
 
 /// Serializes every test in a binary that touches the process environment.
