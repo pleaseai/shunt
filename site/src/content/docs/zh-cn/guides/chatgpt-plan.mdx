@@ -110,8 +110,8 @@ name = "personal"
 priority = 200          # 可选: 越小越优先(默认 100)
 ```
 
-shunt 会把一个会话(`x-claude-code-session-id`)固定在同一个账户上,其余请求轮换。提供服务的账户会出现在
-`x-shunt-account` 响应头中。主机标识符(同一目录中的 `.host-id`)只创建一次,并随每次登录发送,请保留它。
+shunt 会把一个会话(`x-claude-code-session-id`)固定在同一个账户上,其余请求轮换。提供服务的账户在非流式响应中
+由 `x-shunt-account` 响应头标明,在流式响应中由 `account` SSE 事件标明。主机标识符(同一目录中的 `.host-id`)只创建一次,并随每次登录发送,请保留它。
 
 ## 登出
 

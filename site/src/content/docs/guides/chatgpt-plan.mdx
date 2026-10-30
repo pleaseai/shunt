@@ -120,7 +120,7 @@ priority = 200          # optional: lower is preferred (default 100)
 ```
 
 shunt keeps a session (`x-claude-code-session-id`) on one account and rotates otherwise. The serving
-account is named in the `x-shunt-account` response header. A host identifier (`.host-id`, in the
+account is named in the `x-shunt-account` response header on non-streaming replies, or in an `account` SSE event on streaming replies. A host identifier (`.host-id`, in the
 same directory) is created once and sent with every sign-in; leave it in place.
 
 ## Sign out

@@ -124,7 +124,7 @@ That is the translator's behavior for every Responses provider (§ `response.inc
 
 The account pool uses the Responses pool loop shared with Codex and xAI. A session
 (`x-claude-code-session-id`) stays on one account; otherwise accounts rotate. The serving account is
-named in the `x-shunt-account` response header.
+named in the `x-shunt-account` response header on non-streaming replies, or in an `account` SSE event on streaming replies.
 
 | Upstream answer | Pool action |
 | :-- | :-- |
