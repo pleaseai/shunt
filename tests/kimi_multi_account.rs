@@ -8,7 +8,6 @@
 use std::{io::ErrorKind, net::SocketAddr};
 
 use reqwest::StatusCode;
-use sha2::{Digest, Sha256};
 use shunt::{
     config::{AccountConfig, AuthMode, Config, RouteConfig},
     server,
@@ -20,6 +19,7 @@ use wiremock::{
 };
 
 mod common;
+use common::session_id_for_account;
 
 struct BearerToken(String);
 
@@ -109,20 +109,6 @@ fn can_bind_loopback() -> bool {
         }
         Err(error) => panic!("unexpected loopback bind failure: {error}"),
     }
-}
-
-/// Brute-force a session id that `accounts::stable_session_index` (SHA-256
-/// prefix mod account count) maps to the requested pool slot, so a test can
-/// deliberately target a specific account via sticky routing.
-fn session_id_for_account(index: usize, account_count: usize) -> String {
-    (0..1000)
-        .map(|candidate| format!("session-{candidate}"))
-        .find(|session_id| {
-            let digest = Sha256::digest(session_id.as_bytes());
-            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
-            (prefix % account_count as u64) as usize == index
-        })
-        .expect("a session id should map to the requested account")
 }
 
 async fn post_messages(gateway: &TestGateway, session_id: Option<&str>) -> reqwest::Response {
@@ -252,7 +238,7 @@ async fn pool_rotates_to_next_account_on_401() {
     // A session that hashes to account-a still lands on account-b, because
     // account-a is now cooling down (so the upstream never sees a second
     // account-a call at all).
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -319,7 +305,7 @@ async fn pool_rotates_to_next_account_on_402() {
 
     // A session that hashes to account-a still lands on account-b, because
     // account-a is now cooling down.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -465,7 +451,7 @@ async fn disabled_account_is_skipped_in_favor_of_the_enabled_one() {
     // A session id that would hash to account-a's slot in a fully-enabled
     // two-account pool still lands on account-b, since account-a never
     // enters the selectable order at all.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(

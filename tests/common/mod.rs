@@ -209,3 +209,44 @@ pub fn gzip(bytes: &[u8]) -> Vec<u8> {
     encoder.write_all(bytes).unwrap();
     encoder.finish().unwrap()
 }
+
+/// A session id whose sticky account is `identities[index]`.
+///
+/// Production ranks a session's accounts by `shunt::accounts::session_score`
+/// of each account's identity, highest first. The identity is the one shunt
+/// resolves: the `uuid`; for a ChatGPT account without one, the
+/// `chatgpt_account_id` its token or credential file carries; else the name.
+pub fn session_id_for_account(index: usize, identities: &[&str]) -> String {
+    let identities = identities
+        .iter()
+        .map(std::slice::from_ref)
+        .collect::<Vec<_>>();
+    session_id_for_any_identity(index, &identities)
+}
+
+/// [`session_id_for_account`] for a pool whose identities the test does not
+/// fully fix: each account lists every identity it may resolve to, and the
+/// session ranks `identities[index]` first under all of them. A `token_env`
+/// account whose variable the test leaves unset is one: it falls back to its
+/// name unless an earlier test in the same process already cached the
+/// identity of the token under that variable.
+pub fn session_id_for_any_identity(index: usize, identities: &[&[&str]]) -> String {
+    use shunt::accounts::session_score as score;
+
+    (0..1000)
+        .map(|candidate| format!("session-{candidate}"))
+        .find(|session_id| {
+            let target = identities[index]
+                .iter()
+                .map(|identity| score(session_id, identity))
+                .min()
+                .expect("the target account has an identity");
+            identities
+                .iter()
+                .enumerate()
+                .filter(|&(slot, _)| slot != index)
+                .flat_map(|(_, alternatives)| alternatives.iter())
+                .all(|identity| score(session_id, identity) < target)
+        })
+        .expect("a session id should map to the requested account")
+}
