@@ -434,6 +434,7 @@ codex-fallback = "gpt-5.2"
 | `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
 | `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 | `opencode` | `anthropic` | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, 头 `x_api_key` |
+| `cheaperinference` | `anthropic` | `https://api.cheaperinference.com` | `api_key`, env `CHEAPER_INFERENCE_API_KEY` |
 
 `auth = "claude_oauth"` 这样的字符串是 `auth = { mode = "claude_oauth" }` 的简写。`api_key` 映射接受 `env`（除非 preset 已提供，否则必需）和 `header`。省略 `header` 时保持默认值（`bearer`，或 `opencode` preset 的 `x_api_key`）。`claude_oauth`、`chatgpt_oauth`、`kimi_oauth`、`xai_oauth` 与 `antigravity_oauth` 映射可用 `account = "name"` 或 `accounts = [...]` 缩小范围，但不能同时设置两者。`accounts` 接受存储条目名称字符串和完整账户表；显式的 `accounts = []` 会被拒绝，而省略两个范围字段则扫描整个存储。若 ChatGPT 存储为空，`chatgpt_oauth` 仍会回退到 `~/.codex/auth.json`；若 Antigravity 存储为空且未配置任何内容，`antigravity_oauth` 会回退到 `~/.shunt/antigravity-auth.json`；若 xAI 存储为空且未配置任何内容，`xai_oauth` 会回退到 `~/.shunt/xai-auth.json`。`passthrough`、`cursor_oauth` 映射只接受 `mode`；特定 mode 下的未知键会报错。
 

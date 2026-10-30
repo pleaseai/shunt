@@ -434,6 +434,7 @@ codex-fallback = "gpt-5.2"
 | `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
 | `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 | `opencode` | `anthropic` | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, ヘッダー `x_api_key` |
+| `cheaperinference` | `anthropic` | `https://api.cheaperinference.com` | `api_key`, env `CHEAPER_INFERENCE_API_KEY` |
 
 `auth = "claude_oauth"` のような文字列は `auth = { mode = "claude_oauth" }` の省略形です。`api_key` マップは `env`（preset が提供しない場合は必須）と `header` を受け取ります。`header` を省略するとデフォルト（`bearer`、または `opencode` preset の `x_api_key`）がそのまま使われます。`claude_oauth`、`chatgpt_oauth`、`kimi_oauth`、`xai_oauth`、`antigravity_oauth` のマップは `account = "name"` または `accounts = [...]` で範囲を絞れますが、両方は指定できません。`accounts` にはストアエントリ名の文字列と完全なアカウントテーブルを指定できます。明示的な `accounts = []` は拒否され、両方のスコープフィールドを省略するとストア全体を走査します。ChatGPT ストアが空の場合、`chatgpt_oauth` は従来どおり `~/.codex/auth.json` にフォールバックします。Antigravity ストアが空で何も設定されていない場合、`antigravity_oauth` は `~/.shunt/antigravity-auth.json` に、xAI ストアが空で何も設定されていない場合、`xai_oauth` は `~/.shunt/xai-auth.json` にフォールバックします。`passthrough`、`cursor_oauth` のマップは `mode` のみを受け付け、mode 固有の未知のキーはエラーです。
 

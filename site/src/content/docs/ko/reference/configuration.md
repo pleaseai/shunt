@@ -452,6 +452,7 @@ codex-fallback = "gpt-5.2"
 | `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
 | `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 | `opencode` | `anthropic` | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, 헤더 `x_api_key` |
+| `cheaperinference` | `anthropic` | `https://api.cheaperinference.com` | `api_key`, env `CHEAPER_INFERENCE_API_KEY` |
 
 `auth = "claude_oauth"` 같은 문자열은 `auth = { mode = "claude_oauth" }`의 축약형입니다. `api_key` 맵은 `env`(preset이 제공하지 않으면 필수)와 `header`를 받습니다. `header`를 생략하면 기본값(`bearer`, 또는 `opencode` preset의 `x_api_key`)이 그대로 사용됩니다. `claude_oauth`, `chatgpt_oauth`, `kimi_oauth`, `xai_oauth`, `antigravity_oauth` 맵은 `account = "name"` 또는 `accounts = [...]`로 범위를 좁힐 수 있지만 둘을 함께 쓸 수는 없습니다. `accounts`에는 스토어 항목 이름 문자열과 전체 계정 테이블을 넣을 수 있습니다. 명시적인 `accounts = []`는 거부되며, 두 범위 필드를 모두 생략하면 전체 스토어를 스캔합니다. ChatGPT 스토어가 비어 있으면 `chatgpt_oauth`는 기존 `~/.codex/auth.json` fallback을 유지합니다. Antigravity 스토어가 비어 있고 아무것도 설정되지 않았다면 `antigravity_oauth`는 `~/.shunt/antigravity-auth.json`으로 fallback하고, xAI 스토어가 비어 있고 아무것도 설정되지 않았다면 `xai_oauth`는 `~/.shunt/xai-auth.json`으로 fallback합니다. `passthrough`, `cursor_oauth` 맵에는 `mode`만 사용할 수 있으며, mode별로 알 수 없는 키는 오류입니다.
 

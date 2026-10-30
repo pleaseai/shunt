@@ -113,6 +113,14 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         // rejected as a missing key (measured against the live endpoint).
         api_key_header: Some(super::ApiKeyHeader::XApiKey),
     },
+    ProviderPreset {
+        name: "cheaperinference",
+        kind: ProviderKind::Anthropic,
+        base_url: "https://api.cheaperinference.com",
+        auth: AuthMode::ApiKey,
+        api_key_env: Some("CHEAPER_INFERENCE_API_KEY"),
+        api_key_header: None,
+    },
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static ProviderPreset> {
@@ -155,12 +163,13 @@ mod tests {
                 "kimi-code",
                 "zhipu",
                 "minimax-cn",
-                "opencode"
+                "opencode",
+                "cheaperinference"
             ]
         );
         assert_eq!(
             available_names(),
-            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn, opencode"
+            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn, opencode, cheaperinference"
         );
     }
 
@@ -235,5 +244,21 @@ mod tests {
         for preset in PRESETS.iter().filter(|preset| preset.name != "opencode") {
             assert_eq!(preset.api_key_header, None);
         }
+    }
+
+    #[test]
+    fn cheaperinference_preset_uses_the_anthropic_surface_with_a_bearer_key() {
+        let cheaperinference = find("cheaperinference").unwrap();
+        assert_eq!(cheaperinference.kind, ProviderKind::Anthropic);
+        assert_eq!(
+            cheaperinference.base_url,
+            "https://api.cheaperinference.com"
+        );
+        assert_eq!(cheaperinference.auth, AuthMode::ApiKey);
+        assert_eq!(
+            cheaperinference.api_key_env,
+            Some("CHEAPER_INFERENCE_API_KEY")
+        );
+        assert_eq!(cheaperinference.api_key_header, None);
     }
 }
