@@ -118,9 +118,14 @@ pub async fn run_with(
         &tokens.refresh_token,
     )
     .await;
-    let unchanged = clear(name, &tokens.refresh_token).await?;
+    // A token that replaced the revoked one meanwhile is gone from disk once
+    // cleared, so this is the only chance to revoke it.
+    let replacement_confirmed = match clear(name, &tokens.refresh_token).await? {
+        Some((client_id, rotated)) => revoke(endpoints, behavior, &client_id, &rotated).await,
+        None => true,
+    };
     let name = name.to_string();
-    Ok(if confirmed && unchanged {
+    Ok(if confirmed && replacement_confirmed {
         Outcome::Confirmed { name }
     } else {
         Outcome::NotConfirmed { name }
@@ -219,11 +224,12 @@ async fn read(name: &str) -> anyhow::Result<Option<AccountRecord>> {
 /// Rewrite the account as `{version, client_id}` under the account lock. The
 /// client id is re-read under the lock so a concurrent re-registration is kept.
 ///
-/// Returns whether the stored refresh token is still `revoked`. The lock is not
-/// held across the revocation, so a gateway refresh or a new sign-in can
-/// replace the token meanwhile; the replacement is cleared locally but was
-/// never revoked, and the caller must not report the sign-out as confirmed.
-async fn clear(name: &str, revoked: &str) -> anyhow::Result<bool> {
+/// The lock is not held across the revocation, so a gateway refresh or a new
+/// sign-in can replace the refresh token meanwhile. Returns the replacement
+/// (with the client id it belongs to) when the stored token is no longer
+/// `revoked`, so the caller can revoke it too; `None` when the stored token is
+/// still `revoked` or another sign-out already removed it.
+async fn clear(name: &str, revoked: &str) -> anyhow::Result<Option<(String, String)>> {
     let name = name.to_string();
     let revoked = revoked.to_string();
     tokio::task::spawn_blocking(move || {
@@ -231,12 +237,14 @@ async fn clear(name: &str, revoked: &str) -> anyhow::Result<bool> {
         let current = store::read_account(&name)?.with_context(|| {
             format!("chatgpt-plan account {name:?} disappeared during sign-out")
         })?;
-        let unchanged = current
+        let replacement = current
             .tokens
             .as_ref()
-            .is_some_and(|tokens| tokens.refresh_token == revoked);
+            .map(|tokens| tokens.refresh_token.clone())
+            .filter(|token| *token != revoked)
+            .map(|token| (current.client_id.clone(), token));
         store::write_account_locked(&guard, &name, &current.into_signed_out())?;
-        Ok(unchanged)
+        Ok(replacement)
     })
     .await
     .context("account write task failed")?

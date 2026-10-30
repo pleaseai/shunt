@@ -314,35 +314,81 @@ async fn a_missing_account_is_an_error_naming_it() {
     assert!(env.server.received_requests().await.unwrap().is_empty());
 }
 
-/// Rotates the stored refresh token as the revocation arrives, as a gateway
-/// refresh landing between logout's read and its clear would.
-struct RotateThenOk;
+/// Rewrites the account file as the revocation arrives, as a gateway refresh
+/// or a second sign-out landing between logout's read and its clear would.
+struct WriteThenOk(fn() -> AccountRecord);
 
-impl wiremock::Respond for RotateThenOk {
+impl wiremock::Respond for WriteThenOk {
     fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
-        let mut rotated = signed_in();
-        rotated.tokens.as_mut().unwrap().refresh_token = "REFRESH-ROTATED".into();
-        store::write_account(NAME, &rotated).unwrap();
+        store::write_account(NAME, &(self.0)()).unwrap();
         ResponseTemplate::new(200)
     }
 }
 
-#[tokio::test]
-async fn a_token_rotated_during_revocation_is_not_reported_confirmed() {
-    let env = Env::new("rotated").await;
-    store::write_account(NAME, &signed_in()).unwrap();
+fn rotated() -> AccountRecord {
+    let mut record = signed_in();
+    record.tokens.as_mut().unwrap().refresh_token = "REFRESH-ROTATED".into();
+    record
+}
+
+async fn rotate_on_first_revocation(env: &Env, rotated_status: u16) {
     env.discovery(&format!("{}/revoke", env.server.uri())).await;
     Mock::given(method("POST"))
         .and(path("/revoke"))
         .and(body_string_contains("token=REFRESH-SECRET"))
-        .respond_with(RotateThenOk)
+        .respond_with(WriteThenOk(rotated))
+        .expect(1)
+        .mount(&env.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/revoke"))
+        .and(body_string_contains("token=REFRESH-ROTATED"))
+        .and(body_string_contains("client_id=oaiapp_issued"))
+        .respond_with(ResponseTemplate::new(rotated_status))
+        .expect(1)
+        .mount(&env.server)
+        .await;
+}
+
+#[tokio::test]
+async fn a_token_rotated_during_revocation_is_revoked_too() {
+    let env = Env::new("rotated").await;
+    store::write_account(NAME, &signed_in()).unwrap();
+    rotate_on_first_revocation(&env, 200).await;
+
+    let outcome = run_with(NAME, &env.endpoints(), &behavior()).await.unwrap();
+
+    assert_eq!(outcome, Outcome::Confirmed { name: NAME.into() });
+    assert_cleared_locally();
+}
+
+#[tokio::test]
+async fn a_rotated_token_whose_revocation_fails_is_not_reported_confirmed() {
+    let env = Env::new("rotated-fail").await;
+    store::write_account(NAME, &signed_in()).unwrap();
+    rotate_on_first_revocation(&env, 400).await;
+
+    let outcome = run_with(NAME, &env.endpoints(), &behavior()).await.unwrap();
+
+    assert_eq!(outcome, Outcome::NotConfirmed { name: NAME.into() });
+    assert_cleared_locally();
+}
+
+#[tokio::test]
+async fn an_account_signed_out_concurrently_still_confirms() {
+    let env = Env::new("concurrent").await;
+    store::write_account(NAME, &signed_in()).unwrap();
+    env.discovery(&format!("{}/revoke", env.server.uri())).await;
+    Mock::given(method("POST"))
+        .and(path("/revoke"))
+        .respond_with(WriteThenOk(|| AccountRecord::signed_out(CLIENT_ID)))
         .expect(1)
         .mount(&env.server)
         .await;
 
     let outcome = run_with(NAME, &env.endpoints(), &behavior()).await.unwrap();
 
-    assert_eq!(outcome, Outcome::NotConfirmed { name: NAME.into() });
+    assert_eq!(outcome, Outcome::Confirmed { name: NAME.into() });
     assert_cleared_locally();
 }
 

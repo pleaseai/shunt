@@ -136,7 +136,7 @@ again reuses the registration.
 | Result | What it means |
 | :-- | :-- |
 | `… signed out; remote revocation confirmed.` | OpenAI answered 200. The session is revoked. |
-| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | The network failed or OpenAI answered 5xx after a few tries, or the account's token changed during sign-out (the gateway refreshed it, or a new sign-in landed), so the current session was never revoked. The tokens are cleared on this machine, but the session may still be live at OpenAI. Remove it in your ChatGPT settings. |
+| `… signed out locally; remote revocation not confirmed — finish in ChatGPT settings.` | The network failed or OpenAI answered 5xx after a few tries. If the account's token changed during sign-out (the gateway refreshed it, or a new sign-in landed), the new token is revoked too, and this message means one of the two revocations failed. The tokens are cleared on this machine, but the session may still be live at OpenAI. Remove it in your ChatGPT settings. |
 | `… is already signed out.` | The account had no tokens. Nothing was sent. |
 
 A running gateway treats a signed-out account as needing sign-in. See
