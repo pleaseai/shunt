@@ -47,7 +47,7 @@ pub(crate) fn generate_pkce() -> PkceChallenge {
     }
 }
 
-fn random_urlsafe(bytes: usize) -> String {
+pub(crate) fn random_urlsafe(bytes: usize) -> String {
     let mut random = vec![0_u8; bytes];
     rand::rng().fill_bytes(&mut random);
     URL_SAFE_NO_PAD.encode(random)

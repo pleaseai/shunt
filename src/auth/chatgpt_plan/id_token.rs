@@ -85,4 +85,4 @@ pub async fn verify_id_token(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

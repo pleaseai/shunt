@@ -14,9 +14,9 @@ use crate::auth::inbound_jwt::JwksCache;
 const CLIENT_ID: &str = "app_test_client";
 const NONCE: &str = "attempt-nonce";
 
-const KID_ONE: &str = "key-one";
+pub(crate) const KID_ONE: &str = "key-one";
 
-const MODULUS_ONE: &str = "qawicxxdtoL-YNU__uL1pWe-fVHvZgkjJAWs2QQkjxTfauwrSMHhKDF2O4C13H8Om5TOVxtuRNsziP8_lhWTPjCsNU2atmDJhLE5mjkIjVFMrCY58LmlpuG6VKdlBN2Y2V_8pG_bDNlj8eqHc8bWzQmiU8T4_Mr7sR_ZOtqeWwNl12Lh_stT8QuJ3AruKXxfvpWlupLQVhHDYA04hNsGl_pu7f5Hfbf0hwPv0hGOuTmOiUPB_3FzPahDth1oY6QAYC-To3qtL6WcQBERBMb8Iyc0BRiKvCYhcnJxt_J6XjqNxw7XSPvhtBX7HeZ69gqbiUNgpgwdXv5lzhu1f91ltQ";
+pub(crate) const MODULUS_ONE: &str = "qawicxxdtoL-YNU__uL1pWe-fVHvZgkjJAWs2QQkjxTfauwrSMHhKDF2O4C13H8Om5TOVxtuRNsziP8_lhWTPjCsNU2atmDJhLE5mjkIjVFMrCY58LmlpuG6VKdlBN2Y2V_8pG_bDNlj8eqHc8bWzQmiU8T4_Mr7sR_ZOtqeWwNl12Lh_stT8QuJ3AruKXxfvpWlupLQVhHDYA04hNsGl_pu7f5Hfbf0hwPv0hGOuTmOiUPB_3FzPahDth1oY6QAYC-To3qtL6WcQBERBMb8Iyc0BRiKvCYhcnJxt_J6XjqNxw7XSPvhtBX7HeZ69gqbiUNgpgwdXv5lzhu1f91ltQ";
 
 const KEY_ONE_DER: &str = concat!(
     "MIIEogIBAAKCAQEAqawicxxdtoL+YNU//uL1pWe+fVHvZgkjJAWs2QQkjxTfauwrSMHhKDF2",
@@ -51,7 +51,7 @@ fn now() -> u64 {
         .as_secs()
 }
 
-fn sign(claims: &serde_json::Value, kid: &str) -> String {
+pub(crate) fn sign(claims: &serde_json::Value, kid: &str) -> String {
     let der = STANDARD
         .decode(KEY_ONE_DER)
         .expect("test key is valid base64");

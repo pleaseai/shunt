@@ -94,14 +94,14 @@ enum Command {
         print: bool,
     },
     /// Log in to a subscription provider and save its credential for shunt to
-    /// inject. Supports `xai`, `cursor`, `claude`, `codex`, `antigravity`, and
-    /// `kimi`.
+    /// inject. Supports `xai`, `cursor`, `claude`, `codex`, `chatgpt-plan`,
+    /// `antigravity`, and `kimi`.
     Login {
         /// Provider to log in to (`xai`, `cursor`, `claude`, `codex`,
-        /// `antigravity`, or `kimi`).
+        /// `chatgpt-plan`, `antigravity`, or `kimi`).
         provider: String,
         /// Stable account name used by a name-only pool entry (`claude`,
-        /// `codex`, `kimi`, `antigravity`, and `xai` only).
+        /// `codex`, `chatgpt-plan`, `kimi`, `antigravity`, and `xai` only).
         #[arg(long)]
         name: Option<String>,
         /// Generate and store a one-year `claude setup-token` value (`claude`
@@ -493,6 +493,22 @@ fn login(
             })?;
             runtime()?.block_on(shunt::auth::codex::login::run(name))
         }
+        "chatgpt-plan" if long_lived => {
+            anyhow::bail!(
+                "--long-lived is not supported for `shunt login chatgpt-plan`; ChatGPT plan tokens are always refreshable"
+            )
+        }
+        "chatgpt-plan" if mode.is_some() => {
+            anyhow::bail!(
+                "--mode is not supported for `shunt login chatgpt-plan`; ChatGPT plan tokens are always refreshable"
+            )
+        }
+        "chatgpt-plan" => {
+            let name = name.ok_or_else(|| {
+                anyhow::anyhow!("`shunt login chatgpt-plan` requires --name <account-name>")
+            })?;
+            runtime()?.block_on(shunt::auth::chatgpt_plan::login::run(name))
+        }
         "kimi" if long_lived => {
             anyhow::bail!(
                 "--long-lived is not supported for `shunt login kimi`; Kimi Code OAuth tokens are always refreshable"
@@ -511,7 +527,7 @@ fn login(
         }
         _ => {
             anyhow::bail!(
-                "unknown login provider {provider:?}; supported: antigravity, claude, codex, cursor, kimi, xai"
+                "unknown login provider {provider:?}; supported: antigravity, chatgpt-plan, claude, codex, cursor, kimi, xai"
             )
         }
     }
@@ -1374,6 +1390,37 @@ mod tests {
             resolve_claude_mode(None, true).unwrap(),
             LoginMode::SetupToken
         );
+    }
+
+    #[test]
+    fn chatgpt_plan_login_parses_name_and_rejects_missing_name_and_unsupported_flags() {
+        let parsed =
+            Cli::try_parse_from(["shunt", "login", "chatgpt-plan", "--name", "work"]).unwrap();
+        let Some(Command::Login { provider, name, .. }) = parsed.command else {
+            panic!("expected login command");
+        };
+        assert_eq!(provider, "chatgpt-plan");
+        assert_eq!(name.as_deref(), Some("work"));
+
+        let error = login("chatgpt-plan", None, false, None, false, None)
+            .expect_err("missing --name must fail");
+        assert!(error.to_string().contains("requires --name"));
+        let error = login("chatgpt-plan", Some("work"), true, None, false, None)
+            .expect_err("--long-lived must be rejected");
+        assert!(error.to_string().contains("--long-lived is not supported"));
+        let error = login(
+            "chatgpt-plan",
+            Some("work"),
+            false,
+            Some(LoginMode::Oauth),
+            false,
+            None,
+        )
+        .expect_err("--mode must be rejected");
+        assert!(error.to_string().contains("--mode is not supported"));
+        let error = login("chatgpt-plan", Some("work"), false, None, true, None)
+            .expect_err("--manual must be rejected");
+        assert!(error.to_string().contains("--manual is only valid"));
     }
 
     #[test]
