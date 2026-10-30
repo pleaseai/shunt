@@ -20,7 +20,8 @@
   account directory.
 - Out of scope: admin-surface provisioning, upstream model discovery (shunt serves the ids you
   map), namespaced tools, the Responses WebSocket transport, session handoff between hosts, and any
-  change to the `codex` provider.
+  change to the `codex` provider. The inbound `[server.codex_endpoint]` cannot route to
+  chatgpt-plan; config validation rejects such a route.
 
 ## 2. Account store
 

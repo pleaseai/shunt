@@ -1,9 +1,12 @@
 //! The authorization-code exchange.
 
-use anyhow::{bail, Context};
+use anyhow::bail;
 use serde::Deserialize;
 
 use super::authorize::RESOURCE;
+
+/// Deadline for the code exchange, request and body together.
+pub(crate) const EXCHANGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The token endpoint's success body. No `Debug`: it holds live credentials.
 #[derive(Deserialize)]
@@ -37,15 +40,25 @@ pub async fn exchange_code(
             ("redirect_uri", redirect_uri),
             ("resource", RESOURCE),
         ])
+        .timeout(EXCHANGE_TIMEOUT)
         .send()
         .await
-        .context("failed to reach the ChatGPT token endpoint")?;
+        .map_err(|error| {
+            if error.is_timeout() {
+                anyhow::anyhow!("the ChatGPT token endpoint did not answer in time")
+            } else {
+                anyhow::anyhow!("failed to reach the ChatGPT token endpoint")
+            }
+        })?;
     let status = response.status();
     if !status.is_success() {
         bail!("ChatGPT token exchange failed ({status})");
     }
-    response
-        .json()
-        .await
-        .context("the ChatGPT token endpoint returned an unreadable response")
+    response.json().await.map_err(|error| {
+        if error.is_timeout() {
+            anyhow::anyhow!("the ChatGPT token endpoint did not answer in time")
+        } else {
+            anyhow::anyhow!("the ChatGPT token endpoint returned an unreadable response")
+        }
+    })
 }

@@ -110,8 +110,9 @@ impl ChatGptPlanAuthStore {
 
     /// Upstream rejected `stale_token`: renew only if it is still the access
     /// token on disk. Another caller (or process) may already have replaced
-    /// it, in which case that replacement is returned without a POST. The
-    /// `earliest_refresh_at` floor still applies to an unexpired token.
+    /// it, in which case that replacement is returned without a POST. A forced
+    /// refresh ignores `earliest_refresh_at` while the stored token is still
+    /// the rejected one.
     pub async fn force_refresh_if_access_token(
         &self,
         name: &str,

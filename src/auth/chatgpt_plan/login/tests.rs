@@ -426,6 +426,37 @@ async fn an_account_changed_mid_sign_in_is_not_overwritten() {
     );
 }
 
+#[tokio::test]
+async fn a_logout_mid_sign_in_is_not_undone() {
+    use crate::auth::chatgpt_plan::record::TokenBlock;
+
+    let env = Env::new("logout-race").await;
+    let mut signed_in = saved("oaiapp_saved");
+    signed_in.tokens = Some(TokenBlock {
+        access_token: "OLD-ACCESS".into(),
+        refresh_token: "OLD-REFRESH".into(),
+        id_token: None,
+        expires_at: 4_000_000_000,
+        earliest_refresh_at: None,
+        last_refresh: Some(1),
+    });
+    store::write_account(NAME, &signed_in).unwrap();
+
+    let attempt = Attempt::start(env.endpoints(0)).await;
+    env.mount_token("oaiapp_saved", &attempt.param("nonce").unwrap(), GRANTED)
+        .await;
+    store::write_account(NAME, &saved("oaiapp_saved")).unwrap();
+    attempt.deliver("&client_id=oaiapp_saved").await;
+    let error = attempt.finish().await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("changed while you were signing in"),
+        "{error:#}"
+    );
+    assert!(!store::read_account(NAME).unwrap().unwrap().is_signed_in());
+}
+
 mod pure {
     use crate::auth::chatgpt_plan::authorize::{bind_client_id, parse_pasted};
 

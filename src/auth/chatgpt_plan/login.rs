@@ -117,7 +117,7 @@ pub async fn run_with(
     start_paste: impl FnOnce() -> PasteReceiver,
 ) -> anyhow::Result<Outcome> {
     shared::validate_account_name(name)?;
-    let saved = saved_client_id(name).await?;
+    let saved = saved_account_state(name).await?;
     let host_id = tokio::task::spawn_blocking(store::host_id)
         .await
         .context("host id task failed")??;
@@ -153,7 +153,7 @@ pub async fn run_with(
     };
     let url = authorize::build_url(&AuthorizeRequest {
         authorize_url: &endpoints.authorize_url,
-        saved_client_id: saved.as_deref(),
+        saved_client_id: saved.client_id(),
         host_id: &host_id,
         redirect_uri: &redirect_uri,
         state: &state,
@@ -174,8 +174,13 @@ pub async fn run_with(
         }
     }
 
-    let received = await_callback(listener, start_paste(), &state, behavior.timeout).await?;
-    let client_id = authorize::bind_client_id(saved.as_deref(), received.client_id.as_deref())?;
+    let terminal = paste::TerminalGuard::capture();
+    let race = await_callback(listener, start_paste(), &state, behavior.timeout).await;
+    // Reapply the terminal settings on every outcome of the race, before the
+    // token exchange: a paste reader still blocked will not restore them.
+    drop(terminal);
+    let received = race?;
+    let client_id = authorize::bind_client_id(saved.client_id(), received.client_id.as_deref())?;
     let tokens = exchange::exchange_code(
         &endpoints.token_url,
         &client_id,
@@ -196,7 +201,7 @@ pub async fn run_with(
         .collect();
     if !scopes.iter().any(|scope| scope == PLAN_USAGE_SCOPE) {
         // Keep the registration so the next sign-in reuses the client id.
-        commit(name, saved, AccountRecord::signed_out(&client_id)).await?;
+        commit(name, &saved, AccountRecord::signed_out(&client_id)).await?;
         bail!(
             "plan usage was not granted ({PLAN_USAGE_SCOPE} is missing from the granted scopes); \
              the account stays signed out. Approve plan usage and run the sign-in again"
@@ -219,7 +224,7 @@ pub async fn run_with(
             last_refresh: Some(now),
         }),
     };
-    commit(name, saved, record).await?;
+    commit(name, &saved, record).await?;
     Ok(Outcome {
         name: name.to_string(),
         email: identity.email,
@@ -298,27 +303,53 @@ async fn verify(
     })
 }
 
-/// The saved registration's client id, read under the account lock.
-async fn saved_client_id(name: &str) -> anyhow::Result<Option<String>> {
+/// What the account looked like when the attempt started: its saved client id
+/// (if any) and whether it held tokens.
+struct SavedAccount {
+    client_id: Option<String>,
+    signed_in: bool,
+}
+
+impl SavedAccount {
+    fn client_id(&self) -> Option<&str> {
+        self.client_id.as_deref()
+    }
+}
+
+/// The saved registration's client id and signed-in state, read under the
+/// account lock.
+async fn saved_account_state(name: &str) -> anyhow::Result<SavedAccount> {
     let name = name.to_string();
     tokio::task::spawn_blocking(move || {
         let _guard = lock_account(&name)?;
-        Ok(store::read_account(&name)?.map(|record| record.client_id))
+        let record = store::read_account(&name)?;
+        Ok(SavedAccount {
+            signed_in: record.as_ref().is_some_and(AccountRecord::is_signed_in),
+            client_id: record.map(|record| record.client_id),
+        })
     })
     .await
     .context("account read task failed")?
 }
 
-/// Write `record` if the saved client id is still what the attempt started
-/// from. The lock is held across the read and the write, so the write goes
-/// through the store's lock-held writer (the plain writer takes the lock).
-async fn commit(name: &str, expected: Option<String>, record: AccountRecord) -> anyhow::Result<()> {
+/// Write `record` if the account is still what the attempt started from: the
+/// same saved client id (or none) and the same signed-in state, in either
+/// direction. A `shunt logout` keeps the client id, so the signed-in check is
+/// what stops a stale attempt from undoing it; a gateway token rotation keeps
+/// both and is not a change. The lock is held across the read and the write,
+/// so the write goes through the store's lock-held writer (the plain writer
+/// takes the lock).
+async fn commit(name: &str, expected: &SavedAccount, record: AccountRecord) -> anyhow::Result<()> {
     let name = name.to_string();
+    let expected_client_id = expected.client_id.clone();
+    let expected_signed_in = expected.signed_in;
     tokio::task::spawn_blocking(move || {
         let guard = lock_account(&name)?;
-        let current = store::read_account(&name)?.map(|saved| saved.client_id);
+        let current = store::read_account(&name)?;
+        let signed_in = current.as_ref().is_some_and(AccountRecord::is_signed_in);
+        let client_id = current.map(|saved| saved.client_id);
         anyhow::ensure!(
-            current == expected,
+            client_id == expected_client_id && signed_in == expected_signed_in,
             "the account changed while you were signing in; nothing was stored. Run the sign-in again"
         );
         store::write_account_locked(&guard, &name, &record)

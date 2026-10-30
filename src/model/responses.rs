@@ -1509,6 +1509,8 @@ pub(crate) fn error_code(value: &Value) -> &str {
 /// Status only, and always terminal: the event follows a 2xx acceptance, so it
 /// never re-enters failover (`docs/upstreams-failover.md` §3) and never cools a
 /// pool account down — pool cooldown keys on the upstream HTTP status alone.
+/// The one exception is a chatgpt-plan pool: `pool_plan::relay_events` /
+/// `cool_on_relayed_limit` cool a plan account on an in-stream 429.
 pub fn backend_error_status(value: &Value) -> StatusCode {
     if let Some(siwc) = siwc_errors::lookup(error_code(value)) {
         return siwc.status;

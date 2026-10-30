@@ -22,6 +22,7 @@ use crate::auth::shared::{self, file_lock, token_refresh_client};
 
 const REVOKE_ATTEMPTS: u32 = 3;
 const REVOKE_BACKOFF: Duration = Duration::from_millis(500);
+const REVOKE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Where the sign-out talks. Production uses the issuer constant; tests inject
 /// a loopback mock. There is deliberately no environment override: a
@@ -48,6 +49,9 @@ pub struct Behavior {
     /// Accept an `http` revocation endpoint (a loopback mock). Production
     /// requires `https`.
     pub allow_http: bool,
+    /// Deadline for one request, body included. Expiry counts as a network
+    /// error: retried, then not confirmed.
+    pub attempt_timeout: Duration,
 }
 
 impl Behavior {
@@ -56,6 +60,7 @@ impl Behavior {
             attempts: REVOKE_ATTEMPTS,
             backoff: REVOKE_BACKOFF,
             allow_http: false,
+            attempt_timeout: REVOKE_ATTEMPT_TIMEOUT,
         }
     }
 }
@@ -162,7 +167,10 @@ async fn discover(endpoints: &Endpoints, behavior: &Behavior) -> Option<Url> {
     if !response.status().is_success() {
         return None;
     }
-    let body: serde_json::Value = response.json().await.ok()?;
+    let body: serde_json::Value = tokio::time::timeout(behavior.attempt_timeout, response.json())
+        .await
+        .ok()?
+        .ok()?;
     let endpoint = body.get("revocation_endpoint")?.as_str()?;
     accept_endpoint(endpoint, &endpoints.issuer, behavior.allow_http)
 }
@@ -177,7 +185,7 @@ fn accept_endpoint(endpoint: &str, issuer: &str, allow_http: bool) -> Option<Url
 }
 
 /// Send until a non-5xx response arrives or the attempts run out, sleeping a
-/// doubling backoff between tries. A network error and a 5xx are retried; any
+/// doubling backoff between tries. A network error, a timeout and a 5xx are retried; any
 /// other status is returned to the caller as final.
 async fn with_retries<F, Fut>(behavior: &Behavior, mut send: F) -> Option<reqwest::Response>
 where
@@ -186,8 +194,8 @@ where
 {
     let mut delay = behavior.backoff;
     for attempt in 1..=behavior.attempts.max(1) {
-        match send().await {
-            Ok(response) if !response.status().is_server_error() => return Some(response),
+        match tokio::time::timeout(behavior.attempt_timeout, send()).await {
+            Ok(Ok(response)) if !response.status().is_server_error() => return Some(response),
             _ if attempt == behavior.attempts.max(1) => return None,
             _ => {
                 tokio::time::sleep(delay).await;

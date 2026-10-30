@@ -85,6 +85,7 @@ fn behavior() -> Behavior {
         attempts: 3,
         backoff: Duration::from_millis(1),
         allow_http: true,
+        attempt_timeout: Duration::from_secs(10),
     }
 }
 
@@ -311,4 +312,31 @@ async fn a_missing_account_is_an_error_naming_it() {
 
     assert!(format!("{error:#}").contains("ghost"), "{error:#}");
     assert!(env.server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_stalled_issuer_times_out_and_still_clears_locally() {
+    let env = Env::new("stall").await;
+    store::write_account(NAME, &signed_in()).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+        .mount(&env.server)
+        .await;
+    let quick = Behavior {
+        attempts: 2,
+        attempt_timeout: Duration::from_millis(100),
+        ..behavior()
+    };
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_with(NAME, &env.endpoints(), &quick),
+    )
+    .await
+    .expect("logout is bounded")
+    .unwrap();
+
+    assert_eq!(outcome, Outcome::NotConfirmed { name: NAME.into() });
+    assert_cleared_locally();
 }

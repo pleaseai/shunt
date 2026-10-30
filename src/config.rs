@@ -2949,6 +2949,8 @@ pub enum ConfigError {
         provider: String,
         auth: &'static str,
     },
+    #[error("[server.codex_endpoint] route for model {model} targets provider {provider}, but the inbound Codex endpoint does not serve auth = \"chatgpt_plan_oauth\" providers")]
+    CodexRouteChatgptPlan { model: String, provider: String },
     #[error("[server.codex_endpoint] declares more than one route for model {model}")]
     DuplicateCodexRoute { model: String },
     #[error("[server.codex_endpoint] route field `{field}` is empty for model {model}")]
@@ -5034,12 +5036,6 @@ impl Config {
                     }
                 }
             }
-            // An xai_oauth provider injects the operator's subscription bearer,
-            // so its base_url must stay on an xAI host over https (mirrors
-            // Hermes' endpoint re-validation) — never a gateway that would
-            // receive it, and never plaintext. It must also be a Responses
-            // provider: the anthropic adapter has no XaiOauth injection and
-            // would forward the client's own credential to the upstream.
             if name == "chatgpt-plan" && provider.auth != AuthMode::ChatgptPlanOauth {
                 return Err(ConfigError::ChatgptPlanNameRequiresOauth {
                     provider: name.clone(),
@@ -5070,6 +5066,12 @@ impl Config {
                     }
                 }
             }
+            // An xai_oauth provider injects the operator's subscription bearer,
+            // so its base_url must stay on an xAI host over https (mirrors
+            // Hermes' endpoint re-validation) — never a gateway that would
+            // receive it, and never plaintext. It must also be a Responses
+            // provider: the anthropic adapter has no XaiOauth injection and
+            // would forward the client's own credential to the upstream.
             if provider.auth == AuthMode::XaiOauth {
                 if provider.kind != ProviderKind::Responses {
                     return Err(ConfigError::XaiOauthWrongKind {
@@ -5167,6 +5169,12 @@ impl Config {
                             } else {
                                 "none"
                             },
+                        });
+                    }
+                    Some(provider) if provider.auth == AuthMode::ChatgptPlanOauth => {
+                        return Err(ConfigError::CodexRouteChatgptPlan {
+                            model: route.model.clone(),
+                            provider: route.provider.clone(),
                         });
                     }
                     Some(_) => {}
@@ -7744,6 +7752,27 @@ confidence_threshold = 0.6
         chatgpt_plan_config(|p| p.base_url = "http://127.0.0.1:9000/v1".to_string())
             .validate()
             .unwrap();
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_a_route_to_a_chatgpt_plan_provider() {
+        let mut config = chatgpt_plan_config(|_| {});
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "gpt-5.5",
+            "chatgpt-plan",
+            None,
+        )]));
+        let error = config.validate().unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                ConfigError::CodexRouteChatgptPlan { model, provider }
+                    if model == "gpt-5.5" && provider == "chatgpt-plan"
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("chatgpt-plan"));
+        assert!(error.to_string().contains("chatgpt_plan_oauth"));
     }
 
     #[test]
