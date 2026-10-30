@@ -14417,6 +14417,19 @@ routes:
             "X-Shunt-Token",
             "x-shunt-admin-token",
             "X-Shunt-Inbound-Client",
+            "Session-Id",
+            "X-Claude-Code-Session-Id",
+            "Content-Type",
+            "content-length",
+            "Content-Encoding",
+            "Transfer-Encoding",
+            "Host",
+            "Origin",
+            "Upgrade",
+            "Connection",
+            "OpenAI-Beta",
+            "Sec-WebSocket-Key",
+            "sec-websocket-protocol",
         ] {
             let error = auth_with_slots(vec![jwt_entry()], &env, Some(bad), None)
                 .resolve()

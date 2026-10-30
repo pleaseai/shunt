@@ -163,6 +163,23 @@ pub(crate) fn origin_matches_host(origin: &str, host: &str) -> bool {
             })
 }
 
+/// Headers shunt itself reads or rewrites on the Codex path (session metadata,
+/// framing, the cookie slot's Origin rule, the WebSocket handshake); a JWT
+/// carried in one would leak into session ids or fail every turn's re-auth.
+const CODEX_PATH_HEADERS: &[&str] = &[
+    "session-id",
+    "x-claude-code-session-id",
+    "content-type",
+    "content-length",
+    "content-encoding",
+    "transfer-encoding",
+    "host",
+    "origin",
+    "upgrade",
+    "connection",
+    "openai-beta",
+];
+
 fn resolve_header(value: &str, static_header: &HeaderName) -> Result<HeaderName, String> {
     if value.trim().is_empty() {
         return Err("must not be empty".to_string());
@@ -175,6 +192,13 @@ fn resolve_header(value: &str, static_header: &HeaderName) -> Result<HeaderName,
     if reserved {
         return Err(format!(
             "{name} is a credential header shunt already reads or strips; choose another name"
+        ));
+    }
+    if CODEX_PATH_HEADERS.iter().any(|reserved| name == *reserved)
+        || name.as_str().starts_with("sec-websocket-")
+    {
+        return Err(format!(
+            "{name} is a header shunt reads or rewrites on the Codex endpoint; choose another name"
         ));
     }
     if name == *static_header {

@@ -109,7 +109,10 @@ max_token_age_seconds = 5400
 
 Startup rejects either key without a `[[server.auth.jwt]]` entry, an empty value, a header
 name that is invalid or is `authorization`, `x-api-key`, `cookie`, `x-shunt-token`,
-`x-shunt-admin-token`, `x-shunt-inbound-client`, the `[server.auth]` `header`, or the
+`x-shunt-admin-token`, `x-shunt-inbound-client`, a header shunt reads or rewrites on the Codex
+endpoint (`session-id`, `x-claude-code-session-id`, `content-type`, `content-length`,
+`content-encoding`, `transfer-encoding`, `host`, `origin`, `upgrade`, `connection`,
+`openai-beta`, or any `sec-websocket-*`), the `[server.auth]` `header`, or the
 `[server.admin]` `header`, and a cookie name that is not an RFC 6265 token. Both keys
 hot-reload.
 
