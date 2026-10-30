@@ -145,6 +145,20 @@ Rejected alternatives are in ADR-0007. Two more: persisting tokens before valida
 
 - 2026-10-30: Reuse the `OpenAi` dialect rather than a new flavor (user choice; ADR-0007).
 - 2026-10-30: Needs-sign-in accounts keep the existing cooldown + flag instead of hard exclusion (user choice; spec AC-012 reworded).
+- Decision: the gateway's plan refresh store honours `SHUNT_CHATGPT_PLAN_TOKEN_URL` (`ChatGptPlanAuthStore::from_env`), resolved through `shared::sanitize_token_url`, as `SHUNT_CODEX_TOKEN_URL` does for codex.
+  Rationale: refines the Architecture Decision's "no env overrides" note. Gateway-level tests cannot inject a constructor, and the sanitizer only accepts loopback or https on `auth.openai.com`, so the override is no exfiltration surface. The issuer stays un-overridable.
+  Date/Author: 2026-10-30 / implement-executor
+- Decision: `pool_plan` builds the plan refresh store per use rather than once per process.
+  Rationale: the store holds only its token URL; its single-flight lock is the process-wide `refresh_lock_for(path)`, so separate instances still serialize one account's refreshes. A process-wide instance would freeze the env seam at first use, which breaks per-test token endpoints. Codex builds `CodexAuthStore` per use the same way.
+  Date/Author: 2026-10-30 / implement-executor
+
+## Surprises & Discoveries
+
+- Observation: AC-014's capped half does not hold. A `response.incomplete` with `incomplete_details.reason = "max_output_tokens"` ends the Anthropic turn with `end_turn`, because `AnthropicSseMachine::complete` only picks `tool_use` / `end_turn`, as `docs/m1-responses-translation.md` documents for every Responses provider. Changing it is a documented-semantics change (AGENTS.md ask-first), so T008 left it for a decision.
+  Evidence: `src/model/responses.rs` `complete()` (`stop_reason = if self.saw_tool { "tool_use" } else { "end_turn" }`); docs/m1 table row for `response.incomplete`.
+  Decision: deferred to follow-up issue #868 (user, 2026-10-30); T008 ships only the `max_tokens` → `max_output_tokens` forwarding half, and `AnthropicSseMachine::complete` is unchanged.
+- Observation: the T006/T007 refresh and login lib tests, and claude's refresh tests, stall for their full timeout (10-30 s) depending on test order. `shared::token_refresh_client()` is a process-static reqwest client, each `#[tokio::test]` runs its own runtime, and wiremock recycles server ports. A later test then checks out a pooled keep-alive connection whose driving runtime is gone. Adding one unrelated test in T008 turned the intermittent flake into a consistent failure.
+  Evidence: full `--lib` → 2 failed (chatgpt_plan `token_in_refresh_window_is_renewed_and_rotation_persisted`, claude `refresh_with_a_stalled_response_body_times_out_as_transient`), 42 s, 3 of 3 runs; `-- auth::` and `-- --skip auth::` each pass alone. After `#[cfg(test)] pool_max_idle_per_host(0)` on that client: full `--lib` → 3623 passed, 11.8 s, 2 of 2 runs; `-- chatgpt_plan` → 56 passed, 3 of 3 runs. Production pooling is unchanged.
 
 ## Progress
 
