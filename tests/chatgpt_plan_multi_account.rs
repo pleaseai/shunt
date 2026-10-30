@@ -494,3 +494,158 @@ async fn an_empty_plan_pool_names_the_sign_in_command() {
     assert!(upstream.received_requests().await.unwrap().is_empty());
     fs::remove_dir_all(&dir).ok();
 }
+
+// --- in-stream SIWC failures (T009) ----------------------------------------
+
+/// A `200 OK` event stream that fails with `code` after the lifecycle frames
+/// and before any output.
+fn in_stream_failure(code: &str) -> ResponseTemplate {
+    let failed = json!({
+        "type": "response.failed",
+        "response": {"id": "resp_1", "status": "failed", "error": {
+            "code": code,
+            "message": format!("{code} from upstream"),
+        }},
+    });
+    sse_ok(&format!(
+        "event: response.created\ndata: {{\"response\":{{\"id\":\"resp_1\"}}}}\n\n\
+         event: response.in_progress\ndata: {{\"response\":{{\"id\":\"resp_1\"}}}}\n\n\
+         event: response.failed\ndata: {failed}\n\n"
+    ))
+}
+
+#[tokio::test]
+async fn an_in_stream_usage_limit_before_output_rotates_in_both_loops() {
+    let mut vars = common::env_lock().await;
+    let dir = temp_dir("stream-429");
+    write_account(&dir, "a", "plan-a", "refresh-a");
+    write_account(&dir, "b", "plan-b", "refresh-b");
+    vars.set("SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR", &dir);
+    let upstream = MockServer::start().await;
+    let limit = in_stream_failure("subscription_sharing_usage_limit_exceeded");
+    mount(&upstream, "plan-a", limit, 1).await;
+    mount(&upstream, "plan-b", sse_ok(&text_sse("from b")), 2).await;
+    let gateway = start(&upstream).await;
+
+    let response = post(&gateway, simple_turn(true)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let sse = response.text().await.unwrap();
+    assert!(sse.contains("from b"), "{sse}");
+    assert!(!sse.contains("rate_limit_error"), "{sse}");
+
+    // `a` cooled as on an HTTP 429, so the non-streaming loop goes to `b`.
+    let response = post(&gateway, simple_turn(false)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-shunt-account"], "b");
+    upstream.verify().await;
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn an_in_stream_invalid_user_refreshes_once_then_marks_sign_in() {
+    let mut vars = common::env_lock().await;
+    let dir = temp_dir("stream-401");
+    write_account(&dir, "a", "plan-stale", "refresh-a");
+    vars.set("SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR", &dir);
+    let auth = token_endpoint(&mut vars, "plan-fresh", 1).await;
+    let upstream = MockServer::start().await;
+    for token in ["plan-stale", "plan-fresh"] {
+        let invalid = in_stream_failure("subscription_sharing_invalid_user");
+        mount(&upstream, token, invalid, 1).await;
+    }
+    let gateway = start(&upstream).await;
+
+    let response = post(&gateway, simple_turn(true)).await;
+    let sse = response.text().await.unwrap();
+    assert!(sse.contains("authentication_error"), "{sse}");
+    assert!(sse.contains("shunt login chatgpt-plan --name"), "{sse}");
+    assert!(needs_relogin(&gateway, "a"));
+    upstream.verify().await;
+    auth.verify().await;
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn an_in_stream_invalid_user_is_served_after_the_refresh() {
+    let mut vars = common::env_lock().await;
+    let dir = temp_dir("stream-401-ok");
+    write_account(&dir, "a", "plan-stale", "refresh-a");
+    vars.set("SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR", &dir);
+    let auth = token_endpoint(&mut vars, "plan-fresh", 1).await;
+    let upstream = MockServer::start().await;
+    let invalid = in_stream_failure("subscription_sharing_invalid_user");
+    mount(&upstream, "plan-stale", invalid, 1).await;
+    mount(&upstream, "plan-fresh", sse_ok(&text_sse("refreshed")), 1).await;
+    let gateway = start(&upstream).await;
+
+    let response = post(&gateway, simple_turn(false)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.text().await.unwrap().contains("refreshed"));
+    assert!(!needs_relogin(&gateway, "a"));
+    upstream.verify().await;
+    auth.verify().await;
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn every_account_on_an_in_stream_usage_limit_points_to_usage_settings() {
+    let mut vars = common::env_lock().await;
+    let dir = temp_dir("stream-all-429");
+    write_account(&dir, "a", "plan-a", "refresh-a");
+    write_account(&dir, "b", "plan-b", "refresh-b");
+    vars.set("SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR", &dir);
+    let upstream = MockServer::start().await;
+    for token in ["plan-a", "plan-b"] {
+        let limit = in_stream_failure("subscription_sharing_usage_limit_exceeded");
+        mount(&upstream, token, limit, 1).await;
+    }
+    let gateway = start(&upstream).await;
+
+    let response = post(&gateway, simple_turn(true)).await;
+    let sse = response.text().await.unwrap();
+    assert!(sse.contains("rate_limit_error"), "{sse}");
+    assert!(sse.contains(USAGE_URL), "{sse}");
+    assert!(!sse.contains("message_stop"), "{sse}");
+    upstream.verify().await;
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn a_usage_limit_after_output_ends_the_stream_and_cools_the_account() {
+    let mut vars = common::env_lock().await;
+    let dir = temp_dir("stream-late-429");
+    write_account(&dir, "a", "plan-a", "refresh-a");
+    write_account(&dir, "b", "plan-b", "refresh-b");
+    vars.set("SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR", &dir);
+    let upstream = MockServer::start().await;
+    let failed = json!({
+        "type": "response.failed",
+        "response": {"error": {
+            "code": "subscription_sharing_usage_limit_exceeded",
+            "message": "usage limit reached",
+        }},
+    });
+    let late = format!(
+        "event: response.created\ndata: {{\"response\":{{\"id\":\"resp_1\"}}}}\n\n\
+         event: response.output_item.added\ndata: {{\"item\":{{\"type\":\"message\"}}}}\n\n\
+         event: response.output_text.delta\ndata: {{\"delta\":\"partial\"}}\n\n\
+         event: response.failed\ndata: {failed}\n\n"
+    );
+    mount(&upstream, "plan-a", sse_ok(&late), 1).await;
+    // The next turn finds `a` cooling and goes to `b`.
+    mount(&upstream, "plan-b", sse_ok(&text_sse("from b")), 1).await;
+    let gateway = start(&upstream).await;
+
+    let response = post(&gateway, simple_turn(true)).await;
+    let sse = response.text().await.unwrap();
+    assert!(sse.contains("partial"), "{sse}");
+    let error_at = sse.find("event: error").expect("error event");
+    assert!(sse[error_at..].contains("rate_limit_error"), "{sse}");
+    assert!(!sse.contains("message_stop"), "{sse}");
+
+    let response = post(&gateway, simple_turn(false)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-shunt-account"], "b");
+    upstream.verify().await;
+    fs::remove_dir_all(&dir).ok();
+}

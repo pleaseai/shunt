@@ -10,6 +10,7 @@ pub(crate) mod inbound;
 mod inbound_routed;
 mod pool;
 mod pool_plan;
+mod pool_plan_peek;
 mod sse_parse;
 // `pub(crate)` (not private): the chain (`proxy::chain_stream`) reuses the
 // post-terminal drain for an Anthropic-kind winner's raw relay, so both

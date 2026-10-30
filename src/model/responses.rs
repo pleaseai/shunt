@@ -1461,7 +1461,7 @@ pub fn client_facing_status(status: StatusCode) -> StatusCode {
 /// The upstream error `code`, wherever the payload shape puts it: a plain
 /// `{"error":{"code":..}}` object, a streaming `response.failed` event nesting it
 /// under `response`, or a bare top-level `code`. Empty when absent.
-fn error_code(value: &Value) -> &str {
+pub(crate) fn error_code(value: &Value) -> &str {
     value
         .pointer("/error/code")
         .or_else(|| value.pointer("/response/error/code"))

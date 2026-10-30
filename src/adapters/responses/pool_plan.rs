@@ -17,19 +17,33 @@
 //! rotate with a cooldown (credentials kept), 401 refreshes once and retries,
 //! and every other 4xx — the SIWC 403 permission codes included — relays
 //! without a retry or a refresh.
+//!
+//! A SIWC failure the preview sends in-stream on a `200 OK` gets the same
+//! classification when it arrives before any output
+//! ([`peek_if_plan`], `pool_plan_peek.rs`). One that arrives after output has
+//! reached the client is not rotated: the relay ends the client stream with
+//! the mapped error, and the account is cooled as an HTTP 429 would cool it
+//! ([`relay_events`], [`cool_on_relayed_limit`]).
 
-use std::time::Duration;
+use std::{pin::Pin, time::Duration};
 
+use axum::body::Bytes;
 use axum::http::StatusCode;
+use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 
 use crate::{
     accounts,
+    adapters::AdapterError,
     auth::{chatgpt_plan::auth::ChatGptPlanAuthStore, codex::auth::ChatGptAuthError, Credential},
     config::{AccountConfig, AuthMode},
+    model::responses::{backend_error_status, ResponseEvent},
     routing::Route,
     server::AppState,
 };
+
+use super::early_stream::parsed_events;
+use super::pool_plan_peek::peek_pre_content;
 
 /// Whether the plan provider forwards the client's `max_tokens` as
 /// `max_output_tokens`. OpenAI's preview-limitations page lists the parameter
@@ -196,6 +210,99 @@ pub(super) fn error_hint(status: StatusCode, auth: AuthMode) -> Option<String> {
         _ => None,
     }
 }
+
+/// The pre-content check ([`peek_pre_content`]) for a plan account's
+/// upstream answer, run where the pool classifies it. `clock` is the gated
+/// call's idle clock: an idle-gated call (`routing::serve`) skips the check so
+/// the read cannot sit outside its idle bound, and keeps the terminal
+/// in-stream error instead. Every other family's answer is returned unread.
+pub(super) async fn peek_if_plan(
+    account: &AccountConfig,
+    upstream: reqwest::Response,
+    clock: Option<(Duration, tokio::time::Instant)>,
+) -> reqwest::Response {
+    if is_plan_account(account) && clock.is_none() {
+        peek_pre_content(upstream).await
+    } else {
+        upstream
+    }
+}
+
+/// The parsed event stream the pool's streaming relay serves from a winning
+/// account. For a plan account it also cools the account on a usage limit
+/// that arrives after output started (FR-12); the event itself still ends the
+/// client stream with the mapped `rate_limit_error` (AC-019).
+pub(super) fn relay_events(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    bytes: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+) -> Pin<Box<dyn Stream<Item = Result<ResponseEvent, Value>> + Send>> {
+    let parsed = parsed_events(bytes);
+    if !is_plan_account(account) {
+        return Box::pin(parsed);
+    }
+    let state = state.clone();
+    let provider = route.provider.clone();
+    let account = account.clone();
+    Box::pin(parsed.inspect(move |item| {
+        if let Ok(event) = item {
+            if in_stream_status(event) == Some(StatusCode::TOO_MANY_REQUESTS) {
+                cool_usage_limit(&state, &provider, &account);
+            }
+        }
+    }))
+}
+
+/// [`relay_events`] for the pool's non-streaming relay, which turns a
+/// backend error event into an error reply of its mapped status: a 429 there
+/// is an in-stream usage limit the pre-content check did not rotate, so cool
+/// the account.
+pub(super) fn cool_on_relayed_limit(
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    relayed: &Result<axum::response::Response, AdapterError>,
+) {
+    let status = match relayed {
+        Ok(response) => response.status(),
+        Err(error) => error.response.status(),
+    };
+    if is_plan_account(account) && status == StatusCode::TOO_MANY_REQUESTS {
+        cool_usage_limit(state, &route.provider, account);
+    }
+}
+
+/// The client-facing status of a backend `error` / `response.failed` event,
+/// as the relay maps it; `None` for any other event.
+fn in_stream_status(event: &ResponseEvent) -> Option<StatusCode> {
+    let name = event
+        .event
+        .as_deref()
+        .or_else(|| event.data.get("type").and_then(Value::as_str))?;
+    matches!(name, "error" | "response.failed").then(|| backend_error_status(&event.data))
+}
+
+/// Cool `account` as the pool cools it on an HTTP 429 without `retry-after`.
+fn cool_usage_limit(state: &AppState, provider: &str, account: &AccountConfig) {
+    let status = StatusCode::TOO_MANY_REQUESTS;
+    let headers = reqwest::header::HeaderMap::new();
+    state.accounts.cooldown(
+        provider,
+        account,
+        super::pool::rotate_cooldown(status, &headers),
+        accounts::rotation_reason(status, &headers),
+    );
+    tracing::warn!(
+        provider = %provider,
+        account = %account.name,
+        "ChatGPT plan account hit its usage limit after output started; cooling it down"
+    );
+}
+
+#[cfg(test)]
+#[path = "pool_plan_tests.rs"]
+mod plan_tests;
 
 #[cfg(test)]
 mod tests {
