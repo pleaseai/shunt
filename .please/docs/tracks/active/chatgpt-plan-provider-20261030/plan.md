@@ -161,6 +161,9 @@ Rejected alternatives are in ADR-0007. Two more: persisting tokens before valida
 - Decision: `logout::Behavior` carries `allow_http` (false in production) so the loopback mock issuer can be exercised; the https and issuer-host rules are also unit-tested directly on `accept_endpoint`.
   Rationale: the spec requires an https revocation endpoint, but wiremock is plain http; a constructor knob (not an env override) keeps the production rule strict, as `login::Endpoints`/`Behavior` do. A discovery document that cannot be fetched or lacks an acceptable endpoint is treated as unconfirmable (no POST, local clear). Discovery shares the revocation retry policy (3 tries, 500 ms doubling).
   Date/Author: 2026-10-30 / implement-executor
+- Decision: the docs leave `SHUNT_CHATGPT_PLAN_TOKEN_URL` undocumented; only `SHUNT_CHATGPT_PLAN_ACCOUNTS_DIR` is listed as a user env var. Locale pages link `/reference/cli/#shunt-login-chatgpt-plan` and `#shunt-logout-chatgpt-plan`, whose ids come from code-formatted headings and so match in every locale; the guide uses no translated in-page anchors.
+  Rationale: `SHUNT_CODEX_TOKEN_URL` and the xAI token-URL override are test seams that no user doc mentions, and the plan's own decision log calls this one a test seam. The code-heading ids avoid the dead-link-in-locale problem AGENTS.md describes.
+  Date/Author: 2026-10-30 / implement-executor
 
 ## Surprises & Discoveries
 
@@ -173,6 +176,8 @@ Rejected alternatives are in ADR-0007. Two more: persisting tokens before valida
   Evidence: first `a_usage_limit_after_content_cools_on_the_non_streaming_loop` run → `AdapterError { message: "responses backend error event", status: 429 }`.
 - Observation: a test fixture that holds `config::test_env_lock()` and `EnvVarGuard`s in one struct must declare the guards first. Fields drop in declaration order, so a lock declared first is released before the vars are restored, and the next test's freshly set token vars are cleared under it (intermittent wrong-account and 502 failures, about 1 run in 5).
   Evidence: `-- pool_plan` → 2 different single failures in 23 runs before the reorder; 25 of 25 runs clean after it.
+- Observation: no docs index lists milestones (`m18-xai-multi-account.md` is referenced only from code comments and other docs), so `docs/m19-chatgpt-plan-provider.md` needed no index row. `chatgpt-plan` is a preset, not a seeded built-in, so the docs tell users to declare `[providers.chatgpt-plan]` (verified with `shunt check` on the doc snippets).
+  Evidence: `grep -rIl m18` finds no index; `target/debug/shunt check --config` → `config ok` for the legacy-provider, `[[upstreams]]`, accounts, and `shunt.toml.example` snippets.
 
 ## Progress
 
@@ -199,3 +204,6 @@ Rejected alternatives are in ADR-0007. Two more: persisting tokens before valida
 - [x] (2026-10-30 KST) T010 Sign out with `shunt logout chatgpt-plan --name`
   Evidence: `cargo +1.98.1 test --features bench --lib -- chatgpt_plan::logout` (RUSTFLAGS=-D warnings; --all-features unbuildable here) → 11 passed / 0 failed (200 confirms, tokens cleared to {version, client_id}, host id unchanged, request body has token/hint/client_id; running-gateway view get_valid → signed-out terminal error; 503 x3 retried then cleared unconfirmed; 502 then 200 confirmed; dead issuer unconfirmed; 400 not retried; off-host and http endpoints never POSTed; https/host/userinfo rules; already signed out skips network; missing account errors naming it); `-- chatgpt_plan` 67 passed; bin 46 passed incl. new logout CLI parse test; full `test --features bench --no-fail-fast` 4523 passed / 0 failed; clippy --all-targets --features bench and fmt --check clean.
   Files beyond `logout.rs`: `logout/tests.rs` (new), `chatgpt_plan/mod.rs` (module), `main.rs` (`Command::Logout`, `logout()`, parse test).
+- [x] (2026-10-30 KST) T011 Document the chatgpt-plan provider on every surface
+  Evidence: `bun run build` in `site/` → Complete, 221 pages built; `bun run lint:docs` → 134 files lint clean; link check of 44 added internal links in `site/dist` → 0 missing pages or anchors (every fragment is `#shunt-login-chatgpt-plan` or `#shunt-logout-chatgpt-plan`, present in all four locales); guide + sidebar link present in en/ko/ja/zh-cn dist; `wiki/` and Rust untouched.
+  Files beyond the task's `Files:`: the 3 locale guides, `site/src/lib/i18n.ts`, `guides/providers.mdx`, `reference/{cli.mdx,configuration.md}` (+ ko/ja/zh-cn copies), `README*.md`, `shunt.toml.example`, `docs/m19-chatgpt-plan-provider.md`, `docs/notes/chatgpt-plan.md`.
