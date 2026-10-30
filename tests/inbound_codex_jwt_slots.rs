@@ -322,10 +322,11 @@ async fn cookie_websocket_serves_a_turn_then_refuses_one_after_expiry() {
     // `exp` has one-second granularity and the verifier allows no skew, so the
     // token is valid through its `exp` second and dead the second after. The
     // lifetime leaves the handshake and the first turn at least that long on a
-    // loaded runner; `iat` may land one second after `minted`.
+    // loaded runner, and the deadline below comes from the signed `iat`.
     const LIFETIME: u64 = 5;
-    let minted = now();
-    let token = jwt_for(&issuer.uri(), "alice", LIFETIME);
+    let claims = jwt::claims(&issuer.uri(), "alice", LIFETIME);
+    let issued = claims["iat"].as_u64().expect("iat");
+    let token = jwt::token(&claims);
     let cookie = format!("theme=dark; {JWT_COOKIE}={token}; other=1");
 
     let mut socket = connect(&gateway, &[("cookie", &cookie)])
@@ -335,7 +336,7 @@ async fn cookie_websocket_serves_a_turn_then_refuses_one_after_expiry() {
     expect_completed(&mut socket).await;
     assert_no_credential_forwarded(&upstream).await;
 
-    let dead_at = Duration::from_secs(minted + LIFETIME + 2) + Duration::from_millis(100);
+    let dead_at = Duration::from_secs(issued + LIFETIME + 1) + Duration::from_millis(100);
     let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     tokio::time::sleep(dead_at.saturating_sub(elapsed)).await;
     send_create(&mut socket).await;
