@@ -40,7 +40,11 @@
 //!   payload verified as a `[[server.auth.jwt]]` JWT, after the three
 //!   static-token entry points above. Its strip mirror is
 //!   [`InboundAuth::is_jwt_credential`], which matches by the token's
-//!   unverified `iss` in either shared slot.
+//!   unverified `iss` in either shared slot. On the inbound Codex endpoint
+//!   (`Slots::Codex`) it also verifies the `[server.auth] jwt_header` and
+//!   `jwt_cookie` slots; their strip mirror is by name
+//!   ([`ShuntCredentials::strip_reserved_slots`]: the `jwt_header` name and
+//!   `cookie`), not [`InboundAuth::is_jwt_credential`].
 //! - [`crate::gateway::GatewayAuth::authenticate_bearer`] — the
 //!   `Authorization: Bearer` payload; `authenticate_token` the bare value,
 //!   reached in production only through that bearer path and through

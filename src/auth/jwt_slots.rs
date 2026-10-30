@@ -113,8 +113,8 @@ pub(crate) fn cookie_credential<'a>(headers: &'a HeaderMap, name: &str) -> Prese
 /// Whether the request may present a cookie credential (FR-12): a cookie rides
 /// along on a cross-origin browser request without the page's consent, so the
 /// slot is consulted only when the request carries no `Origin` or exactly one
-/// that names this host. Anything unreadable, `null`, repeated, or unparseable
-/// fails closed.
+/// that names this host under the request's own scheme (see [`request_scheme`]).
+/// Anything unreadable, `null`, repeated, or unparseable fails closed.
 pub(crate) fn cookie_slot_allowed(headers: &HeaderMap) -> bool {
     let mut origins = headers.get_all(header::ORIGIN).iter();
     let Some(origin) = origins.next() else {
@@ -124,19 +124,43 @@ pub(crate) fn cookie_slot_allowed(headers: &HeaderMap) -> bool {
         return false;
     }
     let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
-    match (origin.to_str(), host) {
-        (Ok(origin), Some(host)) => origin_matches_host(origin, host),
+    match (origin.to_str(), host, request_scheme(headers)) {
+        (Ok(origin), Some(host), Some(scheme)) => origin_matches_host(origin, host, Some(scheme)),
         _ => false,
     }
 }
 
-/// Whether the `Origin` header value names the same host and port as the
-/// request's `Host` header value, with the scheme's default port filled in on
-/// the `Origin` side. `null` and unparseable origins never match.
-pub(crate) fn origin_matches_host(origin: &str, host: &str) -> bool {
+/// The scheme the client used to reach the gateway: the first value of
+/// `X-Forwarded-Proto` when it is `http` or `https` (TLS is terminated by a
+/// proxy in front of shunt's plain-HTTP listener), `http` when the header is
+/// absent, and `None` for any other or unreadable value.
+pub(crate) fn request_scheme(headers: &HeaderMap) -> Option<&'static str> {
+    let Some(value) = headers.get("x-forwarded-proto") else {
+        return Some("http");
+    };
+    let first = value.to_str().ok()?.split(',').next()?.trim();
+    if first.eq_ignore_ascii_case("https") {
+        Some("https")
+    } else if first.eq_ignore_ascii_case("http") {
+        Some("http")
+    } else {
+        None
+    }
+}
+
+/// Whether the `Origin` header value is the same origin as the request: its
+/// scheme equals the request `scheme`, and its host and port equal the `Host`
+/// header value's, with `scheme`'s default port filled in when `Host` has none.
+/// `None` compares host and port only, taking the Origin's own scheme as the
+/// request's. `null` and unparseable origins never match.
+pub(crate) fn origin_matches_host(origin: &str, host: &str, scheme: Option<&str>) -> bool {
     let Ok(origin) = url::Url::parse(origin) else {
         return false;
     };
+    let scheme = scheme.unwrap_or(origin.scheme());
+    if origin.scheme() != scheme {
+        return false;
+    }
     let Some(origin_host) = origin.host_str() else {
         return false;
     };
@@ -156,7 +180,7 @@ pub(crate) fn origin_matches_host(origin: &str, host: &str) -> bool {
     };
     unbracket(origin_host).eq_ignore_ascii_case(&unbracket(host_without_port))
         && origin_port
-            == host_port.or_else(|| match origin.scheme() {
+            == host_port.or(match scheme {
                 "http" => Some(80),
                 "https" => Some(443),
                 _ => None,
@@ -166,6 +190,9 @@ pub(crate) fn origin_matches_host(origin: &str, host: &str) -> bool {
 /// Headers shunt itself reads or rewrites on the Codex path (session metadata,
 /// framing, the cookie slot's Origin rule, the WebSocket handshake); a JWT
 /// carried in one would leak into session ids or fail every turn's re-auth.
+/// `originator` and `x-codex-routing-hint` come from the Codex CLI itself, and
+/// `thread-id`, `x-client-request-id`, `x-codex-window-id` are synthesized by
+/// shunt, so a slot with one of those names would collide with a real value.
 const CODEX_PATH_HEADERS: &[&str] = &[
     "session-id",
     "x-claude-code-session-id",
@@ -178,6 +205,11 @@ const CODEX_PATH_HEADERS: &[&str] = &[
     "upgrade",
     "connection",
     "openai-beta",
+    "thread-id",
+    "x-client-request-id",
+    "x-codex-window-id",
+    "originator",
+    "x-codex-routing-hint",
 ];
 
 fn resolve_header(value: &str, static_header: &HeaderName) -> Result<HeaderName, String> {
@@ -215,6 +247,11 @@ fn resolve_cookie(value: &str) -> Result<String, String> {
     let is_tchar = |b: u8| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b);
     if !value.bytes().all(is_tchar) {
         return Err(format!("{value:?} is not a valid cookie name"));
+    }
+    if value.eq_ignore_ascii_case(crate::admin::SESSION_COOKIE) {
+        return Err(format!(
+            "{value} is the admin dashboard's session cookie; choose another name"
+        ));
     }
     Ok(value.to_string())
 }

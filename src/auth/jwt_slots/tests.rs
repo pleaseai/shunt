@@ -120,22 +120,65 @@ fn with_origin(origin: &[&[u8]], host: Option<&str>) -> HeaderMap {
     headers
 }
 
+fn with_proto(mut headers: HeaderMap, proto: &[u8]) -> HeaderMap {
+    headers.insert("x-forwarded-proto", HeaderValue::from_bytes(proto).unwrap());
+    headers
+}
+
 #[test]
 fn the_cookie_slot_follows_the_origin_rule() {
     let allowed = |origin: &[&[u8]], host| cookie_slot_allowed(&with_origin(origin, host));
+    let allowed_https = |origin: &[&[u8]], host| {
+        cookie_slot_allowed(&with_proto(with_origin(origin, host), b"https"))
+    };
     assert!(allowed(&[], None));
     assert!(allowed(&[], Some("gw.example")));
-    assert!(allowed(&[b"https://gw.example"], Some("gw.example")));
-    assert!(allowed(&[b"https://gw.example:443"], Some("gw.example")));
+    assert!(allowed_https(&[b"https://gw.example"], Some("gw.example")));
+    assert!(allowed_https(
+        &[b"https://gw.example:443"],
+        Some("gw.example")
+    ));
     assert!(allowed(&[b"http://127.0.0.1:8080"], Some("127.0.0.1:8080")));
-    assert!(!allowed(&[b"https://evil.example"], Some("gw.example")));
-    assert!(!allowed(&[b"https://gw.example:8443"], Some("gw.example")));
+    assert!(!allowed_https(
+        &[b"https://evil.example"],
+        Some("gw.example")
+    ));
+    assert!(!allowed_https(
+        &[b"https://gw.example:8443"],
+        Some("gw.example")
+    ));
     assert!(!allowed(&[b"null"], Some("gw.example")));
     assert!(!allowed(&[b"not a url"], Some("gw.example")));
-    assert!(!allowed(&[b"https://\xff.example"], Some("gw.example")));
-    assert!(!allowed(
+    assert!(!allowed_https(
+        &[b"https://\xff.example"],
+        Some("gw.example")
+    ));
+    assert!(!allowed_https(
         &[b"https://gw.example", b"https://gw.example"],
         Some("gw.example")
     ));
-    assert!(!allowed(&[b"https://gw.example"], None));
+    assert!(!allowed_https(&[b"https://gw.example"], None));
+}
+
+#[test]
+fn the_cookie_slot_requires_the_origin_scheme_to_match_the_request() {
+    let origin = |origin: &'static [u8], proto: Option<&[u8]>| {
+        let headers = with_origin(&[origin], Some("gw.example"));
+        cookie_slot_allowed(&match proto {
+            Some(proto) => with_proto(headers, proto),
+            None => headers,
+        })
+    };
+    // The reported bypass: an http Origin against a request that arrived over https.
+    assert!(!origin(b"http://gw.example", Some(b"https")));
+    assert!(!origin(b"https://gw.example", None));
+    assert!(origin(b"https://gw.example", Some(b"https")));
+    assert!(origin(b"http://gw.example", None));
+    assert!(origin(b"https://gw.example", Some(b" HTTPS ")));
+    // Only the first forwarded value counts.
+    assert!(origin(b"https://gw.example", Some(b"https, http")));
+    assert!(!origin(b"http://gw.example", Some(b"https, http")));
+    // Unrecognised or unreadable values fail closed.
+    assert!(!origin(b"http://gw.example", Some(b"ftp")));
+    assert!(!origin(b"http://gw.example", Some(b"\xff")));
 }

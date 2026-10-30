@@ -56,8 +56,8 @@ impl InboundAuth {
     }
 
     /// Attach the optional extra JWT slots (`jwt_header` / `jwt_cookie`).
-    /// Defaults to none, so `AdminAuth` and every unconfigured deployment read
-    /// exactly the credentials they did before.
+    /// Defaults to none, so every unconfigured deployment reads exactly the
+    /// credentials it did before.
     pub(crate) fn with_jwt_slots(mut self, slots: JwtSlots) -> Self {
         self.jwt_slots = slots;
         self

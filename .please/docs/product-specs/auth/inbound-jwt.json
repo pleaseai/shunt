@@ -3,6 +3,7 @@
   "level": "V_M",
   "domain": "auth",
   "feature": "inbound-jwt",
+  "purpose": "Requirements for accepting inbound JWTs from a configured header or cookie on the Codex endpoint.",
   "depends": [],
   "conflicts": [],
   "traces": [],
@@ -229,7 +230,7 @@
     {
       "id": "REQ-008",
       "kind": "functional",
-      "statement": "reject at startup a configuration that sets jwt_header or jwt_cookie without any [[server.auth.jwt]] entry, a jwt_header that is not a valid header name, equals (case-insensitively) authorization, x-api-key, cookie, a shunt-reserved header name, a header shunt itself reads or rewrites on the Codex endpoint (session-id, x-claude-code-session-id, content-type, content-length, content-encoding, transfer-encoding, host, origin, upgrade, connection, openai-beta, sec-websocket-*), or the [server.auth] or [server.admin] header name, and a jwt_cookie that is empty or not a valid cookie name",
+      "statement": "reject at startup a configuration that sets jwt_header or jwt_cookie without any [[server.auth.jwt]] entry, a jwt_header that is not a valid header name, equals (case-insensitively) authorization, x-api-key, cookie, a shunt-reserved header name, a header shunt itself reads or rewrites on the Codex endpoint (session-id, x-claude-code-session-id, content-type, content-length, content-encoding, transfer-encoding, host, origin, upgrade, connection, openai-beta, sec-websocket-*) or that the Codex CLI sends or shunt synthesizes there (originator, x-codex-routing-hint, thread-id, x-client-request-id, x-codex-window-id), or the [server.auth] or [server.admin] header name, and a jwt_cookie that is empty, not a valid cookie name, or equal (case-insensitively) to the admin dashboard's shunt_admin_session cookie",
       "source_tracks": [
         "inbound-jwt-header-cookie-20261030"
       ],
@@ -305,7 +306,7 @@
     {
       "id": "REQ-011",
       "kind": "functional",
-      "statement": "consult the configured cookie only when the request carries no Origin header or one whose origin matches the request's Host",
+      "statement": "consult the configured cookie only when the request carries no Origin header or one whose origin matches the request's scheme (X-Forwarded-Proto, else http), Host, and effective port",
       "source_tracks": [
         "inbound-jwt-header-cookie-20261030"
       ],

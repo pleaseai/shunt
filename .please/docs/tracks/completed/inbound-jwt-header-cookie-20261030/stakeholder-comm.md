@@ -14,7 +14,7 @@ If we've misunderstood anything, or you need a particular identity provider cove
 
 ## Resolution
 
-Hello. The request you raised is now implemented, and here is where it stands.
+Hello. The change you asked for is built and ready for review, and here is where it stands.
 
 **What was wrong**: Codex CLI's built-in "gateway OAuth" sign-in sends each developer's single sign-on token in a named cookie or a custom header. shunt only looked for that token in the standard authorization header, so every Codex request signed in this way was refused.
 
@@ -22,6 +22,6 @@ Hello. The request you raised is now implemented, and here is where it stands.
 
 **How to check it**: Set the header or cookie name that matches your Codex `gateway_oauth` configuration, sign in from the Codex CLI, and complete a turn. The usage for that turn should appear under your own identity rather than a shared token.
 
-**Release status**: The change is in review as PR #862. It ships once that PR is merged.
+**Release status**: The change is in review as PR #862 and has passed our automated tests, but it has not yet been tried end to end with a real Codex CLI sign-in. It ships once that PR is merged.
 
 Thank you for the detailed report. If you hit anything unexpected, especially with a different identity provider, please let us know.

@@ -348,6 +348,31 @@ async fn cookie_websocket_serves_a_turn_then_refuses_one_after_expiry() {
 }
 
 #[tokio::test]
+async fn header_websocket_serves_two_turns_from_the_upgrade_header() {
+    // The jwt_header slot authenticates the upgrade and every later turn on the socket.
+    let _env = env().await;
+    let issuer = jwt::issuer().await;
+    let upstream = upstream("/codex/responses").await;
+    let auth = auth(
+        &issuer.uri(),
+        &format!("{}/jwks", issuer.uri()),
+        Some(JWT_HEADER),
+        None,
+    );
+    let gateway = start(config(&upstream.uri(), auth)).await;
+    let token = jwt_for(&issuer.uri(), "alice", 300);
+
+    let mut socket = connect(&gateway, &[(JWT_HEADER, &token)])
+        .await
+        .expect("101");
+    send_create(&mut socket).await;
+    expect_completed(&mut socket).await;
+    send_create(&mut socket).await;
+    expect_completed(&mut socket).await;
+    assert_no_credential_forwarded(&upstream).await;
+}
+
+#[tokio::test]
 async fn cross_origin_websocket_with_only_the_cookie_is_unauthorized() {
     // AC-017: the gate runs before the 101.
     let _env = env().await;

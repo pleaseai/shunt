@@ -15,7 +15,7 @@ source_tracks: ["inbound-jwt-header-cookie-20261030"]
 
 ## Purpose
 
-Inbound jwt Specification 관련 요구사항.
+Requirements for accepting inbound JWTs from a configured header or cookie on the Codex endpoint.
 
 ## Requirements
 
@@ -126,10 +126,10 @@ The system MUST remove the configured header and every cookie header from the re
 - WHEN a Codex request is served by a [[server.codex_endpoint.routes]] route to a non-ChatGPT upstream
 - THEN the upstream request contains neither the configured header nor any cookie header
 
-### Requirement: reject at startup a configuration that sets jwt_header or jwt_cookie without any [[server.auth.jwt]] entry, a jwt_header that is not a valid header name, equals (case-insensitively) authorization, x-api-key, cookie, a shunt-reserved header name, a header shunt itself reads or rewrites on the Codex endpoint (session-id, x-claude-code-session-id, content-type, content-length, content-encoding, transfer-encoding, host, origin, upgrade, connection, openai-beta, sec-websocket-*), or the [server.auth] or [server.admin] header name, and a jwt_cookie that is empty or not a valid cookie name
+### Requirement: reject at startup a configuration that sets jwt_header or jwt_cookie without any [[server.auth.jwt]] entry, a jwt_header that is not a valid header name, equals (case-insensitively) authorization, x-api-key, cookie, a shunt-reserved header name, a header shunt itself reads or rewrites on the Codex endpoint (session-id, x-claude-code-session-id, content-type, content-length, content-encoding, transfer-encoding, host, origin, upgrade, connection, openai-beta, sec-websocket-*) or that the Codex CLI sends or shunt synthesizes there (originator, x-codex-routing-hint, thread-id, x-client-request-id, x-codex-window-id), or the [server.auth] or [server.admin] header name, and a jwt_cookie that is empty, not a valid cookie name, or equal (case-insensitively) to the admin dashboard's shunt_admin_session cookie
 <!-- req: REQ-008 tracks=inbound-jwt-header-cookie-20261030 -->
 
-The system MUST reject at startup a configuration that sets jwt_header or jwt_cookie without any [[server.auth.jwt]] entry, a jwt_header that is not a valid header name, equals (case-insensitively) authorization, x-api-key, cookie, a shunt-reserved header name, a header shunt itself reads or rewrites on the Codex endpoint (session-id, x-claude-code-session-id, content-type, content-length, content-encoding, transfer-encoding, host, origin, upgrade, connection, openai-beta, sec-websocket-*), or the [server.auth] or [server.admin] header name, and a jwt_cookie that is empty or not a valid cookie name.
+The system MUST reject at startup a configuration that sets jwt_header or jwt_cookie without any [[server.auth.jwt]] entry, a jwt_header that is not a valid header name, equals (case-insensitively) authorization, x-api-key, cookie, a shunt-reserved header name, a header shunt itself reads or rewrites on the Codex endpoint (session-id, x-claude-code-session-id, content-type, content-length, content-encoding, transfer-encoding, host, origin, upgrade, connection, openai-beta, sec-websocket-*) or that the Codex CLI sends or shunt synthesizes there (originator, x-codex-routing-hint, thread-id, x-client-request-id, x-codex-window-id), or the [server.auth] or [server.admin] header name, and a jwt_cookie that is empty, not a valid cookie name, or equal (case-insensitively) to the admin dashboard's shunt_admin_session cookie.
 
 #### Scenario: If jwt_cookie is set and no [[server.auth.jwt]] entry exists, then the system shall refuse to start and name the offending key.
 
@@ -164,10 +164,10 @@ The system MUST apply configuration reloads to jwt_header and jwt_cookie the sam
 - WHEN a reload adds jwt_header
 - THEN the system accepts a JWT from that header on the next Codex request without a restart
 
-### Requirement: consult the configured cookie only when the request carries no Origin header or one whose origin matches the request's Host
+### Requirement: consult the configured cookie only when the request carries no Origin header or one whose origin matches the request's scheme (X-Forwarded-Proto, else http), Host, and effective port
 <!-- req: REQ-011 tracks=inbound-jwt-header-cookie-20261030 -->
 
-The system MUST consult the configured cookie only when the request carries no Origin header or one whose origin matches the request's Host.
+The system MUST consult the configured cookie only when the request carries no Origin header or one whose origin matches the request's scheme (X-Forwarded-Proto, else http), Host, and effective port.
 
 #### Scenario: If a WebSocket upgrade carries a valid JWT only in the configured cookie and an Origin whose host differs from the request's Host, then the system shall reject the upgrade with 401.
 

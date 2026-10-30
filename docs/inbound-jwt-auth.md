@@ -112,9 +112,11 @@ name that is invalid or is `authorization`, `x-api-key`, `cookie`, `x-shunt-toke
 `x-shunt-admin-token`, `x-shunt-inbound-client`, a header shunt reads or rewrites on the Codex
 endpoint (`session-id`, `x-claude-code-session-id`, `content-type`, `content-length`,
 `content-encoding`, `transfer-encoding`, `host`, `origin`, `upgrade`, `connection`,
-`openai-beta`, or any `sec-websocket-*`), the `[server.auth]` `header`, or the
-`[server.admin]` `header`, and a cookie name that is not an RFC 6265 token. Both keys
-hot-reload.
+`openai-beta`, or any `sec-websocket-*`), a header the Codex CLI sends or shunt synthesizes
+there (`originator`, `x-codex-routing-hint`, `thread-id`, `x-client-request-id`,
+`x-codex-window-id`), the `[server.auth]` `header`, or the `[server.admin]` `header`, and a
+cookie name that is not an RFC 6265 token or is the admin dashboard's `shunt_admin_session`.
+Both keys hot-reload.
 
 Microsoft Entra ID, the usual case, has several traps; each value above answers one:
 
@@ -275,9 +277,11 @@ route accepts three credentials. On the `Authorization: Bearer` slot: static tok
 constant-time compare, no network), then the gateway JWT on the routes that accept it, then
 JWT entries by `iss`. First success wins.
 
-A JWT is accepted in `Authorization: Bearer` — never in the configured `[server.auth]`
-`header` and never in `x-api-key`. That is the slot Claude Code sends `ANTHROPIC_AUTH_TOKEN`
-in, which is the point: the client needs no shunt-specific configuration.
+`Authorization: Bearer` is the one JWT slot every gated route shares — a JWT is never read
+from the configured `[server.auth]` `header` or from `x-api-key`. That is the slot Claude Code
+sends `ANTHROPIC_AUTH_TOKEN` in, which is the point: the client needs no shunt-specific
+configuration. The Codex-only `jwt_header` / `jwt_cookie` slots below are additional, and are
+stripped by name before forwarding.
 
 **The inbound Codex endpoint additionally reads two optional slots** (§1, "Codex gateway
 OAuth"), because Codex reserves `Authorization` for `gateway_oauth`. Its routes are the
@@ -294,8 +298,12 @@ Codex discovery paths stay `Authorization: Bearer`-only.
   authenticated it; if an earlier slot was unavailable the result is `503`, otherwise `401`.
 - **Origin rule for the cookie.** A browser attaches a cookie it holds for the gateway's
   domain to cross-site requests, so the cookie slot is consulted only when the request has no
-  `Origin` header or exactly one that matches the request's `Host`. A cross-origin, `null`,
-  unparseable, or repeated `Origin`, or an `Origin` with no `Host`, disables it. The header slot
+  `Origin` header or exactly one that matches the request's scheme, `Host`, and effective port.
+  The scheme is the first `X-Forwarded-Proto` value (`http` or `https`), else `http`, since
+  shunt itself listens on plain HTTP; behind a TLS-terminating proxy, have it send
+  `X-Forwarded-Proto` or same-origin browser requests lose the cookie slot. A cross-origin
+  (including cross-scheme), `null`, unparseable, or repeated `Origin`, an unrecognised
+  `X-Forwarded-Proto`, or an `Origin` with no `Host`, disables it. The header slot
   is unaffected. Do not point `jwt_cookie` at a cookie a browser holds for the gateway's
   domain, such as an SSO proxy's (Cloudflare Access `CF_Authorization`).
 - **Forwarding.** The configured header and every `cookie` header are stripped before any

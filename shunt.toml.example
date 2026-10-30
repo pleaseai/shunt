@@ -31,10 +31,10 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # --- Optional: accept JWTs from your own identity provider instead of (or
 # alongside) the static tokens above. shunt verifies against the issuer's JWKS
 # and issues nothing itself — no login flow, no session, no signing secret, so
-# clients stay out of Claude Code's gateway provider mode. A JWT is accepted
-# only in Authorization: Bearer. With an entry configured, tokens_env above may
-# be unset; with neither, startup still fails closed. Repeat the table per
-# issuer (docs/inbound-jwt-auth.md).
+# clients stay out of Claude Code's gateway provider mode. Outside the inbound
+# Codex endpoint a JWT is accepted only in Authorization: Bearer. With an entry
+# configured, tokens_env above may be unset; with neither, startup still fails
+# closed. Repeat the table per issuer (docs/inbound-jwt-auth.md).
 #
 # Codex CLI `gateway_oauth` delivers the IdP token in a cookie or a custom
 # header instead of Authorization. Name that slot in [server.auth] (each needs

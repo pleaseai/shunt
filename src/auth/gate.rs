@@ -31,7 +31,7 @@ pub enum Slots {
     /// `Authorization: Bearer` for a static token (the Codex CLI never sends
     /// `x-api-key`), then a JWT from `Authorization: Bearer`, the
     /// `[server.auth] jwt_header` slot, and the `jwt_cookie` slot. `Client`
-    /// never reads the JWT slots.
+    /// never reads the `jwt_header` / `jwt_cookie` slots (only the bearer JWT).
     Codex,
 }
 

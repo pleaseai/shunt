@@ -338,7 +338,10 @@ fn same_origin_or_non_browser(headers: &HeaderMap) -> bool {
     else {
         return false;
     };
-    crate::auth::jwt_slots::origin_matches_host(origin, host)
+    // Host and port only, as documented for the unauthenticated endpoint, so
+    // `http` and `https` on one host are not told apart here (the cookie slot
+    // does compare them).
+    crate::auth::jwt_slots::origin_matches_host(origin, host, None)
 }
 
 #[cfg(test)]

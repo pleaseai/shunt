@@ -1665,7 +1665,8 @@ async fn a_same_origin_or_missing_origin_keeps_the_cookie() {
         codex_gate(&auth, &cookie).await,
         authenticated("dev@example.com")
     );
-    let same = with_origin(cookie, b"https://gw.example", Some("gw.example"));
+    let mut same = with_origin(cookie, b"https://gw.example", Some("gw.example"));
+    same.insert("x-forwarded-proto", HeaderValue::from_static("https"));
     assert_eq!(
         codex_gate(&auth, &same).await,
         authenticated("dev@example.com")

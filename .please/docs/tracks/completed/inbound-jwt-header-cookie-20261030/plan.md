@@ -85,9 +85,9 @@ Everything under spec `## Out of Scope`. Considered and not built:
 
 ### Automated Tests
 
-- [ ] `cargo fmt --all --check`
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] `cargo test --all-features --workspace` (record, don't fix, pre-existing environment failures such as the `responses_chain_stream` refused-port trio)
+- [x] `cargo fmt --all --check`
+- [x] `cargo clippy --all-targets --all-features -- -D warnings` (run with default features: `--all-features` needs `ui/dist` and a Python env this machine lacks; CI runs the full set)
+- [x] `cargo test --all-features --workspace` (record, don't fix, pre-existing environment failures such as the `responses_chain_stream` refused-port trio) — run with default features for the same reason: 60 suites, 4447 passed, 0 failed
 
 ### Manual Testing
 
@@ -95,7 +95,7 @@ Everything under spec `## Out of Scope`. Considered and not built:
 
 ### Acceptance Criteria Check
 
-- [ ] AC-001…AC-017 each map to the task named in its `Validation:` line and pass.
+- [x] AC-001…AC-017 each map to the task named in its `Validation:` line and pass.
 
 ## Review Focus
 

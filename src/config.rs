@@ -14430,6 +14430,11 @@ routes:
             "OpenAI-Beta",
             "Sec-WebSocket-Key",
             "sec-websocket-protocol",
+            "Thread-Id",
+            "x-client-request-id",
+            "X-Codex-Window-Id",
+            "Originator",
+            "X-Codex-Routing-Hint",
         ] {
             let error = auth_with_slots(vec![jwt_entry()], &env, Some(bad), None)
                 .resolve()
@@ -14454,6 +14459,18 @@ routes:
         for bad in [
             "", "a=b", "a b", "a;b", "a,b", "a\"b", "a(b)", "a/b", " a", "a\tb",
         ] {
+            let error = auth_with_slots(vec![jwt_entry()], &env, None, Some(bad))
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), "jwt_cookie", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_cookie_rejects_the_admin_session_cookie() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_COOKIE_ADMIN");
+        for bad in ["shunt_admin_session", "Shunt_Admin_Session"] {
             let error = auth_with_slots(vec![jwt_entry()], &env, None, Some(bad))
                 .resolve()
                 .unwrap_err();
