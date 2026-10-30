@@ -20,7 +20,7 @@ use super::{
     id_token::{self, IdTokenError, OPENAI_ISSUER},
     paste::{self, PasteReceiver},
     record::{AccountRecord, TokenBlock, RECORD_VERSION},
-    store::{self, ACCOUNT_FILE_LOCK, ACCOUNT_LOCK_TIMEOUT},
+    store::{self, ACCOUNT_FILE_LOCK, CLI_LOCK_TIMEOUT},
 };
 use crate::auth::{
     callback::{CallbackConfig, CallbackParams, CallbackServer},
@@ -331,7 +331,7 @@ fn lock_account(name: &str) -> anyhow::Result<file_lock::FileLock> {
     file_lock::lock_file_blocking(
         &store::account_path(name),
         &ACCOUNT_FILE_LOCK,
-        ACCOUNT_LOCK_TIMEOUT,
+        CLI_LOCK_TIMEOUT,
     )
 }
 

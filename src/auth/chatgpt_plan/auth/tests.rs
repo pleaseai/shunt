@@ -389,6 +389,24 @@ async fn force_refresh_only_replaces_the_rejected_token() {
 }
 
 #[tokio::test]
+async fn force_refresh_bypasses_the_earliest_refresh_floor() {
+    let env = Env::new("force-floor").await;
+    // Unexpired, outside the window, and the server said wait.
+    store::write_account(NAME, &account(3000, Some(2000))).unwrap();
+    mount(&env, ResponseTemplate::new(200).set_body_json(ok_body())).await;
+
+    assert_eq!(env.store().get_valid(NAME).await.unwrap(), "access-old");
+    assert_eq!(env.posts().await, 0);
+    let token = env
+        .store()
+        .force_refresh_if_access_token(NAME, "access-old")
+        .await
+        .unwrap();
+    assert_eq!(token, "access-new");
+    assert_eq!(env.posts().await, 1);
+}
+
+#[tokio::test]
 async fn account_file_lock_is_held_across_the_post() {
     let env = Env::new("filelock").await;
     store::write_account(NAME, &account(100, None)).unwrap();
@@ -437,4 +455,7 @@ fn refresh_rule_boundaries() {
     assert!(!refresh_needed(&tokens(1300, Some(1001)), None, 1000));
     assert!(refresh_needed(&tokens(1300, Some(1000)), None, 1000));
     assert!(refresh_needed(&tokens(1000, Some(5000)), None, 1000));
+    // Forced: only the stale-token check decides.
+    assert!(refresh_needed(&tokens(9000, Some(5000)), Some("a"), 1000));
+    assert!(!refresh_needed(&tokens(1000, None), Some("other"), 1000));
 }

@@ -38,11 +38,15 @@ pub static ACCOUNT_FILE_LOCK: FileLockKind = FileLockKind {
     warned: std::sync::Once::new(),
 };
 
-/// How long a writer waits for [`ACCOUNT_FILE_LOCK`]. A login or logout holds
-/// it for one read plus one atomic write of a small file; a token refresh
-/// holds it across its read, the token-endpoint POST (bounded by the refresh
-/// timeout), and its write, because the refresh token rotates.
+/// How long the gateway's refresh waits for [`ACCOUNT_FILE_LOCK`]. Every other
+/// holder keeps it for one read plus one atomic write of a small file.
 pub const ACCOUNT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the CLI (`shunt login`, `shunt logout`) waits for
+/// [`ACCOUNT_FILE_LOCK`]. A token refresh holds it across its token-endpoint
+/// POST (bounded at 30 s), so this must outlast that hold or a sign-in during
+/// a slow refresh reports contention.
+pub const CLI_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
 const HOST_ID_FILE: &str = ".host-id";
 const HOST_ID_PREFIX: &str = "urn:uuid:";
@@ -83,7 +87,8 @@ pub fn read_account(name: &str) -> anyhow::Result<Option<AccountRecord>> {
     Ok(Some(record))
 }
 
-/// Write `record` as account `name`, replacing any existing file.
+/// Write `record` as account `name`, replacing any existing file. Waits
+/// [`CLI_LOCK_TIMEOUT`]: its callers are the login and logout commands.
 pub fn write_account(name: &str, record: &AccountRecord) -> anyhow::Result<()> {
     validate_account_name(name)?;
     let value = serde_json::to_value(record)?;
@@ -91,7 +96,7 @@ pub fn write_account(name: &str, record: &AccountRecord) -> anyhow::Result<()> {
         &account_path(name),
         &value,
         &ACCOUNT_FILE_LOCK,
-        ACCOUNT_LOCK_TIMEOUT,
+        CLI_LOCK_TIMEOUT,
     )
 }
 

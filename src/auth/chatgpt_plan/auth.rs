@@ -151,14 +151,17 @@ impl ChatGptPlanAuthStore {
 
 /// Whether the stored token must be renewed now.
 ///
-/// Due inside the window; never before `earliest_refresh_at` unless the token
-/// has already expired. With `stale` set, only when the stored token is it.
+/// Routine (`stale` is `None`): due inside the window, never before
+/// `earliest_refresh_at` unless the token has already expired. Forced (`stale`
+/// set, upstream rejected that token): due exactly when the stored token is
+/// still the rejected one, whatever the window or the floor, since the same
+/// token would only be rejected again.
 fn refresh_needed(tokens: &TokenBlock, stale: Option<&str>, now: u64) -> bool {
-    if stale.is_some_and(|stale| tokens.access_token != stale) {
-        return false;
+    if let Some(stale) = stale {
+        return tokens.access_token == stale;
     }
     let expired = now >= tokens.expires_at;
-    let in_window = stale.is_some() || now >= tokens.expires_at.saturating_sub(REFRESH_WINDOW_SECS);
+    let in_window = now >= tokens.expires_at.saturating_sub(REFRESH_WINDOW_SECS);
     let too_early = tokens.earliest_refresh_at.is_some_and(|at| now < at);
     in_window && (expired || !too_early)
 }
