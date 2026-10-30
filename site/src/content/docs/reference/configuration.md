@@ -565,6 +565,7 @@ Available presets:
 | `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
 | `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 | `opencode` | `anthropic` | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, header `x_api_key` |
+| `cheaperinference` | `anthropic` | `https://api.cheaperinference.com` | `api_key`, env `CHEAPER_INFERENCE_API_KEY` |
 | `chatgpt-plan` | `responses` | `https://api.openai.com/v1` | `chatgpt_plan_oauth` |
 
 A bare string such as `auth = "claude_oauth"` is shorthand for `auth = { mode = "claude_oauth" }`. `api_key` maps accept `env` (required unless the preset supplies it) and `header`; an omitted `header` keeps the default (`bearer`, or the `opencode` preset's `x_api_key`). `claude_oauth`, `chatgpt_oauth`, `kimi_oauth`, `xai_oauth`, and `antigravity_oauth` maps may select `account = "name"` or `accounts = [...]`, but not both. `accounts` accepts bare store-entry names and full account tables; an explicitly empty `accounts = []` is rejected, while omitting both scope fields scans the whole store. If the ChatGPT store is empty, `chatgpt_oauth` retains its `~/.codex/auth.json` fallback; if the Antigravity store is empty and nothing is configured, `antigravity_oauth` falls back to `~/.shunt/antigravity-auth.json`; if the xAI store is empty and nothing is configured, `xai_oauth` falls back to `~/.shunt/xai-auth.json`. `passthrough` and `cursor_oauth` maps take only `mode`; unknown mode-specific keys are errors.
