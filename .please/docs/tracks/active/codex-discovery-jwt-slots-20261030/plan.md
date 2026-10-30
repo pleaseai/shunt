@@ -55,11 +55,11 @@ Considered and not built:
 - [ ] T001 Move the shared Codex JWT test harness into `tests/common` (file: tests/common/codex_jwt.rs)
   Validation: `tests/inbound_codex_jwt_slots.rs` uses the shared gateway, config, and token helpers instead of defining them, and its tests pass with the same names, count, and assertions.
   Method: `cargo test --test inbound_codex_jwt_slots`, with the same pass count before and after
-- [ ] T002 Codex-shaped discovery reads the `jwt_header` / `jwt_cookie` slots (file: src/auth/gate.rs) (depends on T001)
+- [ ] T002 Codex-shaped discovery reads the `jwt_header` / `jwt_cookie` slots (file: src/auth/gate.rs) (depends on T001) [FR-1, FR-2, FR-3, FR-4, FR-5, NFR-1, NFR-2, AC-001, AC-002, AC-003, AC-004, AC-005, AC-006, AC-007, AC-008, AC-009]
   Validation: AC-001 through AC-009 pass end to end on `/models`, `/backend-api/codex/models`, and `/v1/models?client_version=…`. The slot posture follows exactly the `client_version` detection that picks the Codex shape, including a key with an empty value. A valid `x-api-key` static token wins over a repeated `jwt_header`. The doc comments and log text no longer call the slots inbound-Codex-endpoint-only.
   Method: new `tests/inbound_codex_jwt_discovery.rs` via `cargo test --test inbound_codex_jwt_discovery`, then `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --all --check`
   STOP: the cookie `Origin` rule or repeated-slot handling needs request data beyond the discovery handler's `HeaderMap`
-- [ ] T003 Document that Codex model discovery accepts the configured header and cookie (file: docs/inbound-jwt-auth.md)
+- [ ] T003 Document that Codex model discovery accepts the configured header and cookie (file: docs/inbound-jwt-auth.md) [FR-6]
   Validation: no page says the Codex discovery paths accept a JWT only in `Authorization: Bearer`. Each page that lists the routes reading `jwt_header` / `jwt_cookie` names the three Codex-shaped discovery variants and keeps the Anthropic `/v1/models` bearer-only, across `docs/inbound-jwt-auth.md`, `docs/m11-inbound-codex-endpoint.md`, and the site guides `connect-codex-cli.mdx` and `inbound-codex-endpoint.md` plus `reference/configuration.md`, in en/ko/ja/zh-cn. The site builds, and the edited pages' fragment links resolve in `site/dist`.
   Method: `rg -n "discovery"` over those files for stale wording; `cd site && bun run build` with an anchor check
 
@@ -90,6 +90,7 @@ Considered and not built:
 ## Decision Log
 
 - 2026-10-30: The plan risk guard (inbound authentication path) promoted the plan depth from the requested `lightweight` to `standard`.
+- 2026-10-30: Implementation stays on `amondnet/firefish`, the branch that holds the track commit, instead of an issue-linked branch off `main`, which would have left that commit behind. Requirement tags added to T002/T003 for the coverage gate.
 
 ## Surprises & Discoveries
 </content>
