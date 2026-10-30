@@ -118,6 +118,15 @@ enum Command {
         #[arg(long)]
         manual: bool,
     },
+    /// Sign out of a subscription provider account and clear its saved tokens.
+    /// Supports `chatgpt-plan`.
+    Logout {
+        /// Provider to sign out of (`chatgpt-plan`).
+        provider: String,
+        /// Account name given at login (required for `chatgpt-plan`).
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Set up and inspect the admin usage dashboard.
     Dashboard {
         #[command(subcommand)]
@@ -220,6 +229,7 @@ fn main() -> anyhow::Result<()> {
             manual,
             cli.config.as_deref(),
         ),
+        Some(Command::Logout { provider, name }) => logout(&provider, name.as_deref()),
         Some(Command::Dashboard { action }) => dashboard(action, cli.config),
         Some(Command::Gateway { action }) => gateway(action, cli.config.as_deref()),
         None if cli.check => check(cli.config),
@@ -529,6 +539,20 @@ fn login(
             anyhow::bail!(
                 "unknown login provider {provider:?}; supported: antigravity, chatgpt-plan, claude, codex, cursor, kimi, xai"
             )
+        }
+    }
+}
+
+fn logout(provider: &str, name: Option<&str>) -> anyhow::Result<()> {
+    match provider {
+        "chatgpt-plan" => {
+            let name = name.ok_or_else(|| {
+                anyhow::anyhow!("`shunt logout chatgpt-plan` requires --name <account-name>")
+            })?;
+            runtime()?.block_on(shunt::auth::chatgpt_plan::logout::run(name))
+        }
+        _ => {
+            anyhow::bail!("unknown logout provider {provider:?}; supported: chatgpt-plan")
         }
     }
 }
@@ -1389,6 +1413,26 @@ mod tests {
         assert_eq!(
             resolve_claude_mode(None, true).unwrap(),
             LoginMode::SetupToken
+        );
+    }
+
+    #[test]
+    fn chatgpt_plan_logout_parses_and_rejects_missing_name_and_unknown_provider() {
+        let parsed =
+            Cli::try_parse_from(["shunt", "logout", "chatgpt-plan", "--name", "work"]).unwrap();
+        let Some(Command::Logout { provider, name }) = parsed.command else {
+            panic!("expected logout");
+        };
+        assert_eq!(provider, "chatgpt-plan");
+        assert_eq!(name.as_deref(), Some("work"));
+
+        assert!(Cli::try_parse_from(["shunt", "logout"]).is_err());
+        let error = logout("chatgpt-plan", None).unwrap_err();
+        assert!(error.to_string().contains("requires --name"), "{error}");
+        let error = logout("nope", Some("work")).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown logout provider"),
+            "{error}"
         );
     }
 
