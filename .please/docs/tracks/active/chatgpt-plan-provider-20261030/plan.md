@@ -72,7 +72,7 @@ Rejected alternatives are in ADR-0007. Two more: persisting tokens before valida
 - [x] T003 Surface the callback's client_id and scope from the loopback listener (file: src/auth/callback.rs) [FR-2]
   Validation: a callback to `/auth/callback?code=…&state=…&client_id=oaiapp_x&scope=…` yields all three values; params beyond the captured set are ignored and oversized values rejected; every existing `wait_for_code` caller and test is unchanged.
   Method: `cargo test --all-features -- auth::callback`
-- [ ] T004 Store chatgpt-plan accounts and the installation host id (depends on T001) (file: src/auth/chatgpt_plan/store.rs) [FR-4, FR-7, AC-010]
+- [x] T004 Store chatgpt-plan accounts and the installation host id (depends on T001) (file: src/auth/chatgpt_plan/store.rs) [FR-4, FR-7, AC-010]
   Validation: account files are written 0600 in a 0700 directory and scanned into the pool by name; two names with the same email give two records (AC-010); `.host-id` is created once as `urn:uuid:<v4>` under concurrent first use and never scanned as an account; a signed-out `{version, client_id}` file round-trips; a store directory whose path contains spaces or is a symlink keeps host id and accounts together.
   Method: `cargo test --all-features -- chatgpt_plan::store`
 - [ ] T005 Verify the SIWC ID token (file: src/auth/chatgpt_plan/id_token.rs) [FR-6, AC-007, AC-008]
@@ -150,9 +150,13 @@ Rejected alternatives are in ADR-0007. Two more: persisting tokens before valida
 
 - [x] (2026-10-30 KST) T001 Register the chatgpt-plan auth mode, preset, and config validation
   Evidence: `cargo +1.98.1 test --features bench --workspace` (RUSTFLAGS=-D warnings) → exit 0, lib 3563 passed / 0 failed; clippy and fmt --check clean
+- [x] (2026-10-30 KST) T005 Verify the SIWC ID token
+  Evidence: `cargo +1.98.1 test --features bench --lib -- chatgpt_plan::id_token` (RUSTFLAGS=-D warnings; --all-features unbuildable here) → 11 passed / 0 failed (valid token + array aud + email; iat +5 s accepted; exp -20 s within skew accepted; wrong nonce, missing nonce, wrong aud, exp -120 s, unknown kid rejected; unreachable JWKS → KeysUnavailable); full lib 3592 passed / 0 failed; clippy --all-targets --features bench and fmt --check clean; inbound_jwt untouched
 - [x] (2026-10-30 KST) T002 Map SIWC error codes to Anthropic errors
   Evidence: `cargo +1.98.1 test --features bench` (RUSTFLAGS=-D warnings; --all-features unbuildable here) → exit 0, 4423 passed / 0 failed (lib 3569, responses_translate 123) incl. 3 siwc_errors unit, 7 responses_translate SIWC/detail, 3 error.rs wiremock tests; clippy --all-targets --features bench and fmt --check clean
 - [x] (2026-10-30 KST) T003 Surface the callback's client_id and scope from the loopback listener
   Evidence: `cargo +1.98.1 test --features bench --lib -- auth::` (RUSTFLAGS=-D warnings; --all-features unbuildable here) → exit 0, 569 passed / 0 failed incl. 3 new auth::callback tests (client_id+scope surfaced, extra params ignored, empty→None, oversized rejected with 400 and wait continues, at-cap accepted) and all claude/antigravity login tests; clippy --all-targets --features bench and fmt --check clean
 - [x] (2026-10-30 KST) T004 Store chatgpt-plan accounts and the installation host id
   Evidence: `cargo +1.98.1 test --features bench --lib -- chatgpt_plan` (RUSTFLAGS=-D warnings; --all-features unbuildable here) → 17 passed / 0 failed incl. 8 new store tests (0600/0700, same-email two records, signed-out {version, client_id} round-trip, 8-thread host id created once as urn:uuid v4, .host-id and .json.lock never scanned, spaces + symlinked dir, corrupt host id replaced, Debug redaction); full lib 3581 passed / 0 failed; clippy --all-targets --features bench and fmt --check clean
+- [x] (2026-10-30 KST) T005 Verify the SIWC ID token
+  Evidence: `cargo +1.98.1 test --features bench --lib -- chatgpt_plan::id_token` (RUSTFLAGS=-D warnings; --all-features unbuildable here) → 11 passed / 0 failed (valid token + array aud + email; iat +5 s accepted; exp -20 s within skew accepted; wrong nonce, missing nonce, wrong aud, exp -120 s, unknown kid rejected; unreachable JWKS → KeysUnavailable); full lib 3592 passed / 0 failed; clippy --all-targets --features bench and fmt --check clean; inbound_jwt untouched
