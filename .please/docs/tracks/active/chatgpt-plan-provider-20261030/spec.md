@@ -66,7 +66,7 @@ does not send for that dialect, or must never send, were rejected.
 - [ ] AC-011 (FR-8): While an account's access token is within its refresh window, the system shall renew it before forwarding the next request on that account.
 - [ ] AC-012 (FR-8): If a refresh fails with a terminal grant error, then the system shall mark that account as needing sign-in and cool it down so healthy accounts serve requests first, as the existing pooled providers do.
 - [ ] AC-013 (FR-9): When Claude Code sends a request with tools and extended thinking to a mapped model, the system shall forward the tools as plain function tools and return the model's tool call to Claude Code as an Anthropic `tool_use` block.
-- [ ] AC-014 (FR-9): When the client sets `max_tokens`, the system shall forward it as `max_output_tokens`, and a response stopped by that cap shall reach Claude Code with stop reason `max_tokens`.
+- [ ] AC-014 (FR-9): When the client sets `max_tokens`, the system shall forward it as `max_output_tokens`. (Reporting a capped turn as stop reason `max_tokens` is a translator change for every Responses provider, deferred to #868.)
 - [ ] AC-015 (FR-10): When the client request carries `temperature` or `metadata`, the system shall omit them from the upstream request.
 - [ ] AC-016 (FR-10): When the Claude Code client requests a non-streaming response, the system shall still stream from upstream and return one complete Anthropic message.
 - [ ] AC-017 (FR-11): When upstream returns HTTP 400 with body `{"detail": "Unsupported parameter: temperature"}`, the system shall return an Anthropic `invalid_request_error` carrying that message.
