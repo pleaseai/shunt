@@ -43,8 +43,8 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | :-- | :-- | :-- |
 | `header` | `x-shunt-token` | 携带客户端 token 的头部 |
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | 保存逗号分隔的 `name:token` 对的环境变量 |
-| `jwt_header` | 未设置 | 入站 Codex 端点额外从中读取 IdP JWT 的头部,对应 Codex `gateway_oauth` 的 `delivery.kind = "header"` |
-| `jwt_cookie` | 未设置 | 入站 Codex 端点额外从中读取 IdP JWT 的 cookie,对应 `delivery.kind = "cookie"` |
+| `jwt_header` | 未设置 | 入站 Codex 端点(及 Codex 形状的模型发现)额外从中读取 IdP JWT 的头部,对应 Codex `gateway_oauth` 的 `delivery.kind = "header"` |
+| `jwt_cookie` | 未设置 | 入站 Codex 端点(及 Codex 形状的模型发现)额外从中读取 IdP JWT 的 cookie,对应 `delivery.kind = "cookie"` |
 
 指定的环境变量必须包含至少一个凭据,例如 `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`。若此表存在但该变量未设置、为空或格式错误,启动会安全失败(fail closed)。被门控的路由(映射的 `/v1/messages` 推理和 `GET /v1/models` 发现)接受 token 出现在配置的头部、`Authorization: Bearer` 或 `x-api-key` 中 —— 当多个槽位携带有效 token 时,专用头部优先。
 
@@ -90,7 +90,7 @@ identity_claim = "repository"
 
 只要存在至少一个条目,`tokens_env` 就可以解析为空 —— 完全通过 IdP 认证的部署没有静态 token 需要设置。既没有可解析的 token 列表也没有条目时,`[server.auth]` 仍然启动失败。
 
-JWT 通过 `Authorization: Bearer` 接受,这正是 Claude Code 已经发送 `ANTHROPIC_AUTH_TOKEN` 的槽位。仅在入站 Codex 端点上,还可通过下文可选的 `jwt_header` 和 `jwt_cookie` 槽位接受;配置的 `header` 和 `x-api-key` 从不读取 JWT。在受控路由上先检查静态 token,该路由接受时再检查 gateway JWT,然后按 `iss` 检查 JWT 条目。验证会从 config 固定算法(token header 里的 `alg` 永远不参与选择)、要求 `kid`,并检查 `exp`/`nbf`、`aud`、`azp`、`exp - iat`、已配置的 `require`/`subject_prefix` 运算符,邮箱允许列表,以及(条目读取 `email` 时)`email_verified = true`。验证通过的身份声明(默认是邮箱)成为日志和用量归属中的调用方身份;超过 256 字节的值会被拒绝,而不是截断。受控路由就是 `[server.auth]` 已经保护的那些路由:注入凭据的 `/v1/messages` 和 `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`(仅在非 loopback 监听时),以及入站 Codex 端点(HTTP、WebSocket 和 analytics)。
+JWT 通过 `Authorization: Bearer` 接受,这正是 Claude Code 已经发送 `ANTHROPIC_AUTH_TOKEN` 的槽位。仅在入站 Codex 端点和 Codex 形状的模型发现上,还可通过下文可选的 `jwt_header` 和 `jwt_cookie` 槽位接受;配置的 `header` 和 `x-api-key` 从不读取 JWT。在受控路由上先检查静态 token,该路由接受时再检查 gateway JWT,然后按 `iss` 检查 JWT 条目。验证会从 config 固定算法(token header 里的 `alg` 永远不参与选择)、要求 `kid`,并检查 `exp`/`nbf`、`aud`、`azp`、`exp - iat`、已配置的 `require`/`subject_prefix` 运算符,邮箱允许列表,以及(条目读取 `email` 时)`email_verified = true`。验证通过的身份声明(默认是邮箱)成为日志和用量归属中的调用方身份;超过 256 字节的值会被拒绝,而不是截断。受控路由就是 `[server.auth]` 已经保护的那些路由:注入凭据的 `/v1/messages` 和 `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`(仅在非 loopback 监听时),以及入站 Codex 端点(HTTP、WebSocket 和 analytics)。
 
 key set 按 issuer 在首次使用时惰性拉取,因此 IdP 不可达不会阻塞启动。缓存的 key set 最多信任 5 分钟,之后由下一个请求尝试重新拉取(受 60 秒重新拉取下限约束);拉取成功会整体替换 key set,因此 issuer 撤下的密钥大约 5 分钟内就不再参与验证。拉取失败时会继续使用已过期的 key set,以免 IdP 故障变成全面故障;discovery 本身失败时则改为尝试上次发现的 `jwks_uri`。只有条目的 `issuer` 和 `jwks_url` 都未变化时,config reload 才会保留已缓存的密钥。未知的 `kid` 在每个 key set 的 60 秒窗口内最多触发一次重新拉取。没有任何条目能验证的 token 返回 `401`;没有任何条目验证通过、且与 token 的 issuer 匹配的条目中存在既无缓存 key set 又拉取失败的条目时,返回 **`503`**,这样 IdP 故障就不会被报告成凭据错误。
 
@@ -107,7 +107,7 @@ jwt_cookie = "auth-openid"        # Codex: delivery = { kind = "cookie", name = 
 ```
 
 - **校验。** 启动时会拒绝:没有 `[[server.auth.jwt]]` 条目却设置了任一键、空值、无效的头部名称,以及等于 `authorization`、`x-api-key`、`cookie`、`x-shunt-token`、`x-shunt-admin-token`、`x-shunt-inbound-client`、shunt 在 Codex 端点上读取或改写的头部(`session-id`, `x-claude-code-session-id`, `content-type`, `content-length`, `content-encoding`, `transfer-encoding`, `host`, `origin`, `upgrade`, `connection`, `openai-beta`, `sec-websocket-*`)、Codex CLI 发送或 shunt 在该处合成的头部(`originator`, `x-codex-routing-hint`, `thread-id`, `x-client-request-id`, `x-codex-window-id`)、`[server.auth]` 的 `header` 或 `[server.admin]` 的 `header` 的头部名称。cookie 名称必须是 RFC 6265 的 token,且不能是管理仪表板的 `shunt_admin_session`。两个键都支持 hot-reload。
-- **范围。** 只有入站 Codex 端点读取它们:Responses 路由(`/v1/responses`、`/backend-api/codex/responses`、`/responses` 上的 HTTP 与 WebSocket)、`/alpha/search` 以及 analytics sink。`/v1/messages`、`/v1/models`、`/usage` 和 Codex discovery 路径仍只接受 `Authorization: Bearer` 中的 JWT。
+- **范围。** 只有入站 Codex 端点读取它们:Responses 路由(`/v1/responses`、`/backend-api/codex/responses`、`/responses` 上的 HTTP 与 WebSocket)、`/alpha/search`、analytics sink,以及 Codex 形状的模型发现响应(`GET /models`、`GET /backend-api/codex/models`,以及请求带 `client_version` 查询字段的 `GET /v1/models`)。发现仍接受此前接受的所有凭据,并仍返回空的 Codex 目录 `{"models":[]}`。`/v1/messages`、`/usage` 和 Anthropic 形状的 `/v1/models`(无 `client_version`)仍只接受 `Authorization: Bearer` 中的 JWT。
 - **槽位顺序。** 静态 token、`Authorization: Bearer` JWT、`jwt_header`(原始 JWT 或 `Bearer <jwt>`,scheme 大小写不限)、`jwt_cookie`。第一个验证成功的槽位生效,因此 `Authorization` 中的 ChatGPT token 会落到 cookie 上。只有扫描到某个槽位时才会检查它;配置的头部或 cookie 名称出现多次时,除非更早的槽位已经完成认证,否则请求被拒绝。凭据缺失或无效返回 `401`,issuer 的密钥无法获取返回 `503`,在此端点上两者都使用 OpenAI 错误格式。
 - **Origin 规则。** 仅当请求没有 `Origin` 头部,或恰好有一个与请求的 scheme、`Host` 和有效端口都匹配的 `Origin` 时,才会使用 cookie。scheme 取第一个 `X-Forwarded-Proto` 值(`http` 或 `https`),没有时为 `http`,因为 shunt 本身以明文 HTTP 监听;位于终止 TLS 的代理之后时,请让代理发送 `X-Forwarded-Proto`。跨源(包括 scheme 不同)、`null`、无法解析或重复的 `Origin`,以及出现在没有 `Host` 或 `X-Forwarded-Proto` 无法识别的请求上的 `Origin`会禁用 cookie 槽位,头部槽位不受影响。浏览器会为网关域名附带它持有的 cookie,所以不要让 `jwt_cookie` 指向这类 cookie,例如 shunt 前面 SSO 代理的 cookie(Cloudflare Access 的 `CF_Authorization`)。
 - **转发。** 配置的头部和所有 `cookie` 头部在发往上游之前都会被移除,账户池和被路由的提供商均如此。

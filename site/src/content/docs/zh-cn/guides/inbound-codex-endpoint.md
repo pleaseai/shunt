@@ -23,7 +23,7 @@ shunt run
 
 启动校验会拒绝未知的 `provider`,或者不使用 `auth = "chatgpt_oauth"` 的提供方 —— 该端点注入的是运营者的 Codex bearer,因此只有 `chatgpt_oauth` 提供方符合条件。每个键与默认值见[配置参考](/zh-cn/reference/configuration/),已注册的路由见 [HTTP 端点](/zh-cn/reference/endpoints/)。
 
-该可选功能也使 Codex CLI 的模型发现可被正确解析。`GET /models` 和 `GET /backend-api/codex/models` 返回有效的回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 路径上,`client_version` 查询字段优先于类 Anthropic 的头部并选择 Codex 形状;没有该字段时,现有 Anthropic 发现响应保持不变。这些请求先通过常规模型发现认证门,且 shunt 不会伪造不完整的 Codex 模型行。
+该可选功能也使 Codex CLI 的模型发现可被正确解析。`GET /models` 和 `GET /backend-api/codex/models` 返回有效的回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 路径上,`client_version` 查询字段优先于类 Anthropic 的头部并选择 Codex 形状;没有该字段时,现有 Anthropic 发现响应保持不变。这些请求先通过常规模型发现认证门,且 shunt 不会伪造不完整的 Codex 模型行。Codex 形状的响应也会读取 `[server.auth]` 的 `jwt_header` 和 `jwt_cookie` 槽位(见下文),因此同时启用 ChatGPT 登录和 gateway OAuth 的用户会得到 `200` 而不是 `401`;Anthropic 形状的 `/v1/models` 对 JWT 仍只接受 `Authorization: Bearer`。
 
 ## 网页搜索
 
@@ -94,7 +94,7 @@ http_headers = { "x-shunt-token" = "<token>" }
 
 没有 `[server.auth]` 时,该端点对任何能触达它的人开放 —— 对回环或个人使用可以接受,对共享网关则不行。客户端提供的凭据**仅**用于向 shunt 认证:它(以及 CLI 碰巧发送的任何 `Authorization`)都会被剥除,绝不转发到上游。`[server.admin]` 的凭据头部 —— 默认 `x-shunt-admin-token`,或 `[server.admin] header` 指定的名字 —— 同样会被剥除,因为管理面正是在该槽位上认证,而管理凭据可以开通上游账户。整个 `cookie` 头部也会被剥除:管理面同样在该槽位接受会话 cookie,而 shunt 不保留 cookie jar,上游不会依赖它。`x-api-key` 也会被无条件剥除 —— 即使未配置 `[server.auth]` 也是如此,因为目标提供方在启动时就被校验为仅 `chatgpt_oauth`,所以入站的 `x-api-key` 值永远不可能是该上游的有效凭据;像 Claude Code 的 `apiKeyHelper` 那样在 `Authorization` 和 `x-api-key` 中填入同一个密钥的客户端,也不会因为第二个槽位而泄露该密钥。由于入站客户端是真正的 Codex CLI,该透传会逐字转发它的请求头部(`version`、`originator`、`OpenAI-Beta`、`x-codex-*` 等),并**只**换入所选池账户的 `Authorization` bearer 与 `chatgpt-account-id`。完整的认证演练见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#3-提供-shunt-客户端-token当配置了-serverauth-时)。
 
-要让开发者通过组织的身份提供商,用 Codex CLI 的 `gateway_oauth` 逐人登录,请设置 `[server.auth]` 的 `jwt_header` 或 `jwt_cookie`:此时端点也会从该头部或 cookie 读取 IdP JWT,并像其他客户端凭据一样将其移除。参见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#7-通过身份提供商登录gateway-oauth)。
+要让开发者通过组织的身份提供商,用 Codex CLI 的 `gateway_oauth` 逐人登录,请设置 `[server.auth]` 的 `jwt_header` 或 `jwt_cookie`:此时端点(包括 Codex 形状的模型发现响应)也会从该头部或 cookie 读取 IdP JWT,并像其他客户端凭据一样将其移除。参见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#7-通过身份提供商登录gateway-oauth)。
 
 ## WebSocket 传输
 

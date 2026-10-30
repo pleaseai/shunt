@@ -117,6 +117,14 @@ present, with the query marker taking precedence over Anthropic-looking headers.
 query field, `/v1/models` preserves the existing Anthropic discovery response unchanged. All
 three variants pass the existing model-discovery authentication gate first, and the Codex-only
 paths remain absent when `[server.codex_endpoint]` was not enabled at boot.
+
+The three Codex-shaped variants also read the `[server.auth]` `jwt_header` and `jwt_cookie`
+slots, with the same slot order, cookie `Origin` rule, and repeated-slot handling as the
+Responses routes (see `inbound-jwt-auth.md`). They keep accepting every credential they accepted
+before: static tokens in the configured header, `x-api-key`, or `Authorization: Bearer`, a Bearer
+JWT, and a `[server.gateway]` login token. The Anthropic-shaped `/v1/models` response (no
+`client_version`) accepts a JWT only in `Authorization: Bearer`. The answer stays the empty
+Codex catalog.
 ### Client analytics sink
 
 The same opt-in also registers `POST /backend-api/codex/analytics-events/events` and
