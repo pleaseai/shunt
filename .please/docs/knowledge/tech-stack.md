@@ -63,9 +63,10 @@ unchanged.
 
 - Credential lookup & refresh in `src/auth/`
 - `rpassword` — interactive credential prompts
-- OAuth / subscription reuse: ChatGPT/Codex (`codex login`), xAI/Grok (`shunt login xai`),
+- OAuth / subscription reuse: ChatGPT/Codex (`codex login`), ChatGPT plan via Sign in with
+  ChatGPT (`shunt login chatgpt-plan --name`, `shunt logout chatgpt-plan`), xAI/Grok (`shunt login xai`),
   Cursor (`shunt login cursor`), Anthropic passthrough
-- Multi-account pooling + load balancing (Anthropic, Codex) — reactive rotation
+- Multi-account pooling + load balancing (Anthropic, Codex, xAI, ChatGPT plan) — reactive rotation
 
 ## Observability
 
@@ -93,7 +94,7 @@ unchanged.
 
 ## Providers (built-in)
 
-OpenAI · ChatGPT/Codex · xAI · Grok (SuperGrok/X Premium+) · Cursor · Anthropic passthrough.
+OpenAI · ChatGPT/Codex · ChatGPT plan (SIWC preview) · xAI · Grok (SuperGrok/X Premium+) · Cursor · Anthropic passthrough.
 Any Anthropic-Messages-compatible backend (Kimi, DeepSeek, GLM, MiniMax, OpenRouter, Vercel
 AI Gateway, …) is one config table away — no code changes.
 
