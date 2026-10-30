@@ -1,4 +1,4 @@
-import { titleCase, when } from './format';
+import { planLabel, when } from './format';
 import type {
   AccountRow,
   ClaudeStoreAccount,
@@ -115,14 +115,14 @@ function managedState(account: PoolAccount): string {
 }
 
 /** A row for a managed pool account, before any observation is folded into it. */
-function managedRow(provider: string, account: PoolAccount): AccountRow {
+function managedRow(provider: string, auth: string | null | undefined, account: PoolAccount): AccountRow {
   return {
     provider,
     label: account.name,
     // A managed-only row (no observed override below) shows the pool's own plan
     // as its detail caption, matching the wording the observed path already uses
     // ("Max plan") — see `observation::parse_claude`.
-    detail: account.plan ? `${titleCase(account.plan)} plan` : null,
+    detail: account.plan ? `${planLabel(auth, account.plan)} plan` : null,
     managed: account,
     observed: null,
     state: managedState(account),
@@ -272,7 +272,7 @@ export function accountGroups(
   for (const table of pool?.providers ?? []) {
     const provider = POOL_PROVIDER_ALIASES[table.provider] ?? table.provider;
     for (const account of table.accounts ?? []) {
-      const row = managedRow(provider, account);
+      const row = managedRow(provider, table.auth, account);
       groupFor(provider).push(row);
       // Each identity table is sourced from one account store, so it may only
       // be matched against accounts of that store's auth kind. Gate on the
