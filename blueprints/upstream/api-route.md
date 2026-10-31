@@ -41,9 +41,7 @@ Never write, print, log, or commit the key.
 [[models]]
 id = "claude-gpt-6-1-sol-via-api-route"
 display_name = "GPT-6.1 Sol (via API Route)"
-
-[models.upstream_model]
-api-route = "gpt-6.1-sol"
+upstream_model = { api-route = "gpt-6.1-sol" }
 ```
 
 Use an available model such as `gpt-6.1-sol`. Query `GET https://global.api-route.com/v1/models` with `Authorization: Bearer $API_ROUTE_API_KEY` to verify model availability for the operator's key. Do not assume every listed model supports Messages. Claude Code context-window hints belong on inbound model ids, not upstream model mappings.
