@@ -268,11 +268,12 @@ fields. Ready-to-use entries (uncomment in
 | MiniMax China — built-in preset | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | OpenCode Zen — built-in preset | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — curated cross-vendor catalog; reads `x-api-key` |
 | Cheaper Inference — built-in preset | `https://api.cheaperinference.com` | `gpt-5.4`, `deepseek-v4-flash`, `glm-5.3` — OpenAI-compatible gateway with a Messages endpoint |
+| API Route — built-in preset | `https://global.api-route.com` | `gpt-6.1-sol` — OpenAI-compatible gateway with a Messages endpoint |
 | Mimo (Xiaomi) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — see [Mimo docs](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8`, `~anthropic/claude-sonnet-latest` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` (accepts `x_api_key`) |
 
-`zhipu`, `minimax-cn`, `opencode`, and `cheaperinference` are also built-in presets, so they do not need a `[providers.*]` table
+`zhipu`, `minimax-cn`, `opencode`, `cheaperinference`, and `api-route` are also built-in presets, so they do not need a `[providers.*]` table
 from `shunt.toml.example`. Use the ordered `[[upstreams]]` form instead — for example,
 `provider = "zhipu"` or `provider = "minimax-cn"` — and keep the `anthropic` passthrough default.
 

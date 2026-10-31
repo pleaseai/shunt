@@ -136,7 +136,7 @@ codex-fallback = "gpt-5.6-sol"
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` —— 通过 HTTP 访问的 Google Antigravity 后端,使用 `~/.shunt/antigravity-auth.json`(`shunt login antigravity`;或用 `shunt login antigravity --name` 在 `~/.shunt/accounts/antigravity` 下使用具名账号,通过 `accounts = [...]` 选择) |
 | `antigravity-cli` | `antigravity_cli` | 无(本地 CLI) | **已弃用。** 本地 `agy` 二进制 —— 通过子进程访问同一后端,已被上面的 `antigravity` 取代 |
 
-有序的 `[[upstreams]]` 条目还接受 `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode`、`cheaperinference`、`chatgpt-plan` 预设,它们会补齐对应后端的 `kind`、`base_url` 和默认认证。
+有序的 `[[upstreams]]` 条目还接受 `kimi`、`kimi-code`、`zhipu`、`minimax-cn`、`opencode`、`cheaperinference`、`api-route`、`chatgpt-plan` 预设,它们会补齐对应后端的 `kind`、`base_url` 和默认认证。
 
 **ChatGPT 套餐(Sign in with ChatGPT)。** `chatgpt-plan` 预设通过 `api.openai.com/v1/responses` 上 OpenAI 的 "Sign in with ChatGPT" 令牌共享预览使用 ChatGPT 套餐,与上面的 `codex` 提供方相互独立。用 `shunt login chatgpt-plan --name <account>` 登录(浏览器回调到 `127.0.0.1:1455`,远程主机上则粘贴回调 URL),添加一个 `provider = "chatgpt-plan"` 的有序 `[[upstreams]]` 条目(预设会补齐 `kind`、`base_url` 和 `auth = "chatgpt_plan_oauth"`),并按下面的方式映射模型。多个命名账户组成账户池,某个账户触达套餐用量上限时会轮换;`shunt logout chatgpt-plan --name <account>` 会撤销并清除一个账户。预览会拒绝一些请求参数,输出开始后触达用量上限时流会直接结束而不是轮换。详见 [ChatGPT 套餐指南](https://shunt.sh/zh-cn/guides/chatgpt-plan/)。
 
@@ -175,6 +175,7 @@ chatgpt-plan = "gpt-6.1-sol"
 | MiniMax 国内版 | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | OpenCode Zen | `https://opencode.ai/zen` | `claude-fable-5-1`、`gpt-6-astra` — 精选跨厂商目录;读取 `x-api-key` |
 | Cheaper Inference | `https://api.cheaperinference.com` | `gpt-5.4`、`deepseek-v4-flash`、`glm-5.3` — 提供 Messages 端点的 OpenAI 兼容网关 |
+| API Route | `https://global.api-route.com` | `gpt-6.1-sol` — 提供 Messages 端点的 OpenAI 兼容网关 |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 
