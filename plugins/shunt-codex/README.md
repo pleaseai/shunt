@@ -88,11 +88,12 @@ and is configured to route the model ids above to the Codex provider:
 > The latest are `gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna` / `gpt-6.1-sol` / `gpt-6.1-terra`, followed by
 > `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`; older accounts may only have
 > `gpt-5.5` / `gpt-5.4`. In `models.json`, `gpt-6-sol` and `gpt-6-luna` require a
-> Codex client of at least 0.155.0, while `gpt-6-astra` and `gpt-6.1-sol` require
-> at least 0.153.0 (though `gpt-6.1-sol` was rejected with a 0.156.0 identity
-> anyway); shunt's pinned client identity (`codex_cli_rs/0.159.3`) satisfies all
-> four. This plugin ships no agent for
-> `gpt-6-astra` or `gpt-6.1-sol`, and a route alone does not make one invokable.
+> Codex client of at least 0.155.0, while `gpt-6-astra`, `gpt-6.1-sol` and
+> `gpt-6.1-terra` require at least 0.153.0 (though `gpt-6.1-sol` was rejected
+> with a 0.156.0 identity anyway); shunt's pinned client identity
+> (`codex_cli_rs/0.159.3`) satisfies all five. This plugin ships no agent for
+> `gpt-6-astra`, `gpt-6.1-sol` or `gpt-6.1-terra`, and a route alone does not
+> make one invokable.
 > To use one, add a `[[routes]]` block like those above, then pick one way to
 > select it: `ANTHROPIC_CUSTOM_MODEL_OPTION=gpt-6.1-sol` to offer it in the
 > `/model` picker, `CLAUDE_CODE_SUBAGENT_MODEL=gpt-6.1-sol` to run every subagent
