@@ -15,6 +15,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::config::{AccountConfig, PoolConfig};
 
 mod request_stats;
+mod session_binding;
 mod upstream_skip;
 
 pub use request_stats::AttemptOutcome;
