@@ -1191,6 +1191,7 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 | AuthMode::KimiOauth
                 | AuthMode::AntigravityOauth
                 | AuthMode::XaiOauth
+                | AuthMode::ChatgptPlanOauth
         ) {
             continue;
         }
@@ -1241,7 +1242,9 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
             }
             // xAI resolves through the shared per-family helper rather than another
             // copy of the call above.
-            AuthMode::XaiOauth => provider.resolve_pool_accounts().await,
+            AuthMode::XaiOauth | AuthMode::ChatgptPlanOauth => {
+                provider.resolve_pool_accounts().await
+            }
             _ => unreachable!("provider auth filtered above"),
         };
         let resolved = match resolved {
@@ -1320,6 +1323,13 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
         "sort_by_reset": state
             .accounts
             .effective_sort_by_reset(state.config.server.pool.as_ref()),
+        // The usage poller's cadence, for the dashboard's next-check
+        // countdown: `null` until its first pass, and whenever it is off.
+        "usage_poll": state.accounts.usage_poll_schedule().map(|schedule| json!({
+            "interval_seconds": schedule.interval_seconds,
+            "last_started_at": schedule.last_started_at,
+            "next_at": schedule.next_at(),
+        })),
     }))
 }
 
@@ -1451,7 +1461,9 @@ async fn patch_pool_account(
             )
             .await
         }
-        AuthMode::XaiOauth => provider_cfg.resolve_pool_accounts().await,
+        AuthMode::XaiOauth | AuthMode::ChatgptPlanOauth => {
+            provider_cfg.resolve_pool_accounts().await
+        }
         _ => return bad_request("provider does not use a managed pool"),
     };
     let accounts = match resolved {

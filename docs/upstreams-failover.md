@@ -46,6 +46,7 @@ branching). Unknown preset name → config error listing available presets.
 | `zhipu` | anthropic | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
 | `minimax-cn` | anthropic | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 | `opencode` | anthropic | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, header `x-api-key` |
+| `cheaperinference` | anthropic | `https://api.cheaperinference.com` | `api_key`, env `CHEAPER_INFERENCE_API_KEY` |
 
 `kimi` and `kimi-code` are distinct presets for distinct services: `kimi` is the metered Moonshot
 API (`auth = "api_key"`, env `MOONSHOT_API_KEY`), while `kimi-code` is the subscription-billed Kimi

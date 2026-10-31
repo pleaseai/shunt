@@ -22,6 +22,7 @@ use crate::{
     codex_endpoint::{authenticate_inbound, extract_session_id},
     concurrency::WebSocketPermit,
     error::ShuntError,
+    headers::same_origin_or_non_browser,
     server::AppState,
 };
 
@@ -323,25 +324,6 @@ fn http_openai_beta(headers: &mut HeaderMap) {
             headers.remove("openai-beta");
         }
     }
-}
-
-fn same_origin_or_non_browser(headers: &HeaderMap) -> bool {
-    let Some(origin) = headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return true;
-    };
-    let Some(host) = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-    // Host and port only, as documented for the unauthenticated endpoint, so
-    // `http` and `https` on one host are not told apart here (the cookie slot
-    // does compare them).
-    crate::auth::jwt_slots::origin_matches_host(origin, host, None)
 }
 
 #[cfg(test)]

@@ -90,7 +90,25 @@ fn mapped_error_body(
     let text = text.unwrap_or_else(|| format!("upstream returned {status}"));
     tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
     let value = upstream_error_value(status, &text, auth);
-    Bytes::from(serde_json::to_vec(&map_error_value(&value, status)).unwrap_or_default())
+    let mapped = with_auth_hint(map_error_value(&value, status), status, auth);
+    Bytes::from(serde_json::to_vec(&mapped).unwrap_or_default())
+}
+
+/// Append the auth mode's gateway hint for `status` (see
+/// [`super::pool_plan::error_hint`]) to a mapped envelope's message.
+fn with_auth_hint(mut mapped: Value, status: StatusCode, auth: crate::config::AuthMode) -> Value {
+    let Some(hint) = super::pool_plan::error_hint(status, auth) else {
+        return mapped;
+    };
+    if let Some(message) = mapped.pointer_mut("/error/message") {
+        let text = message.as_str().unwrap_or_default();
+        *message = Value::String(if text.is_empty() {
+            hint
+        } else {
+            format!("{text} ({hint})")
+        });
+    }
+    mapped
 }
 
 fn upstream_error_value(status: StatusCode, text: &str, auth: crate::config::AuthMode) -> Value {
@@ -136,7 +154,8 @@ pub(super) fn build_upstream_error(
     tracing::warn!(%status, ?auth, upstream_error_body = %text, "responses upstream error");
     let value = upstream_error_value(status, &text, auth);
     let shunt_status = crate::model::responses::client_facing_status(status);
-    let mut response = (shunt_status, axum::Json(map_error_value(&value, status))).into_response();
+    let mapped = with_auth_hint(map_error_value(&value, status), status, auth);
+    let mut response = (shunt_status, axum::Json(mapped)).into_response();
     if let Some(retry_after) = retry_after.and_then(|value| value.parse().ok()) {
         response.headers_mut().insert("retry-after", retry_after);
     }
@@ -649,6 +668,63 @@ pub(super) mod tests {
         assert_eq!(
             body_json(error).await["error"]["message"],
             "upstream returned 429 Too Many Requests"
+        );
+    }
+
+    #[tokio::test]
+    async fn siwc_unavailable_503_becomes_overloaded_error_keeping_status() {
+        let body =
+            r#"{"error":{"message":"try later","code":"subscription_sharing_usage_unavailable"}}"#;
+        let upstream = upstream_response(503, body, &[]).await;
+        let error = mapped_upstream_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            upstream,
+            AuthMode::ChatgptPlanOauth,
+        )
+        .await;
+        assert_eq!(error.response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "overloaded_error");
+        assert_eq!(body["error"]["message"], "try later");
+    }
+
+    #[tokio::test]
+    async fn siwc_unsupported_capability_400_carries_parameter() {
+        let body = r#"{"error":{"message":"tool 'tool_search' is not supported","type":"invalid_request_error","param":"tools","code":"subscription_sharing_unsupported_capability"}}"#;
+        let upstream = upstream_response(400, body, &[]).await;
+        let error = mapped_upstream_error(
+            StatusCode::BAD_REQUEST,
+            upstream,
+            AuthMode::ChatgptPlanOauth,
+        )
+        .await;
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(
+            body["error"]["message"],
+            "tool 'tool_search' is not supported (parameter: tools)"
+        );
+    }
+
+    #[tokio::test]
+    async fn bare_detail_400_maps_to_invalid_request_error() {
+        let upstream = upstream_response(
+            400,
+            r#"{"detail":"Unsupported parameter: temperature"}"#,
+            &[],
+        )
+        .await;
+        let error = mapped_upstream_error(
+            StatusCode::BAD_REQUEST,
+            upstream,
+            AuthMode::ChatgptPlanOauth,
+        )
+        .await;
+        let body = body_json(error).await;
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(
+            body["error"]["message"],
+            "Unsupported parameter: temperature"
         );
     }
 }

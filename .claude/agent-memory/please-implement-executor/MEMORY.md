@@ -1,0 +1,1 @@
+- [shunt build env](project_build_env.md) — cargo +1.98.1, RUSTFLAGS=-D warnings, --features bench instead of --all-features

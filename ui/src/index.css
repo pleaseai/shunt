@@ -107,6 +107,11 @@
   }
   h1 { font-size: 1.35rem; letter-spacing: -0.04em; }
   h2 { font-size: 1rem; margin-top: 2.4rem; }
+  /* A heading with controls on its right; the heading keeps its own top margin. */
+  .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  /* Each label stays whole; on a narrow screen the labels wrap, not their words. */
+  .refresh-bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 0.9rem; font-size: 0.85rem; }
+  .refresh-bar > span { white-space: nowrap; }
   .card {
     margin-top: 1rem;
     padding: 1rem 1.1rem;

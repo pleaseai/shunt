@@ -481,7 +481,7 @@ async fn refresh_tokens(
 /// and Unicode line/paragraph separator replaced, for a single-line log field.
 /// `is_control` alone misses U+2028/U+2029, which a Unicode-aware viewer
 /// renders as a line break.
-fn log_excerpt(text: &str) -> String {
+pub(crate) fn log_excerpt(text: &str) -> String {
     text.chars()
         .take(200)
         .map(|c| if breaks_line(c) { ' ' } else { c })

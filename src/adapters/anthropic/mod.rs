@@ -1456,6 +1456,7 @@ fn rewrite_account_uuid(body: Vec<u8>, account_uuid: Option<&str>) -> Vec<u8> {
 /// stripped and replaced with the provider's key in its configured header.
 fn outbound_headers(headers: &HeaderMap, credential: &Credential) -> HeaderMap {
     let mut out = headers::filtered(headers);
+    headers::strip_browser_context(&mut out);
     crate::response_coding::filter_accept_encoding(&mut out);
     match credential {
         Credential::ApiKey { value, header } => {

@@ -96,6 +96,17 @@ export interface PoolProvider {
 export interface PoolData {
   providers: PoolProvider[];
   sortByReset: boolean;
+  /** The usage poller's cadence; `null` before its first pass or when it is off. */
+  usagePoll: UsagePoll | null;
+}
+
+/** When shunt last asked the providers' usage APIs for every account, and when it next will. */
+export interface UsagePoll {
+  intervalSeconds: number;
+  /** Unix seconds. */
+  lastStartedAt: number;
+  /** Unix seconds. */
+  nextAt: number;
 }
 
 export interface ClaudeStoreAccount {

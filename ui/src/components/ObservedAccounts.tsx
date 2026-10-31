@@ -200,8 +200,11 @@ function Message({ children, muted }: { children: ReactNode; muted?: boolean }):
  */
 export function ObservedAccounts({
   observed,
+  refreshBar,
 }: {
   observed: Loadable<Map<string, AccountRow[]>>;
+  /** Shown beside the heading: freshness, the next quota check, and Refresh. */
+  refreshBar?: ReactNode;
 }): ReactElement {
   // `[server.admin] hide_observed`: the gateway reads no provider login on its
   // host, so the table holds managed pool accounts alone. It stays rather than
@@ -210,7 +213,10 @@ export function ObservedAccounts({
   const { hideObserved } = useSession();
   return (
     <>
-      <h2>Accounts and usage</h2>
+      <div className="section-head">
+        <h2>Accounts and usage</h2>
+        {refreshBar}
+      </div>
       {hideObserved ? (
         <p className="muted">
           Managed pool accounts only. This gateway is configured not to read provider logins on

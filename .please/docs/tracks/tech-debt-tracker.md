@@ -26,6 +26,11 @@
 | TD-022 | anthropic-account-refusal-20261022 | Stale "every account refused" comments in `account_refusal.rs` and `upstream_skip.rs`; `account_refusal.rs` (523 lines) and `failover/chain.rs` (566 lines) exceed the 500-line guideline (#825) | Low | 2026-10-23 |
 | TD-023 | inbound-jwt-header-cookie-20261030 | `CODEX_PATH_HEADERS` (`src/auth/jwt_slots.rs`) duplicates the headers the Codex endpoint and WebSocket bridge read or rewrite; a new one there must be added to the `jwt_header` reject list by hand (#862) | Low | 2026-10-30 |
 | TD-024 | inbound-jwt-header-cookie-20261030 | `tests/inbound_codex_jwt_slots.rs` is 558 lines, over the 500-line guideline (#862) | Low | 2026-10-30 |
+| TD-025 | chatgpt-plan-provider-20261030 | `src/adapters/responses/pool_plan_tests.rs` is 695 lines, over the 500-line guideline | Low | 2026-10-30 |
+| TD-026 | chatgpt-plan-provider-20261030 | `pool_plan::error_hint` attaches the plan usage-limit hint to every 429 from a plan account, not only `subscription_sharing_usage_limit_exceeded` | Low | 2026-10-30 |
+| TD-027 | chatgpt-plan-provider-20261030 | Plan refresh deadline handling, adapted from the xAI store, was kept as plausible-but-unproven in review | Low | 2026-10-30 |
+| TD-028 | chatgpt-plan-provider-20261030 | A chatgpt-plan login can overwrite a newer sign-in after an intervening logout (ABA in `commit`) (#877) | Low | 2026-10-30 |
+| TD-029 | chatgpt-plan-provider-20261030 | Sign-in without the plan scope drops refresh tokens without revoking them (#878) | Medium | 2026-10-30 |
 
 ## Resolved
 

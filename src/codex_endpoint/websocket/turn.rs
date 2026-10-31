@@ -118,25 +118,7 @@ pub(super) async fn run_turn(context: TurnContext) {
     {
         Ok(client) => client,
         Err(err) => {
-            // A JWT issuer key set that became unreachable mid-connection is a
-            // `503`, like the upgrade gate answers, not a credential failure.
-            let err_frame = if err.status() == axum::http::StatusCode::SERVICE_UNAVAILABLE {
-                build_ws_error_frame(
-                    503,
-                    "api_error",
-                    "api_error",
-                    "cannot verify the presented credential: a configured JWT issuer's key set is unreachable",
-                    None,
-                )
-            } else {
-                build_ws_error_frame(
-                    401,
-                    "authentication_error",
-                    "authentication_error",
-                    "missing or invalid client token",
-                    None,
-                )
-            };
+            let err_frame = auth_error_frame(err.status());
             let _ = out_tx
                 .send((turn_gen, Message::Text(err_frame.into())))
                 .await;
@@ -445,6 +427,39 @@ pub(super) async fn run_turn(context: TurnContext) {
         let _ = out_tx
             .send((turn_gen, Message::Text(err_frame.into())))
             .await;
+    }
+}
+
+/// The error frame for a turn whose re-authentication failed, by the status
+/// [`crate::codex_endpoint::authenticate_inbound`] refused it with.
+fn auth_error_frame(status: axum::http::StatusCode) -> String {
+    match status {
+        // A JWT issuer key set that became unreachable mid-connection is a
+        // `503`, like the upgrade gate answers, not a credential failure.
+        axum::http::StatusCode::SERVICE_UNAVAILABLE => build_ws_error_frame(
+            503,
+            "api_error",
+            "api_error",
+            "cannot verify the presented credential: a configured JWT issuer's key set is unreachable",
+            None,
+        ),
+        // A reload removed `[server.auth]` under a connection whose page is on
+        // another origin: the upgrade passed with a token, this turn has none
+        // to check and refuses the origin instead.
+        axum::http::StatusCode::FORBIDDEN => build_ws_error_frame(
+            403,
+            "forbidden",
+            "forbidden",
+            crate::codex_endpoint::CROSS_ORIGIN_REFUSAL,
+            None,
+        ),
+        _ => build_ws_error_frame(
+            401,
+            "authentication_error",
+            "authentication_error",
+            "missing or invalid client token",
+            None,
+        ),
     }
 }
 

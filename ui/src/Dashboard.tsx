@@ -9,6 +9,7 @@ import { ClaudeAccounts } from './components/ClaudeAccounts';
 import { CodexAccounts } from './components/CodexAccounts';
 import { ObservedAccounts } from './components/ObservedAccounts';
 import { PoolHealth } from './components/PoolHealth';
+import { RefreshBar } from './components/RefreshBar';
 import { UpstreamStatus } from './components/UpstreamStatus';
 import { useCanWrite } from './session';
 import { useDashboard } from './useDashboard';
@@ -57,7 +58,16 @@ export function Dashboard(): ReactElement {
       {/* Usage first: it is what an operator opens this page for. Pool
           management is a rarer, riskier task, so it sits behind a disclosure
           rather than above the numbers. */}
-      <ObservedAccounts observed={data.observed} />
+      <ObservedAccounts
+        observed={data.observed}
+        refreshBar={
+          <RefreshBar
+            updatedAt={data.updatedAt}
+            usagePoll={data.pool.status === 'ready' ? data.pool.data.usagePoll : null}
+            onRefresh={data.refreshNow}
+          />
+        }
+      />
 
       <Collapsible.Root className="mt-8" data-pool-management>
         <Collapsible.Trigger className="collapsible-trigger secondary w-full justify-start text-left text-text-secondary">

@@ -83,14 +83,11 @@ function identityKey(auth: string, id: string): string {
   return `${auth}:${id}`;
 }
 
-/** The window fields an observation may override on a coalesced row. */
-const WINDOW_KEYS = [
-  'utilization_5h',
-  'reset_5h',
-  'utilization_7d',
-  'reset_7d',
-  'utilization_7d_oi',
-  'reset_7d_oi',
+/** The windows an observation may override on a coalesced row: each a utilization and its reset. */
+const WINDOWS = [
+  ['utilization_5h', 'reset_5h'],
+  ['utilization_7d', 'reset_7d'],
+  ['utilization_7d_oi', 'reset_7d_oi'],
 ] as const;
 
 /**
@@ -158,8 +155,41 @@ function observedRow(observation: ObservedAccount): AccountRow {
   };
 }
 
-/** Fold an observation into the managed row that holds the same subscription. */
-function foldObservation(row: AccountRow, observation: ObservedAccount): void {
+/**
+ * What a reused observation is folded against: the pool account as the full
+ * load that made the observation saw it. `undefined` when that load had no
+ * pool state for the account (or none at all).
+ */
+interface Reuse {
+  baseline: PoolAccount | undefined;
+  /**
+   * The windows the pool has already superseded since that load, by index into
+   * `WINDOWS`. Kept across automatic reloads (see `accountGroups`), so a
+   * window that moved and then cleared on reset does not read as unmoved.
+   */
+  superseded: Set<number>;
+}
+
+/** Whether the pool's numbers for one window changed since the reuse baseline. */
+function windowMoved(
+  row: AccountRow,
+  baseline: PoolAccount | undefined,
+  window: (typeof WINDOWS)[number],
+): boolean {
+  if (!baseline) return window.some((key) => row[key] !== null && row[key] !== undefined);
+  return window.some((key) => (row[key] ?? null) !== (baseline[key] ?? null));
+}
+
+/**
+ * Fold an observation into the managed row that holds the same subscription.
+ * `reuse` is set when the observation is one an earlier full load made, reused
+ * by an automatic reload that may not observe again; see below.
+ */
+function foldObservation(
+  row: AccountRow,
+  observation: ObservedAccount,
+  reuse: Reuse | null,
+): void {
   row.observed = observation;
   // Prefer the observed detail when present; otherwise keep the plan-derived
   // detail from the pool payload. `observed` comes from
@@ -170,9 +200,39 @@ function foldObservation(row: AccountRow, observation: ObservedAccount): void {
   // Prefer the client's windows: the pool only learns a window from a response
   // header it has actually received, so it reports null for windows the client
   // can already see.
-  for (const key of WINDOW_KEYS) {
-    const value = observation[key];
-    if (value !== null && value !== undefined) row[key] = value;
+  //
+  // A reused observation is only as fresh as the full load that made it, and
+  // it may be fresher than the pool (it asked the provider directly) or older
+  // (the pool has seen traffic since). The pool's window wins only where it
+  // changed since that load: then the pool has learned something the
+  // observation predates. Otherwise the row reads as that load drew it.
+  const moved = reuse
+    ? WINDOWS.map((window, index) => {
+        if (reuse.superseded.has(index) || windowMoved(row, reuse.baseline, window)) {
+          reuse.superseded.add(index);
+          return true;
+        }
+        return false;
+      })
+    : [];
+  WINDOWS.forEach((window, index) => {
+    if (moved[index]) return;
+    for (const key of window) {
+      const value = observation[key];
+      if (value !== null && value !== undefined) row[key] = value;
+    }
+  });
+  // "Waiting for traffic" is a response-derived observation saying no quota has
+  // been captured yet. Once the pool has state it did not have at that load, or
+  // has moved a window, traffic has plainly arrived, so the cached claim is
+  // dropped and the row reads the managed state.
+  if (
+    reuse &&
+    observation.state === 'waiting-for-traffic' &&
+    row.managed?.has_state &&
+    (!reuse.baseline?.has_state || moved.some(Boolean))
+  ) {
+    row.observed = { ...observation, state: 'available' };
   }
 }
 
@@ -254,6 +314,21 @@ export function accountGroups(
   accounts: { accounts?: ClaudeStoreAccount[] } | null,
   codexAccounts: { accounts?: CodexStoreAccount[] } | null = null,
   xaiAccounts: { accounts?: XaiStoreAccount[] } | null = null,
+  options: {
+    /**
+     * The observations are a reused earlier full load's, made alongside this
+     * pool state; set by automatic reloads (`useDashboard`).
+     */
+    reused?: {
+      pool: { providers?: PoolProvider[] } | null;
+      /**
+       * Windows already superseded by the pool, per account, carried from one
+       * automatic reload to the next; `accountGroups` adds to it. Cleared by
+       * starting a new full load.
+       */
+      superseded: Map<string, Set<number>>;
+    };
+  } = {},
 ): Map<string, AccountRow[]> {
   const uuidByName = uuidsByAccountName(accounts);
   const accountIdByCodexName = accountIdsByCodexName(codexAccounts);
@@ -268,12 +343,37 @@ export function accountGroups(
     return created;
   };
   const byUuid = new Map<string, AccountRow>();
+  // Each managed row's account as the reused full load saw it, matched on the
+  // provider table and the account's own ref.
+  const baselineFor = new Map<AccountRow, PoolAccount>();
+  const rowKeys = new Map<AccountRow, string>();
+  const reuseFor = (superseded: Map<string, Set<number>>, row: AccountRow): Reuse => {
+    const key = rowKeys.get(row) ?? '';
+    let windows = superseded.get(key);
+    if (!windows) {
+      windows = new Set();
+      superseded.set(key, windows);
+    }
+    return { baseline: baselineFor.get(row), superseded: windows };
+  };
+  const baselineAccounts = new Map<string, PoolAccount>();
+  const accountKey = (provider: string, account: PoolAccount) =>
+    `${provider}\u0000${account.account_ref ?? account.name}`;
+  for (const table of options.reused?.pool?.providers ?? []) {
+    for (const account of table.accounts ?? []) {
+      baselineAccounts.set(accountKey(table.provider, account), account);
+    }
+  }
 
   for (const table of pool?.providers ?? []) {
     const provider = POOL_PROVIDER_ALIASES[table.provider] ?? table.provider;
     for (const account of table.accounts ?? []) {
       const row = managedRow(provider, account);
       groupFor(provider).push(row);
+      const key = accountKey(table.provider, account);
+      rowKeys.set(row, key);
+      const baseline = baselineAccounts.get(key);
+      if (baseline) baselineFor.set(row, baseline);
       // Each identity table is sourced from one account store, so it may only
       // be matched against accounts of that store's auth kind. Gate on the
       // account's actual auth kind (`table.auth`), not the provider's display
@@ -299,7 +399,11 @@ export function accountGroups(
     const match =
       observation.uuid && auth ? byUuid.get(identityKey(auth, observation.uuid)) : undefined;
     if (match) {
-      foldObservation(match, observation);
+      foldObservation(
+        match,
+        observation,
+        options.reused ? reuseFor(options.reused.superseded, match) : null,
+      );
       continue;
     }
     groupFor(observation.provider).push(observedRow(observation));
