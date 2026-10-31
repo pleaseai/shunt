@@ -209,3 +209,48 @@ pub fn gzip(bytes: &[u8]) -> Vec<u8> {
     encoder.write_all(bytes).unwrap();
     encoder.finish().unwrap()
 }
+
+/// A session id whose first-choice account is the one at `index` of the
+/// pooled provider in `state`'s config: where selection places it while every
+/// account is healthy.
+///
+/// Placement is rendezvous hashing over the resolved account identities
+/// (ADR-0008 `spread`), so the answer depends on the accounts themselves, not
+/// just on how many there are. The accounts are resolved exactly as the
+/// gateway resolves them, and a fresh pool stands in for "every account
+/// healthy and no binding yet". Panics unless exactly one provider configures
+/// accounts.
+pub async fn session_id_for_account(state: &shunt::server::AppState, index: usize) -> String {
+    let mut pooled = state
+        .config
+        .providers
+        .iter()
+        .filter(|(_, provider)| !provider.accounts.is_empty());
+    let (name, provider) = pooled.next().expect("a provider with accounts");
+    assert!(pooled.next().is_none(), "exactly one pooled provider");
+    let mut accounts = provider
+        .resolve_pool_accounts()
+        .await
+        .expect("pool accounts resolve");
+    // The session's own first choice, whether or not that account can serve:
+    // a test may target a disabled account to show it is skipped.
+    for account in &mut accounts {
+        account.disabled = false;
+    }
+    assert!(index < accounts.len(), "account index {index} out of range");
+    let pool = shunt::accounts::AccountPool::new();
+    (0..10_000)
+        .map(|candidate| format!("session-{candidate}"))
+        .find(|session_id| {
+            pool.select_order(
+                name,
+                &accounts,
+                Some(session_id),
+                None,
+                state.config.server.pool.as_ref(),
+            )
+            .first()
+                == Some(&index)
+        })
+        .expect("a session id should map to the requested account")
+}

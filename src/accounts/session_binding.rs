@@ -5,9 +5,6 @@
 //! `(provider, SHA-256(selection key))`; the raw selection key is hashed on
 //! entry and never stored, logged or exported.
 
-// No non-test callers until the pool selection wiring lands.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::fmt;
 
@@ -32,28 +29,36 @@ pub(crate) fn hash_session_key(key: &str) -> SessionHash {
     Sha256::digest(key.as_bytes()).into()
 }
 
-/// Rendezvous weight: first 8 bytes (big-endian) of
-/// SHA-256(session hash || serde_json bytes of the account key). Stable across
-/// restarts because no randomized hasher is involved.
-pub(crate) fn weight(session: &SessionHash, account: &AccountKey) -> u64 {
-    let mut hasher = Sha256::new();
-    hasher.update(session);
-    hasher.update(account_stable_bytes(account));
-    let digest = hasher.finalize();
+/// Stable 64-bit digest of an account key: the first 8 bytes (big-endian) of
+/// SHA-256 over its serde_json bytes. Computed once per pool health entry and
+/// cached there, so a selection does not hash every account again.
+pub(crate) fn account_digest(account: &AccountKey) -> u64 {
+    let digest = Sha256::digest(account_stable_bytes(account));
     let mut head = [0u8; 8];
     head.copy_from_slice(&digest[..8]);
     u64::from_be_bytes(head)
 }
 
+/// Rendezvous weight of a session on an account: the splitmix64 finalizer
+/// over the session hash's first 8 bytes XOR the account digest. Stable across
+/// restarts because no randomized hasher is involved; cheap enough to run for
+/// every account on every session selection.
+pub(crate) fn weight(session: &SessionHash, account_digest: u64) -> u64 {
+    let mut head = [0u8; 8];
+    head.copy_from_slice(&session[..8]);
+    splitmix64(u64::from_be_bytes(head) ^ account_digest)
+}
+
+fn splitmix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
 fn account_stable_bytes(account: &AccountKey) -> Vec<u8> {
     // Plain strings and unit enums only: serialization cannot fail.
     serde_json::to_vec(account).unwrap_or_default()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct BindingKey {
-    provider: String,
-    session: SessionHash,
 }
 
 #[derive(Clone)]
@@ -85,6 +90,7 @@ pub(crate) enum CommitOutcome {
 
 /// One persisted row. `session_hash` is lowercase hex of the SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "persisted by T006"))]
 pub(crate) struct BindingRow {
     pub(crate) provider: String,
     pub(crate) session_hash: String,
@@ -92,8 +98,12 @@ pub(crate) struct BindingRow {
     pub(crate) last_used: u64,
 }
 
+/// Bindings per provider, keyed by session hash. Nested by provider so a
+/// lookup borrows the provider name instead of allocating a key.
 pub(crate) struct SessionBindings {
-    map: HashMap<BindingKey, Binding>,
+    map: HashMap<String, HashMap<SessionHash, Binding>>,
+    /// Total bindings across providers.
+    len: usize,
     max_entries: usize,
     evictions: u64,
     last_sweep: u64,
@@ -109,7 +119,7 @@ impl Default for SessionBindings {
 impl fmt::Debug for SessionBindings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SessionBindings")
-            .field("len", &self.map.len())
+            .field("len", &self.len)
             .field("evictions", &self.evictions)
             .finish()
     }
@@ -123,16 +133,22 @@ impl SessionBindings {
     pub(crate) fn with_capacity(max_entries: usize) -> Self {
         Self {
             map: HashMap::new(),
+            len: 0,
             max_entries: max_entries.max(1),
             evictions: 0,
             last_sweep: 0,
         }
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the T004 metrics"))]
     pub(crate) fn len(&self) -> usize {
-        self.map.len()
+        self.len
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by the T004 eviction counter")
+    )]
     pub(crate) fn evictions(&self) -> u64 {
         self.evictions
     }
@@ -145,13 +161,11 @@ impl SessionBindings {
         session: &SessionHash,
         now: u64,
     ) -> Option<BindingView> {
-        let key = BindingKey {
-            provider: provider.to_string(),
-            session: *session,
-        };
-        let binding = self.map.get(&key)?;
+        let sessions = self.map.get_mut(provider)?;
+        let binding = sessions.get(session)?;
         if expired(binding.last_used, now) {
-            self.map.remove(&key);
+            sessions.remove(session);
+            self.len -= 1;
             return None;
         }
         Some(BindingView {
@@ -171,25 +185,29 @@ impl SessionBindings {
         observed_generation: u64,
         now: u64,
     ) -> CommitOutcome {
-        let key = BindingKey {
-            provider: provider.to_string(),
-            session: *session,
-        };
-        let live = match self.map.get(&key) {
-            Some(b) if expired(b.last_used, now) => {
-                self.map.remove(&key);
+        let live = match self
+            .map
+            .get_mut(provider)
+            .and_then(|s| s.get(session).map(|b| (b.last_used, b.generation)))
+        {
+            Some((last_used, _)) if expired(last_used, now) => {
+                self.remove(provider, session);
                 None
             }
-            other => other.map(|b| b.generation),
+            other => other.map(|(_, generation)| generation),
         };
         match live {
             None => {
-                self.insert_new(key, served.clone(), now);
+                self.insert_new(provider, *session, served.clone(), now);
                 CommitOutcome::Placed
             }
             Some(current) if observed_generation < current => CommitOutcome::Stale,
             Some(_) => {
-                let binding = self.map.get_mut(&key).expect("checked live above");
+                let binding = self
+                    .map
+                    .get_mut(provider)
+                    .and_then(|sessions| sessions.get_mut(session))
+                    .expect("checked live above");
                 binding.last_used = now;
                 if binding.account == *served {
                     return CommitOutcome::Touched;
@@ -201,28 +219,26 @@ impl SessionBindings {
         }
     }
 
-    /// Drop every binding to `account`; returns how many were removed.
-    pub(crate) fn remove_account(&mut self, account: &AccountKey) -> usize {
-        let before = self.map.len();
-        self.map.retain(|_, b| b.account != *account);
-        before - self.map.len()
+    /// Drop every binding whose account matches; returns how many were removed.
+    pub(crate) fn remove_matching(&mut self, matches: impl Fn(&AccountKey) -> bool) -> usize {
+        self.retain(|_, b| !matches(&b.account))
     }
 
     /// Live bindings per account (expired entries not counted).
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the T008 admin view"))]
     pub(crate) fn bound_count(&self, account: &AccountKey, now: u64) -> usize {
-        self.map
-            .values()
-            .filter(|b| b.account == *account && !expired(b.last_used, now))
+        self.bindings()
+            .filter(|(_, _, b)| b.account == *account && !expired(b.last_used, now))
             .count()
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "persisted by T006"))]
     pub(crate) fn export(&self, now: u64) -> Vec<BindingRow> {
-        self.map
-            .iter()
-            .filter(|(_, b)| !expired(b.last_used, now))
-            .map(|(k, b)| BindingRow {
-                provider: k.provider.clone(),
-                session_hash: to_hex(&k.session),
+        self.bindings()
+            .filter(|(_, _, b)| !expired(b.last_used, now))
+            .map(|(provider, session, b)| BindingRow {
+                provider: provider.to_string(),
+                session_hash: to_hex(session),
                 account: b.account.clone(),
                 last_used: b.last_used,
             })
@@ -231,6 +247,7 @@ impl SessionBindings {
 
     /// Load persisted rows. Malformed hashes and expired rows are dropped, a
     /// `last_used` in the future is clamped to `now`, and the cap still holds.
+    #[cfg_attr(not(test), expect(dead_code, reason = "restored by T006"))]
     pub(crate) fn import(&mut self, rows: impl IntoIterator<Item = BindingRow>, now: u64) {
         for row in rows {
             let Some(session) = from_hex(&row.session_hash) else {
@@ -240,38 +257,73 @@ impl SessionBindings {
             if expired(last_used, now) {
                 continue;
             }
-            let key = BindingKey {
-                provider: row.provider,
-                session,
-            };
-            match self.map.get_mut(&key) {
+            match self
+                .map
+                .get_mut(&row.provider)
+                .and_then(|sessions| sessions.get_mut(&session))
+            {
                 Some(existing) if existing.last_used >= last_used => {}
                 Some(existing) => {
                     existing.account = row.account;
                     existing.last_used = last_used;
                 }
-                None => self.insert_new(key, row.account, last_used),
+                None => self.insert_new(&row.provider, session, row.account, last_used),
             }
         }
         self.last_sweep = now;
     }
 
-    fn insert_new(&mut self, key: BindingKey, account: AccountKey, now: u64) {
+    fn bindings(&self) -> impl Iterator<Item = (&str, &SessionHash, &Binding)> {
+        self.map.iter().flat_map(|(provider, sessions)| {
+            sessions
+                .iter()
+                .map(move |(session, binding)| (provider.as_str(), session, binding))
+        })
+    }
+
+    /// Keep the bindings `keep` accepts; returns how many were removed.
+    fn retain(&mut self, mut keep: impl FnMut(&SessionHash, &Binding) -> bool) -> usize {
+        let before = self.len;
+        for sessions in self.map.values_mut() {
+            sessions.retain(|session, binding| keep(session, binding));
+        }
+        self.map.retain(|_, sessions| !sessions.is_empty());
+        self.len = self.map.values().map(HashMap::len).sum();
+        before - self.len
+    }
+
+    fn remove(&mut self, provider: &str, session: &SessionHash) {
+        if let Some(sessions) = self.map.get_mut(provider) {
+            if sessions.remove(session).is_some() {
+                self.len -= 1;
+            }
+        }
+    }
+
+    fn insert_new(&mut self, provider: &str, session: SessionHash, account: AccountKey, now: u64) {
         if now.saturating_sub(self.last_sweep) >= SWEEP_INTERVAL_SECS {
-            self.map.retain(|_, b| !expired(b.last_used, now));
+            self.retain(|_, b| !expired(b.last_used, now));
             self.last_sweep = now;
         }
-        if self.map.len() >= self.max_entries {
+        if self.len >= self.max_entries {
             self.evict_lru();
         }
-        self.map.insert(
-            key,
-            Binding {
-                account,
-                last_used: now,
-                generation: 1,
-            },
-        );
+        let binding = Binding {
+            account,
+            last_used: now,
+            generation: 1,
+        };
+        let previous = match self.map.get_mut(provider) {
+            Some(sessions) => sessions.insert(session, binding),
+            None => self
+                .map
+                .entry(provider.to_string())
+                .or_default()
+                .insert(session, binding),
+        };
+        if previous.is_none() {
+            self.len += 1;
+        }
     }
 
     /// Evict least-recently-used entries until room for one more remains under
@@ -279,24 +331,31 @@ impl SessionBindings {
     fn evict_lru(&mut self) {
         let target =
             (self.max_entries * EVICT_TARGET_PERCENT / 100).min(self.max_entries.saturating_sub(1));
-        let excess = self.map.len().saturating_sub(target);
+        let excess = self.len.saturating_sub(target);
         if excess == 0 {
             return;
         }
-        let mut order: Vec<(u64, BindingKey)> = self
-            .map
-            .iter()
-            .map(|(k, b)| (b.last_used, k.clone()))
-            .collect();
-        // Entries at index < excess are the `excess` oldest.
-        order.select_nth_unstable_by_key(excess - 1, |(t, _)| *t);
-        for (_, key) in order.into_iter().take(excess) {
-            self.map.remove(&key);
-        }
+        let mut stamps: Vec<u64> = self.bindings().map(|(_, _, b)| b.last_used).collect();
+        // The `excess`-th oldest stamp: everything strictly older goes, then
+        // just enough entries at that stamp to reach `excess`.
+        let (_, &mut cutoff, _) = stamps.select_nth_unstable(excess - 1);
+        let older = stamps.iter().filter(|&&t| t < cutoff).count();
+        let mut at_cutoff = excess - older;
+        self.retain(|_, b| {
+            if b.last_used < cutoff {
+                return false;
+            }
+            if b.last_used == cutoff && at_cutoff > 0 {
+                at_cutoff -= 1;
+                return false;
+            }
+            true
+        });
         self.evictions += excess as u64;
     }
 }
 
+#[cfg_attr(not(test), expect(dead_code, reason = "persisted by T006"))]
 fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes.iter().fold(String::with_capacity(64), |mut s, b| {
@@ -305,6 +364,7 @@ fn to_hex(bytes: &[u8]) -> String {
     })
 }
 
+#[cfg_attr(not(test), expect(dead_code, reason = "restored by T006"))]
 fn from_hex(s: &str) -> Option<SessionHash> {
     if s.len() != 64 || !s.is_ascii() {
         return None;

@@ -21,7 +21,6 @@ use std::{
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
-use sha2::{Digest, Sha256};
 use shunt::{
     config::{AccountConfig, CodexEndpointConfig, Config, InboundAuthConfig, PoolConfig},
     server,
@@ -247,19 +246,6 @@ fn can_bind_loopback() -> bool {
         }
         Err(error) => panic!("unexpected loopback bind failure: {error}"),
     }
-}
-
-/// Brute-force a `session-id` that maps to `index` under production's bucket
-/// assignment (`accounts::stable_session_index`).
-fn session_id_for_account(index: usize, account_count: usize) -> String {
-    (0..1000)
-        .map(|candidate| format!("session-{candidate}"))
-        .find(|session_id| {
-            let digest = Sha256::digest(session_id.as_bytes());
-            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
-            (prefix % account_count as u64) as usize == index
-        })
-        .expect("a session id should map to the requested account")
 }
 
 /// POST a raw Responses request to one of the inbound codex paths.
@@ -766,7 +752,7 @@ async fn session_id_header_sticks_to_one_account() {
 
     // A session id that hashes to account-b (index 1); every request with it must
     // land on account-b.
-    let session_id = session_id_for_account(1, 2);
+    let session_id = common::session_id_for_account(&gateway.state, 1).await;
     for _ in 0..3 {
         let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1167,7 +1153,7 @@ async fn restored_stale_quota_reprobes_once_then_uses_healthy_account() {
         state_path,
     ))
     .await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id = common::session_id_for_account(&gateway.state, 0).await;
     let logs = Arc::new(Mutex::new(Vec::new()));
     let subscriber = reprobe_log_subscriber(&logs);
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
@@ -1237,7 +1223,7 @@ async fn missing_stale_probe_token_cancels_before_healthy_fallback() {
         state_path,
     ))
     .await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id = common::session_id_for_account(&gateway.state, 0).await;
     let logs = Arc::new(Mutex::new(Vec::new()));
     let subscriber = reprobe_log_subscriber(&logs);
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
@@ -1304,7 +1290,7 @@ async fn token_env_401_cools_down_and_rotates_to_next_account() {
 
     // A session id that maps to account-a (index 0) so the 401 account is tried
     // first, then the turn rotates to account-b.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = common::session_id_for_account(&gateway.state, 0).await;
     let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1367,7 +1353,7 @@ async fn pooled_ttfb_timeout_returns_504_without_replaying() {
     );
     config.server.timeouts.upstream_ttfb_ms = 25;
     let gateway = start_gateway_with(config).await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id = common::session_id_for_account(&gateway.state, 0).await;
 
     let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
@@ -1574,8 +1560,6 @@ async fn refresh_failure_cools_down_and_rotates_to_next_account() {
         .mount(&upstream)
         .await;
 
-    // Pin the store account first so its refresh-failure rotation is exercised.
-    let session = session_id_for_account(0, 2);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -1584,6 +1568,8 @@ async fn refresh_failure_cools_down_and_rotates_to_next_account() {
         ],
     ))
     .await;
+    // Pin the store account first so its refresh-failure rotation is exercised.
+    let session = common::session_id_for_account(&gateway.state, 0).await;
 
     let response = post_responses(&gateway, "/responses", Some(&session), None).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1650,7 +1636,6 @@ async fn refresh_retry_still_unauthorized_rotates_to_next_account() {
         .mount(&upstream)
         .await;
 
-    let session = session_id_for_account(0, 2);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -1659,6 +1644,7 @@ async fn refresh_retry_still_unauthorized_rotates_to_next_account() {
         ],
     ))
     .await;
+    let session = common::session_id_for_account(&gateway.state, 0).await;
 
     let response = post_responses(&gateway, "/responses", Some(&session), None).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1827,7 +1813,6 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
         .mount(&upstream)
         .await;
 
-    let session = session_id_for_account(0, 2);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -1836,6 +1821,7 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
         ],
     ))
     .await;
+    let session = common::session_id_for_account(&gateway.state, 0).await;
 
     let response = post_responses(&gateway, "/responses", Some(&session), None).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1890,7 +1876,7 @@ async fn model_refusal_rotates_to_next_account() {
     ))
     .await;
 
-    let session_id = session_id_for_account(0, 2);
+    let session_id = common::session_id_for_account(&gateway.state, 0).await;
     let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1951,7 +1937,6 @@ async fn model_refusal_after_refresh_rotates_to_next_account() {
         .mount(&upstream)
         .await;
 
-    let session = session_id_for_account(0, 2);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -1960,6 +1945,7 @@ async fn model_refusal_after_refresh_rotates_to_next_account() {
         ],
     ))
     .await;
+    let session = common::session_id_for_account(&gateway.state, 0).await;
 
     let response = post_responses(&gateway, "/responses", Some(&session), None).await;
     assert_eq!(response.status(), StatusCode::OK);
