@@ -12,7 +12,7 @@
 - **Approach**: A pool-owned binding table, consulted inside `select_order_inner` and committed by each adapter at the point it knows which account served
 - **Execution**: code
 - **Plan Depth**: deep
-- **Planned At**: 86fce6b
+- **Planned At**: a33fc90
 
 ## Context
 
@@ -165,3 +165,4 @@ Rejected:
 - 2026-10-31: Binding key = each path's existing selection key (spec assumption corrected).
 - 2026-10-31: Persisted `last_used` is coarsened to one hour.
 - 2026-10-31: `spread` ignores priority on first placement; a move respects priority tiers.
+- 2026-10-31: Rebased onto `main` at `a33fc90` (#846, #871) before implementation and re-verified the plan against it. Line references in `src/accounts.rs` shift down by about 38. #871's `ChatgptPlanOauth` pools serve through the same `pool.rs` success arms (via `pool_plan::relay_events` / `peek_if_plan`), so T005 covers them. ADR renumbered to 0008 because #871 took 0007.
