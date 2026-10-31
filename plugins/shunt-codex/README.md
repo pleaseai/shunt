@@ -85,7 +85,7 @@ and is configured to route the model ids above to the Codex provider:
    [`docs/codex-configuration.md`](https://github.com/pleaseai/shunt/blob/main/docs/codex-configuration.md)).
 
 > The ChatGPT-account backend only accepts the slugs your account is entitled to.
-> The latest are `gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna` / `gpt-6.1-sol`, followed by
+> The latest are `gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna` / `gpt-6.1-sol` / `gpt-6.1-terra`, followed by
 > `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`; older accounts may only have
 > `gpt-5.5` / `gpt-5.4`. In `models.json`, `gpt-6-sol` and `gpt-6-luna` require a
 > Codex client of at least 0.155.0, while `gpt-6-astra` and `gpt-6.1-sol` require
