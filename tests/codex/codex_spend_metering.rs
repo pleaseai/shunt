@@ -1,6 +1,6 @@
 //! `[server.spend]` metering of streamed inbound Codex endpoint turns
 //! (codex-spend-caps, T004) — the Responses-protocol companion to
-//! `tests/spend_metering.rs`.
+//! `tests/spend/spend_metering.rs`.
 //!
 //! Every test drives a real gateway against mock upstreams and reads the
 //! principal's counters back from the meter. Expected costs are computed here
@@ -47,7 +47,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 const TOKENS_ENV: &str = "SHUNT_TEST_CODEX_METER_TOKENS";
 const ACCOUNT_ENV: &str = "SHUNT_TEST_CODEX_METER_ACCOUNT";

@@ -20,7 +20,7 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 /// Asserts a header is absent from the forwarded request.
 struct NoHeader(&'static str);

@@ -37,7 +37,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 use common::jwt;
 
 const JWT_HEADER: &str = "x-gateway-token";

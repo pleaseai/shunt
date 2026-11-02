@@ -5,7 +5,7 @@
 //!
 //! The accounts are `token_env` plan accounts, so resolution needs no store
 //! file; the 401 refresh-then-retry path that needs a real store runs in
-//! `tests/chatgpt_plan_multi_account.rs`.
+//! `tests/multi_account/chatgpt_plan_multi_account.rs`.
 
 // The env lock serializes tests that set token env vars across awaits.
 #![allow(clippy::await_holding_lock)]

@@ -31,7 +31,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 struct TestGateway {
     base_url: String,

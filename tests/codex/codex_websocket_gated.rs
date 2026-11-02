@@ -9,8 +9,8 @@
 //! stall is cut at the gap — before the first event and between events — and
 //! that escalation then falls back to the strong tier.
 
-mod common;
-mod judge_harness;
+use crate::common;
+use crate::judge_harness;
 
 use std::{
     sync::{
@@ -76,7 +76,7 @@ async fn spawn_stalling_upstream(stall: Stall) -> (String, Arc<AtomicUsize>) {
                     drop(socket);
                     return;
                 }
-                // An explicit config, as `tests/codex_websocket_fallback.rs`
+                // An explicit config, as `tests/codex/codex_websocket_fallback.rs`
                 // passes: it is what negotiates the permessage-deflate
                 // extension the client offers.
                 let Ok(mut ws) = tokio_tungstenite::accept_async_with_config(
