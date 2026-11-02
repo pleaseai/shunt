@@ -241,6 +241,7 @@ async fn search_is_gated_by_inbound_auth_with_an_openai_shaped_error() {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
+        ..Default::default()
     });
     let gateway = start_gateway_with(config).await;
 

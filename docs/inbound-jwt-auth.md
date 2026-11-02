@@ -1,6 +1,6 @@
 # Inbound JWT authentication (verify-only)
 
-Issue [#344](https://github.com/pleaseai/shunt/issues/344), phase 1.
+Issue [#344](https://github.com/pleaseai/shunt/issues/344), phases 1 and 2 (workload identity).
 
 ## 0. Problem
 
@@ -40,6 +40,13 @@ tokens_env = "SHUNT_CLIENT_TOKENS"
 issuer = "https://accounts.google.com"
 audience = ["<client id dedicated to shunt>"]
 email_domains = ["example.com"]
+
+# Workload identity: a GitHub Actions OIDC token carries no `email`.
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
 ```
 
 | Key | Required | Default | Meaning |
@@ -48,6 +55,9 @@ email_domains = ["example.com"]
 | `audience` | yes | — | Accepted `aud` values; a string or an array, so a client-id rotation is not a flag day |
 | `email_domains` | — | `[]` | Case-insensitive **exact** match on the part after the final `@` — never a suffix match |
 | `allowed_emails` | — | `[]` | Case-insensitive full-address match |
+| `require` | — | `{}` | Table of claim name → string or array. Every listed claim must be present in the verified payload as a JSON **string** equal (exact, case-sensitive) to one of its values. AND across claims, any-of within one claim |
+| `subject_prefix` | — | `[]` | String or array. When non-empty, `sub` must be a string starting with at least one prefix (case-sensitive) |
+| `identity_claim` | when no email rule | `email` | Claim whose value becomes the caller identity. Required when the entry has no `email_domains` / `allowed_emails` |
 | `algorithms` | — | `["RS256"]` | Accepted signing algorithms. Asymmetric only |
 | `authorized_parties` | — | `audience` | Accepted `azp` values when the claim is present |
 | `clock_skew_seconds` | — | `0` | Tolerance on `exp` and `nbf` |
@@ -58,22 +68,124 @@ Validation, all at startup:
 
 1. `tokens_env` may resolve empty **only** when at least one entry exists. With neither a
    resolvable token list nor an entry, `[server.auth]` still fails closed.
-2. Each entry needs `issuer`, `audience`, and at least one `email_domains` /
-   `allowed_emails` value.
+2. Each entry needs `issuer`, `audience`, and at least one authorization rule: an
+   `email_domains` / `allowed_emails` value, a `require` naming a claim other than `aud` or
+   `iss`, or a non-empty `subject_prefix`. `audience` alone is not an authorization rule, and
+   neither is `require` on `aud` or `iss`, which only repeats the audience and issuer checks.
 3. `algorithms` must be non-empty and must not name a symmetric algorithm (`HS256`, `HS384`,
    `HS512`).
 4. An entry's `issuer` may not equal `[server.gateway] public_url`.
 5. `max_token_age_seconds` must be greater than zero.
+6. `identity_claim` (trimmed; empty means absent) is required when the entry has no email
+   rule.
+7. `require` claim names are trimmed and non-empty, and each claim's values (trimmed, empty
+   strings dropped) must leave a non-empty list — an empty list is an error, not a silent
+   deny-all. `subject_prefix` drops empty strings: an empty prefix would match every `sub`,
+   so it never counts as a rule.
+8. Neither `require` nor `identity_claim` may name `exp`, `iat`, or `nbf`. Those registered
+   claims are always numbers, so entries naming them are rejected at startup.
+
+### Codex gateway OAuth: `jwt_header` and `jwt_cookie`
+
+The Codex CLI's native `gateway_oauth` (`[model_providers.<id>.gateway_oauth]`) reserves
+`Authorization` and delivers the IdP access token in a cookie or a custom header
+(`delivery = { kind = "cookie", name = ... }` or `{ kind = "header", name = ..., scheme = "Bearer" }`).
+Two optional `[server.auth]` keys name that slot; the token is verified by the same
+`[[server.auth.jwt]]` entries as a bearer JWT (issue #860).
+
+```toml
+[server.auth]
+jwt_cookie = "auth-openid"
+# jwt_header = "X-Gateway-Token"
+
+[[server.auth.jwt]]
+issuer = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+audience = ["api://<shunt-app-id>"]
+authorized_parties = ["<codex public client id>"]
+require = { tid = "<tenant-id>" }
+identity_claim = "preferred_username"
+max_token_age_seconds = 5400
+```
+
+Startup rejects either key without a `[[server.auth.jwt]]` entry, an empty value, a header
+name that is invalid or is `authorization`, `x-api-key`, `cookie`, `x-shunt-token`,
+`x-shunt-admin-token`, `x-shunt-inbound-client`, a header shunt reads or rewrites on the Codex
+endpoint (`session-id`, `x-claude-code-session-id`, `content-type`, `content-length`,
+`content-encoding`, `transfer-encoding`, `host`, `origin`, `upgrade`, `connection`,
+`openai-beta`, or any `sec-websocket-*`), a header the Codex CLI sends or shunt synthesizes
+there (`originator`, `x-codex-routing-hint`, `thread-id`, `x-client-request-id`,
+`x-codex-window-id`), the `[server.auth]` `header`, or the `[server.admin]` `header`, and a
+cookie name that is not an RFC 6265 token or is the admin dashboard's `shunt_admin_session`.
+Both keys hot-reload.
+
+Microsoft Entra ID, the usual case, has several traps; each value above answers one:
+
+- **The access token must be a JWT.** shunt verifies locally and does no introspection, so
+  `scopes` must request an API scope registered for shunt (`api://<app-id>/.default`).
+  Opaque access tokens (Google OAuth) cannot work.
+- **Use v2 tokens.** Set the API registration's `accessTokenAcceptedVersion` to `2` (issuer
+  `https://login.microsoftonline.com/<tenant-id>/v2.0`). v1 tokens use
+  `https://sts.windows.net/<tenant-id>/` and `appid` instead of `azp`.
+- **`audience` must match the token's `aud`** (`api://<app-id>` or the app-id GUID).
+- **`authorized_parties` must list the Codex public client.** v2 tokens carry `azp` = the
+  requesting client, and `authorized_parties` defaults to `audience`.
+- **No `email_domains`.** Entra access tokens carry no `email_verified`. Authorize with
+  `require = { tid = ... }` and take the identity from `preferred_username` or the immutable
+  `oid`.
+- **Raise `max_token_age_seconds`.** The default access-token lifetime is randomized between
+  60 and 90 minutes, above the default `3600`; set about `5400`. See Microsoft's
+  [access tokens](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens) and
+  [token lifetimes](https://learn.microsoft.com/en-us/entra/identity-platform/configurable-token-lifetimes).
+- **Register the fixed redirect URI** `http://127.0.0.1:<redirect_port>/callback` on a public
+  client. Native gateway OAuth has no device-code fallback; over SSH, forward the port with
+  `ssh -L <port>:127.0.0.1:<port>`.
+
+Operational notes: an Entra access token is large, so it counts toward
+`[server.limits] max_request_header_bytes` when that is set, and reverse proxies commonly cap a
+cookie near 4 KB, in which case prefer header delivery. The Codex side keeps
+`requires_openai_auth = false`; OAuth alone does not enable remote model catalog discovery,
+so use `model_catalog_json` for custom metadata. The user-facing walkthrough is the site's
+Codex connection guide.
 
 Rule 2 is enforced rather than documented because for some issuers `audience` is not an
 authorization decision at all: a GitHub Actions workflow chooses its own `aud`, so any
-repository on GitHub can mint a token carrying a given audience. Phase 2 adds the operators
-(`require`, `subject_prefix`) that authorize such issuers; phase 1 offers only the email
-ones, which is why an email rule is currently mandatory.
+repository on GitHub can mint a token carrying a given audience. `require` and
+`subject_prefix` are the operators that authorize such issuers.
 
 Rule 4 keeps the two JWT paths unambiguous. `[server.gateway]` mints session tokens whose
 `iss` is its own `public_url`, and both verifiers read the same `Authorization: Bearer`
 slot, so a shared issuer would make ownership of a token depend on evaluation order.
+
+### Workload identity (GitHub Actions)
+
+A GitHub Actions OIDC token has no `email`; the entry above authorizes on repository claims
+and names `repository` as the identity. Security notes:
+
+- **`require` / `subject_prefix` are what authorize.** Any GitHub repository can mint a token
+  with any `aud`, so a matching audience proves nothing.
+- **End a `subject_prefix` at a delimiter.** `repo:pleaseai/`, not `repo:pleaseai`, which
+  also matches `repo:pleaseai-evil/...`.
+- **Don't rely on `sub`'s shape.** GitHub repositories created after July 15, 2026 use an
+  immutable `repo:OWNER@OWNER-ID/REPO@REPO-ID:...` subject, and so does any repository renamed or
+  transferred after that date; other older ones keep `repo:OWNER/REPO:...` unless they opt in, and admins can customize `sub` entirely. A
+  name-based `subject_prefix` therefore rejects new repositories; authorize on the id claims
+  in `require` and treat `subject_prefix` as an optional extra restriction.
+- **Prefer immutable ids** (`repository_owner_id`, `repository_id`) in `require`: org and
+  repository names can be renamed and re-registered by someone else.
+- **Pick a bounded `identity_claim`** such as `repository`, not `sub`. The branch segment of
+  `sub` is caller-controlled, and the identity namespaces the Codex endpoint's sticky key and
+  appears in logs.
+- **Identities share one namespace.** The identity is not prefixed with its issuer, so it is
+  compared as a bare string with static `name:token` client names and with every other
+  entry's identities. Equal strings become one caller for usage attribution, spend
+  accounting, and the Codex endpoint's sticky key. This is not an authorization bypass, but
+  choose an identity claim whose values cannot equal a static client name or another
+  issuer's identities. `repository` (`org/repo`) cannot equal an email address, but a static
+  client name may contain `/`, so do not give static clients `org/repo`-style names; a bare
+  username claim such as `actor` is riskier still.
+- **`require` matches top-level string claims only.** A number, boolean, array, object, or
+  null never matches, even if its text would. GitHub carries its numeric ids as strings
+  (`"repository_id": "74"` in its example token), so quote them in config.
 
 ## 2. Verification
 
@@ -94,15 +206,20 @@ replayed as an HMAC secret.
 
 **Claims.** `exp` and `nbf` with `clock_skew_seconds`; `aud` against the configured set;
 `azp` against `authorized_parties` when the claim is present; `exp - iat` against
-`max_token_age_seconds`; `email_verified` must be `true`; the address must match an email
-rule.
+`max_token_age_seconds`. Then every configured operator group must pass (AND): the email
+group (`email_domains` OR `allowed_emails`), `require`, and `subject_prefix`.
 
-**Identity.** The verified `email` becomes the caller identity, in place of the `name` from
-a `name:token` pair. An address over 256 bytes is rejected (`401`), never truncated: the
-identity namespaces the account pool's sticky key on the inbound Codex endpoint, so an
-unbounded caller-controlled string there would be the failure mode issue #296 records for
-the Codex `model` label, and truncation would fold two addresses that share a prefix into
-one identity — and so into one sticky key.
+`email_verified` must be `true`, and `email` present, **iff** the entry has an email rule, its
+identity claim is `email`, or `require` names `email` — so an unverified address can never
+become an identity or satisfy a rule. An entry with none of these does not read `email` at all.
+
+**Identity.** The value of `identity_claim` (default `email`) becomes the caller identity, in
+place of the `name` from a `name:token` pair. It must be present as a non-empty JSON string.
+A value over 256 bytes is rejected (`401`), never truncated: the identity namespaces the
+account pool's sticky key on the inbound Codex endpoint, so an unbounded caller-controlled
+string there would be the failure mode issue #296 records for the Codex `model` label, and
+truncation would fold two values that share a prefix into one identity — and so into one
+sticky key.
 
 ### Key sets
 
@@ -160,10 +277,40 @@ route accepts three credentials. On the `Authorization: Bearer` slot: static tok
 constant-time compare, no network), then the gateway JWT on the routes that accept it, then
 JWT entries by `iss`. First success wins.
 
-A JWT is accepted **only** in `Authorization: Bearer` — not in the configured
-`[server.auth]` header and not in `x-api-key`. That is the slot Claude Code sends
-`ANTHROPIC_AUTH_TOKEN` in, which is the point: the client needs no shunt-specific
-configuration.
+`Authorization: Bearer` is the one JWT slot every gated route shares — a JWT is never read
+from the configured `[server.auth]` `header` or from `x-api-key`. That is the slot Claude Code
+sends `ANTHROPIC_AUTH_TOKEN` in, which is the point: the client needs no shunt-specific
+configuration. The Codex-only `jwt_header` / `jwt_cookie` slots below are additional, and are
+stripped by name before forwarding.
+
+**The inbound Codex endpoint additionally reads two optional slots** (§1, "Codex gateway
+OAuth"), because Codex reserves `Authorization` for `gateway_oauth`. Its routes are the
+Responses routes (HTTP and WebSocket on `/v1/responses`, `/backend-api/codex/responses`,
+`/responses`), `/alpha/search`, and the analytics sink. The order is: static token, then
+`Authorization: Bearer` JWT, then `jwt_header` (the raw JWT or `Bearer <jwt>`, scheme in any
+case), then `jwt_cookie`; the first slot that verifies wins and the same
+`[[server.auth.jwt]]` rules apply to every slot. A ChatGPT token in `Authorization` fails
+issuer selection and the scan moves on. `/v1/messages`, `/v1/models`, `/usage`, and the
+Codex discovery paths stay `Authorization: Bearer`-only.
+
+- **A slot is examined only when the scan reaches it.** A configured header or cookie name
+  that appears more than once rejects the request, unless an earlier slot already
+  authenticated it; if an earlier slot was unavailable the result is `503`, otherwise `401`.
+- **Origin rule for the cookie.** A browser attaches a cookie it holds for the gateway's
+  domain to cross-site requests, so the cookie slot is consulted only when the request has no
+  `Origin` header or exactly one that matches the request's scheme, `Host`, and effective port.
+  The scheme is the first `X-Forwarded-Proto` value (`http` or `https`), else `http`, since
+  shunt itself listens on plain HTTP; behind a TLS-terminating proxy, have it send
+  `X-Forwarded-Proto` or same-origin browser requests lose the cookie slot. A cross-origin
+  (including cross-scheme), `null`, unparseable, or repeated `Origin`, or an `Origin` on a
+  request with no `Host` or an unrecognised `X-Forwarded-Proto`, disables it. The header slot
+  is unaffected. Do not point `jwt_cookie` at a cookie a browser holds for the gateway's
+  domain, such as an SSO proxy's (Cloudflare Access `CF_Authorization`).
+- **Forwarding.** The configured header and every `cookie` header are stripped before any
+  upstream request, for the pool and for routed providers.
+- **WebSocket.** The handshake credential is verified again on every turn: an expired IdP
+  token fails the next turn with a `401` error frame, and Codex reconnects with a refreshed
+  token. Errors here use the OpenAI error shape.
 
 **A JWT from a configured issuer is never forwarded upstream.** `m4-inbound-auth.md` §2
 states the boundary for static tokens and resolves the mixed passthrough/mapped case by
@@ -197,13 +344,8 @@ allowlist on every request, so removing a domain or address takes effect immedia
 token already minted for a still-allowed address keeps working until it expires, whatever
 the IdP does to the account behind it.
 
-## 5. Not in phase 1
+## 5. Not implemented
 
-- `require` (claim → allowed values) and `subject_prefix`, the operators workload issuers
-  need.
-- `identity_claim`, and therefore any issuer whose tokens carry no `email`.
-- Per-entry `email_verified`; it is currently unconditional, which is correct while email is
-  the only authorization operator.
 - Groups. See issue #347.
 
 ## 6. Not in scope at all

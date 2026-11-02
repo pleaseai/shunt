@@ -98,6 +98,11 @@ const BLUEPRINTS: &[Blueprint] = &[
         &["zen", "opencode-zen"],
         "OpenCode Zen curated catalog via OPENCODE_API_KEY"
     ),
+    upstream_blueprint!(
+        "cheaperinference",
+        &["cheaper-inference"],
+        "Cheaper Inference gateway via CHEAPER_INFERENCE_API_KEY"
+    ),
 ];
 
 const GENERIC_UPSTREAM: &str = include_str!("../blueprints/upstream/_generic.md");
@@ -289,6 +294,7 @@ mod tests {
             "zhipu",
             "minimax-cn",
             "opencode",
+            "cheaperinference",
         ] {
             assert!(error.contains(slug), "missing {slug:?} in {error:?}");
         }

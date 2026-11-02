@@ -252,6 +252,7 @@ fn config_with(upstream: &MockServer, router: &str, weak_passthrough: bool) -> C
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: TOKENS_ENV.to_string(),
+        ..Default::default()
     });
     config.server.admin = Some(AdminConfig {
         header: "x-shunt-admin-token".to_string(),

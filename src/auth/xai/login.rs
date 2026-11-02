@@ -460,7 +460,9 @@ mod tests {
         let error = run_named("Not Valid")
             .await
             .expect_err("invalid account name must fail");
-        assert!(error.to_string().contains("must match [a-z0-9-]+"));
+        assert!(error
+            .to_string()
+            .contains(crate::auth::shared::ACCOUNT_NAME_RULE));
     }
 
     // The slow_down clamp arithmetic (+5s, capped at 30s) is covered by

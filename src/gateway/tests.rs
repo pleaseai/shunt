@@ -1515,6 +1515,7 @@ async fn gateway_jwt_and_static_client_token_compose_on_models() {
         jwt: Vec::new(),
         header: "x-shunt-token".into(),
         tokens_env: auth_env.clone(),
+        ..Default::default()
     });
     config.models = vec![ModelConfig {
         id: "claude-via-gateway".into(),
@@ -2193,6 +2194,7 @@ async fn available_models_policy_denies_or_allows_gateway_requests() {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env.clone(),
+        ..Default::default()
     });
     let provider = config.providers.get_mut("openai").unwrap();
     provider.base_url = upstream.uri();

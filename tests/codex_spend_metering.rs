@@ -162,6 +162,7 @@ fn config(upstream: &str, metered: bool) -> Config {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: TOKENS_ENV.to_string(),
+        ..Default::default()
     });
     // `[server.spend]` requires the admin API that manages its caps.
     config.server.admin = Some(AdminConfig {

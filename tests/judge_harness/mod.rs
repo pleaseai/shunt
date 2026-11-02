@@ -165,6 +165,7 @@ pub(crate) fn driven_config_with(
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: TOKENS_ENV.to_string(),
+        ..Default::default()
     });
     config.models = vec![
         ModelConfig {

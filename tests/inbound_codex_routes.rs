@@ -655,6 +655,7 @@ async fn inbound_auth_gates_routed_requests() {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: "SHUNT_TEST_ROUTED_TOKENS_G".to_string(),
+        ..Default::default()
     });
 
     let gateway = start_gateway_with(config).await;

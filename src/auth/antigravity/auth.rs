@@ -57,10 +57,10 @@ pub(crate) const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/user
 
 /// Resolve the Antigravity OAuth refresh endpoint from a raw
 /// `SHUNT_ANTIGRAVITY_TOKEN_URL` value. Mirrors `claude::auth`'s and
-/// `codex::auth`'s own `sanitize_token_url` wrappers: a non-loopback
-/// plaintext override would egress the long-lived `refresh_token` in the
-/// clear, so [`crate::auth::shared::sanitize_token_url`] rejects it in favor
-/// of the real endpoint. Exists so the refresh path can be pointed at a local
+/// `codex::auth`'s own `sanitize_token_url` wrappers: an override that is
+/// neither loopback nor HTTPS to the real endpoint's host would egress the
+/// long-lived `refresh_token`, so [`crate::auth::shared::sanitize_token_url`]
+/// rejects it in favor of the real endpoint. Exists so the refresh path can be pointed at a local
 /// mock in tests; production deployments leave the env var unset.
 fn sanitize_token_url(raw: Option<String>) -> String {
     crate::auth::shared::sanitize_token_url(raw, TOKEN_URL)

@@ -77,11 +77,17 @@ impl AccountRefusal {
 /// Judge a relayed upstream response for an account-level refusal before it
 /// reaches the client. Only a 400 or 402 has its body read, under the shared
 /// error-body bounds; every other status returns untouched and unread. The
-/// returned response carries the upstream's body intact either way (a 400 or
-/// 402 in a supported content coding comes back decoded), and a
-/// body that stalls past the budget, passes the smaller of the caller's cap (`bounds.max_bytes`) and the envelope ceiling, or is not the Anthropic
-/// envelope is simply not a refusal. `bounds.idle` starts at header arrival,
-/// as the relay's own body read starts it.
+/// returned response carries the upstream's body intact (a 400 or 402 in a
+/// supported content coding comes back decoded). A body that exceeds the
+/// smaller of the caller's cap (`bounds.max_bytes`) and the envelope
+/// ceiling, or is not the Anthropic envelope, is not classified as a refusal.
+///
+/// Without an idle clock (`bounds.idle = None`), a body that outlasts
+/// [`ERROR_ENVELOPE_BUDGET`] is passed on unjudged. With an idle clock, an idle
+/// gap that ends before the budget, or a budget trip before any body bytes
+/// arrive, returns the idle error instead. A budget trip after bytes arrive
+/// still passes the body on unjudged. The idle clock starts at header arrival,
+/// as the relay's own body read starts it, and each chunk refreshes it.
 pub(super) async fn judge(
     upstream: reqwest::Response,
     bounds: ResponseBounds,

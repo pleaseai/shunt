@@ -4251,3 +4251,144 @@ fn native_off_ignores_tool_search_call_item() {
     assert_eq!(final_json["stop_reason"], "end_turn");
     assert!(final_json["content"].as_array().unwrap().is_empty());
 }
+
+const SIWC_CASES: [(&str, u16, &str); 9] = [
+    (
+        "subscription_sharing_usage_limit_exceeded",
+        429,
+        "rate_limit_error",
+    ),
+    (
+        "subscription_sharing_usage_unavailable",
+        503,
+        "overloaded_error",
+    ),
+    (
+        "subscription_sharing_user_unavailable",
+        503,
+        "overloaded_error",
+    ),
+    (
+        "subscription_sharing_unsupported_capability",
+        400,
+        "invalid_request_error",
+    ),
+    (
+        "subscription_sharing_user_not_eligible",
+        403,
+        "permission_error",
+    ),
+    (
+        "subscription_sharing_route_not_supported",
+        403,
+        "permission_error",
+    ),
+    (
+        "subscription_sharing_invalid_user",
+        401,
+        "authentication_error",
+    ),
+    ("chatpass_v2_scope_not_authorized", 403, "permission_error"),
+    (
+        "chatpass_v2_invalid_authorization_context",
+        403,
+        "permission_error",
+    ),
+];
+
+#[test]
+fn siwc_codes_map_over_http_shape() {
+    for (code, status, kind) in SIWC_CASES {
+        let status = StatusCode::from_u16(status).unwrap();
+        let body = json!({"error": {"message": "nope", "code": code}});
+        let mapped = map_error_value(&body, status);
+        assert_eq!(mapped["error"]["type"], kind, "{code}");
+        assert_eq!(mapped["error"]["message"], "nope", "{code}");
+        assert_eq!(client_facing_status(status), status, "{code}");
+    }
+}
+
+#[test]
+fn siwc_codes_map_over_in_stream_response_failed() {
+    for (code, status, kind) in SIWC_CASES {
+        let event = json!({
+            "type": "response.failed",
+            "response": {"error": {"code": code, "message": "nope"}}
+        });
+        let got = backend_error_status(&event);
+        assert_eq!(got.as_u16(), status, "{code}");
+        assert_eq!(
+            map_error_value(&event, got)["error"]["type"],
+            kind,
+            "{code}"
+        );
+    }
+}
+
+#[test]
+fn siwc_type_overrides_status_derived_type() {
+    // A 503 body would be `api_error` by status alone.
+    let body =
+        json!({"error": {"message": "busy", "code": "subscription_sharing_usage_unavailable"}});
+    assert_eq!(
+        map_error_value(&body, StatusCode::SERVICE_UNAVAILABLE)["error"]["type"],
+        "overloaded_error"
+    );
+    let plain = json!({"error": {"message": "busy", "code": "something_else"}});
+    assert_eq!(
+        map_error_value(&plain, StatusCode::SERVICE_UNAVAILABLE)["error"]["type"],
+        "api_error"
+    );
+}
+
+#[test]
+fn siwc_unsupported_capability_appends_parameter() {
+    let body = json!({"error": {
+        "message": "tool 'tool_search' is not supported. Remove it or use an API key instead.",
+        "type": "invalid_request_error",
+        "param": "tools",
+        "code": "subscription_sharing_unsupported_capability"
+    }});
+    let mapped = map_error_value(&body, StatusCode::BAD_REQUEST);
+    assert_eq!(mapped["error"]["type"], "invalid_request_error");
+    assert!(
+        mapped["error"]["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("use an API key instead. (parameter: tools)"),
+        "{mapped}"
+    );
+    let stream = json!({"type": "response.failed", "response": {"error": {
+        "code": "subscription_sharing_unsupported_capability", "message": "m", "param": "tools"
+    }}});
+    assert_eq!(
+        map_error_value(&stream, StatusCode::BAD_REQUEST)["error"]["message"],
+        "m (parameter: tools)"
+    );
+}
+
+#[test]
+fn param_is_not_appended_for_non_siwc_codes() {
+    let body = json!({"error": {"message": "m", "code": "invalid_value", "param": "tools"}});
+    assert_eq!(
+        map_error_value(&body, StatusCode::BAD_REQUEST)["error"]["message"],
+        "m"
+    );
+}
+
+#[test]
+fn bare_detail_body_at_400_is_invalid_request_with_text() {
+    let body = json!({"detail": "Unsupported parameter: temperature"});
+    let mapped = map_error_value(&body, StatusCode::BAD_REQUEST);
+    assert_eq!(mapped["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        mapped["error"]["message"],
+        "Unsupported parameter: temperature"
+    );
+}
+
+#[test]
+fn unknown_codes_keep_status_based_mapping() {
+    let event = json!({"type": "response.failed", "response": {"error": {"code": "mystery"}}});
+    assert_eq!(backend_error_status(&event), StatusCode::BAD_GATEWAY);
+}

@@ -63,7 +63,7 @@ Set `hide_observed = true` when the dashboard is shared or reached remotely and 
 ## Provision a Claude account in the browser
 
 1. Open `/admin` and sign in with an admin token.
-2. Enter an account name containing only lowercase letters, digits, and hyphens.
+2. Enter an account name containing only lowercase letters, digits, and `.`, `_`, `@`, `+` or `-`, not starting or ending with a dot. The login's email address works once lowercased.
 3. Select **Full OAuth (refreshable)** (the dashboard default) or **Setup token (1-year, inference-only)**, then select **Start**.
 4. Open the displayed authorize URL in another tab. Sign in to the target Claude account and approve access.
 5. Copy the resulting `<code>#<state>` value back to the admin page and select **Complete**.
@@ -93,7 +93,7 @@ An empty-account `chatgpt_oauth` provider, including the built-in `codex` provid
 name = "codex-backup"
 ```
 
-`SHUNT_CODEX_TOKEN_URL` overrides the ChatGPT token endpoint for local integration testing. shunt accepts HTTPS overrides or plain HTTP loopback URLs only; leave it unset in production.
+`SHUNT_CODEX_TOKEN_URL` overrides the ChatGPT token endpoint for local integration testing. shunt accepts a loopback URL, or HTTPS to the built-in endpoint's own host, and ignores anything else (the admin login flow logs a warning when it does); leave it unset in production.
 
 ## Provision an Antigravity account in the browser
 

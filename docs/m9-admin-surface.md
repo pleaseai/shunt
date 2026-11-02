@@ -241,6 +241,12 @@ process-lifetime state:
   downgrading that dashboard to read-only until the operator signed in again.
   Scripted logins are unaffected: the check passes when neither `Sec-Fetch-Site`
   nor `Origin` is present.
+- **The OIDC callback redeems `state` before it spends that budget.** The
+  callback is a `GET`, so another site can fire it with an `<img>` tag, and a
+  same-origin check cannot apply to the identity provider's own redirect. A
+  callback carrying no live `state` is therefore refused before the rate limit
+  is consulted; only `POST /admin/api/oidc/start`, which is same-origin checked,
+  mints one. Without `[server.admin.oidc]` the callback answers `404`.
 - **Pending-login store** is in-memory only, single-use, and TTL-bound; each
   completion attempt is counted and the entry is discarded after a small cap. The
   256-bit OAuth `state` already makes guessing infeasible.
@@ -379,10 +385,11 @@ redirect URL from the browser address bar or `<code>#<state>`. Completion checks
 the pending state in constant time, requires a refresh token, derives the account
 ID from the access-token JWT, and writes the verbatim `auth.json` shape at `0600`.
 `SHUNT_CODEX_TOKEN_URL` overrides the exchange endpoint for local tests; an
-invalid or non-HTTPS/non-loopback override is ignored with a warning (mirroring the
-Claude completion flow) instead of silently, and the exchange POST uses the
-redirect-hardened client so a permitted endpoint cannot 3xx the single-use code to
-an unsafe plaintext host. No access, refresh, or ID token is returned or logged.
+invalid override, or one that is neither loopback nor HTTPS to the built-in
+endpoint's host, is ignored with a warning (mirroring the Claude completion flow)
+instead of silently, and the exchange POST uses the redirect-hardened client, which
+follows a 3xx only within the host it started on, so a permitted endpoint cannot
+hand the single-use code to another host. No access, refresh, or ID token is returned or logged.
 
 Like Claude, an empty-account `chatgpt_oauth` provider scans the Codex store and
 makes the new account live on its next request. Explicit-account providers need a
@@ -418,6 +425,24 @@ named-model usage. Codex remains `response-derived`: both translated Messages
 traffic and raw inbound Responses attach the default CLI account id to
 `x-codex-*` quota capture without importing the credential into the managed
 store. Before such traffic its row explicitly says it is waiting for traffic.
+
+The **Accounts and usage** heading carries a refresh bar: when the table last
+finished loading, the countdown to the next usage-poller pass (from the pool
+response's `usage_poll`; hidden while the poller is off), and a **Reload** button.
+While the tab is visible the page re-reads shunt's own state every 30 seconds:
+`GET /admin/api/pool` and the account stores, with the usage table rebuilt from
+the observations it already has. It never calls `GET /admin/api/observed` on that
+timer, because that endpoint asks each provider's usage API about every login on
+the host, uncached. On those timed reloads, a row that is both a pool account and
+a host login keeps the numbers the last full load drew, except where the pool's
+own window has changed since that load: the pool has then learned something the
+observation predates. A cached `waiting-for-traffic` is dropped the same way once
+the pool has seen the account's traffic. One timed reload runs at a time, so a
+backend slower than the interval still lands its answers. A hidden tab skips the timer and catches up once when it is
+shown again. When the last observation failed the timer leaves the error showing
+instead of repainting the table without the logins. **Reload** repeats the full
+page load, observations included. It is not the per-account **Refresh**, which
+exercises that account's refresh grant, and neither starts a usage-poller pass early.
 
 The usage table groups by provider: the provider is named once and its accounts
 nest beneath it, folding managed pool accounts in alongside the read-only

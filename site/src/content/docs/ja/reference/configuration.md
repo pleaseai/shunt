@@ -43,10 +43,14 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 | :-- | :-- | :-- |
 | `header` | `x-shunt-token` | クライアントトークンを運ぶヘッダー |
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | カンマ区切りの `name:token` ペアを保持する環境変数 |
+| `jwt_header` | 未設定 | インバウンド Codex エンドポイントが IdP の JWT を追加で読むヘッダー。Codex `gateway_oauth` の `delivery.kind = "header"` 用 |
+| `jwt_cookie` | 未設定 | インバウンド Codex エンドポイントが IdP の JWT を追加で読む Cookie。`delivery.kind = "cookie"` 用 |
 
 指定された環境変数には 1 つ以上の認証情報が必要です。例: `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`。テーブルが存在するのに変数が未設定・空・不正な場合、起動はフェイルクローズします。ゲートされるルート（マッピングされた `/v1/messages` 推論と `GET /v1/models` discovery）は、設定されたヘッダー、`Authorization: Bearer`、`x-api-key` のいずれでもトークンを受け付けます — 複数のスロットに有効なトークンがある場合は専用ヘッダーが優先されます。
 
 `tokens_env` の値も、他の設定ファイル文字列と同様に `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。shunt がトークンを読み取る環境変数名を指す点は変わりません。
+
+インバウンド認証が設定されていない場合（このテーブルも `[server.gateway]` ログインもない場合）、認証情報を注入するルートは、`Origin` のホストまたはポートが `Host` ヘッダーと異なるリクエストを `403 permission_error` で拒否します。インバウンドの Codex ルートは、このテーブルがない場合は常に同じリクエストを OpenAI 形式の `403 forbidden` で拒否します。ブラウザはクロスオリジンのリクエストに `Origin` を付けます。そのようなリクエストは別サイトのページから送られたもので、そのページはプリフライトなしで `text/plain` の POST を送れます。ブラウザ以外のクライアントは `Origin` を送らないため影響を受けません。別のオリジンから shunt を呼び出すブラウザアプリには `[server.auth]` が必要です。設定にかかわらず、shunt はリクエストをアップストリームへ転送する前に `Origin`、`Referer`、`Sec-Fetch-*` を削除します。
 
 ### `[[server.auth.jwt]]`（オプション）
 
@@ -60,6 +64,13 @@ tokens_env = "SHUNT_CLIENT_TOKENS"   # JWT issuer を設定したら任意
 issuer = "https://accounts.google.com"
 audience = ["<shunt 専用の client id>"]
 email_domains = ["example.com"]
+
+# ワークロード ID: GitHub Actions の OIDC トークンには email がありません
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
 ```
 
 | キー | デフォルト | 意味 |
@@ -68,21 +79,42 @@ email_domains = ["example.com"]
 | `audience` | 必須 | 受け入れる `aud` 値。文字列または配列 |
 | `email_domains` | `[]` | 大文字小文字を区別しないドメイン。最後の `@` の後ろの部分と**完全一致**で、サフィックス一致ではない |
 | `allowed_emails` | `[]` | 大文字小文字を区別しない完全なメールアドレス |
+| `require` | `{}` | クレーム名 → 文字列または文字列配列のテーブル。列挙した各クレームはトップレベルの JSON **文字列**で、いずれかの値と完全一致（大文字小文字を区別）する必要がある。クレーム間は AND。`email` を持たないワークロード issuer 向け |
+| `subject_prefix` | `[]` | 文字列または配列。設定すると `sub` がいずれかで始まる必要がある（大文字小文字を区別）。区切り文字で終えること — 例: `repo:pleaseai/`（`repo:pleaseai` は `pleaseai-evil` にも一致する）。GitHub の `sub` 形式はリポジトリの作成時期と管理者の設定によって変わるため、ID クレームに対する `require` を優先すること |
+| `identity_claim` | `email` | 文字列値（空でなく 256 バイト以下）が呼び出し元 identity になるクレーム。エントリに `email_domains`/`allowed_emails` がない場合は必須。`sub` ではなく `repository` のように長さが限られたクレームを選ぶ。identity には issuer の接頭辞が付かないため、静的クライアント名や他のエントリの identity と値が同じだと、使用量と spend で同じ呼び出し元として扱われる。`actor` のような単純なユーザー名クレームは避けること |
 | `algorithms` | `["RS256"]` | 受け入れる署名アルゴリズム。非対称のみ |
 | `authorized_parties` | `audience` | `azp` クレームが存在する場合に受け入れる値 |
 | `clock_skew_seconds` | `0` | `exp` と `nbf` に適用する許容誤差 |
 | `max_token_age_seconds` | `3600` | `exp - iat` がこれを超えたら拒否 |
 | `jwks_url` | discovery | discovery ドキュメントを提供しない issuer 向けの明示的な JWKS エンドポイント |
 
-各エントリには `issuer`、`audience`、そして `email_domains` か `allowed_emails` の値が最低 1 つ必要です。`audience` だけでは認可ルールになりません — issuer によっては呼び出し側が自分で audience を選べるからです。`algorithms` に対称アルゴリズムや未知の値がある場合、また `issuer` が `[server.gateway]` の `public_url` と同じ場合も、起動は fail closed します。両方の検証器が同じ bearer スロットを読むため、issuer が重なるとトークンの所有権が評価順に左右されます。
+各エントリには `issuer`、`audience`、そして認可ルールが最低 1 つ必要です: `email_domains`/`allowed_emails` の値、`aud`・`iss` 以外のクレームを指定した `require` テーブル（この 2 つは shunt がすでに行う検査の繰り返しにすぎません）、または `subject_prefix`。`audience` だけでは認可ルールになりません — issuer によっては呼び出し側が自分で audience を選べるからです（任意の GitHub リポジトリが任意の `aud` でトークンを発行できます）。メールルールのないエントリは `identity_claim` も設定する必要があります。設定されたすべてのグループ（メールルール、`require`、`subject_prefix`）を通過する必要があります。`email_verified = true` は、エントリにメールルールがある場合、identity クレームが `email` の場合、または `require` が `email` を指定している場合に強制され、それ以外のエントリは `email` を読みません。`algorithms` に対称アルゴリズムや未知の値がある場合、また `issuer` が `[server.gateway]` の `public_url` と同じ場合も、起動は fail closed します。両方の検証器が同じ bearer スロットを読むため、issuer が重なるとトークンの所有権が評価順に左右されます。
 
 エントリが 1 つでもあれば `tokens_env` は空でも構いません — 認証をすべて IdP に任せるデプロイには設定すべき静的トークンがありません。トークンリストもエントリもない場合、`[server.auth]` は従来どおり起動に失敗します。
 
-JWT は **`Authorization: Bearer` でのみ**受け付けます — 設定された `header` でも `x-api-key` でもありません。Claude Code がすでに `ANTHROPIC_AUTH_TOKEN` を送っているスロットです。ゲートされたルートでは、まず静的トークン、そのルートが受け付ける場合は gateway JWT、次に `iss` で JWT エントリの順に確認します。検証はアルゴリズムを config で固定し（トークンヘッダーの `alg` が選ぶことはありません）、`kid` を必須とし、`exp`/`nbf`、`aud`、`azp`、`exp - iat`、`email_verified = true`、メール許可リストを確認します。検証済みのメールがログと使用量の帰属における呼び出し元 identity になり、256 バイトを超えるアドレスは切り詰めずに拒否します。ゲートされるルートは `[server.auth]` がすでに保護しているルートです: 認証情報を注入する `/v1/messages` と `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`（loopback 以外のみ）、そしてインバウンド Codex エンドポイント（HTTP、WebSocket、analytics）。
+JWT は `Authorization: Bearer` で受け付けます。これは Claude Code がすでに `ANTHROPIC_AUTH_TOKEN` を送っているスロットです。インバウンド Codex エンドポイントに限り、後述の任意スロット `jwt_header` と `jwt_cookie` でも受け付けます。設定された `header` や `x-api-key` から JWT を読むことはありません。ゲートされたルートでは、まず静的トークン、そのルートが受け付ける場合は gateway JWT、次に `iss` で JWT エントリの順に確認します。検証はアルゴリズムを config で固定し（トークンヘッダーの `alg` が選ぶことはありません）、`kid` を必須とし、`exp`/`nbf`、`aud`、`azp`、`exp - iat`、設定された `require`/`subject_prefix` オペレーター、メール許可リスト、およびエントリが `email` を読む場合は `email_verified = true` を確認します。検証済みの identity クレーム（デフォルトはメール）がログと使用量の帰属における呼び出し元 identity になり、256 バイトを超える値は切り詰めずに拒否します。ゲートされるルートは `[server.auth]` がすでに保護しているルートです: 認証情報を注入する `/v1/messages` と `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`（loopback 以外のみ）、そしてインバウンド Codex エンドポイント（HTTP、WebSocket、analytics）。
 
 key set は issuer ごとに初回使用時に遅延取得されるため、IdP に到達できなくても起動を妨げません。キャッシュした key set を信頼するのは最大 5 分で、その後は次のリクエストが再取得を試みます（60 秒の再取得下限が適用されます）。再取得に成功すると key set を丸ごと置き換えるため、issuer が取り下げた鍵は約 5 分以内に検証に使われなくなります。再取得に失敗した場合は、IdP の障害が全面停止に広がらないよう期限切れの key set を使い続け、discovery 自体が失敗したときは最後に発見した `jwks_uri` を代わりに試します。config reload は、エントリの `issuer` と `jwks_url` がどちらも変わらない場合に限りキャッシュ済みの鍵を保持します。未知の `kid` は key set あたり 60 秒のウィンドウで最大 1 回しか再取得を起こしません。どのエントリでも検証できなかったトークンは `401`、検証できたエントリがなく、トークンの issuer に一致するエントリのうちキャッシュ済みの key set がなく取得にも失敗したものがある場合は **`503`** です — IdP の障害が不正な認証情報として報告されることはありません。
 
 shunt は失効状態を保持しないため、有効なトークンは期限まで使えます。その範囲を制限するのが `max_token_age_seconds` で、issuer は分単位の寿命のトークンを発行すべきです。許可リストからドメインやアドレスを削除した場合は次のリクエストから反映されます。
+
+### Codex gateway OAuth: `jwt_header` と `jwt_cookie`
+
+Codex CLI のネイティブ `gateway_oauth` は `Authorization` を予約しており、ID プロバイダー（IdP）のアクセストークンを Cookie またはカスタムヘッダーで渡します。任意の 2 つの `[server.auth]` キーで shunt が読む場所を指定し、トークンは bearer JWT と同じ `[[server.auth.jwt]]` エントリで検証されます。Microsoft Entra ID の例を含む手順全体は [Codex CLI の接続ガイド](/ja/guides/connect-codex-cli/)にあります。
+
+```toml
+[server.auth]
+jwt_cookie = "auth-openid"        # Codex: delivery = { kind = "cookie", name = "auth-openid" }
+# jwt_header = "X-Gateway-Token"  # Codex: delivery = { kind = "header", name = "X-Gateway-Token", scheme = "Bearer" }
+```
+
+- **検証。** 起動時に次を拒否します: `[[server.auth.jwt]]` エントリのないままキーを設定した場合、空の値、不正なヘッダー名、および `authorization`、`x-api-key`、`cookie`、`x-shunt-token`、`x-shunt-admin-token`、`x-shunt-inbound-client`、Codex エンドポイントで shunt が読み取る、または書き換えるヘッダー（`session-id`, `x-claude-code-session-id`, `content-type`, `content-length`, `content-encoding`, `transfer-encoding`, `host`, `origin`, `upgrade`, `connection`, `openai-beta`, `sec-websocket-*`）、Codex CLI が送信する、または shunt がそこで合成するヘッダー（`originator`, `x-codex-routing-hint`, `thread-id`, `x-client-request-id`, `x-codex-window-id`）、`[server.auth]` の `header`、`[server.admin]` の `header` のいずれかであるヘッダー名。Cookie 名は RFC 6265 の token でなければならず、管理ダッシュボードの `shunt_admin_session` であってはなりません。どちらのキーも hot-reload されます。
+- **対象範囲。** このキーを読むのはインバウンド Codex エンドポイントだけです: Responses ルート（`/v1/responses`、`/backend-api/codex/responses`、`/responses` の HTTP と WebSocket）、`/alpha/search`、analytics sink。`/v1/messages`、`/v1/models`、`/usage`、Codex の discovery パスは JWT を `Authorization: Bearer` でのみ受け付けます。
+- **スロットの順序。** 静的トークン、`Authorization: Bearer` の JWT、`jwt_header`（生の JWT または `Bearer <jwt>`、scheme の大文字小文字は不問）、`jwt_cookie` の順です。検証に成功した最初のスロットが採用されるため、`Authorization` の ChatGPT トークンは Cookie にフォールスルーします。スロットはスキャンが到達したときだけ調べます。設定したヘッダー名または Cookie 名が複数回現れると、先行スロットがすでに認証した場合を除きリクエストを拒否します。認証情報がない、または無効なら `401`、issuer の鍵を取得できなければ `503` で、このエンドポイントではどちらも OpenAI のエラー形式です。
+- **Origin ルール。** Cookie を参照するのは、リクエストに `Origin` ヘッダーがない場合、またはリクエストの scheme、`Host`、実効ポートと一致する `Origin` がちょうど 1 つある場合だけです。scheme は最初の `X-Forwarded-Proto` の値（`http` または `https`）で、ない場合は shunt 自体が平文 HTTP で待ち受けるため `http` です。TLS を終端するプロキシの背後では、プロキシに `X-Forwarded-Proto` を送らせてください。cross-origin（scheme が異なる場合を含む）、`null`、解析できない、または重複した `Origin`、および `Host` がない、または `X-Forwarded-Proto` を認識できないリクエストの `Origin` は Cookie スロットを無効にします。ヘッダースロットには影響しません。ブラウザはゲートウェイのドメインに対して保持する Cookie をリクエストに付けるため、`jwt_cookie` をそのような Cookie（例: shunt の前段にある SSO プロキシの Cookie、Cloudflare Access の `CF_Authorization`）に向けないでください。
+- **転送。** 設定したヘッダーとすべての `cookie` ヘッダーは、プールでもルーティング先プロバイダーでも、アップストリームへのリクエスト前に取り除かれます。
+- **WebSocket。** ハンドシェイクの認証情報は毎ターン再検証されます。IdP トークンが期限切れになると次のターンが `401` エラーフレームで失敗し、Codex は更新されたトークンで再接続します。
+- **サイズ。** Entra のアクセストークンは大きくなります。`[server.limits]` の `max_request_header_bytes` を設定している場合はその対象に含まれ、リバースプロキシは通常 Cookie 1 つを約 4 KB に制限します。どちらかが問題になるならヘッダー配信を使ってください。
 
 ## `[server.admin]`（オプション）
 
@@ -184,9 +216,9 @@ rate は upstream ごとに、最も具体的なものから順に一致しま�
 | :-- | :-- | :-- |
 | `fail_closed_on_error` | `false` | プリンシパルのメーターを信頼できないとき（復元に失敗したカウンターレコード。そのウィンドウが終わるまで）: `false` はリクエストを転送して警告を記録、`true` は上限のあるプリンシパルを `429` `spend limit unavailable` で拒否（上限のないプリンシパルは転送） |
 
-上限適用は `POST /v1/messages` に対して行われます（`count_tokens` は対象外）。プリンシパルは静的な `[server.auth]` トークン名、検証済み JWT のメール、または gateway ログインのメールで、`user` 上限の `user_id` とそのまま照合されます。認証情報を注入するが ID を持たないリクエストは `shunt:anonymous` を共有し、passthrough または `type = "noop"` ルートのみのチェーンは適用も計測もされません。UTC の期間（日、月曜開始の週、月）ごとの上限は、そのプリンシパルの `user` 行、なければ `organization` 行（共有プールではなくユーザーごとのデフォルト）、それもなければ無制限です。`amount: null` の `user` 行は明示的な無制限です。チェックは予約を伴わない事前チェックなので、処理中のリクエストは上限を超えることがあります。上限に達したプリンシパルには `retry-after` と `x-should-retry: false` 付きの `429 billing_error`（`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`）が返り、上限のあるプリンシパルの計測対象レスポンスでは（passthrough または `noop` ルートのみのチェーンはアップストリームのヘッダーをそのまま保持）、すべてのステータスでアップストリームの `anthropic-ratelimit-*` ヘッダーが除去され、そのプリンシパル自身の `anthropic-ratelimit-unified-*` ヘッダーは `2xx` と 2 種類の支出上限による拒否、つまり上限超過の `429` と、`anthropic-ratelimit-unified-overage-disabled-reason: fetch_error` が付く fail-closed の `429 spend limit unavailable` にのみ付きます（その他のエラーや fail-open での転送には付きません）。`/audit`、監査・アイデンティティの保持スイープ、group scope は未実装です。詳細な動作は [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)（英語）を参照してください。
+上限適用は `POST /v1/messages` に対して行われます（`count_tokens` は対象外）。プリンシパルは静的な `[server.auth]` トークン名、検証済み JWT の identity（`identity_claim`、既定はメール）、または gateway ログインのメールで、`user` 上限の `user_id` とそのまま照合されます。認証情報を注入するが ID を持たないリクエストは `shunt:anonymous` を共有し、passthrough または `type = "noop"` ルートのみのチェーンは適用も計測もされません。UTC の期間（日、月曜開始の週、月）ごとの上限は、そのプリンシパルの `user` 行、なければ `organization` 行（共有プールではなくユーザーごとのデフォルト）、それもなければ無制限です。`amount: null` の `user` 行は明示的な無制限です。チェックは予約を伴わない事前チェックなので、処理中のリクエストは上限を超えることがあります。上限に達したプリンシパルには `retry-after` と `x-should-retry: false` 付きの `429 billing_error`（`spend limit reached (<period>; resets YYYY-MM-DD 00:00 UTC)`）が返り、上限のあるプリンシパルの計測対象レスポンスでは（passthrough または `noop` ルートのみのチェーンはアップストリームのヘッダーをそのまま保持）、すべてのステータスでアップストリームの `anthropic-ratelimit-*` ヘッダーが除去され、そのプリンシパル自身の `anthropic-ratelimit-unified-*` ヘッダーは `2xx` と 2 種類の支出上限による拒否、つまり上限超過の `429` と、`anthropic-ratelimit-unified-overage-disabled-reason: fetch_error` が付く fail-closed の `429 spend limit unavailable` にのみ付きます（その他のエラーや fail-open での転送には付きません）。`/audit`、監査・アイデンティティの保持スイープ、group scope は未実装です。詳細な動作は [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)（英語）を参照してください。
 
-受信 Codex エンドポイント（`[server.codex_endpoint]`）も同じ上限とカウンターでチェックおよび計測されるため、1 つの上限が両方のサーフェスにまたがるプリンシパルの支出を制限します。すべてのターンは、HTTP でも Responses WebSocket でも、アップストリームを呼ぶ前にチェックされます。プリンシパルは静的トークン名、検証済み JWT のメール、または `[server.auth]` がない場合の `shunt:anonymous` です。上限を超えたターンには `429` が返り、`error.type` と `error.code` は `usage_limit_reached`、さらに `resets_at`（エポック秒、到達した上限のうち最後にリセットされるもの）、`retry-after`、`x-should-retry: false` が付き、`blocked_message` が純粋な ASCII であれば `x-codex-promo-message` でも伝えられます。`fail_closed_on_error` は、上限を持つプリンシパルを同じ type で、`resets_at` と `retry-after` なしで拒否します。完了したターンは Responses の `usage` から課金されます。キャッシュされた入力トークンは `cache_read` レート、残りの入力は `input` レートで、推論トークンは出力に含まれます。使用量が報告されずに終わったターンは、推定入力の下限に配信済みの出力を加えて課金されます。クライアントから見える動作は[受信 Codex エンドポイント](/ja/guides/inbound-codex-endpoint/#支出上限)を参照してください。
+受信 Codex エンドポイント（`[server.codex_endpoint]`）も同じ上限とカウンターでチェックおよび計測されるため、1 つの上限が両方のサーフェスにまたがるプリンシパルの支出を制限します。すべてのターンは、HTTP でも Responses WebSocket でも、アップストリームを呼ぶ前にチェックされます。プリンシパルは静的トークン名、検証済み JWT の identity（`identity_claim`、既定はメール）、または `[server.auth]` がない場合の `shunt:anonymous` です。上限を超えたターンには `429` が返り、`error.type` と `error.code` は `usage_limit_reached`、さらに `resets_at`（エポック秒、到達した上限のうち最後にリセットされるもの）、`retry-after`、`x-should-retry: false` が付き、`blocked_message` が純粋な ASCII であれば `x-codex-promo-message` でも伝えられます。`fail_closed_on_error` は、上限を持つプリンシパルを同じ type で、`resets_at` と `retry-after` なしで拒否します。完了したターンは Responses の `usage` から課金されます。キャッシュされた入力トークンは `cache_read` レート、残りの入力は `input` レートで、推論トークンは出力に含まれます。使用量が報告されずに終わったターンは、推定入力の下限に配信済みの出力を加えて課金されます。クライアントから見える動作は[受信 Codex エンドポイント](/ja/guides/inbound-codex-endpoint/#支出上限)を参照してください。
 
 ## `[server.gateway]`（オプション）
 
@@ -402,6 +434,8 @@ codex-fallback = "gpt-5.2"
 | `zhipu` | `anthropic` | `https://open.bigmodel.cn/api/anthropic` | `api_key`, env `ZHIPUAI_API_KEY` |
 | `minimax-cn` | `anthropic` | `https://api.minimax.cn/anthropic` | `api_key`, env `MINIMAX_API_KEY` |
 | `opencode` | `anthropic` | `https://opencode.ai/zen` | `api_key`, env `OPENCODE_API_KEY`, ヘッダー `x_api_key` |
+| `cheaperinference` | `anthropic` | `https://api.cheaperinference.com` | `api_key`, env `CHEAPER_INFERENCE_API_KEY` |
+| `chatgpt-plan` | `responses` | `https://api.openai.com/v1` | `chatgpt_plan_oauth` |
 
 `auth = "claude_oauth"` のような文字列は `auth = { mode = "claude_oauth" }` の省略形です。`api_key` マップは `env`（preset が提供しない場合は必須）と `header` を受け取ります。`header` を省略するとデフォルト（`bearer`、または `opencode` preset の `x_api_key`）がそのまま使われます。`claude_oauth`、`chatgpt_oauth`、`kimi_oauth`、`xai_oauth`、`antigravity_oauth` のマップは `account = "name"` または `accounts = [...]` で範囲を絞れますが、両方は指定できません。`accounts` にはストアエントリ名の文字列と完全なアカウントテーブルを指定できます。明示的な `accounts = []` は拒否され、両方のスコープフィールドを省略するとストア全体を走査します。ChatGPT ストアが空の場合、`chatgpt_oauth` は従来どおり `~/.codex/auth.json` にフォールバックします。Antigravity ストアが空で何も設定されていない場合、`antigravity_oauth` は `~/.shunt/antigravity-auth.json` に、xAI ストアが空で何も設定されていない場合、`xai_oauth` は `~/.shunt/xai-auth.json` にフォールバックします。`passthrough`、`cursor_oauth` のマップは `mode` のみを受け付け、mode 固有の未知のキーはエラーです。
 
@@ -441,7 +475,7 @@ origin に関係なく、保持された各スロットはそのスロットが�
 | :-- | :-- | :-- |
 | `kind` | `anthropic` \| `responses` \| `cursor` \| `gemini` \| `antigravity` \| `antigravity_cli` | 上流プロトコル / アダプター。`anthropic` = Messages API（パススルー、オプションで再キー付け）。`responses` = Anthropic Messages を OpenAI Responses API へ変換（Responses API には `stop` パラメーターがないため、`stop_sequences` は黙って捨てられるのではなく、変換内でゲートウェイ側からエミュレートされます）。`cursor` = ネイティブな Cursor ConnectRPC/protobuf AgentService アダプター。`gemini` = Anthropic Messages を Google Code Assist バックエンドの Gemini `generateContent`/`streamGenerateContent` へ変換。`antigravity` = Google Antigravity バックエンドに HTTP で接続。`gemini` と同じ Code Assist プロトコルを話しますが、Antigravity のサブスクリプショントークンで認証し、プロジェクト探索では `ideType: ANTIGRAVITY` として自身を識別します。`antigravity_cli` = **非推奨** — 上流を持たず、ローカルの Antigravity CLI バイナリ（`agy`）をサブプロセスとして実行。`agy` が自身のツール呼び出しを解決し、`tool_use` ブロックを返せないため、実際にツール呼び出しを要求するリクエスト（空でない `tools` 配列、または `any`・`tool` の `tool_choice`）は、テキストとして黙って応答するのではなく `400 invalid_request_error` で拒否されます。`tool_choice: none`（`tools` と併用していても）、ツールのない `tool_choice: auto`、空の `tools: []` はいずれもツール呼び出しを強制しないため受け付けられます。 |
 | `base_url` | URL | 上流のベース。shunt がエンドポイントパスを追加します。`kind = "cursor"` ではログイン／トークン更新用エンドポイントにのみ使われ、エージェント／推論ホストは選択しません。 |
-| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `kimi_oauth` \| `xai_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough` はクライアント自身の credential を転送。`api_key` は `api_key_env` からキーを注入。`chatgpt_oauth` は `~/.codex/auth.json` を再利用。`claude_oauth` は明示的な Anthropic アカウントから選択。`kimi_oauth` は明示的な Kimi Code アカウント（`shunt login kimi`）から選択し、`kind = "anthropic"` と `kimi.com` の `base_url` の組み合わせでのみ有効。`xai_oauth` は `~/.shunt/accounts/xai/` の名前付きログイン（`shunt login xai --name`）をプールし、それ以外の場合は `shunt login xai` からの `~/.shunt/xai-auth.json` を再利用（HTTPS 上の x.ai/grok.com ホストへのみ送信）。`cursor_oauth` は `~/.shunt/cursor-auth.json`（`shunt login cursor`）を再利用。`google_oauth` は gemini CLI ログインの `~/.gemini/oauth_creds.json` を再利用し、`kind = "gemini"` でのみ有効。`antigravity_oauth` は `shunt login antigravity` からの `~/.shunt/antigravity-auth.json` を再利用し、`kind = "antigravity"` でのみ有効で、`google_oauth` とは**互換性がありません** — Antigravity は Gemini CLI のトークンには含まれない 2 つのスコープ（`cclog`、`experimentsandconfigs`）を要求します。`none` は認証すべき上流を持たないアダプター（`kind = "antigravity_cli"`）向けに、credential を一切送信しません。 |
+| `auth` | `passthrough` \| `api_key` \| `chatgpt_oauth` \| `claude_oauth` \| `kimi_oauth` \| `xai_oauth` \| `chatgpt_plan_oauth` \| `cursor_oauth` \| `google_oauth` \| `antigravity_oauth` \| `none` | `passthrough` はクライアント自身の credential を転送。`api_key` は `api_key_env` からキーを注入。`chatgpt_oauth` は `~/.codex/auth.json` を再利用。`claude_oauth` は明示的な Anthropic アカウントから選択。`kimi_oauth` は明示的な Kimi Code アカウント（`shunt login kimi`）から選択し、`kind = "anthropic"` と `kimi.com` の `base_url` の組み合わせでのみ有効。`xai_oauth` は `~/.shunt/accounts/xai/` の名前付きログイン（`shunt login xai --name`）をプールし、それ以外の場合は `shunt login xai` からの `~/.shunt/xai-auth.json` を再利用（HTTPS 上の x.ai/grok.com ホストへのみ送信）。`chatgpt_plan_oauth` は `~/.shunt/accounts/chatgpt-plan/` の名前付き ChatGPT プランのアカウント（`shunt login chatgpt-plan --name`）をプールし、`kind = "responses"` と `api.openai.com` の `base_url` の組み合わせでのみ有効（[ChatGPT プランのガイド](/ja/guides/chatgpt-plan/)を参照）。`cursor_oauth` は `~/.shunt/cursor-auth.json`（`shunt login cursor`）を再利用。`google_oauth` は gemini CLI ログインの `~/.gemini/oauth_creds.json` を再利用し、`kind = "gemini"` でのみ有効。`antigravity_oauth` は `shunt login antigravity` からの `~/.shunt/antigravity-auth.json` を再利用し、`kind = "antigravity"` でのみ有効で、`google_oauth` とは**互換性がありません** — Antigravity は Gemini CLI のトークンには含まれない 2 つのスコープ（`cclog`、`experimentsandconfigs`）を要求します。`none` は認証すべき上流を持たないアダプター（`kind = "antigravity_cli"`）向けに、credential を一切送信しません。 |
 | `api_key_env` | 環境変数名 | `auth = "api_key"` のとき、キーを読み取る場所。この値自体も `${VAR}` / `${file:...}` で書けます([Secret 参照](#secret-参照)を参照)。 |
 | `api_key_header` | `bearer`（デフォルト） \| `x_api_key` | 注入されたキーを送るヘッダー。 |
 | `effort` | `low` … `max` | オプションのデフォルト reasoning エフォート（`responses` プロバイダー）。`kind = "antigravity"` にも適用され、サフィックスのない `gemini-*` の `upstream_model` にカタログの effort サフィックスとして付与されます。 |
@@ -1299,7 +1333,7 @@ policy = { type = "target_selector", selector = "/target" }
 
 ## `[store]`（オプション）
 
-プールのクォータ、ゲートウェイの refresh token、支出上限とその監査記録を保存する、オプションのトランザクション対応ストアです。SQLite または PostgreSQL を使えます。このテーブルがなければ何も変わらず、3 つのサブシステムはこれまでどおり JSON の `state_path` スナップショットと復元経路を使います。設定すると、ストアがスナップショットを置き換え、既存のスナップショットは一度だけインポートされます。詳しい動作は [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)（英語）を参照してください。`[store]` は再起動が必要な設定です。設定のリロードで変更すると警告をログに出し、再起動後に反映されます。
+プールのクォータ、ゲートウェイの refresh token、支出上限とその監査記録を保存する、オプションのトランザクション対応ストアです。SQLite または PostgreSQL を使えます。このテーブルがなければ何も変わらず、3 つのサブシステムはこれまでどおり JSON の `state_path` スナップショットと復元経路を使います。設定すると、ストアがスナップショットを置き換え、既存のスナップショットは一度だけインポートされます。詳しい動作は [`docs/store.md`](https://github.com/pleaseai/shunt/blob/main/docs/store.md)（英語）を参照してください。既存のスナップショットをストアへ移す手順は [ストアへの移行](/ja/guides/store-migration/) を参照してください。`[store]` は再起動が必要な設定です。設定のリロードで変更すると警告をログに出し、再起動後に反映されます。
 
 | キー | デフォルト | 意味 |
 | :-- | :-- | :-- |

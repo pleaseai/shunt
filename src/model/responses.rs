@@ -7,6 +7,7 @@ use crate::model::responses_request::TOOL_SEARCH_NAME;
 pub use crate::model::responses_request::{
     encode_reasoning_signature, translate_request, translate_request_value,
 };
+use crate::model::siwc_errors;
 use crate::model::stop_sequences::StopScanner;
 
 #[derive(Debug, Clone)]
@@ -1375,10 +1376,19 @@ pub fn map_error_value(value: &Value, status: StatusCode) -> Value {
     let message = error_message(value);
     let message = context_overflow_message(value, &message).unwrap_or(message);
     let message = misalignment_steer_message(value, &message).unwrap_or(message);
+    // A SIWC code owns its Anthropic type (a 503 unavailable code is
+    // `overloaded_error`, not `api_error`) and names the offending parameter;
+    // every other code keeps the status-derived type.
+    let siwc = siwc_errors::lookup(error_code(value));
+    let message = match siwc {
+        Some(_) => siwc_errors::message_with_param(value, &message).unwrap_or(message),
+        None => message,
+    };
+    let error_type = siwc.map_or_else(|| anthropic_error_type(status), |hit| hit.error_type);
     json!({
         "type": "error",
         "error": {
-            "type": anthropic_error_type(status),
+            "type": error_type,
             "message": message
         }
     })
@@ -1451,7 +1461,7 @@ pub fn client_facing_status(status: StatusCode) -> StatusCode {
 /// The upstream error `code`, wherever the payload shape puts it: a plain
 /// `{"error":{"code":..}}` object, a streaming `response.failed` event nesting it
 /// under `response`, or a bare top-level `code`. Empty when absent.
-fn error_code(value: &Value) -> &str {
+pub(crate) fn error_code(value: &Value) -> &str {
     value
         .pointer("/error/code")
         .or_else(|| value.pointer("/response/error/code"))
@@ -1491,13 +1501,20 @@ fn error_code(value: &Value) -> &str {
 ///   not transport-gated: any Responses backend's in-stream error event with a
 ///   top-level status maps the same way (a `401` / `403` passes through as the
 ///   auth envelope, as that out-of-band HTTP status already does).
+/// - A Sign in with ChatGPT code (`subscription_sharing_*`, `chatpass_v2_*`) →
+///   the status in [`siwc_errors::lookup`], checked before everything else.
 /// - Anything else (including `misalignment_policy_violation`, `server_error`,
 ///   and quota codes such as `insufficient_quota`) → the `502` gateway error.
 ///
 /// Status only, and always terminal: the event follows a 2xx acceptance, so it
 /// never re-enters failover (`docs/upstreams-failover.md` §3) and never cools a
 /// pool account down — pool cooldown keys on the upstream HTTP status alone.
+/// The one exception is a chatgpt-plan pool: `pool_plan::relay_events` /
+/// `cool_on_relayed_limit` cool a plan account on an in-stream 429.
 pub fn backend_error_status(value: &Value) -> StatusCode {
+    if let Some(siwc) = siwc_errors::lookup(error_code(value)) {
+        return siwc.status;
+    }
     match error_code(value) {
         "rate_limit_exceeded" | "slow_down" | "flex_unavailable" => StatusCode::TOO_MANY_REQUESTS,
         "server_is_overloaded" => {
@@ -1567,6 +1584,26 @@ fn error_message(value: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("upstream request failed")
         .to_string()
+}
+
+/// Append ` ({hint})` to the message [`error_message`] reads from a backend
+/// error event, so a gateway hint reaches the client through the in-stream
+/// mapping as `with_auth_hint` adds it to an HTTP error reply. Written at
+/// `/error/message`, which [`error_message`] reads first; a payload whose
+/// `error` is not an object is left alone.
+pub(crate) fn append_error_hint(value: &mut Value, hint: &str) {
+    let message = format!("{} ({hint})", error_message(value));
+    match value.get_mut("error") {
+        Some(Value::Object(error)) => {
+            error.insert("message".to_string(), Value::String(message));
+        }
+        None => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("error".to_string(), json!({ "message": message }));
+            }
+        }
+        Some(_) => {}
+    }
 }
 
 /// Rewrite upstream context-overflow errors into Anthropic's wording.

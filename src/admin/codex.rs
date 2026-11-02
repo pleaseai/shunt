@@ -21,8 +21,8 @@ use crate::{
 
 use super::{
     authenticate, bad_gateway, bad_request, check_csrf, cleanup_reprovisioned_pool_health,
-    forget_pool_health_if_absent, internal, json_secure, remaining_account_identities,
-    require_write,
+    forget_pool_health_if_absent, internal, invalid_account_name, json_secure,
+    remaining_account_identities, require_write,
     session::{PendingAttempt, PendingKind, COMPLETION_EXCHANGE_TIMEOUT},
     too_many_requests, unauthorized,
 };
@@ -55,7 +55,7 @@ pub(super) async fn add_codex_account(
         return bad_request("invalid JSON body");
     };
     if codex_store::validate_account_name(&body.name).is_err() {
-        return bad_request("account name must match [a-z0-9-]+");
+        return invalid_account_name();
     }
     let pkce = generate_pkce();
     let authorize_url = match codex_login::build_authorize_url(
@@ -127,7 +127,7 @@ pub(super) async fn complete_codex_account(
         return bad_request("invalid JSON body");
     };
     if codex_store::validate_account_name(&name).is_err() {
-        return bad_request("account name must match [a-z0-9-]+");
+        return invalid_account_name();
     }
     let key = codex_pending_key(&name);
     // Held for the rest of the handler; see `PendingStore::lock_completion` for
@@ -294,7 +294,7 @@ pub(super) async fn remove_codex_account_handler(
         return response;
     }
     if codex_store::validate_account_name(&name).is_err() {
-        return bad_request("account name must match [a-z0-9-]+");
+        return invalid_account_name();
     }
     let target = name.clone();
     let removed = match tokio::task::spawn_blocking(move || {
