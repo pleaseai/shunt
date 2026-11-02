@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { renderDashboard, rowOf, tbody } from '../test/harness';
 import type { PoolAccount } from '../types';
 
-function poolWith(account: PoolAccount) {
-  return { pool: [{ provider: 'claude', auth: 'claude_oauth', accounts: [account] }] };
+function poolWith(...accounts: PoolAccount[]) {
+  return { pool: [{ provider: 'claude', auth: 'claude_oauth', accounts }] };
 }
 
 /** The State cell of the pool row for `name`, read off the rendered table. */
@@ -120,6 +120,56 @@ describe('the pool table reports why an account is out, not just that it is', ()
       }),
     );
     expect(stateOf('fable-capped')).toBe('capped (fable)');
+  });
+
+  /**
+   * `near_quota` is also true for an account the pool has merely moved off at
+   * its switch threshold, so reporting it for a used-up window hid the
+   * difference between "nearly out" and "out until the window resets".
+   */
+  it('reports a used-up window as exhausted over cooling and near quota', async () => {
+    await renderDashboard(
+      poolWith({
+        name: 'spent-one',
+        has_state: true,
+        near_quota: true,
+        exhausted: true,
+        utilization_7d: 1,
+        cooldown_secs_remaining: 300,
+      }),
+    );
+    expect(stateOf('spent-one')).toBe('exhausted');
+  });
+
+  /**
+   * Whether a window is used up is the pool's decision, made from per-window
+   * statuses. The raw aggregate `status` can still read `rejected` after a
+   * per-window status cleared it, and a Fable-only rejection leaves other models
+   * served, so the table must not second-guess the flag from `status`.
+   */
+  it('keeps an account the pool does not call exhausted out of that state', async () => {
+    await renderDashboard(
+      poolWith(
+        {
+          name: 'stale-rejection',
+          has_state: true,
+          near_quota: true,
+          exhausted: false,
+          status: 'rejected',
+          utilization_5h: 0.99,
+        },
+        {
+          name: 'fable-out',
+          has_state: true,
+          exhausted: false,
+          status: 'rejected',
+          utilization_7d_oi: 1,
+          capped_fable: true,
+        },
+      ),
+    );
+    expect(stateOf('stale-rejection')).toBe('near quota');
+    expect(stateOf('fable-out')).toBe('capped (fable)');
   });
 
   it('keeps near quota above a fable-only cap', async () => {
