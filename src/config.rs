@@ -411,6 +411,32 @@ pub struct InboundAuthConfig {
     /// use different claim vocabularies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jwt: Vec<InboundJwtConfig>,
+    /// Extra header that may carry a JWT from one of the `[[server.auth.jwt]]`
+    /// issuers, for deployments behind an identity-aware proxy. Requires at
+    /// least one `[[server.auth.jwt]]` entry; may not name `authorization`,
+    /// `x-api-key`, a shunt-reserved slot, or the `[server.auth]` /
+    /// `[server.admin]` header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt_header: Option<String>,
+    /// Cookie (case-sensitive name) that may carry such a JWT. Requires at
+    /// least one `[[server.auth.jwt]]` entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt_cookie: Option<String>,
+}
+
+impl Default for InboundAuthConfig {
+    /// The serde defaults, so a literal can name only the fields it cares
+    /// about. `resolve()` still fails closed: no tokens and no JWT entries is
+    /// an error, whatever built the value.
+    fn default() -> Self {
+        Self {
+            header: default_auth_header(),
+            tokens_env: default_tokens_env(),
+            jwt: Vec::new(),
+            jwt_header: None,
+            jwt_cookie: None,
+        }
+    }
 }
 
 /// One `[[server.auth.jwt]]` entry: an external issuer whose JWTs shunt
@@ -435,6 +461,20 @@ pub struct InboundJwtConfig {
     /// Individual verified addresses that are accepted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_emails: Vec<String>,
+    /// Workload-identity operator: claim name → accepted values. Every listed
+    /// claim must be a top-level JSON string equal to one of its values (AND
+    /// across claims, any-of within one).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub require: BTreeMap<String, StringList>,
+    /// Accepted `sub` prefixes. When non-empty, `sub` must be a string starting
+    /// with one of them. End a prefix at a delimiter (`repo:org/`), or it also
+    /// matches sibling names.
+    #[serde(default)]
+    pub subject_prefix: StringList,
+    /// Claim whose string value becomes the caller identity. Defaults to
+    /// `email`; required when the entry has no email rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_claim: Option<String>,
     /// Accepted signing algorithms. The token header's `alg` never selects the
     /// algorithm; this list does.
     #[serde(default = "default_jwt_algorithms")]
@@ -522,6 +562,13 @@ impl InboundAuthConfig {
             .enumerate()
             .map(|(index, entry)| entry.resolve(index))
             .collect::<Result<Vec<_>, _>>()?;
+        let jwt_slots = crate::auth::jwt_slots::resolve(
+            self.jwt_header.as_deref(),
+            self.jwt_cookie.as_deref(),
+            !jwt.is_empty(),
+            &header,
+        )
+        .map_err(|(key, message)| ConfigError::InvalidInboundJwtSlot { key, message })?;
         let raw = std::env::var(&self.tokens_env).unwrap_or_default();
         let tokens = if raw.trim().is_empty() {
             if jwt.is_empty() {
@@ -538,7 +585,9 @@ impl InboundAuthConfig {
                 }
             })?
         };
-        Ok(crate::auth::inbound::InboundAuth::new(header, tokens).with_jwt(jwt))
+        Ok(crate::auth::inbound::InboundAuth::new(header, tokens)
+            .with_jwt(jwt)
+            .with_jwt_slots(jwt_slots))
     }
 }
 
@@ -577,16 +626,61 @@ impl InboundJwtConfig {
             .map(|email| email.trim().to_ascii_lowercase())
             .filter(|email| !email.is_empty())
             .collect();
-        // Every entry must carry an authorization rule beyond `audience`.
-        // Phase 1 offers only the email operators; the rule is enforced here
-        // rather than documented because for some issuers `audience` is not an
-        // authorization decision at all — a GitHub Actions workflow picks its
-        // own `aud`, so any repository could mint a token carrying it.
-        if allowed_domains.is_empty() && allowed_emails.is_empty() {
+        let subject_prefixes = self.subject_prefix.resolve();
+        let mut require: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (claim, values) in &self.require {
+            let claim = claim.trim();
+            if claim.is_empty() {
+                return Err(invalid("require claim names must not be empty".to_string()));
+            }
+            if is_numeric_claim(claim) {
+                return Err(invalid(format!(
+                    "require.{claim} names a numeric claim, which never matches a string value"
+                )));
+            }
+            let values = values.resolve();
+            if values.is_empty() {
+                return Err(invalid(format!(
+                    "require.{claim} must list at least one non-empty value"
+                )));
+            }
+            if require.insert(claim.to_string(), values).is_some() {
+                return Err(invalid(format!("duplicate require claim name: {claim}")));
+            }
+        }
+        // Every entry must carry an authorization rule beyond `audience`; the
+        // rule is enforced here rather than documented because for some
+        // issuers `audience` is not an authorization decision at all — a
+        // GitHub Actions workflow picks its own `aud`, so any repository could
+        // mint a token carrying it.
+        let has_email_rule = !allowed_domains.is_empty() || !allowed_emails.is_empty();
+        let has_claim_rule = require
+            .keys()
+            .any(|claim| !matches!(claim.as_str(), "aud" | "iss"));
+        if !has_email_rule && !has_claim_rule && subject_prefixes.is_empty() {
             return Err(invalid(
-                "requires at least one email_domains or allowed_emails entry: audience alone is not an authorization rule".to_string(),
+                "requires at least one email_domains or allowed_emails entry, a require table naming a claim other than aud or iss, or a subject_prefix: audience alone is not an authorization rule".to_string(),
             ));
         }
+        let identity_claim = self
+            .identity_claim
+            .as_deref()
+            .map(str::trim)
+            .filter(|claim| !claim.is_empty());
+        let identity_claim = match identity_claim {
+            Some(claim) if is_numeric_claim(claim) => {
+                return Err(invalid(format!(
+                    "identity_claim {claim:?} names a numeric claim; the identity must be a string claim"
+                )))
+            }
+            Some(claim) => claim.to_string(),
+            None if has_email_rule => "email".to_string(),
+            None => {
+                return Err(invalid(
+                    "identity_claim is required when the entry has no email_domains or allowed_emails (a workload token carries no email)".to_string(),
+                ))
+            }
+        };
 
         let mut algorithms = Vec::new();
         for raw in &self.algorithms {
@@ -655,10 +749,19 @@ impl InboundJwtConfig {
             authorized_parties,
             allowed_domains,
             allowed_emails,
+            require: require.into_iter().collect(),
+            subject_prefixes,
+            identity_claim,
             clock_skew_seconds: self.clock_skew_seconds,
             max_token_age_seconds: self.max_token_age_seconds,
         })
     }
+}
+
+/// Registered JWT claims that are always numbers (RFC 7519 §4.1), so neither a
+/// `require` value nor an identity can ever match them.
+fn is_numeric_claim(claim: &str) -> bool {
+    matches!(claim, "exp" | "iat" | "nbf")
 }
 
 /// `[server.admin]` — opt-in admin web surface (M9). A **separate** credential
@@ -2261,6 +2364,11 @@ pub enum AuthMode {
     /// or per-account in `~/.shunt/accounts/xai/<name>.json`
     /// (`shunt login xai --name <account-name>`), which form an account pool.
     XaiOauth,
+    /// ChatGPT-plan subscription OAuth for the public OpenAI API surface,
+    /// acquired via `shunt login chatgpt-plan --name <account-name>` and stored
+    /// per-account in `~/.shunt/accounts/chatgpt-plan/<name>.json`, which form an
+    /// account pool. Only valid for `kind = "responses"` on `api.openai.com`.
+    ChatgptPlanOauth,
     /// Cursor OAuth acquired by `shunt login cursor`.
     CursorOauth,
     /// Kimi Code subscription OAuth, acquired via the device-code flow
@@ -2281,6 +2389,18 @@ pub enum AuthMode {
     AntigravityOauth,
     /// No authentication header sent (e.g. local subprocess CLI adapters).
     None,
+}
+
+impl AuthMode {
+    /// Whether a `responses` provider with this auth serves its turns through
+    /// the Responses account-pool loop (per-account credentials, rotation,
+    /// refresh-on-401) rather than one credential resolved up front.
+    pub fn uses_responses_pool(self) -> bool {
+        matches!(
+            self,
+            AuthMode::ChatgptOauth | AuthMode::XaiOauth | AuthMode::ChatgptPlanOauth
+        )
+    }
 }
 
 /// The dialect of the OpenAI Responses API an upstream speaks. Some backends
@@ -2751,6 +2871,14 @@ pub enum ConfigError {
     XaiOauthNotHttps { provider: String },
     #[error("providers.{provider} uses auth = \"xai_oauth\" but kind is not \"responses\"; the anthropic adapter would forward the client's own credential instead of the xAI token")]
     XaiOauthWrongKind { provider: String },
+    #[error("providers.{provider}.auth = \"chatgpt_plan_oauth\" requires kind = \"responses\" (providers.{provider}.kind); the anthropic adapter would forward the client's own credential instead of the plan token")]
+    ChatgptPlanOauthWrongKind { provider: String },
+    #[error("providers.{provider}.base_url must be https for auth = \"chatgpt_plan_oauth\" (or a loopback host); refusing to send a subscription token over plaintext")]
+    ChatgptPlanOauthNotHttps { provider: String },
+    #[error("providers.{provider}.base_url host {host} is not api.openai.com for auth = \"chatgpt_plan_oauth\"; refusing to send a subscription token off-origin")]
+    ChatgptPlanOauthNonOpenaiHost { provider: String, host: String },
+    #[error("providers.{provider}.auth must be \"chatgpt_plan_oauth\": a provider named \"chatgpt-plan\" is reserved for the ChatGPT-plan subscription")]
+    ChatgptPlanNameRequiresOauth { provider: String },
     #[error("providers.{provider} uses auth = \"cursor_oauth\" but kind is not \"cursor\"")]
     CursorOauthWrongKind { provider: String },
     #[error("providers.{provider} uses auth = \"cursor_oauth\" but base_url host {host} is not cursor.sh/cursor.com; refusing to send a subscription token off-origin")]
@@ -2788,7 +2916,7 @@ pub enum ConfigError {
     AntigravityLegacyTableMissingAuth,
     #[error("{0}")]
     AntigravityMigrationRequired(String),
-    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", \"kimi_oauth\", \"xai_oauth\", or \"antigravity_oauth\"")]
+    #[error("providers.{provider}.accounts requires auth = \"claude_oauth\", \"chatgpt_oauth\", \"kimi_oauth\", \"xai_oauth\", \"chatgpt_plan_oauth\", or \"antigravity_oauth\"")]
     AccountsRequireOauthProvider { provider: String },
     #[error("providers.{provider}.classifier_model requires kind = \"anthropic\"; it remaps Claude Code's auto-mode classifier request within the provider, and only the anthropic adapter carries that request shape")]
     ClassifierModelWrongKind { provider: String },
@@ -2821,6 +2949,8 @@ pub enum ConfigError {
     InvalidAccountName { provider: String, name: String },
     #[error("providers.{provider}.accounts account \"{name}\" sets both credentials and token_env; set at most one credential source")]
     AccountMultipleCredentialSources { provider: String, name: String },
+    #[error("providers.{provider}.accounts account \"{name}\" sets credentials, but chatgpt-plan accounts are signed in with `shunt login chatgpt-plan --name {name}`, not `credentials`")]
+    ChatgptPlanAccountCredentials { provider: String, name: String },
     #[error("providers.{provider}.accounts account \"{name}\" sets token_env, but Antigravity accounts require a credential file containing a project id; use `credentials`, or omit the account entirely to use the default account store")]
     AntigravityAccountTokenEnv { provider: String, name: String },
     #[error("server.pool.{key} must be between 0.0 and 1.0, got {value}")]
@@ -2856,6 +2986,8 @@ pub enum ConfigError {
         provider: String,
         auth: &'static str,
     },
+    #[error("[server.codex_endpoint] route for model {model} targets provider {provider}, but the inbound Codex endpoint does not serve auth = \"chatgpt_plan_oauth\" providers")]
+    CodexRouteChatgptPlan { model: String, provider: String },
     #[error("[server.codex_endpoint] declares more than one route for model {model}")]
     DuplicateCodexRoute { model: String },
     #[error("[server.codex_endpoint] route field `{field}` is empty for model {model}")]
@@ -3157,6 +3289,8 @@ pub enum ConfigError {
     InvalidClientTokens { env: String, message: String },
     #[error("[[server.auth.jwt]] entry {index}: {message}")]
     InvalidInboundJwt { index: usize, message: String },
+    #[error("server.auth.{key} is invalid: {message}")]
+    InvalidInboundJwtSlot { key: &'static str, message: String },
     #[error("[[server.auth.jwt]] entry {index} uses issuer {issuer}, which is also [server.gateway] public_url: the gateway's own session tokens and this issuer's tokens would be indistinguishable")]
     InboundJwtCollidesWithGateway { index: usize, issuer: String },
     #[error("sentry.dsn is not a valid DSN: {message}")]
@@ -3227,6 +3361,7 @@ impl ProviderConfig {
             AuthMode::KimiOauth => Some(StoreFamily::Kimi),
             AuthMode::AntigravityOauth => Some(StoreFamily::Antigravity),
             AuthMode::XaiOauth => Some(StoreFamily::Xai),
+            AuthMode::ChatgptPlanOauth => Some(StoreFamily::ChatgptPlan),
             _ => None,
         }
     }
@@ -3248,7 +3383,7 @@ impl ProviderConfig {
         let account_scope = self.account_scope.clone();
         async move {
             use crate::accounts::StoreFamily;
-            use crate::auth::{antigravity, claude, codex, kimi, xai};
+            use crate::auth::{antigravity, chatgpt_plan, claude, codex, kimi, xai};
 
             let (family, label, dir, scan): (_, _, _, fn() -> std::io::Result<Vec<AccountConfig>>) =
                 match auth {
@@ -3281,6 +3416,12 @@ impl ProviderConfig {
                         "xAI",
                         xai::store::default_accounts_dir(),
                         xai::store::scan_accounts,
+                    ),
+                    AuthMode::ChatgptPlanOauth => (
+                        StoreFamily::ChatgptPlan,
+                        "ChatGPT plan",
+                        chatgpt_plan::store::default_accounts_dir(),
+                        chatgpt_plan::store::scan_accounts,
                     ),
                     _ => return Ok(Vec::new()),
                 };
@@ -4366,8 +4507,10 @@ impl Config {
         }
         // Fail closed at boot: [server.auth] without resolvable tokens is an
         // error, not an open gateway.
+        let mut jwt_header = None;
         if let Some(auth) = &self.server.auth {
             let resolved = auth.resolve()?;
+            jwt_header = resolved.jwt_header().cloned();
             // Keep the two JWT paths unambiguous. `[server.gateway]` mints its
             // own session tokens with `iss` equal to its `public_url`, and
             // `authenticate_bearer` checks them on the same header slot as an
@@ -4410,8 +4553,25 @@ impl Config {
         // would be an unauthenticated admin surface. Reject it rather than run
         // open. This also runs the admin key arrays' shape and cross-set
         // uniqueness checks (see `AdminConfig::resolve`).
-        if let Some(admin) = &self.server.admin {
-            admin.resolve()?;
+        let admin_auth = self
+            .server
+            .admin
+            .as_ref()
+            .map(|admin| admin.resolve())
+            .transpose()?;
+        // `jwt_header` is a header shunt reads a JWT from; it may not also be
+        // the admin token header. (`[server.auth] header` is checked in
+        // `InboundAuthConfig::resolve`.)
+        if let (Some(jwt_header), Some(admin_auth)) = (&jwt_header, &admin_auth) {
+            if jwt_header == admin_auth.header() {
+                return Err(ConfigError::InvalidInboundJwtSlot {
+                    key: "jwt_header",
+                    message: format!(
+                        "{} is already the [server.admin] header",
+                        admin_auth.header()
+                    ),
+                });
+            }
         }
         // `[server.spend]` authenticates with the admin credential, so it
         // cannot be served without one.
@@ -4722,6 +4882,7 @@ impl Config {
                         | AuthMode::ChatgptOauth
                         | AuthMode::KimiOauth
                         | AuthMode::XaiOauth
+                        | AuthMode::ChatgptPlanOauth
                         | AuthMode::AntigravityOauth
                 )
             {
@@ -4890,6 +5051,12 @@ impl Config {
                 }
             }
             for account in &provider.accounts {
+                if provider.auth == AuthMode::ChatgptPlanOauth && account.credentials.is_some() {
+                    return Err(ConfigError::ChatgptPlanAccountCredentials {
+                        provider: name.clone(),
+                        name: account.name.clone(),
+                    });
+                }
                 if account.credentials.is_some() && account.token_env.is_some() {
                     return Err(ConfigError::AccountMultipleCredentialSources {
                         provider: name.clone(),
@@ -4930,6 +5097,39 @@ impl Config {
                                 value,
                             });
                         }
+                    }
+                }
+            }
+            if name == "chatgpt-plan" && provider.auth != AuthMode::ChatgptPlanOauth {
+                return Err(ConfigError::ChatgptPlanNameRequiresOauth {
+                    provider: name.clone(),
+                });
+            }
+            // A chatgpt_plan_oauth provider injects a ChatGPT-plan bearer into
+            // the public OpenAI API, so it must be a `responses` provider on
+            // exactly `api.openai.com` over https (loopback hosts are allowed
+            // for tests and local mocks), never a gateway that would receive it.
+            if provider.auth == AuthMode::ChatgptPlanOauth {
+                if provider.kind != ProviderKind::Responses {
+                    return Err(ConfigError::ChatgptPlanOauthWrongKind {
+                        provider: name.clone(),
+                    });
+                }
+                let host = url.host_str().unwrap_or_default();
+                if !host_is_loopback(host) {
+                    if url.scheme() != "https" {
+                        return Err(ConfigError::ChatgptPlanOauthNotHttps {
+                            provider: name.clone(),
+                        });
+                    }
+                    if host != "api.openai.com" || url.port_or_known_default() != Some(443) {
+                        return Err(ConfigError::ChatgptPlanOauthNonOpenaiHost {
+                            provider: name.clone(),
+                            host: match url.port() {
+                                Some(port) => format!("{host}:{port}"),
+                                None => host.to_string(),
+                            },
+                        });
                     }
                 }
             }
@@ -5036,6 +5236,12 @@ impl Config {
                             } else {
                                 "none"
                             },
+                        });
+                    }
+                    Some(provider) if provider.auth == AuthMode::ChatgptPlanOauth => {
+                        return Err(ConfigError::CodexRouteChatgptPlan {
+                            model: route.model.clone(),
+                            provider: route.provider.clone(),
                         });
                     }
                     Some(_) => {}
@@ -5890,6 +6096,11 @@ impl Config {
         let Some(config) = self.provider(provider) else {
             return false;
         };
+        // The plan-backed preview rejects `tool_search`, so even an explicit
+        // `tool_search = true` stays on the shim for this auth mode.
+        if config.auth == AuthMode::ChatgptPlanOauth {
+            return false;
+        }
         if !matches!(
             self.responses_flavor(provider),
             ResponsesFlavor::OpenAi | ResponsesFlavor::Chatgpt
@@ -7585,6 +7796,174 @@ confidence_threshold = 0.6
         let config = config.validate().unwrap();
         let codex = config.provider("codex").unwrap();
         assert_eq!(codex.accounts.len(), 1);
+    }
+
+    fn chatgpt_plan_config(mutate: impl FnOnce(&mut ProviderConfig)) -> Config {
+        let mut config = Config::default();
+        let mut provider = ProviderConfig::responses(
+            "https://api.openai.com/v1",
+            AuthMode::ChatgptPlanOauth,
+            None,
+        );
+        mutate(&mut provider);
+        config
+            .providers
+            .insert("chatgpt-plan".to_string(), provider);
+        config
+    }
+
+    #[test]
+    fn chatgpt_plan_oauth_accepts_the_openai_api_host() {
+        chatgpt_plan_config(|_| {}).validate().unwrap();
+        // Loopback is allowed for local mocks, over plain http.
+        chatgpt_plan_config(|p| p.base_url = "http://127.0.0.1:9000/v1".to_string())
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn codex_endpoint_rejects_a_route_to_a_chatgpt_plan_provider() {
+        let mut config = chatgpt_plan_config(|_| {});
+        config.server.codex_endpoint = Some(codex_endpoint_with(vec![codex_route(
+            "gpt-5.5",
+            "chatgpt-plan",
+            None,
+        )]));
+        let error = config.validate().unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                ConfigError::CodexRouteChatgptPlan { model, provider }
+                    if model == "gpt-5.5" && provider == "chatgpt-plan"
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("chatgpt-plan"));
+        assert!(error.to_string().contains("chatgpt_plan_oauth"));
+    }
+
+    #[test]
+    fn chatgpt_plan_oauth_rejects_wrong_kind() {
+        let config = chatgpt_plan_config(|p| p.kind = ProviderKind::Anthropic);
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::ChatgptPlanOauthWrongKind { .. }
+        ));
+        assert!(error.to_string().contains("providers.chatgpt-plan.kind"));
+    }
+
+    #[test]
+    fn chatgpt_plan_oauth_rejects_plaintext_remote_url() {
+        let config = chatgpt_plan_config(|p| p.base_url = "http://api.openai.com/v1".to_string());
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::ChatgptPlanOauthNotHttps { .. }
+        ));
+        assert!(error
+            .to_string()
+            .contains("providers.chatgpt-plan.base_url"));
+    }
+
+    #[test]
+    fn chatgpt_plan_oauth_rejects_non_openai_host() {
+        for url in [
+            "https://evil.example.com/v1",
+            "https://api.openai.com.evil.com/v1",
+            "https://chatgpt.com/backend-api",
+            "https://eu.api.openai.com/v1",
+        ] {
+            let config = chatgpt_plan_config(|p| p.base_url = url.to_string());
+            let error = config.validate().unwrap_err();
+            assert!(
+                matches!(error, ConfigError::ChatgptPlanOauthNonOpenaiHost { .. }),
+                "{url}: {error}"
+            );
+            assert!(error
+                .to_string()
+                .contains("providers.chatgpt-plan.base_url"));
+        }
+    }
+
+    #[test]
+    fn chatgpt_plan_oauth_rejects_a_non_default_port_on_the_openai_host() {
+        let config =
+            chatgpt_plan_config(|p| p.base_url = "https://api.openai.com:8443/v1".to_string());
+        let error = config.validate().unwrap_err();
+        assert!(
+            matches!(error, ConfigError::ChatgptPlanOauthNonOpenaiHost { .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("api.openai.com:8443"), "{error}");
+        let config =
+            chatgpt_plan_config(|p| p.base_url = "https://api.openai.com:443/v1".to_string());
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn provider_named_chatgpt_plan_requires_the_plan_auth() {
+        let mut config = Config::default();
+        config.providers.insert(
+            "chatgpt-plan".to_string(),
+            ProviderConfig::responses(
+                "https://api.openai.com/v1",
+                AuthMode::ApiKey,
+                Some("OPENAI_API_KEY"),
+            ),
+        );
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::ChatgptPlanNameRequiresOauth { .. }
+        ));
+        assert!(error.to_string().contains("providers.chatgpt-plan.auth"));
+    }
+
+    #[test]
+    fn chatgpt_plan_oauth_rejects_account_credentials() {
+        let config = chatgpt_plan_config(|p| {
+            let mut work = account("work");
+            work.credentials = Some("~/.shunt/work.json".into());
+            p.accounts.push(work);
+        });
+        let error = config.validate().unwrap_err();
+        assert!(
+            matches!(error, ConfigError::ChatgptPlanAccountCredentials { .. }),
+            "{error}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("providers.chatgpt-plan.accounts"));
+        assert!(message.contains("shunt login chatgpt-plan --name work"));
+    }
+
+    #[test]
+    fn chatgpt_plan_oauth_accepts_inline_accounts_and_has_a_store_family() {
+        let config = chatgpt_plan_config(|p| p.accounts.push(account("work")))
+            .validate()
+            .unwrap();
+        assert_eq!(
+            config.provider("chatgpt-plan").unwrap().store_family(),
+            Some(crate::accounts::StoreFamily::ChatgptPlan)
+        );
+    }
+
+    #[test]
+    fn chatgpt_plan_oauth_never_uses_native_tool_search() {
+        for explicit in [None, Some(true)] {
+            let config = chatgpt_plan_config(|p| p.tool_search = explicit);
+            assert!(!config.native_tool_search("chatgpt-plan", "gpt-5.5"));
+        }
+        // The stock OpenAI provider on the same host still resolves native.
+        let config = Config::default();
+        assert!(config.native_tool_search("openai", "gpt-5.5"));
+    }
+
+    #[test]
+    fn chatgpt_plan_does_not_alter_default_config() {
+        let config = Config::default();
+        assert!(config.provider("chatgpt-plan").is_none());
+        assert!(!config.upstream_order.iter().any(|n| n == "chatgpt-plan"));
     }
 
     #[test]
@@ -9460,6 +9839,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: default_auth_header(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let result = config.validate();
         std::env::remove_var(&env);
@@ -9589,6 +9969,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let anthropic = config.providers.get_mut("anthropic").unwrap();
         anthropic.auth = AuthMode::ClaudeOauth;
@@ -9616,6 +9997,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let anthropic = config.providers.get_mut("anthropic").unwrap();
         anthropic.auth = AuthMode::ClaudeOauth;
@@ -9640,6 +10022,7 @@ policy = { type = "target_selector", selector = "/target" }
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let anthropic = config.providers.get_mut("anthropic").unwrap();
         anthropic.auth = AuthMode::ClaudeOauth;
@@ -12714,6 +13097,7 @@ target = "judge-alias"
             provider: "anthropic".into(),
         };
         assert!(error.to_string().contains("xai_oauth"));
+        assert!(error.to_string().contains("chatgpt_plan_oauth"));
     }
 
     /// zstd request compression is on by default, but only on the ChatGPT/Codex
@@ -14133,6 +14517,9 @@ routes:
             audience: super::StringList::One("shunt-clients".to_string()),
             email_domains: vec!["example.com".to_string()],
             allowed_emails: Vec::new(),
+            require: BTreeMap::new(),
+            subject_prefix: super::StringList::default(),
+            identity_claim: None,
             algorithms: vec!["RS256".to_string()],
             authorized_parties: Vec::new(),
             clock_skew_seconds: 0,
@@ -14146,6 +14533,7 @@ routes:
             header: default_auth_header(),
             tokens_env: tokens_env.to_string(),
             jwt: entries,
+            ..Default::default()
         }
     }
 
@@ -14182,6 +14570,204 @@ routes:
         ));
     }
 
+    /// `auth_with_jwt` plus the two optional slot keys.
+    fn auth_with_slots(
+        entries: Vec<InboundJwtConfig>,
+        tokens_env: &str,
+        jwt_header: Option<&str>,
+        jwt_cookie: Option<&str>,
+    ) -> InboundAuthConfig {
+        InboundAuthConfig {
+            jwt_header: jwt_header.map(str::to_string),
+            jwt_cookie: jwt_cookie.map(str::to_string),
+            ..auth_with_jwt(entries, tokens_env)
+        }
+    }
+
+    /// The offending key named by an `InvalidInboundJwtSlot`, asserting the
+    /// rendered message names it too.
+    fn slot_error_key(error: ConfigError) -> &'static str {
+        let rendered = error.to_string();
+        match error {
+            ConfigError::InvalidInboundJwtSlot { key, .. } => {
+                assert!(rendered.contains(key), "{rendered}");
+                key
+            }
+            other => panic!("expected InvalidInboundJwtSlot, got {other}"),
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_slots_default_to_none() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_NONE");
+        let resolved = auth_with_jwt(vec![jwt_entry()], &env).resolve().unwrap();
+        assert!(resolved.jwt_header().is_none());
+        assert!(resolved.jwt_cookie().is_none());
+    }
+
+    #[test]
+    fn inbound_jwt_slots_resolve_onto_inbound_auth() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_OK");
+        let resolved = auth_with_slots(
+            vec![jwt_entry()],
+            &env,
+            Some("X-Forwarded-Access-Token"),
+            Some("Proxy_Jwt"),
+        )
+        .resolve()
+        .expect("valid slots resolve");
+        assert_eq!(
+            resolved.jwt_header().map(|name| name.as_str()),
+            Some("x-forwarded-access-token")
+        );
+        // Cookie names are case-sensitive: the configured spelling survives.
+        assert_eq!(resolved.jwt_cookie(), Some("Proxy_Jwt"));
+    }
+
+    #[test]
+    fn inbound_jwt_slots_parse_from_toml() {
+        let auth: InboundAuthConfig =
+            toml::from_str("jwt_header = \"x-iap-jwt\"\njwt_cookie = \"iap\"\n").unwrap();
+        assert_eq!(auth.jwt_header.as_deref(), Some("x-iap-jwt"));
+        assert_eq!(auth.jwt_cookie.as_deref(), Some("iap"));
+        let bare: InboundAuthConfig = toml::from_str("").unwrap();
+        assert!(bare.jwt_header.is_none() && bare.jwt_cookie.is_none());
+        assert_eq!(bare.header, "x-shunt-token");
+    }
+
+    #[test]
+    fn inbound_jwt_slot_without_a_jwt_entry_names_the_key() {
+        // Fires before the tokens check, so no env needs to be set.
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_NO_ENTRY");
+        for (header, cookie, key) in [
+            (Some("x-iap-jwt"), None, "jwt_header"),
+            (None, Some("iap"), "jwt_cookie"),
+            // An empty string is "set", not "unset".
+            (Some(""), None, "jwt_header"),
+            (None, Some(""), "jwt_cookie"),
+        ] {
+            let error = auth_with_slots(Vec::new(), &env, header, cookie)
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), key);
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_header_rejects_unusable_names() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_HEADER");
+        for bad in [
+            "",
+            "   ",
+            " x-iap-jwt",
+            "x-iap-jwt ",
+            "x iap",
+            "x-iap\u{e9}",
+            "Authorization",
+            "X-API-KEY",
+            "Cookie",
+            "X-Shunt-Token",
+            "x-shunt-admin-token",
+            "X-Shunt-Inbound-Client",
+            "Session-Id",
+            "X-Claude-Code-Session-Id",
+            "Content-Type",
+            "content-length",
+            "Content-Encoding",
+            "Transfer-Encoding",
+            "Host",
+            "Origin",
+            "Upgrade",
+            "Connection",
+            "OpenAI-Beta",
+            "Sec-WebSocket-Key",
+            "sec-websocket-protocol",
+            "Thread-Id",
+            "x-client-request-id",
+            "X-Codex-Window-Id",
+            "Originator",
+            "X-Codex-Routing-Hint",
+        ] {
+            let error = auth_with_slots(vec![jwt_entry()], &env, Some(bad), None)
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), "jwt_header", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_header_rejects_the_configured_auth_header() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_STATIC");
+        let mut auth = auth_with_slots(vec![jwt_entry()], &env, Some("X-Custom-Token"), None);
+        auth.header = "x-custom-token".to_string();
+        assert_eq!(slot_error_key(auth.resolve().unwrap_err()), "jwt_header");
+    }
+
+    #[test]
+    fn inbound_jwt_cookie_rejects_invalid_names() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_COOKIE");
+        for bad in [
+            "", "a=b", "a b", "a;b", "a,b", "a\"b", "a(b)", "a/b", " a", "a\tb",
+        ] {
+            let error = auth_with_slots(vec![jwt_entry()], &env, None, Some(bad))
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), "jwt_cookie", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_cookie_rejects_the_admin_session_cookie() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("SLOTS_COOKIE_ADMIN");
+        for bad in ["shunt_admin_session", "Shunt_Admin_Session"] {
+            let error = auth_with_slots(vec![jwt_entry()], &env, None, Some(bad))
+                .resolve()
+                .unwrap_err();
+            assert_eq!(slot_error_key(error), "jwt_cookie", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_header_equal_to_the_admin_header_fails_validation() {
+        let _env_lock = crate::config::test_env_lock();
+        let tokens_env = format!("SHUNT_TEST_SLOT_ADMIN_{}", std::process::id());
+        std::env::remove_var(&tokens_env);
+        let build = |jwt_header: &str| {
+            let mut config = Config::default();
+            config.server.auth = Some(auth_with_slots(
+                vec![jwt_entry()],
+                &unset_tokens_env("SLOTS_ADMIN"),
+                Some(jwt_header),
+                None,
+            ));
+            config.server.admin = Some(admin_config_with_keys(
+                &tokens_env,
+                vec![admin_key("terraform", ADMIN_KEY_A)],
+                Vec::new(),
+            ));
+            config
+        };
+
+        // Case-insensitive: the admin header is `x-shunt-admin-token`, which is
+        // also a reserved slot, so use a distinct admin header to reach the
+        // admin-specific comparison.
+        let mut config = build("X-Admin-Proxy");
+        config.server.admin.as_mut().unwrap().header = "x-admin-proxy".to_string();
+        assert_eq!(slot_error_key(config.validate().unwrap_err()), "jwt_header");
+
+        // A different name validates.
+        build("x-iap-jwt")
+            .validate()
+            .expect("a distinct jwt_header validates alongside [server.admin]");
+    }
+
     #[test]
     fn inbound_jwt_requires_an_authorization_rule_beyond_audience() {
         // `audience` is not an authorization decision for every issuer — a
@@ -14199,6 +14785,156 @@ routes:
                 if message.contains("email_domains")),
             "{error}"
         );
+    }
+
+    #[test]
+    fn inbound_jwt_workload_entry_needs_an_identity_claim() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("NO_IDENTITY");
+        let mut require_only = jwt_entry();
+        require_only.email_domains = Vec::new();
+        require_only.require = BTreeMap::from([(
+            "repository_owner".to_string(),
+            super::StringList::One("o".into()),
+        )]);
+        let mut subject_only = jwt_entry();
+        subject_only.email_domains = Vec::new();
+        subject_only.subject_prefix = super::StringList::One("repo:o/".to_string());
+        let mut empty_prefix = jwt_entry();
+        empty_prefix.email_domains = Vec::new();
+        empty_prefix.subject_prefix = super::StringList::One("  ".to_string());
+        empty_prefix.identity_claim = Some("repository".to_string());
+
+        for (entry, needle) in [
+            (require_only, "identity_claim"),
+            (subject_only, "identity_claim"),
+            (empty_prefix, "authorization rule"),
+        ] {
+            let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+            assert!(
+                matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                    if message.contains(needle)),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_an_empty_require_claim_name_or_value_list() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("REQUIRE_SHAPE");
+        for require in [
+            BTreeMap::from([(
+                "repository_owner".to_string(),
+                super::StringList::Many(vec![" ".into()]),
+            )]),
+            BTreeMap::from([(
+                "repository_owner".to_string(),
+                super::StringList::Many(Vec::new()),
+            )]),
+            BTreeMap::from([(" ".to_string(), super::StringList::One("o".into()))]),
+        ] {
+            let mut entry = jwt_entry();
+            entry.require = require.clone();
+            assert!(
+                matches!(
+                    auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+                    ConfigError::InvalidInboundJwt { index: 0, .. }
+                ),
+                "{require:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_require_on_aud_or_iss_is_not_an_authorization_rule() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("REQUIRE_AUD");
+        for claim in ["aud", "iss"] {
+            let mut entry = jwt_entry();
+            entry.email_domains = Vec::new();
+            entry.identity_claim = Some("repository".to_string());
+            entry.require =
+                BTreeMap::from([(claim.to_string(), super::StringList::One("shunt-ci".into()))]);
+            let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+            assert!(
+                matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                    if message.contains("other than aud or iss")),
+                "{claim}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_numeric_claims_in_require_and_identity_claim() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("NUMERIC_CLAIM");
+        for claim in ["exp", "iat", "nbf"] {
+            let mut required = jwt_entry();
+            required.require =
+                BTreeMap::from([(claim.to_string(), super::StringList::One("1".into()))]);
+            let mut identity = jwt_entry();
+            identity.identity_claim = Some(claim.to_string());
+            for entry in [required, identity] {
+                let error = auth_with_jwt(vec![entry], &env).resolve().unwrap_err();
+                assert!(
+                    matches!(&error, ConfigError::InvalidInboundJwt { index: 0, message }
+                        if message.contains("numeric claim")),
+                    "{claim}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inbound_jwt_rejects_duplicate_require_claim_names_after_trimming() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("REQUIRE_DUP");
+        let mut entry = jwt_entry();
+        entry.require = BTreeMap::from([
+            (
+                "repository_id".to_string(),
+                super::StringList::One("7654321".into()),
+            ),
+            (
+                " repository_id ".to_string(),
+                super::StringList::One("7654322".into()),
+            ),
+        ]);
+        assert!(matches!(
+            auth_with_jwt(vec![entry], &env).resolve().unwrap_err(),
+            ConfigError::InvalidInboundJwt { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_workload_entry_resolves_from_toml() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("WORKLOAD");
+        for require in [
+            r#"{ repository_owner = ["pleaseai"] }"#,
+            r#"{ repository_owner = "pleaseai" }"#,
+        ] {
+            let entry: InboundJwtConfig = toml::from_str(&format!(
+                r#"
+                issuer = "https://issuer.example"
+                audience = "shunt-clients"
+                require = {require}
+                subject_prefix = "repo:pleaseai/"
+                identity_claim = " repository "
+                "#
+            ))
+            .expect("workload entry parses");
+
+            let resolved = auth_with_jwt(vec![entry], &env).resolve().unwrap();
+            let rule = &resolved.jwt()[0];
+            assert_eq!(
+                rule.require,
+                vec![("repository_owner".to_string(), vec!["pleaseai".to_string()])]
+            );
+            assert_eq!(rule.subject_prefixes, vec!["repo:pleaseai/".to_string()]);
+            assert_eq!(rule.identity_claim, "repository");
+        }
     }
 
     #[test]

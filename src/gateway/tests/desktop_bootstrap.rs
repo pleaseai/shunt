@@ -69,6 +69,7 @@ async fn desktop_device_flow_without_client_id_signs_in_refreshes_and_revokes_wi
         jwt: Vec::new(),
         header: "x-shunt-token".into(),
         tokens_env: auth_env.clone(),
+        ..Default::default()
     });
     let template_path = write_template("desktop-flow", &template());
     set_template(&mut config, &template_path);

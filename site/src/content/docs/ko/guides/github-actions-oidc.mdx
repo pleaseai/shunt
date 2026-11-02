@@ -1,0 +1,333 @@
+---
+title: GitHub Actions (OIDC)
+description: 정적 secret 없이 GitHub Actions 워크플로가 잡(job) 자신의 GitHub OIDC 토큰을 [[server.auth.jwt]] 항목에 제시하여 공유 shunt 게이트웨이를 호출합니다. GitLab CI/CD와 Kubernetes 서비스 계정도 같은 방식으로 쓸 수 있습니다.
+---
+
+공유 게이트웨이를 호출해야 하는 워크플로는 보통 GitHub secrets에 클라이언트 토큰을 저장합니다. 이 가이드는 그 secret을 없앱니다. 모든 Actions 잡은 GitHub에서 OIDC 토큰을 요청할 수 있고, shunt의 [`[[server.auth.jwt]]`](/ko/guides/shared-gateway/#자체-identity-provider의-jwt-검증) 검증기는 이를 직접 받을 수 있습니다. 게이트웨이에서 새로 실행할 것이 없고, GitHub에 장기 자격 증명을 저장하지도 않습니다.
+
+shunt는 GitHub이 공개한 키로 토큰 서명을 검증한 다음, **클레임**으로 인가합니다. 즉 잡이 어느 조직과 저장소에서 실행되는지를 봅니다. GitLab CI/CD와 Kubernetes 서비스 계정에도 같은 패턴을 쓸 수 있습니다. [다른 CI 및 워크로드 issuer](#다른-ci-및-워크로드-issuer)를 참고하세요. 이미 Google Cloud를 운영하고 있고 이메일 형태의 신원을 원한다면 끝부분의 [Google 서비스 계정 대안](#대안-google-서비스-계정)을 참고하세요.
+
+## GitHub이 토큰에 넣는 것
+
+GitHub Actions OIDC 토큰에는 `email` 클레임이 없습니다. 여기서 중요한 클레임은 다음과 같습니다(GitHub의 [OIDC 레퍼런스](https://docs.github.com/en/actions/reference/security/oidc) 참고).
+
+| 클레임 | 값 |
+| :-- | :-- |
+| `iss` | `https://token.actions.githubusercontent.com` |
+| `aud` | 기본값은 저장소 소유자의 URL이며, 잡은 임의의 문자열을 요청할 수 있습니다 |
+| `sub` | `repo:`로 시작합니다. 예: `repo:my-org/my-repo:ref:refs/heads/main`, `...:pull_request`, `...:environment:prod`, `...:ref:refs/tags/v1` |
+| `repository`, `repository_id` | `my-org/my-repo`와 그 숫자 id |
+| `repository_owner`, `repository_owner_id` | 조직 또는 사용자와 그 숫자 id |
+| `ref`, `environment`, `job_workflow_ref` | 브랜치 또는 태그 ref, 환경 이름, 재사용 워크플로 경로 |
+
+`sub` 형식은 저장소마다 같지 않습니다. 2026년 7월 15일 이후에 만들어진 저장소와 그 이후 이름이 바뀌거나 이전된 저장소는 `repo:OWNER@OWNER-ID/REPO@REPO-ID:...` 형식을 쓰고, 그 밖의 이전 저장소는 옵트인하지 않는 한 `repo:OWNER/REPO:...`를 유지하며, 조직이나 저장소 관리자는 `sub`를 완전히 바꿀 수도 있습니다(예: `repository_owner:my-org`). 아래 설정이 `sub`가 아니라 숫자 id 클레임으로 인가하는 이유입니다.
+
+## shunt 설정
+
+```toml
+[server.auth]
+# No static tokens needed once a JWT issuer is configured.
+tokens_env = "SHUNT_CLIENT_TOKENS"
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]                 # a string dedicated to shunt; the workflow requests the same one
+require = { repository_owner_id = "1234567", repository_id = ["7654321", "7654322"] }
+identity_claim = "repository"
+```
+
+GitHub CLI로 id를 확인합니다.
+
+```bash
+gh api orgs/my-org --jq .id              # repository_owner_id (users/<name> for a personal account)
+gh api repos/my-org/my-repo --jq .id     # repository_id
+```
+
+항목을 읽는 방법은 다음과 같습니다.
+
+- **인가하는 것은 `require`입니다.** 어떤 GitHub 저장소든 임의의 `aud`로 토큰을 요청할 수 있으므로 `audience`가 일치한다는 사실은 아무것도 증명하지 않습니다. 다른 서비스용으로 발급된 토큰이 여기서 재사용되는 것을 막을 뿐입니다. `require`는 클레임 이름을 문자열 또는 배열에 매핑합니다. 나열된 모든 클레임은 JSON 문자열로 존재해야 하고 값 중 하나와 정확히(대소문자 구분) 같아야 합니다. 클레임 사이는 AND, 한 클레임 안의 값들은 any-of입니다. GitHub 토큰에서 id는 문자열이므로 따옴표로 감싸세요.
+- **이름이 아니라 숫자 id를 쓰세요.** 조직과 저장소 이름은 변경, 삭제된 뒤 다른 사람이 다시 등록할 수 있지만 id는 그럴 수 없습니다. 여러 저장소를 허용하려면 `repository_id` 값을 여러 개 나열합니다.
+- **`identity_claim = "repository"`**는 호출자 신원을 `my-org/my-repo`로 만들며, 로그와 사용량 귀속에 나타나는 값입니다. 이것은 레이블일 뿐 인가 수단이 아닙니다(인가는 id가 합니다). 항목에 이메일 규칙이 없으므로 여기서는 필수이고, 값은 비어 있지 않은 256바이트 이하의 문자열이어야 합니다. `sub`를 신원으로 쓰지 마세요. 브랜치 구간은 호출자가 정할 수 있습니다.
+- **`email_verified` 검사는 적용되지 않습니다.** 항목에 이메일 규칙이 없고, 신원 클레임이 `email`이 아니며, `require`가 `email`을 지정하지 않기 때문입니다.
+
+더 좁히려면 `require`에 정확히 일치하는 클레임을 추가하세요. 예를 들어 `ref = "refs/heads/main"` 또는 `environment = "production"`입니다. 접두사 매칭과 달리 `refs/heads/main-evil` 같은 더 긴 이름으로는 만족시킬 수 없고, `sub` 형식에도 의존하지 않습니다.
+
+`subject_prefix`도 사용할 수 있지만(문자열 또는 배열이며, `sub`가 그중 하나로 시작해야 함) 주의가 필요합니다. 접두사는 구분자에서 끝내세요. `repo:my-org`가 아니라 `repo:my-org/`입니다. 앞의 것은 `repo:my-org-evil/...`에도 일치합니다. 또한 위의 두 가지 `sub` 형식 때문에 `repo:my-org/my-repo:` 같은 이름 기반 접두사는 immutable 형식을 쓰는 저장소와 일치하지 않습니다. `require` 위에 얹는 추가 제한으로만 쓰고, 유일한 규칙으로 쓰지 마세요.
+
+JWT는 `Authorization: Bearer`로만 받으며 업스트림으로 전달되지 않습니다. `[server.auth]`가 이미 게이트하는 라우트(자격 증명을 주입하는 `/v1/messages`, `GET /v1/models` 등 [게이팅되는 라우트](/ko/reference/configuration/#serverauthjwt-선택))에서는 신원이 로그와 사용량에 귀속됩니다. 패스스루 추론은 검사하지 않습니다. 호출자가 자신의 자격 증명으로 비용을 지불하기 때문입니다.
+
+## 워크플로
+
+잡에는 `id-token: write`가 필요합니다. 이 권한은 OIDC 토큰을 요청할 수 있게 할 뿐 다른 접근 권한은 주지 않습니다. 토큰은 러너 자체의 엔드포인트에서 가져오므로 서드파티 액션이 필요 없습니다.
+
+```yaml
+name: ask-claude
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write          # lets the job request a GitHub OIDC token
+
+jobs:
+  ask:
+    runs-on: ubuntu-latest
+    env:
+      SHUNT_URL: https://shunt.example.com
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Get a GitHub OIDC token for shunt
+        run: |
+          token="$(curl -fsS -G \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            --data-urlencode "audience=$SHUNT_URL" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r .value)"
+          echo "::add-mask::$token"
+          echo "SHUNT_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: Smoke test
+        run: |
+          curl -fsS "$SHUNT_URL/v1/models" \
+            -H "Authorization: Bearer $SHUNT_TOKEN" | head -c 400
+
+      - name: Run Claude Code
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          ANTHROPIC_BASE_URL="$SHUNT_URL" ANTHROPIC_AUTH_TOKEN="$SHUNT_TOKEN" \
+            claude -p "Summarize the last commit."
+```
+
+`audience`는 shunt 항목의 `audience`와 같아야 합니다. `::add-mask::`는 토큰을 저장하기 전에 secret으로 등록하므로 로그에 나와도 가려집니다. 그래도 `echo`하거나 `set -x`로 실행하지 마세요. 포크에서 온 pull request는 토큰에 쓰기 권한을 받지 못하므로(GitHub이 읽기로 낮춥니다) 포크 pull request로 트리거된 잡은 대개 OIDC 토큰을 요청할 수 없습니다. `pull_request` 워크플로에서는 이 점을 염두에 두세요.
+
+## 토큰 수명
+
+OIDC 토큰은 bearer입니다. 만료될 때까지 사용할 수 있고 shunt는 폐기 상태를 보관하지 않습니다. GitHub 문서는 `exp`와 `iat`를 클레임으로 나열하지만 수명을 명시하지는 않습니다. GitHub 자체 엔터프라이즈 예시의 토큰은 `exp - iat`가 300초입니다. shunt는 `exp - iat`가 `max_token_age_seconds`(기본 `3600`)를 *초과*할 때만 거부하므로 기본값으로 받아들입니다. 긴 잡은 하나의 토큰을 잡 전체에서 들고 있지 말고, shunt를 호출하는 단계 전에 위와 같은 단계로 새 토큰을 요청하세요. Claude Code 세션 하나처럼 단일 프로세스는 시작할 때 받은 토큰을 계속 사용하며, 그 토큰이 만료되면 `401`을 받습니다. 토큰보다 오래 실행되는 세션에는 같은 방식으로 새 토큰을 요청하는 스크립트를 Claude Code의 `apiKeyHelper`로 설정하세요(요청 변수는 `id-token: write`가 있는 잡의 모든 단계에 설정됩니다). 이때 Claude Code는 `ANTHROPIC_AUTH_TOKEN` 없이 실행하세요. `ANTHROPIC_AUTH_TOKEN`이 설정되어 있으면 `apiKeyHelper`보다 우선하므로 세션이 만료된 토큰을 계속 씁니다.
+
+## 문제 해결
+
+**`401 authentication_error`.** shunt는 실패한 모든 검사에 같은 응답을 주므로, 디코딩한 토큰을 항목과 대조해 보세요.
+
+| 검사 | 해결 |
+| :-- | :-- |
+| `aud`가 `audience`에 없음 | `audience` 쿼리 파라미터와 설정 값이 정확히 같아야 합니다 |
+| `require` 클레임이 없거나 값이 다름 | 페이로드의 `repository_owner_id`, `repository_id`와 비교하세요. 문자열이어야 하고 저장소가 목록에 있어야 합니다 |
+| `sub`가 `subject_prefix`로 시작하지 않음 | `sub` 형식(이름 기반, immutable, 사용자 지정)을 확인하고 접두사를 빼거나 고치세요 |
+| `repository`(신원 클레임)가 없거나 비어 있거나 256바이트 초과 | 클레임은 비어 있지 않은 문자열이어야 합니다. `identity_claim` 철자를 확인하세요 |
+| `iss`가 설정한 `issuer`와 다름 | GitHub Enterprise Cloud 엔터프라이즈는 고유 issuer `https://token.actions.githubusercontent.com/<enterprise-slug>`를 선택할 수 있습니다. 토큰에 담긴 값으로 `issuer`를 설정하세요 |
+| `exp - iat`가 `max_token_age_seconds`보다 큼 | 토큰 수명보다 낮게 설정한 경우에만 해당합니다 |
+
+**`api_error` 본문과 함께 `503`.** shunt가 GitHub의 키 집합을 가져오지 못했습니다. 자격 증명은 문제가 없습니다. 게이트웨이가 `https://token.actions.githubusercontent.com`에 접근할 수 있는지 확인하세요. 키 집합은 처음 사용할 때 가져오므로, 실패는 시작 시점이 아니라 첫 요청에서 드러납니다. [동시성 제한](/ko/guides/shared-gateway/#인바운드-동시성-제한)이 반환하는 `overloaded_error`와는 다릅니다.
+
+**`ACTIONS_ID_TOKEN_REQUEST_URL`이 비어 있음.** 잡에 `id-token: write`가 없거나 포크에서 실행되고 있습니다.
+
+**페이로드 확인.** 클레임(가운데 세그먼트)만 디코딩하고, 토큰 전체를 어디에도 붙여 넣지 마세요.
+
+```bash
+python3 -c 'import sys,json,base64; p=sys.stdin.read().strip().split(".")[1]; print(json.dumps(json.loads(base64.urlsafe_b64decode(p+"="*(-len(p)%4))),indent=2))' <<< "$SHUNT_TOKEN"
+```
+
+일회용 디버그 단계에서 실행하세요. 페이로드에는 secret이 없지만, 어떤 클레임이 검사와 어긋나는지 가장 빨리 볼 수 있는 방법입니다. 전체 키 목록은 [설정 레퍼런스](/ko/reference/configuration/#serverauthjwt-선택)를 참고하세요.
+
+## 다른 CI 및 워크로드 issuer
+
+`[[server.auth.jwt]]`는 배열이므로 하나의 설정에 GitHub 항목, GitLab 항목, Kubernetes 항목을 나란히 둘 수 있습니다. 토큰은 `issuer`가 자신의 `iss`와 같은 항목들에 대해 검사됩니다. 위의 규칙이 각 항목에 똑같이 적용됩니다. `require`와 `identity_claim`은 **최상위 문자열 클레임만** 읽습니다. 숫자, 배열, 중첩 객체는 절대 일치하지 않습니다. 호출자 신원에는 issuer 접두사가 붙지 않으므로, 정적 클라이언트 이름이나 다른 항목의 신원과 값이 겹칠 수 없는 클레임을 고르세요(예를 들어 GitHub의 `repository`와 GitLab의 `project_path`는 둘 다 `group/project` 형태입니다).
+
+### GitLab CI/CD
+
+GitLab 잡은 [`id_tokens`](https://docs.gitlab.com/ci/yaml/#id_tokens) 키워드로 ID 토큰을 요청할 수 있습니다. GitLab의 [ID 토큰 레퍼런스](https://docs.gitlab.com/ci/secrets/id_token_authentication/)에 따르면 `iss`는 GitLab 인스턴스의 도메인(`https://gitlab.com` 또는 자체 관리 인스턴스 URL)이고, `aud`는 잡이 지정한 값이며, 토큰은 RS256으로 서명됩니다. 여기서 쓰는 클레임은 `namespace_id`, `project_id`, `project_path`, `ref`, `ref_type`, `ref_protected`입니다. GitLab의 예시 페이로드에서는 모두 JSON 문자열로 나오므로(`"project_id": "20"`, `"ref_protected": "false"`) `require`에서 따옴표로 감싸세요. `sub`의 기본값은 `project_path:{group}/{project}:ref_type:{type}:ref:{branch}`이고 프로젝트별로 바꿀 수 있으므로 여기에 기대지 마세요. GitLab은 OIDC discovery를 `https://gitlab.com/.well-known/openid-configuration`에서 제공하며(자체 관리형은 `https://<your-instance>/.well-known/openid-configuration`), shunt는 기본적으로 이것을 사용합니다.
+
+```toml
+[[server.auth.jwt]]
+issuer = "https://gitlab.com"                            # your instance URL if self-managed
+audience = ["https://shunt.example.com"]                 # the job asks for the same string
+require = { namespace_id = "72", project_id = ["20", "21"] }
+identity_claim = "project_path"
+```
+
+`require`가 인가를 결정한다는 점은 GitHub과 같습니다. 어떤 GitLab 프로젝트든 임의의 `aud`로 토큰을 요청할 수 있기 때문입니다. 경로는 이름이 바뀔 수 있으므로 숫자 id로 인가하세요. id는 디코딩한 토큰에서 읽으면 됩니다(문제 해결 절의 페이로드 확인 스니펫 참고). GitLab 문서는 `project_id`를 프로젝트 수명 동안 변하지 않는 값으로, `namespace_id`를 프로젝트가 같은 네임스페이스에 있는 동안만 안정적인 값으로 설명합니다. 따라서 프로젝트를 이전하면 `namespace_id`를 갱신할 때까지 일치하지 않습니다. 보호된 ref의 잡만 받으려면 `require`에 `ref_protected = "true"`를 추가하세요. `project_path`는 신원이며, 인가가 아니라 라벨입니다.
+
+```yaml
+ask-claude:
+  image: node:22
+  id_tokens:
+    SHUNT_TOKEN:
+      aud: https://shunt.example.com     # must equal `audience` in shunt
+  script:
+    - npm install -g @anthropic-ai/claude-code
+    - ANTHROPIC_BASE_URL=https://shunt.example.com ANTHROPIC_AUTH_TOKEN="$SHUNT_TOKEN" claude -p "Summarize the last commit."
+```
+
+토큰은 `id_tokens`의 키 이름과 같은 이름의 변수로 노출됩니다. 수명: GitLab은 토큰 만료 시각을 잡의 타임아웃이 지정되어 있으면 그 값으로, 없으면 5분으로 설정합니다(문서에는 최댓값이 명시되어 있지 않습니다). 이를 토큰의 수명으로 보면, 타임아웃이 1시간을 넘는 잡은 기본 `max_token_age_seconds`인 `3600`을 초과하여 shunt가 토큰을 `401`로 거부합니다. 잡 타임아웃을 1시간 이하로 유지하거나, 알고 있는 상태에서 `max_token_age_seconds`를 올리세요.
+
+### Kubernetes 서비스 계정(프로젝티드 토큰)
+
+파드는 [`serviceAccountToken` 프로젝티드 볼륨](https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken)으로 임의의 audience를 가진 단기 서비스 계정 토큰을 마운트할 수 있습니다. 이 토큰은 JWT이며, `iss`는 클러스터 API 서버의 첫 번째 `--service-account-issuer` 값이고 `sub`는 `system:serviceaccount:<namespace>:<name>`입니다. 네임스페이스와 서비스 계정 상세 정보는 중첩된 `kubernetes.io` 클레임 안에 있어 `require`로는 일치시킬 수 없습니다. 따라서 `subject_prefix`로 `sub`를 기준으로 인가하고, `sub`를 신원으로 사용하세요(값은 256바이트 이하여야 합니다).
+
+```toml
+[[server.auth.jwt]]
+issuer = "https://oidc.example.com"                      # exactly the cluster's --service-account-issuer
+jwks_url = "https://oidc.example.com/openid/v1/jwks"     # omit if discovery is reachable
+audience = ["https://shunt.example.com"]
+subject_prefix = ["system:serviceaccount:ci:"]           # every service account in namespace `ci`
+identity_claim = "sub"
+```
+
+접두사는 끝의 콜론에서 끝내야 한 네임스페이스만 포함합니다. 접두사로는 서비스 계정 하나만 지정할 수 없습니다. `system:serviceaccount:ci:runner`는 `...:runner-2`도 일치시키므로, 호출자에게 전용 네임스페이스를 주세요.
+
+shunt는 HTTPS로 키에 접근할 수 있어야 합니다. issuer URL이 `https` URL이면 API 서버는 `/.well-known/openid-configuration`에서 discovery 문서를, `/openid/v1/jwks`에서 키 집합을 제공합니다. RBAC 클러스터에서는 `system:service-account-issuer-discovery` ClusterRole이 `system:serviceaccounts` 그룹에 바인딩되어 있어, 파드는 자기 서비스 계정 토큰으로 이를 읽을 수 있습니다. shunt는 키를 가져올 때 자격 증명을 보내지 않으므로, 게이트웨이가 어디서 실행되든 API 서버는 이 요청을 익명 요청으로 취급하며 기본 바인딩으로는 접근할 수 없습니다. Kubernetes 문서가 드는 공개 방법 중 shunt에 맞는 것은 두 가지입니다. 관리자가 해당 역할을 `system:unauthenticated`에 바인딩하거나(API 서버가 익명 요청을 허용하는 경우), 공개 엔드포인트가 API 서버 응답의 캐시본을 제공하고 API 서버의 `--service-account-jwks-uri`가 discovery 문서에서 그 엔드포인트를 가리키게 하는 것입니다. shunt는 인증을 하지 않으므로 역할을 `system:authenticated`에 바인딩해도 소용이 없습니다. `https://kubernetes.default.svc` 같은 issuer(Kubernetes 예시 토큰의 값)는 외부에서 접근할 수 없으므로 `jwks_url`을 키가 게시된 곳으로 지정하세요. `issuer`는 여전히 토큰의 `iss`와 같아야 합니다. 관리형 클러스터가 공개 issuer를 제공하는지는 공급자마다 다르며 여기서는 다루지 않습니다.
+
+아래 파드는 `ci` 네임스페이스의 `runner` ServiceAccount로 실행되며, 매니페스트는 이 둘을 만들지 않습니다. 아직 없다면 먼저 만드세요.
+
+```bash
+kubectl create namespace ci
+kubectl create serviceaccount runner --namespace ci
+```
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: claude-runner
+  namespace: ci
+spec:
+  serviceAccountName: runner
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  containers:
+    - name: claude
+      image: node:22
+      command: ["sh", "-c"]
+      args:
+        - |
+          npm install -g @anthropic-ai/claude-code
+          mkdir -p ~/.claude
+          echo '{ "apiKeyHelper": "cat /var/run/secrets/shunt/token" }' > ~/.claude/settings.json
+          claude -p "Reply with the word ready."
+      env:
+        - name: ANTHROPIC_BASE_URL
+          value: https://shunt.example.com
+      volumeMounts:
+        - name: shunt-token
+          mountPath: /var/run/secrets/shunt
+          readOnly: true
+  volumes:
+    - name: shunt-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: https://shunt.example.com   # must equal `audience` in shunt
+              expirationSeconds: 3600
+              path: token
+```
+
+`expirationSeconds`의 기본값은 1시간이고 최소 10분(600)이어야 합니다. 클러스터 관리자는 `--service-account-max-token-expiration`으로 상한을 둘 수 있습니다. shunt는 수명이 `max_token_age_seconds`를 *초과하는* 토큰만 거부하므로 1시간은 기본값을 통과합니다.
+
+<Aside type="caution">
+
+kubelet은 토큰이 만료에 가까워지면 파일을 갱신하지만(토큰이 TTL의 80%를 넘었거나 24시간을 넘으면 교체를 요청합니다), 다시 읽는 것은 애플리케이션의 책임입니다. 토큰을 한 번 읽어 계속 들고 있는 프로세스, 예를 들어 export한 `ANTHROPIC_AUTH_TOKEN`은 그 토큰이 만료되면 `401`을 받습니다. 대신 Claude Code의 `apiKeyHelper`가 파일을 읽도록 설정하고, `ANTHROPIC_AUTH_TOKEN` 없이 Claude Code를 시작하세요. export된 `ANTHROPIC_AUTH_TOKEN`이 `apiKeyHelper`보다 우선하기 때문입니다.
+
+```json
+{ "apiKeyHelper": "cat /var/run/secrets/shunt/token" }
+```
+
+Claude Code는 헬퍼의 출력을 캐시한 뒤(기본 5분) 다시 실행하므로, 토큰 수명은 그보다 충분히 길게 유지하세요.
+
+</Aside>
+
+레거시 시크릿 기반 서비스 계정 토큰(`kubernetes.io/service-account-token` Secret)은 쓰지 마세요. Kubernetes는 이를 만료되지 않는 토큰으로 설명하며, shunt는 `exp`와 `iat`가 없는 토큰을 거부합니다.
+
+## 대안: Google 서비스 계정
+
+이미 Google Cloud를 운영하고 있거나 이메일 주소 형태의 신원을 원한다면 이 경로를 쓰세요. 잡은 GitHub OIDC 토큰으로 Google Cloud에 자신을 증명하고, Google이 서비스 계정용 단기 ID 토큰을 발급하며, shunt는 `allowed_emails` 같은 이메일 규칙으로 그 ID 토큰을 받습니다. 어떤 저장소가 서비스 계정이 될 수 있는지는 shunt가 아니라 Google Cloud의 Workload Identity Federation 속성 조건(attribute condition)과 IAM 바인딩이 결정합니다.
+
+IAM, Resource Manager, Service Account Credentials, Security Token Service API가 활성화된 프로젝트가 필요합니다.
+
+```bash
+PROJECT_ID="my-project"
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+GITHUB_ORG="my-org"
+GITHUB_REPO="my-org/my-repo"
+SA_EMAIL="shunt-ci@${PROJECT_ID}.iam.gserviceaccount.com"
+
+gcloud iam service-accounts create shunt-ci --project="$PROJECT_ID"   # needs no project roles
+
+OWNER_ID="$(gh api "orgs/${GITHUB_ORG}" --jq .id)"
+REPO_ID="$(gh api "repos/${GITHUB_REPO}" --jq .id)"
+
+gcloud iam workload-identity-pools create github \
+  --project="$PROJECT_ID" --location=global \
+  --display-name="GitHub Actions"
+
+gcloud iam workload-identity-pools providers create-oidc shunt \
+  --project="$PROJECT_ID" --location=global \
+  --workload-identity-pool=github \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id" \
+  --attribute-condition="assertion.repository_owner_id == '${OWNER_ID}'"
+
+gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
+  --project="$PROJECT_ID" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/attribute.repository_id/${REPO_ID}"
+
+gcloud iam workload-identity-pools providers describe shunt \
+  --project="$PROJECT_ID" --location=global --workload-identity-pool=github \
+  --format='value(name)'                                              # -> workload_identity_provider
+
+gcloud iam service-accounts describe "$SA_EMAIL" \
+  --project="$PROJECT_ID" --format='value(uniqueId)'                  # -> authorized_parties
+```
+
+<Aside type="caution">
+
+GitHub는 모든 조직에 하나의 issuer URL을 쓰므로, 다른 조직이 풀에 들어오지 못하게 막는 것은 `--attribute-condition`입니다. 이 조건 없이 프로바이더를 만들지 마세요. 그러면 어떤 GitHub 저장소든 풀에 토큰을 제시할 수 있습니다. Google은 이름 대신 숫자 `*_id` 클레임을 쓰도록 권장합니다. IAM 바인딩은 조직을 저장소 하나로 좁힙니다. `principalSet` 멤버를 `attribute.repository_owner_id/...`로 넓히면 조직의 모든 저장소가 게이트웨이를 호출할 수 있습니다. 액션이 ID 토큰을 발급하는 데는 `roles/iam.workloadIdentityUser`로 충분합니다. 이 역할에 `iam.serviceAccounts.getOpenIdToken`이 포함되어 있기 때문이며, `roles/iam.serviceAccountOpenIdTokenCreator`도 사용할 수 있습니다.
+
+</Aside>
+
+```toml
+[[server.auth.jwt]]
+issuer = "https://accounts.google.com"
+audience = ["shunt-ci"]                                        # any string; the workflow asks for the same one
+allowed_emails = ["shunt-ci@my-project.iam.gserviceaccount.com"]
+authorized_parties = ["112010400000000710080"]                 # the service account's uniqueId
+```
+
+- **`allowed_emails`**: `email_domains = ["my-project.iam.gserviceaccount.com"]`보다 정확한 주소를 권장합니다. 도메인 규칙은 프로젝트의 어떤 서비스 계정이 발급한 ID 토큰이든 받아들입니다. 호출자 신원은 이 이메일입니다.
+- **`authorized_parties`는 필수입니다.** Google은 `azp`(그리고 `sub`)에 서비스 계정의 숫자 고유 ID를 넣고 `aud`에는 여러분의 audience 문자열을 넣습니다. shunt는 `azp`가 있으면 항상 검사하고 허용 집합의 기본값을 `audience`로 두기 때문에, 이 키가 없으면 모든 토큰이 `401`로 거부됩니다.
+- 토큰의 `email_verified`는 이메일을 포함해 발급할 때만 `true`이므로, 워크플로에서 `id_token_include_email: true`를 설정해야 합니다.
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  ask:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/github/providers/shunt
+          service_account: shunt-ci@my-project.iam.gserviceaccount.com
+          create_credentials_file: false
+          token_format: id_token
+          id_token_audience: shunt-ci          # must equal `audience` in shunt
+          id_token_include_email: true         # adds the email and email_verified claims
+
+      - name: Run Claude Code
+        env:
+          ANTHROPIC_BASE_URL: https://shunt.example.com
+          ANTHROPIC_AUTH_TOKEN: ${{ steps.auth.outputs.id_token }}
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude -p "Summarize the last commit."
+```
+
+액션은 ID 토큰을 마스킹된 secret으로 등록합니다. 수명: Google은 서비스 계정 ID 토큰의 유효 시간을 1시간으로 문서화하고 있고, 액션의 README는 최대 10분이며 변경할 수 없다고 적고 있습니다. 어느 쪽이든 기본 `max_token_age_seconds`를 통과하지만 더 짧은 쪽을 기준으로 계획하고, 긴 단계 전에는 auth 단계를 다시 실행하세요. `401`이 나면 위의 디코딩 스니펫을 그대로 쓸 수 있습니다. `iss`, `aud`, `azp`(= `sub` = 고유 ID), `email`, `email_verified: true`가 보여야 하며, `aud`는 `audience`와, `azp`는 `authorized_parties`와, `email`은 `allowed_emails`와 대조하세요. 자신의 머신에서 비슷한 토큰을 얻으려면 서비스 계정을 가장(impersonate)하세요. 사용자 계정에 해당 서비스 계정에 대한 `roles/iam.serviceAccountOpenIdTokenCreator`가 필요합니다.
+
+```bash
+SHUNT_TOKEN="$(gcloud auth print-identity-token \
+  --impersonate-service-account="$SA_EMAIL" --audiences=shunt-ci --include-email)"
+```

@@ -7,7 +7,7 @@ name = "shunt-gateway"
 # unpublishable (issue #292). Remove this restriction with the pins once upstream
 # snapview/tungstenite-rs#426 ships in a crates.io release.
 publish = false
-version = "0.59.1"
+version = "0.61.0"
 edition = "2021"
 description = "Claude Code LLM gateway — an Anthropic Messages proxy that routes models to OpenAI/Codex and Anthropic-compatible backends"
 license = "MIT OR Apache-2.0"
@@ -227,6 +227,15 @@ harness = false
 [[bench]]
 name = "stage_router"
 harness = false
+
+# Line tables keep file:line in panic backtraces but drop the type and variable
+# debuginfo that dominates link input: every `tests/*.rs` file is its own binary
+# statically linking the whole dependency graph, so full debuginfo made each
+# `cargo test` link dozens of very large objects. `test` inherits this profile;
+# `release` and `bench` are unaffected. Override locally with
+# `CARGO_PROFILE_DEV_DEBUG=full` when you need a debugger.
+[profile.dev]
+debug = "line-tables-only"
 
 # openai-oss-forks pins for permessage-deflate (RFC 7692) on the outbound Codex
 # WebSocket (issue #292). Pinned to an exact rev, not a branch, per our usual

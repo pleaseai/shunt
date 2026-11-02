@@ -596,6 +596,9 @@ fn websocket_headers(
         Credential::XaiOauth { access_token } => {
             set("authorization", format!("Bearer {access_token}"))?
         }
+        Credential::ChatgptPlanOauth { access_token } => {
+            set("authorization", format!("Bearer {access_token}"))?
+        }
         Credential::CursorOauth { access_token } => {
             set("authorization", format!("Bearer {access_token}"))?
         }

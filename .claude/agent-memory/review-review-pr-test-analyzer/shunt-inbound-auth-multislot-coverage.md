@@ -1,6 +1,6 @@
 ---
 name: shunt-inbound-auth-multislot-coverage
-description: PR #133 tests/inbound_auth.rs + src/auth/inbound.rs gap analysis for the multi-slot (x-shunt-token/Bearer/x-api-key) gate-token change; the recurring "priority test forgets the leak assertion" pattern.
+description: PR #133 tests/inbound/inbound_auth.rs + src/auth/inbound.rs gap analysis for the multi-slot (x-shunt-token/Bearer/x-api-key) gate-token change; the recurring "priority test forgets the leak assertion" pattern.
 metadata:
   type: project
 ---
@@ -30,7 +30,7 @@ isolation given current adapters.
 `header("authorization", "Bearer upstream-key")` with the success assertion —
 strong. But the *priority/attribution* test added right after it
 (`mapped_route_attributes_to_the_dedicated_header_over_bearer_and_api_key`,
-tests/inbound_auth.rs:307) — which is the one scenario where TWO different
+tests/inbound/inbound_auth.rs:307) — which is the one scenario where TWO different
 clients' live credentials coexist on the same request — only asserts
 `header("x-shunt-inbound-client", "alice")` and drops the NoHeader/exact-value
 checks entirely. Coverage gap: nothing asserts the losing credential (bob's

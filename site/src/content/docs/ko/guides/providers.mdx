@@ -21,6 +21,7 @@ description: 내장 프로바이더와 TOML 테이블로 Anthropic 호환 백엔
 | [`codex`](/ko/guides/codex/) | `responses` | `chatgpt_oauth` | `chatgpt.com/backend-api` — `~/.codex/auth.json` 재사용 |
 | [`xai`](/ko/guides/xai/) | `responses` | `api_key` (`XAI_API_KEY`) | `api.x.ai/v1` — xAI 개발자 API |
 | [`grok`](/ko/guides/xai/) | `responses` | `xai_oauth` | `cli-chat-proxy.grok.com/v1` — `shunt login xai`를 통한 SuperGrok / X Premium+ 구독, 또는 `~/.shunt/accounts/xai/`의 이름 있는 로그인을 풀로 묶음(`shunt login xai --name`) |
+| [`chatgpt-plan`](/ko/guides/chatgpt-plan/) | `responses` | `chatgpt_plan_oauth` | `api.openai.com/v1` — "Sign in with ChatGPT" 프리뷰를 통한 ChatGPT 플랜; 프리셋이며 기본으로 심어지지 않으므로 `[providers.chatgpt-plan]`을 선언해야 함(`shunt login chatgpt-plan --name <account>`) |
 | [`cursor`](/ko/providers/cursor/) | `cursor` | `cursor_oauth` | `api2.cursor.sh` — `~/.shunt/cursor-auth.json` 재사용 (`shunt login cursor`) |
 | `gemini` | `gemini` | `google_oauth` | `cloudcode-pa.googleapis.com` — `~/.gemini/oauth_creds.json` 재사용 |
 | [`antigravity`](/ko/providers/antigravity/) | `antigravity` | `antigravity_oauth` | `daily-cloudcode-pa.googleapis.com` — `~/.shunt/antigravity-auth.json` 재사용 (`shunt login antigravity`) |
@@ -200,6 +201,27 @@ OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`
 
 여러 SuperGrok 계정을 풀로 묶으려면 각 계정을 `shunt login xai --name <name>`으로 로그인하세요. 자세한 내용은 [xAI / Grok](/ko/guides/xai/) 페이지를 참고하세요.
 
+### chatgpt-plan 프로바이더 (ChatGPT 플랜, Sign in with ChatGPT)
+
+이름 있는 계정을 하나 이상 로그인한 뒤, 프로바이더를 선언하고 모델을 라우팅합니다:
+
+```bash
+shunt login chatgpt-plan --name work
+```
+
+```toml
+[providers.chatgpt-plan]
+kind = "responses"
+base_url = "https://api.openai.com/v1"
+auth = "chatgpt_plan_oauth"
+
+[[routes]]
+model = "gpt-6.1-sol"
+provider = "chatgpt-plan"
+```
+
+이 프로바이더는 `api.openai.com`의 OpenAI "Sign in with ChatGPT" 토큰 공유 프리뷰를 사용하며, 위의 `codex` 프로바이더와는 별개입니다. 프리뷰는 일부 파라미터를 거부하고 자체 오류 코드를 가집니다. 원격 호스트의 붙여넣기 대안, 로그아웃, 프리뷰 제한, 각 오류의 의미는 [ChatGPT 플랜 가이드](/ko/guides/chatgpt-plan/)를 참고하세요.
+
 ## Anthropic 호환 백엔드 추가
 
 대부분의 서드파티 "Claude Code를 X와 함께 쓰기" 게이트웨이는 Anthropic-Messages 호환입니다: `kind = "anthropic"`에 `auth = "api_key"`이며, `base_url`과 키 env 변수만 다릅니다. 바로 사용할 수 있는 base(각 프로바이더는 전체 설정을 설명하는 전용 페이지로 연결됨):
@@ -214,6 +236,7 @@ OAuth를 통해 사용자의 **SuperGrok / X Premium+** 구독을 사용하고(`
 | [MiniMax](/ko/providers/minimax/) | `https://api.minimax.io/anthropic` | [MiniMax 문서](https://platform.minimax.io/docs/token-plan/claude-code) 참고 |
 | [MiniMax 중국](/ko/providers/minimax-cn/) | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | [OpenCode Zen](/ko/providers/opencode/) | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — 큐레이션된 크로스 벤더 카탈로그 (`x-api-key` 읽음) |
+| [Cheaper Inference](/ko/providers/cheaperinference/) | `https://api.cheaperinference.com` | `gpt-5.4`, `deepseek-v4-flash`, `glm-5.3` — Messages 엔드포인트를 제공하는 OpenAI 호환 게이트웨이 |
 | [Mimo (Xiaomi)](/ko/providers/mimo/) | `https://api.xiaomimimo.com/anthropic` | `mimo-v2.5-pro` — [Mimo 문서](https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode) 참고 |
 | [OpenRouter](/ko/providers/openrouter/) | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | [Vercel AI Gateway](/ko/providers/vercel-ai-gateway/) | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8`(`x_api_key`를 받아들임) |

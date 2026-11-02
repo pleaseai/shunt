@@ -35,6 +35,6 @@ terminates the failover loop early and relays that response to the client even w
 accounts remain untried in `order`, which arguably contradicts the "never fails closed" design
 goal stated in docs/m8-anthropic-multi-account.md (that goal is proven true for `select_order()`
 itself, but this early-return can defeat it in practice for this one sub-case). No unit test or
-integration test in `tests/multi_account.rs` exercises a non-401/non-2xx retry response in this
+integration test in `tests/multi_account/multi_account.rs` exercises a non-401/non-2xx retry response in this
 branch — it's untested behavior. Confidence ~50-55 (spec only explicitly defines the 401
 sub-case for this branch, so this may be accepted-as-is scope-limiting rather than a bug).

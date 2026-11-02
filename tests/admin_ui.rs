@@ -108,11 +108,13 @@ async fn an_asset_is_served_with_its_own_bytes_and_type() {
     // real emitted one rather than a name this test invented.
     let shell = String::from_utf8(body_bytes(get(&router, "/admin/pool").await).await)
         .expect("the shell is UTF-8");
+    // Keyed on `src=`: the shell links other assets (the favicon, the
+    // stylesheet) by `href=`, and the favicon's link comes first.
     let script = shell
-        .split("/admin/assets/")
+        .split("src=\"/admin/assets/")
         .nth(1)
         .and_then(|rest| rest.split('"').next())
-        .expect("the shell references a hashed asset under /admin/assets/");
+        .expect("the shell loads a hashed script under /admin/assets/");
     assert!(script.ends_with(".js"), "expected a script, got {script}");
 
     let response = get(&router, &format!("/admin/assets/{script}")).await;
@@ -126,6 +128,36 @@ async fn an_asset_is_served_with_its_own_bytes_and_type() {
         Some("nosniff")
     );
     assert!(!body_bytes(response).await.is_empty());
+}
+
+/// The tab icon the shell links is embedded and served as an image, so the
+/// browser shows it from the built bundle rather than asking for a dev path.
+#[tokio::test]
+async fn the_favicon_is_embedded_and_served_as_an_image() {
+    let (router, _env) = admin_router("favicon").await;
+
+    let shell = String::from_utf8(body_bytes(get(&router, "/admin").await).await)
+        .expect("the shell is UTF-8");
+    let icon = shell
+        .split("rel=\"icon\"")
+        .nth(1)
+        .and_then(|rest| rest.split("href=\"").nth(1))
+        .and_then(|rest| rest.split('"').next())
+        .expect("the shell links a favicon");
+    assert!(
+        icon.starts_with("/admin/assets/") && icon.ends_with(".png"),
+        "expected an embedded PNG, got {icon}"
+    );
+
+    let response = get(&router, icon).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(content_type(&response), "image/png");
+    // Vite emits the icon as a hashed copy of the source file, so the served
+    // bytes are the source asset's: a wrong or truncated image fails here.
+    assert_eq!(
+        body_bytes(response).await,
+        include_bytes!("../ui/src/assets/favicon.png")
+    );
 }
 
 /// The shell is an admin HTML response, so it carries the same defense-in-depth

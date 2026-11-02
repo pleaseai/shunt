@@ -18,7 +18,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue};
 
 use crate::{config::AdminKeyring, gateway::GatewayAuth};
 
-use crate::auth::inbound_jwt::JwtIssuerRule;
+use crate::auth::{inbound_jwt::JwtIssuerRule, jwt_slots::JwtSlots};
 
 /// Resolved inbound-auth state: the header to inspect, the accepted
 /// `name → token` pairs, and the verify-only JWT issuers. Built once at startup
@@ -34,6 +34,7 @@ pub struct InboundAuth {
     header: HeaderName,
     tokens: Vec<(String, String)>,
     jwt: Vec<JwtIssuerRule>,
+    jwt_slots: JwtSlots,
 }
 
 impl InboundAuth {
@@ -42,6 +43,7 @@ impl InboundAuth {
             header,
             tokens,
             jwt: Vec::new(),
+            jwt_slots: JwtSlots::default(),
         }
     }
 
@@ -51,6 +53,24 @@ impl InboundAuth {
     pub fn with_jwt(mut self, jwt: Vec<JwtIssuerRule>) -> Self {
         self.jwt = jwt;
         self
+    }
+
+    /// Attach the optional extra JWT slots (`jwt_header` / `jwt_cookie`).
+    /// Defaults to none, so every unconfigured deployment reads exactly the
+    /// credentials it did before.
+    pub(crate) fn with_jwt_slots(mut self, slots: JwtSlots) -> Self {
+        self.jwt_slots = slots;
+        self
+    }
+
+    /// The configured `jwt_header`, if any.
+    pub fn jwt_header(&self) -> Option<&HeaderName> {
+        self.jwt_slots.header.as_ref()
+    }
+
+    /// The configured `jwt_cookie` name, if any.
+    pub fn jwt_cookie(&self) -> Option<&str> {
+        self.jwt_slots.cookie.as_deref()
     }
 
     /// True when `name` is the label of a configured static token.

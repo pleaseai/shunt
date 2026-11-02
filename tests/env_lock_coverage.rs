@@ -6,11 +6,12 @@
 //! the environment as it resolves a config, so every env write in `tests/` has
 //! to be serialized against every env read — see `tests/common/mod.rs`.
 //!
-//! Two earlier attempts at that failed the same way. `tests/multi_account.rs`
-//! guarded only the tests that touched the refresh variables (#507), and
-//! `tests/admin_surface.rs` had three locks, one per variable family, so a test
-//! holding one still reallocated `environ` under a test holding another (#539).
-//! Both looked serialized and excluded nothing.
+//! Two earlier attempts at that failed the same way.
+//! `tests/multi_account/multi_account.rs` guarded only the tests that touched
+//! the refresh variables (#507), and `tests/admin_surface.rs` had three locks,
+//! one per variable family, so a test holding one still reallocated `environ`
+//! under a test holding another (#539). Both looked serialized and excluded
+//! nothing.
 //!
 //! This gate is keyed on the *absence of the raw call* rather than on
 //! recognizing a correct use of the guard. A pattern-matching gate only catches
@@ -414,5 +415,125 @@ fn raw_write_offsets_survive_crlf_line_endings() {
     assert!(
         source[start..end].contains("common::set_env_blocking"),
         "the enclosing block must be the one that takes the lock"
+    );
+}
+
+const SHARED_MODULES: &[&str] = &["common", "judge_harness"];
+
+fn declared_shared_module(line: &str) -> Option<&'static str> {
+    let raw = line.trim();
+    if raw.starts_with("#[path") {
+        let target = raw.split('"').nth(1)?;
+        return SHARED_MODULES.iter().copied().find(|module| {
+            target
+                .split('/')
+                .any(|segment| segment == *module || segment == format!("{module}.rs"))
+        });
+    }
+    let code = raw.split("//").next().unwrap_or("").trim();
+    let tokens: Vec<&str> = code
+        .split(|c: char| c.is_whitespace() || c == ';' || c == '{')
+        .filter(|token| !token.is_empty())
+        .collect();
+    SHARED_MODULES.iter().copied().find(|module| {
+        tokens
+            .windows(2)
+            .any(|pair| pair[0] == "mod" && pair[1] == *module)
+    })
+}
+
+fn path_attr_dir(line: &str) -> Option<String> {
+    let raw = line.trim();
+    if !raw.starts_with("#[path") {
+        return None;
+    }
+    let target = raw.split('"').nth(1)?;
+    let (dir, _) = target.strip_prefix("../")?.rsplit_once('/')?;
+    Some(dir.to_owned())
+}
+
+#[test]
+fn shared_module_declarations_are_recognized_past_comments_and_paths() {
+    assert_eq!(
+        declared_shared_module("mod common; // shared"),
+        Some("common")
+    );
+    assert_eq!(
+        declared_shared_module("pub mod judge_harness;"),
+        Some("judge_harness")
+    );
+    assert_eq!(
+        declared_shared_module("use crate::common; // not mod common"),
+        None
+    );
+    assert_eq!(
+        declared_shared_module(r#"#[path = "..//common/mod.rs"]"#),
+        Some("common")
+    );
+    assert_eq!(
+        declared_shared_module(r#"#[path = "../common_utils/mod.rs"]"#),
+        None
+    );
+    assert_eq!(
+        declared_shared_module(r#"#[path = "helper.rs"] // not common"#),
+        None
+    );
+    assert_eq!(
+        path_attr_dir(r#"#[path = "../judge_harness/mod.rs"]"#).as_deref(),
+        Some("judge_harness")
+    );
+    assert_eq!(path_attr_dir(r#"#[path = "postgres.rs"]"#), None);
+}
+
+#[test]
+fn grouped_binaries_declare_shared_modules_only_in_their_root() {
+    let sources = test_sources();
+    let roots: Vec<&str> = sources
+        .iter()
+        .filter_map(|(name, _)| name.strip_suffix("/main.rs"))
+        .filter(|dir| !dir.contains('/'))
+        .collect();
+    assert!(
+        roots.len() >= 4,
+        "expected at least the spend, codex, inbound and multi_account group \
+         roots under tests/, found {roots:?}"
+    );
+
+    let support_dirs: Vec<String> = sources
+        .iter()
+        .filter(|(name, _)| roots.iter().any(|dir| *name == format!("{dir}/main.rs")))
+        .flat_map(|(_, source)| code_lines(source).filter_map(|(_, line)| path_attr_dir(line)))
+        .collect();
+    assert!(
+        support_dirs.iter().any(|dir| dir == "judge_harness"),
+        "expected the group roots to pull in judge_harness through #[path], found {support_dirs:?}"
+    );
+
+    let mut violations = Vec::new();
+    for (name, source) in &sources {
+        let in_group = roots
+            .iter()
+            .any(|dir| name.starts_with(&format!("{dir}/")) && *name != format!("{dir}/main.rs"))
+            || support_dirs
+                .iter()
+                .any(|dir| name.starts_with(&format!("{dir}/")));
+        if !in_group {
+            continue;
+        }
+        for (number, line) in code_lines(source) {
+            if let Some(module) = declared_shared_module(line) {
+                violations.push(format!("{name}:{number}: {} (`{module}`)", line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "these declare a shared support module inside a grouped test binary. \
+         Declare it once in the group's `main.rs` and write `use crate::common;` \
+         (or `use crate::judge_harness;`) here instead: a second declaration \
+         compiles a second env lock into the same process, which is issue #539 \
+         again:\n  {}",
+        violations.join("\n  ")
     );
 }

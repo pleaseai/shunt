@@ -384,7 +384,7 @@ here applies.
 
 - **Checked before any upstream call.** Every turn is assessed first, on the HTTP `POST` of all
   three Responses paths and on the Responses WebSocket. The principal is the one `/v1/messages`
-  uses: the static `[server.auth]` token name, the verified JWT email, or `shunt:anonymous` without
+  uses: the static `[server.auth]` token name, the verified JWT identity (`identity_claim`, the email by default), or `shunt:anonymous` without
   `[server.auth]`. This endpoint does not accept gateway-login sessions.
 - **HTTP refusal.** An over-cap turn gets `429` with
   `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<epoch s>}}`
