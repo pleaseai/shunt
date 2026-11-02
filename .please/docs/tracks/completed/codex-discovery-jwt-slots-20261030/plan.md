@@ -93,6 +93,7 @@ Considered and not built:
   Evidence: `cd site && bun --bun run build` → 217 pages built (plain `bun run build` needs Node ≥ 22; default Node is 18.20.8); all 111 fragment links in the edited guide/reference pages across en/ko/ja/zh-cn resolve in `site/dist`; `rg` for the stale bearer-only discovery wording in all four locales → no hits. Commit 6f60b322 (worktree), merged in c5b3bb57
 - [x] (2026-10-31 10:00 KST) T002 Codex-shaped discovery reads the `jwt_header` / `jwt_cookie` slots
   Evidence: `cargo +1.98.1 test --test inbound_codex_jwt_discovery` → 9 passed, 0 failed (one test per AC-001..AC-009; AC-001 also covers `?client_version` empty and `?foo=1&client_version=x`, AC-006 covers `x-api-key` + repeated `jwt_header` → 200). Against the pre-change `src/` 4 failed (AC-001/002/003/008); reverting only the gateway-before-503 reorder fails AC-009; routing `CodexDiscovery` through `authenticate_bearer` fails AC-006. `cargo +1.98.1 test --workspace` → 61 suites, 4459 passed, 0 failed, 2 ignored; `cargo +1.98.1 clippy --all-targets -- -D warnings` and `cargo +1.98.1 fmt --all --check` exit 0 (default features; `--all-features` not run)
+- [x] (2026-11-02 10:00 KST) Review-stage commits (SHA: `b7df68f8`, `6ca94e46`)
 
 ## Decision Log
 
@@ -102,3 +103,23 @@ Considered and not built:
 ## Surprises & Discoveries
 </content>
 </invoke>
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+- Codex-shaped model discovery (`GET /models`, `GET /backend-api/codex/models`, and `GET /v1/models?client_version` with the Codex endpoint enabled) accepts the IdP JWT from the `[server.auth]` `jwt_header` / `jwt_cookie` slots, through a new `gate::Slots::CodexDiscovery` posture that keeps every client credential (`x-api-key`, the configured static header) and adds the JWT slot scan the Codex endpoint already applies.
+- A `[server.gateway]` login token now authenticates before an unreachable issuer's `503` is returned on discovery.
+- The shared Codex JWT test harness moved to `tests/common/codex_jwt.rs`; `tests/inbound_codex_jwt_discovery.rs` adds one test per AC-001..AC-009.
+- Docs updated in `docs/` and the site guide/reference pages across en/ko/ja/zh-cn.
+
+### What Went Well
+- Proving each test against the pre-change code (4 of 9 failed) and against single-change reverts (AC-006, AC-009) showed the tests pin the behaviour, not just pass.
+- The ensemble review converged in one fix commit; the two rejected `ocr` findings were by design (NFR-2's undifferentiated `401`).
+
+### What Could Improve
+- Cubic reviewed a two-dot diff against a newer `main` tip and reported changes from another PR; check the three-dot diff before acting on a vendor-engine lead.
+- The PR body first claimed `main` touched none of this PR's files, which was wrong (the review ledger and `configuration.md` overlapped); run `git diff --name-only` against the merged `main` before writing such a claim.
+- `--all-features` cannot run in this environment (no `ui/dist`, no Python), so CI is the only all-features run.
+
+### Tech Debt Created
+- `src/discovery.rs` is 918 lines, over the 500-line guideline (911 before this track; +7 net here).
