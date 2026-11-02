@@ -423,10 +423,12 @@ const SHARED_MODULES: &[&str] = &["common", "judge_harness"];
 fn declared_shared_module(line: &str) -> Option<&'static str> {
     let raw = line.trim();
     if raw.starts_with("#[path") {
-        return SHARED_MODULES
-            .iter()
-            .copied()
-            .find(|module| raw.contains(module));
+        let target = raw.split('"').nth(1)?;
+        return SHARED_MODULES.iter().copied().find(|module| {
+            target
+                .split('/')
+                .any(|segment| segment == *module || segment == format!("{module}.rs"))
+        });
     }
     let code = raw.split("//").next().unwrap_or("").trim();
     let tokens: Vec<&str> = code
@@ -467,6 +469,14 @@ fn shared_module_declarations_are_recognized_past_comments_and_paths() {
     assert_eq!(
         declared_shared_module(r#"#[path = "..//common/mod.rs"]"#),
         Some("common")
+    );
+    assert_eq!(
+        declared_shared_module(r#"#[path = "../common_utils/mod.rs"]"#),
+        None
+    );
+    assert_eq!(
+        declared_shared_module(r#"#[path = "helper.rs"] // not common"#),
+        None
     );
     assert_eq!(
         path_attr_dir(r#"#[path = "../judge_harness/mod.rs"]"#).as_deref(),
