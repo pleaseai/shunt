@@ -1,5 +1,5 @@
 //! Multi-account pool and failover tests for `auth = "kimi_oauth"`, mirroring
-//! `tests/multi_account.rs`'s Claude coverage but scoped to the Kimi path:
+//! `tests/multi_account/multi_account.rs`'s Claude coverage but scoped to the Kimi path:
 //! no account-UUID rewrite, no `anthropic-beta` header, and every non-`Relay`
 //! classification (401, quota 429, 5xx, membership 402) collapses to
 //! cooldown-and-rotate rather than Claude's fuller Rotate/PauseSame/
@@ -19,7 +19,7 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 struct BearerToken(String);
 
@@ -487,7 +487,7 @@ async fn disabled_account_is_skipped_in_favor_of_the_enabled_one() {
 /// `resolve_kimi_account`: `forward_kimi_oauth`'s `Err` arm at the
 /// credential-resolve step must arm a cooldown and `continue` to the next
 /// candidate rather than failing the request, mirroring
-/// `unresolvable_account_cools_down_and_rotates` in `tests/multi_account.rs`.
+/// `unresolvable_account_cools_down_and_rotates` in `tests/multi_account/multi_account.rs`.
 #[tokio::test]
 async fn unresolvable_account_cools_down_and_rotates() {
     if !can_bind_loopback() {
@@ -533,7 +533,7 @@ async fn unresolvable_account_cools_down_and_rotates() {
 /// `last_response` stays `None` and `forward_kimi_oauth` surfaces a 502
 /// without ever calling the mock, exercising the currently-unreached
 /// `last_response == None` arm. Mirrors
-/// `all_accounts_unresolvable_returns_bad_gateway` in `tests/multi_account.rs`.
+/// `all_accounts_unresolvable_returns_bad_gateway` in `tests/multi_account/multi_account.rs`.
 #[tokio::test]
 async fn all_accounts_unresolvable_returns_bad_gateway() {
     if !can_bind_loopback() {

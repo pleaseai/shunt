@@ -2,7 +2,11 @@
 //!
 //! `mod common;` pulls this in. Each binary compiles its own copy of everything
 //! here, which is exactly right for [`EnvVars`]: the hazard it guards is
-//! per-process, and the test binaries are separate processes.
+//! per-process, and the test binaries are separate processes. A grouped binary
+//! (`tests/<dir>/main.rs`) declares it once, as
+//! `#[path = "../common/mod.rs"] mod common;` in its `main.rs`, and its modules
+//! reach it through `use crate::common;` — which keeps one lock per process.
+//! `tests/env_lock_coverage.rs` rejects a second declaration inside a group.
 
 // Every binary uses a different part of this module. The rest is not dead code,
 // it is code this binary happens not to need.

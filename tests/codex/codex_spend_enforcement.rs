@@ -2,7 +2,7 @@
 //! routes (codex-spend-caps, T001).
 //!
 //! Caps are created through the admin API and spend is seeded straight into
-//! the meter, as in `tests/spend_enforcement.rs`. These pin what a Codex CLI
+//! the meter, as in `tests/spend/spend_enforcement.rs`. These pin what a Codex CLI
 //! sees once its principal is at a cap: a `429` carrying the
 //! `usage_limit_reached` type and code, `resets_at`, `retry-after` and the
 //! promo header, with no request reaching the upstream.
@@ -36,7 +36,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 const TOKENS_ENV: &str = "SHUNT_TEST_CODEX_SPEND_TOKENS";
 const ADMIN_ENV: &str = "SHUNT_TEST_CODEX_SPEND_ADMIN";

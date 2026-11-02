@@ -1,4 +1,4 @@
-//! Codex/ChatGPT account-pool failover (M10) — mirrors `tests/multi_account.rs`
+//! Codex/ChatGPT account-pool failover (M10) — mirrors `tests/multi_account/multi_account.rs`
 //! (the Anthropic account pool) for the `codex` provider's Responses adapter.
 //!
 //! Two behaviors set this suite apart from the Anthropic one, both driven by
@@ -48,7 +48,7 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 struct BearerToken(String);
 
@@ -306,7 +306,7 @@ fn session_id_for_account(index: usize, account_count: usize) -> String {
 }
 
 /// Find `message_start`'s `usage.input_tokens` in a gateway SSE response body,
-/// mirroring the identically-named helper in `tests/codex_websocket_fallback.rs`
+/// mirroring the identically-named helper in `tests/codex/codex_websocket_fallback.rs`
 /// (integration test binaries do not share code across files, so this is
 /// intentionally duplicated rather than imported).
 fn message_start_input_tokens(sse: &str) -> u64 {
@@ -1130,7 +1130,7 @@ async fn websocket_enabled_pool_falls_back_to_http_and_streams() {
         account("account-a", "SHUNT_TEST_CODEX_WSPOOL_A"),
         account("account-b", "SHUNT_TEST_CODEX_WSPOOL_B"),
     );
-    // Opt in to the ws transport (mirrors tests/codex_websocket_fallback.rs) —
+    // Opt in to the ws transport (mirrors tests/codex/codex_websocket_fallback.rs) —
     // the mock upstream has no websocket endpoint, so account-a's ws attempt
     // fails its handshake and falls back to HTTP for the same account without
     // ever reaching account-b.

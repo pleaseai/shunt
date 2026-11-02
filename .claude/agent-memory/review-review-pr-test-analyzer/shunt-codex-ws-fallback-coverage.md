@@ -1,6 +1,6 @@
 ---
 name: shunt-codex-ws-fallback-coverage
-description: PR #111/issue #46 tests/codex_websocket_fallback.rs gap analysis — dual WS+HTTP mock-on-one-port pattern, matrix gaps (json_events_response error arm, continuation-retry peek), and a reusable test-matrix-coverage check.
+description: PR #111/issue #46 tests/codex/codex_websocket_fallback.rs gap analysis — dual WS+HTTP mock-on-one-port pattern, matrix gaps (json_events_response error arm, continuation-retry peek), and a reusable test-matrix-coverage check.
 metadata:
   type: project
 ---
@@ -12,7 +12,7 @@ failure. Implemented in `src/adapters/responses/mod.rs` via `open_ws_turn` →
 committing to the WS response; `Ok` commits+buffers-for-replay, `Err`/`None`
 returns `Err` so `forward()` re-drives over HTTP).
 
-Test infra pattern worth reusing: `tests/codex_websocket_fallback.rs`'s
+Test infra pattern worth reusing: `tests/codex/codex_websocket_fallback.rs`'s
 `spawn_dual_upstream` binds ONE TcpListener and peeks the first 4 bytes
 (`GET ` vs otherwise) to route a connection to a WS-upgrade handler or a
 plain-HTTP handler, so one mock server can play both the WS and HTTP-fallback
@@ -53,7 +53,7 @@ Minor/low-severity notes from the same review: `http_hits.load() >= 1`
 `forward_http` is called at most once per request on this path, so `==1`
 would still be correct and would catch an accidental double-POST (relevant
 for a metered upstream). `request_is_websocket`'s byte-peek loop
-(`tests/codex_websocket_fallback.rs`) doesn't yield between partial reads
+(`tests/codex/codex_websocket_fallback.rs`) doesn't yield between partial reads
 (`TcpStream::peek` returns `Ready` for any n>0), a theoretical busy-spin under
 segmented delivery — not observed in 15 local repeated runs, loopback
 virtually always delivers the whole request line atomically, so this is

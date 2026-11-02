@@ -12,7 +12,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 fn can_bind_loopback() -> bool {
     match std::net::TcpListener::bind("127.0.0.1:0") {

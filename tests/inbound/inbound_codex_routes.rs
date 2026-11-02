@@ -1,6 +1,6 @@
 //! Opt-in per-model routing on the inbound Codex endpoint
 //! (`[[server.codex_endpoint.routes]]`, issue #436) — the companion to
-//! `tests/inbound_codex_endpoint.rs`, which covers the fixed-provider mode.
+//! `tests/inbound/inbound_codex_endpoint.rs`, which covers the fixed-provider mode.
 //!
 //! The behaviors under test are the ones that separate a routed request from
 //! the fixed passthrough: the body `model` is rewritten to the route's
@@ -24,7 +24,7 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 /// A raw OpenAI Responses request body, exactly as the Codex CLI would send it.
 /// `model` is first so a rewrite is visibly a JSON edit and not a text splice.

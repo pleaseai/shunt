@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, Notify};
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
 use tungstenite::client::IntoClientRequest;
 
-mod common;
+use crate::common;
 
 struct RunningServer {
     address: SocketAddr,

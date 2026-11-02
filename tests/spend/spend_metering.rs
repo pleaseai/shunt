@@ -41,8 +41,8 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-mod common;
-mod judge_harness;
+use crate::common;
+use crate::judge_harness;
 
 use judge_harness::{alias, upstream_with};
 
