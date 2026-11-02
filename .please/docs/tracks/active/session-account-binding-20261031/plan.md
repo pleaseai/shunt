@@ -70,7 +70,7 @@ The generation is per binding and every move bumps it. A commit whose ticket car
 Every adapter's failover loop stays as it is, and the sessionless and test wrappers keep their signatures.
 
 **Placement:**
-- `spread`: highest rendezvous weight, where the weight is the first 8 bytes of SHA-256(session hash ‖ account key), taken over eligible distinct identities, with priority ignored.
+- `spread`: highest rendezvous weight, where the weight is `splitmix64(session_hash[..8] ^ account_digest)` and `account_digest` is the first 8 bytes of SHA-256 over the account key (Decision Log 2026-11-02), taken over eligible distinct identities, with priority ignored.
 - `soonest_weekly_reset`: priority, then governing weekly reset (unknown last), then configuration order.
 
 **On a move:** the same rule within the best available priority tier. The rest of the order, after the bound or placed account, keeps today's failover ordering, so `sort_by_reset` and headroom still apply (FR-16). An account that is ineligible for every candidate leaves today's order untouched and the binding unchanged.
@@ -86,13 +86,13 @@ Rejected:
 
 ## Tasks
 
-- [ ] T001 Add the `[server.pool] assignment` strategy key (file: src/config.rs) [FR-6]
+- [x] T001 Add the `[server.pool] assignment` strategy key (file: src/config.rs) [FR-6]
   Validation: `assignment = "soonest_weekly_reset"` and `"spread"` parse, absent means `spread`, and any other value makes `shunt check` fail naming the key; `shunt.toml.example` and `shunt.yaml.example` show the key.
   Method: `cargo test --all-features config::` plus `cargo run -- check` on a config with an invalid value
-- [ ] T002 Build the bounded session binding table (file: src/accounts/session_binding.rs) [FR-1, FR-9, AC-001, AC-014, AC-015, NFR-1]
+- [x] T002 Build the bounded session binding table (file: src/accounts/session_binding.rs) [FR-1, FR-9, AC-001, AC-014, AC-015, NFR-1]
   Validation: keys are (provider, SHA-256 of the selection key), and a raw id never appears in the table or its export (AC-001); an entry idle 24 h is gone (AC-014); at 10,000 entries a new insert evicts the least recently used and bumps an eviction count, at amortized constant cost (AC-015); a commit carrying an older generation does not overwrite a newer binding (NFR-1).
   Method: `cargo test --all-features accounts::session_binding`
-- [ ] T003 Select through bindings and assignment strategies (file: src/accounts.rs) (depends on T001, T002) [FR-2, FR-4, FR-5, FR-7, FR-8, FR-12, FR-15, FR-16, AC-006, AC-007, AC-008, AC-009, AC-010, AC-011, AC-012, AC-013, AC-018, NFR-2]
+- [x] T003 Select through bindings and assignment strategies (file: src/accounts.rs) (depends on T001, T002) [FR-2, FR-4, FR-5, FR-7, FR-8, FR-12, FR-15, FR-16, AC-006, AC-007, AC-008, AC-009, AC-010, AC-011, AC-012, AC-013, AC-018, NFR-2]
   Validation: AC-006 to AC-013 and AC-020 hold at the selection level; a binding whose account is absent from the `accounts` slice is placed again as if unbound, with the ticket carrying the removed account as ineligible (reason `failover`) so the commit moves the binding and records the switch (AC-018), and `forget_identity` drops its bindings; sessionless and empty-id requests still round-robin (FR-15); `account_pool_mixed_cycles` stays within 5 % of its `main` result.
   Method: `cargo test --all-features accounts::` plus `cargo bench --features bench --bench perf_issues -- account_pool`, with new bench cases for binding hit, miss, eviction and concurrent commit, driven through `pub` ticket-returning selection and commit methods on `AccountPool`, which `benches/perf_issues.rs` reaches as `shunt::accounts::AccountPool` (not through `bench_support`)
   STOP: an existing selection test fails for a reason other than the sticky slot formula, meaning a behavior the spec keeps has changed.
@@ -159,6 +159,15 @@ Rejected:
 - Edge case: bound account soft-near for 59 s, then a non-near header, then soft-near again → no move until 60 s more of continuous soft-near (AC-006, AC-007).
 - Edge case: a re-probe promotes C to index 0 for a session bound to A, and C serves → the binding stays on A.
 
+## Progress
+
+- [x] (2026-11-01 KST) T001 Add the `[server.pool] assignment` strategy key — 262b23e9
+  Evidence: `cargo +1.98.1 test --features bench --lib pool_assignment` → 1 passed (absent→spread; spread/soonest_weekly_reset parse; "Spread"/"bogus"/"SOONEST_WEEKLY_RESET" rejected naming `assignment`); `shunt check` on `assignment = "Spread"` → error `unknown variant: found 'Spread' … for key "default.server.pool.assignment"`; examples updated.
+- [x] (2026-11-01 KST) T002 Build the bounded session binding table — e6c9cf00
+  Evidence: `cargo +1.98.1 test --features bench --lib accounts::session_binding` → 9 passed (raw id absent from export/Debug; odd keys incl. empty/10 MB hash; 24 h expiry at +1 s; cap evicts LRU in a ~90 % batch and counts evictions; older-generation commit → Stale). Generation 0 = unbound at selection; `#![allow(dead_code)]` left for T003 to remove.
+- [x] (2026-11-02 KST) T003 Select through bindings and assignment strategies — ee6ff2fd
+  Evidence: `cargo +1.98.1 test --features bench --lib accounts::` → 283 passed (11 `assignment::tests`, 23 `binding_selection_tests` covering AC-002, AC-005..AC-013, AC-018, AC-020, FR-15 and FR-16 tail order, every commit case, `forget_identity`); disabling the 60 s debounce failed both debounce tests (mutation check). Orchestrator re-run: fmt clean, clippy `--all-targets --features bench -D warnings` exit 0, `cargo +1.98.1 test --features bench --workspace` → 4647 passed, 0 failed. `account_pool_mixed_cycles` vs a fresh same-session baseline (47.7/146.0/137.6/140.0 ms at 1/8/32/128 workers): +1.5/+1.8/−0.2/+1.0 % and +2.3/+4.7/+3.3/+2.7 % on two runs, within 5 %. New benches `account_pool_binding_{hit,miss,eviction,concurrent_commit}`. CI `--all-features` remains the authority.
+
 ## Decision Log
 
 - 2026-10-31: State file stays v3 with an optional `bindings` field (no v4 bump), so a file-mode downgrade keeps quota (a store-mode downgrade still meets `SchemaTooNew`); ADR-0008 §6 amended.
@@ -166,3 +175,10 @@ Rejected:
 - 2026-10-31: Persisted `last_used` is coarsened to one hour.
 - 2026-10-31: `spread` ignores priority on first placement; a move respects priority tiers.
 - 2026-10-31: Rebased onto `main` at `a33fc90` (#846, #871) before implementation and re-verified the plan against it. Line references in `src/accounts.rs` shift down by about 38. #871's `ChatgptPlanOauth` pools serve through the same `pool.rs` success arms (via `pool_plan::relay_events` / `peek_if_plan`), so T005 covers them. ADR renumbered to 0008 because #871 took 0007.
+- 2026-11-01: The integration-test slot-search helpers (`tests/multi_account.rs`, `tests/kimi_multi_account.rs`, `tests/codex_multi_account.rs`, `tests/inbound_codex_endpoint.rs`) move from T004/T005 into T003, because T003 changes placement and the suite must stay green at every commit.
+- 2026-11-02: The rendezvous weight is `splitmix64(session_hash[..8] ^ account_digest)`, where `account_digest` is the first 8 bytes of SHA-256 over the account key, cached per health entry. The SHA-256-per-pair weight from T002 cost +35 to +42 % on `account_pool_mixed_cycles`. It is still deterministic across restarts.
+- 2026-11-02: `SessionBindings` nests by provider, so a lookup does not allocate.
+- 2026-11-02: When the head is the session's first choice and healthy, the order is today's rotation from the head. Otherwise it is today's sorted failover order with the head moved to the front. `sort_by_reset` never decides a head.
+- 2026-11-02: An ineligible bound account with no healthy alternative leaves the binding (AC-004). The exception is a bound account that left the slice, whose ticket always carries `failover` (AC-018).
+- 2026-11-02: Seven existing selection tests (burn-rate headroom, hard-threshold backstop, paused-sticky ranking, the three `sort_by_reset_*` tests, priority ordering) now observe their sort on a sessionless request, with assertions unchanged. A session's head is now its rendezvous placement (FR-7, FR-16). The user approved this.
+- 2026-11-02: The integration tests share `tests/common/mod.rs::session_id_for_account`, which searches with a fresh `AccountPool` over the gateway's resolved pool accounts.
