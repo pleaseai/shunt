@@ -11,11 +11,7 @@
 //! the refresh variables (#507), and `tests/admin_surface.rs` had three locks,
 //! one per variable family, so a test holding one still reallocated `environ`
 //! under a test holding another (#539). Both looked serialized and excluded
-//! nothing. A grouped binary can reintroduce the second failure without a
-//! single new lock: two `mod common;` declarations in one binary compile two
-//! copies of the guard, so
-//! `grouped_binaries_declare_shared_modules_only_in_their_root` keeps that
-//! declaration in the binary root.
+//! nothing.
 //!
 //! This gate is keyed on the *absence of the raw call* rather than on
 //! recognizing a correct use of the guard. A pattern-matching gate only catches
@@ -131,11 +127,10 @@ fn tests_dir() -> &'static Path {
 /// Every `.rs` file under `tests/`, as (path relative to `tests/`, contents).
 ///
 /// Recursive, because a test binary is not only `tests/*.rs`: cargo also builds
-/// `tests/<dir>/main.rs` (the grouped binaries `spend`, `codex`, `inbound`, and
-/// `multi_account`, whose modules sit beside their `main.rs`), and a support
-/// module in a subdirectory such as `tests/common/mod.rs` is compiled into
-/// whichever binaries declare it. `tests/common/mod.rs` is exempt by name below
-/// rather than by being out of reach of the walk.
+/// `tests/<dir>/main.rs`, and a support module in a subdirectory is compiled
+/// into whichever binaries declare it. `tests/common/mod.rs` is the one that
+/// exists today, and it is exempt by name below rather than by being out of
+/// reach of the walk.
 fn test_sources() -> Vec<(String, String)> {
     fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("a readable directory under tests/") {
@@ -423,14 +418,8 @@ fn raw_write_offsets_survive_crlf_line_endings() {
     );
 }
 
-/// Support modules that hold per-process state and so must be compiled into a
-/// binary exactly once: `common` owns the env lock, and `judge_harness` reaches
-/// it through `crate::common`.
 const SHARED_MODULES: &[&str] = &["common", "judge_harness"];
 
-/// Which shared module, if any, this code line declares — either as
-/// `mod common;` (with any visibility) or through a `#[path = ".."]` attribute
-/// that points at the module's directory, whatever the declared name.
 fn declared_shared_module(line: &str) -> Option<&'static str> {
     let code = line.trim();
     if code.starts_with("#[path") {
@@ -450,12 +439,6 @@ fn declared_shared_module(line: &str) -> Option<&'static str> {
     })
 }
 
-/// A grouped binary (`tests/<dir>/main.rs`) compiles every file under its
-/// directory into one process. A `mod common;` in one of those modules, rather
-/// than `use crate::common;`, compiles a second copy of the guard with its own
-/// `ENV_LOCK` — two locks in one process, each excluding only its own holders,
-/// which is the failure of #539 rebuilt by a declaration rather than by a new
-/// lock. So the binary root is the only place either module may be declared.
 #[test]
 fn grouped_binaries_declare_shared_modules_only_in_their_root() {
     let sources = test_sources();
@@ -464,7 +447,6 @@ fn grouped_binaries_declare_shared_modules_only_in_their_root() {
         .filter_map(|(name, _)| name.strip_suffix("/main.rs"))
         .filter(|dir| !dir.contains('/'))
         .collect();
-    // Without this the gate passes by finding no group to check.
     assert!(
         roots.len() >= 4,
         "expected at least the spend, codex, inbound and multi_account group \

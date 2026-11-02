@@ -1,8 +1,3 @@
-//! Inbound authentication and inbound Codex endpoint tests.
-//!
-//! One binary rather than one per file because every integration test binary
-//! statically links the whole dependency graph, and that link is the cost.
-
 #[path = "../common/mod.rs"]
 mod common;
 

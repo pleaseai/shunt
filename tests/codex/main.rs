@@ -1,8 +1,3 @@
-//! Codex spend enforcement, metering, and WebSocket transport tests.
-//!
-//! One binary rather than one per file because every integration test binary
-//! statically links the whole dependency graph, and that link is the cost.
-
 #[path = "../common/mod.rs"]
 mod common;
 #[path = "../judge_harness/mod.rs"]
