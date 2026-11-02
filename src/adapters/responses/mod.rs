@@ -9,6 +9,8 @@ mod http;
 pub(crate) mod inbound;
 mod inbound_routed;
 mod pool;
+mod pool_plan;
+mod pool_plan_peek;
 mod sse_parse;
 // `pub(crate)` (not private): the chain (`proxy::chain_stream`) reuses the
 // post-terminal drain for an Anthropic-kind winner's raw relay, so both
@@ -30,7 +32,7 @@ use serde_json::Value;
 use crate::{
     adapters::{Adapter, AdapterError, AdapterFuture},
     auth::{resolve_credential, Credential},
-    config::{AuthMode, CountTokens},
+    config::CountTokens,
     model::{
         responses::translate_request_value,
         responses_request::{effective_session_identity, EffectiveSessionId},
@@ -274,34 +276,37 @@ async fn forward(
         response_bounds,
         attribution: body.attribution(),
     };
-    let upstream_body = Arc::new(translate_request_value(
+    let auth = state
+        .config
+        .provider(&route.provider)
+        .map(|provider| provider.auth)
+        .unwrap_or_default();
+    let mut upstream_body = translate_request_value(
         request_json,
         &route,
         flavor,
         tool_search_native,
         session_id.as_deref(),
         body.is_client_turn(),
-    ));
+    );
+    pool_plan::shape_upstream_body(&mut upstream_body, auth);
+    let upstream_body = Arc::new(upstream_body);
     tracing::debug!(
         provider = %route.provider,
         upstream_model = %route.upstream_model,
         upstream_request = %upstream_body,
         "responses upstream request"
     );
-    let auth = state
-        .config
-        .provider(&route.provider)
-        .map(|provider| provider.auth)
-        .unwrap_or_default();
 
     // Codex/ChatGPT account-pool failover (M10), mirroring the Anthropic
     // adapter's claude_oauth branch: pooled credentials are resolved per-account
     // inside forward_chatgpt_oauth rather than once up front, so a single
     // account's expired/rejected token can rotate to the next one instead of
-    // failing the whole request. The xAI pool (docs/m18) uses the same branch,
-    // keyed on its own store family.
+    // failing the whole request. The xAI pool (docs/m18) and the chatgpt-plan
+    // pool (ADR-0007, `pool_plan`) use the same branch, keyed on their own
+    // store families.
     let mut single_started_at: Option<std::time::Instant> = None;
-    if matches!(auth, AuthMode::ChatgptOauth | AuthMode::XaiOauth) {
+    if auth.uses_responses_pool() {
         let provider = state
             .config
             .provider(&route.provider)
@@ -553,21 +558,23 @@ pub(crate) async fn chain_attempt(
         response_bounds: crate::adapters::ResponseBounds::default(),
         attribution: body.attribution(),
     };
-    let upstream_body = Arc::new(translate_request_value(
+    let auth = state
+        .config
+        .provider(&route.provider)
+        .map(|provider| provider.auth)
+        .unwrap_or_default();
+    let mut upstream_body = translate_request_value(
         request_json,
         route,
         flavor,
         tool_search_native,
         session_id.as_deref(),
         body.is_client_turn(),
-    ));
-    let auth = state
-        .config
-        .provider(&route.provider)
-        .map(|provider| provider.auth)
-        .unwrap_or_default();
+    );
+    pool_plan::shape_upstream_body(&mut upstream_body, auth);
+    let upstream_body = Arc::new(upstream_body);
 
-    if matches!(auth, AuthMode::ChatgptOauth | AuthMode::XaiOauth) {
+    if auth.uses_responses_pool() {
         let provider = state
             .config
             .provider(&route.provider)

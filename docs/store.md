@@ -12,6 +12,8 @@ evaluation that led there is in [`storage.md`](storage.md). This page is the
 operator-facing behavior of what shipped in the single-instance phase. The
 user-facing key reference is
 [`[store]` in the configuration reference](https://shunt.sh/reference/configuration/#store-optional).
+The step-by-step move from JSON snapshots to a store is the
+[Migrating to the Store](https://shunt.sh/guides/store-migration/) guide.
 
 ## What the store holds
 
@@ -106,7 +108,9 @@ The first boot with `[store]` copies each store-backed subsystem's JSON snapshot
 into the store, in one transaction per subsystem together with an `import_record`
 row. The snapshots are `[server.pool] state_path`, `[server.gateway] state_path`
 (default `~/.shunt/gateway-sessions.json`), and `[server.spend] state_path`
-(default `~/.shunt/gateway-spend.json`).
+(default `~/.shunt/gateway-spend.json`). The operator procedure, including how to
+recover from a first boot that missed a snapshot, is in
+[Migrating to the Store](https://shunt.sh/guides/store-migration/).
 
 - The decision is keyed on the `import_record`, not on whether the tables are
   empty. A subsystem that was imported never imports again, even if you later

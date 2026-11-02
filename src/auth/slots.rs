@@ -20,7 +20,7 @@
 //! | --- | --- | --- |
 //! | `authorization` | shared with the caller's own upstream credential | **by value** ([`ShuntCredentials::strip_consumed_slots`]) |
 //! | `x-api-key` | shared with the caller's own upstream credential | **by value** ([`ShuntCredentials::strip_consumed_slots`]) |
-//! | `x-shunt-token`, `x-shunt-admin-token`, `x-shunt-inbound-client`, `cookie`, plus whatever `[server.auth] header` / `[server.admin] header` name | reserved by shunt | **by name** ([`ShuntCredentials::strip_reserved_slots`]) |
+//! | `x-shunt-token`, `x-shunt-admin-token`, `x-shunt-inbound-client`, `cookie`, plus whatever `[server.auth] header` / `[server.auth] jwt_header` / `[server.admin] header` name | reserved by shunt | **by name** ([`ShuntCredentials::strip_reserved_slots`]) |
 //!
 //! ## Accept sites
 //!
@@ -40,7 +40,11 @@
 //!   payload verified as a `[[server.auth.jwt]]` JWT, after the three
 //!   static-token entry points above. Its strip mirror is
 //!   [`InboundAuth::is_jwt_credential`], which matches by the token's
-//!   unverified `iss` in either shared slot.
+//!   unverified `iss` in either shared slot. On the inbound Codex endpoint
+//!   (`Slots::Codex`) it also verifies the `[server.auth] jwt_header` and
+//!   `jwt_cookie` slots; their strip mirror is by name
+//!   ([`ShuntCredentials::strip_reserved_slots`]: the `jwt_header` name and
+//!   `cookie`), not [`InboundAuth::is_jwt_credential`].
 //! - [`crate::gateway::GatewayAuth::authenticate_bearer`] — the
 //!   `Authorization: Bearer` payload; `authenticate_token` the bare value,
 //!   reached in production only through that bearer path and through
@@ -183,13 +187,13 @@ pub(crate) const RESERVED_SLOTS: [&str; 4] = [
 
 /// Everything a forward site needs to recognize one of shunt's own inbound
 /// credentials: the three credential tables to check values against, and the
-/// two configurable header names to clear by name.
+/// three configurable header names to clear by name.
 ///
 /// `Copy`, so a site can take it by value and still hand it to a helper.
 ///
 /// Deliberately **not** `Default`, and the fields are private. An all-`None`
 /// value strips nothing at all — `strip_consumed_slots` matches no credential
-/// and both `if let Some(name)` arms of `strip_reserved_slots` are skipped — so
+/// and every `if let Some(name)` arm of `strip_reserved_slots` is skipped — so
 /// a `Default` is a placeholder that compiles and silently disables the whole
 /// boundary. [`Self::from_state`] is therefore the only way to build one
 /// outside tests, which also means the production callers must pass the real
@@ -204,6 +208,10 @@ pub(crate) struct ShuntCredentials<'a> {
     static_header: Option<&'a HeaderName>,
     /// `[server.admin] header`, when configured.
     admin_header: Option<&'a HeaderName>,
+    /// `[server.auth] jwt_header`, when configured. Never a shared slot
+    /// (startup validation forbids `authorization` / `x-api-key`), so it is
+    /// removed unconditionally.
+    jwt_header: Option<&'a HeaderName>,
 }
 
 impl<'a> ShuntCredentials<'a> {
@@ -218,6 +226,10 @@ impl<'a> ShuntCredentials<'a> {
             admin_credentials: state.admin_auth.as_deref().map(AdminAuth::credentials),
             static_header: state.inbound_auth.as_deref().map(InboundAuth::header),
             admin_header: state.admin_auth.as_deref().map(AdminAuth::header),
+            jwt_header: state
+                .inbound_auth
+                .as_deref()
+                .and_then(InboundAuth::jwt_header),
         }
     }
 
@@ -226,7 +238,7 @@ impl<'a> ShuntCredentials<'a> {
     /// production has exactly one constructor. Same pattern as
     /// [`crate::auth::inbound::is_consumed_by_shunt`].
     ///
-    /// The two configured header names are always `None` here — a caller that
+    /// The three configured header names are always `None` here — a caller that
     /// needs them is exercising `strip_reserved_slots`, which only
     /// `from_state` can wire correctly.
     #[cfg(test)]
@@ -241,14 +253,16 @@ impl<'a> ShuntCredentials<'a> {
             admin_credentials,
             static_header: None,
             admin_header: None,
+            jwt_header: None,
         }
     }
 
-    /// Clear every slot shunt reserves by *name*: the three fixed
-    /// [`RESERVED_SLOTS`], the configured `[server.auth] header`, and the
-    /// configured `[server.admin] header`.
+    /// Clear every slot shunt reserves by *name*: the fixed
+    /// [`RESERVED_SLOTS`], the configured `[server.auth] header`, the
+    /// configured `[server.auth] jwt_header`, and the configured
+    /// `[server.admin] header`.
     ///
-    /// The two configured headers are treated asymmetrically, deliberately, and
+    /// The configured headers are treated asymmetrically, deliberately, and
     /// this asymmetry is the pre-existing behavior of
     /// `proxy::failover::check_inbound_auth` (see the "Caveat for
     /// `[server.auth] header = \"authorization\"`" paragraph of
@@ -262,6 +276,8 @@ impl<'a> ShuntCredentials<'a> {
     ///   consequence for the operator is that pointing `header` at a shared
     ///   slot costs callers that slot on inference; the default dedicated
     ///   `x-shunt-token` avoids the collision entirely.
+    /// - `jwt_header` is removed **always**, like `static_header`; it cannot
+    ///   name a shared slot, so no value check is needed.
     /// - `admin_header` is removed **only when it is not** one of the
     ///   [`SHARED_SLOTS`]. Dropping a shared slot outright for the admin header
     ///   would delete a genuine caller credential sight unseen on a passthrough
@@ -276,6 +292,9 @@ impl<'a> ShuntCredentials<'a> {
             headers.remove(name);
         }
         if let Some(name) = self.static_header {
+            headers.remove(name);
+        }
+        if let Some(name) = self.jwt_header {
             headers.remove(name);
         }
         if let Some(name) = self.admin_header {

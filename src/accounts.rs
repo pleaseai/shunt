@@ -32,6 +32,7 @@ pub enum StoreFamily {
     Kimi,
     Antigravity,
     Xai,
+    ChatgptPlan,
 }
 
 /// Stable physical-account identity used by every runtime state map.
@@ -454,6 +455,13 @@ pub struct AccountSnapshot {
     /// Fable `model`).
     pub available: bool,
     pub near_quota: bool,
+    /// A shared window (5h or 7d) is used up: the provider rejected it (or, with
+    /// no per-window status recorded, the aggregate status says `rejected`), or
+    /// its observed utilization reached 100%. Unlike `near_quota`, which is also
+    /// set at the switch threshold, this is only set once the window itself is
+    /// spent. Selection still keeps such an account as a last resort. See
+    /// [`shared_window_exhausted`].
+    pub exhausted: bool,
     /// A shared-window (5h or 7d) `max_utilization` cap excludes the account
     /// from selection for every model.
     pub capped: bool,
@@ -560,6 +568,7 @@ impl AccountSnapshot {
             has_state: false,
             available: !account.disabled && !paused,
             near_quota: false,
+            exhausted: false,
             capped: false,
             capped_fable: false,
             cap_clears_at: None,
@@ -649,6 +658,29 @@ pub struct AccountPool {
     /// (issue #817). Lives here because the pool is the process-lifetime state
     /// every `AppState` snapshot shares across reloads; memory-only.
     upstream_skips: UpstreamSkips,
+    /// When the usage poller last began a pass, and its interval. `None` until
+    /// the first pass, and for good when `usage_refresh_seconds` leaves the
+    /// poller off. Read by `GET /admin/api/pool` for the dashboard's
+    /// next-check countdown.
+    usage_poll: Mutex<Option<UsagePollSchedule>>,
+}
+
+/// The usage poller's cadence as of its latest pass (`crate::usage_poll`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsagePollSchedule {
+    /// The effective interval, after the 60-second floor.
+    pub interval_seconds: u64,
+    /// Unix seconds at which the latest pass began.
+    pub last_started_at: u64,
+}
+
+impl UsagePollSchedule {
+    /// Unix seconds at which the next pass is due. The poller skips missed
+    /// ticks rather than bursting, so a pass that overruns its interval moves
+    /// the real next pass later than this; the next pass then restamps it.
+    pub fn next_at(&self) -> u64 {
+        self.last_started_at.saturating_add(self.interval_seconds)
+    }
 }
 
 /// Why one account is not selectable for this request.
@@ -764,6 +796,20 @@ impl AccountPool {
     /// The per-upstream skip windows that account-level refusals start.
     pub(crate) fn upstream_skips(&self) -> &UpstreamSkips {
         &self.upstream_skips
+    }
+
+    /// Record that a usage-poller pass began at `started_at` (Unix seconds).
+    pub fn note_usage_poll_started(&self, interval_seconds: u64, started_at: u64) {
+        *self.usage_poll.lock().expect("usage poll lock poisoned") = Some(UsagePollSchedule {
+            interval_seconds,
+            last_started_at: started_at,
+        });
+    }
+
+    /// The usage poller's cadence as of its latest pass, or `None` when no pass
+    /// has run (the poller is off, or has not started yet).
+    pub fn usage_poll_schedule(&self) -> Option<UsagePollSchedule> {
+        *self.usage_poll.lock().expect("usage poll lock poisoned")
     }
 
     /// Synchronize the upstream's current configured identities before an
@@ -2516,6 +2562,7 @@ impl AccountPool {
                             && !capped
                             && !(is_fable && capped_fable),
                         near_quota: quota.near,
+                        exhausted: shared_window_exhausted(&health.quota),
                         capped,
                         capped_fable,
                         cap_clears_at: cap_exclusion(&health.quota, account, false, pool)
@@ -3204,6 +3251,21 @@ fn governing_cooldown(
         .into_iter()
         .flatten()
         .max()
+}
+
+/// Whether a shared quota window (5-hour or weekly) is used up, for the admin
+/// view: rejected by the provider, or observed at 100%. The rejection test is
+/// [`assess_quota`]'s for a non-Fable request, so a stale aggregate `status`
+/// counts only when no per-window status has been recorded, and an isolated
+/// `7d_oi` rejection (Fable-only) does not count: other models are still served.
+fn shared_window_exhausted(quota: &QuotaState) -> bool {
+    let has_window_status =
+        quota.status_5h.is_some() || quota.status_7d.is_some() || quota.status_7d_oi.is_some();
+    let rejected = quota.status_5h.as_deref() == Some("rejected")
+        || quota.status_7d.as_deref() == Some("rejected")
+        || (!has_window_status && quota.status.as_deref() == Some("rejected"));
+    let used_up = |utilization: Option<f64>| utilization.is_some_and(|value| value >= 1.0);
+    rejected || used_up(quota.utilization_5h) || used_up(quota.utilization_7d)
 }
 
 fn governing_weekly_reset(quota: &QuotaState, is_fable: bool) -> Option<u64> {
@@ -9431,6 +9493,74 @@ mod tests {
         let mut entries = pool.entries.lock().expect("account health lock poisoned");
         let health = entries.entry(account_key(provider, account)).or_default();
         edit(&mut health.quota);
+    }
+
+    #[test]
+    fn shared_window_exhausted_follows_the_per_window_rejection_rules() {
+        let quota = |edit: &dyn Fn(&mut QuotaState)| {
+            let mut quota = QuotaState::default();
+            edit(&mut quota);
+            shared_window_exhausted(&quota)
+        };
+        assert!(!quota(&|_| {}), "no observation is not exhausted");
+        assert!(
+            quota(&|q| q.status_7d = Some("rejected".into())),
+            "weekly rejected"
+        );
+        assert!(
+            quota(&|q| q.status_5h = Some("rejected".into())),
+            "5-hour rejected"
+        );
+        assert!(
+            quota(&|q| q.utilization_7d = Some(1.0)),
+            "weekly observed at 100%"
+        );
+        assert!(
+            !quota(&|q| q.utilization_5h = Some(0.99)),
+            "99% can still serve"
+        );
+        assert!(
+            !quota(&|q| q.status_7d_oi = Some("rejected".into())),
+            "a Fable-only rejection leaves other models served"
+        );
+        // A stale aggregate rejection is ignored once per-window statuses
+        // exist, exactly as selection ignores it.
+        assert!(!quota(&|q| {
+            q.status = Some("rejected".into());
+            q.status_7d = Some("allowed".into());
+        }));
+        assert!(
+            quota(&|q| q.status = Some("rejected".into())),
+            "with no per-window status the aggregate is all there is"
+        );
+    }
+
+    #[test]
+    fn snapshot_reports_exhausted_only_for_a_used_up_shared_window() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("spent"), account("warned"), account("fable-out")];
+        set_quota(&pool, "anthropic", &accounts[0], |q| {
+            q.utilization_7d = Some(1.0);
+            q.status_7d = Some("rejected".into());
+        });
+        set_quota(&pool, "anthropic", &accounts[1], |q| {
+            q.utilization_5h = Some(0.99);
+            q.status_5h = Some("allowed_warning".into());
+        });
+        set_quota(&pool, "anthropic", &accounts[2], |q| {
+            q.utilization_7d_oi = Some(1.0);
+            q.status_7d_oi = Some("rejected".into());
+        });
+        // The snapshot reports observed accounts only; `set_quota` writes the
+        // quota alone.
+        for health in pool.entries.lock().unwrap().values_mut() {
+            health.observed = true;
+        }
+        let snaps = pool.snapshot("anthropic", &accounts, None, None);
+        assert!(snaps[0].exhausted);
+        assert!(!snaps[1].exhausted, "near its threshold, not out");
+        assert!(snaps[1].near_quota);
+        assert!(!snaps[2].exhausted, "Fable-only");
     }
 
     const FABLE: Option<&str> = Some("claude-fable-5");

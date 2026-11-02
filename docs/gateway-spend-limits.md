@@ -110,7 +110,7 @@ When `blocked_message` is set it follows after an em dash (`... UTC) — Request
 
 When `[server.codex_endpoint]` is enabled, every Codex turn is checked against the same caps and counters before any upstream call. That covers the HTTP `POST` on `/backend-api/codex/responses`, `/responses` and `/v1/responses`, and the Responses WebSocket on the same paths. `[server.spend]` absent means no check and no metering, as before.
 
-**Principal.** It is the principal `/v1/messages` uses: the static `[server.auth]` token name, the verified JWT email, or `shunt:anonymous` when the endpoint runs without `[server.auth]`. The endpoint does not accept gateway-login sessions, so the gateway-login email never appears here. Every route on the endpoint injects a gateway-held credential, so no route is exempt as a passthrough.
+**Principal.** It is the principal `/v1/messages` uses: the static `[server.auth]` token name, the verified JWT identity (`identity_claim`, the email by default), or `shunt:anonymous` when the endpoint runs without `[server.auth]`. The endpoint does not accept gateway-login sessions, so the gateway-login email never appears here. Every route on the endpoint injects a gateway-held credential, so no route is exempt as a passthrough.
 
 **Refusal (HTTP).** A principal at or over any cap gets `429` in the OpenAI Responses error shape, because the Codex CLI recognises that shape and not the Anthropic one:
 

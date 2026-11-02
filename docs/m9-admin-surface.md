@@ -426,6 +426,24 @@ traffic and raw inbound Responses attach the default CLI account id to
 `x-codex-*` quota capture without importing the credential into the managed
 store. Before such traffic its row explicitly says it is waiting for traffic.
 
+The **Accounts and usage** heading carries a refresh bar: when the table last
+finished loading, the countdown to the next usage-poller pass (from the pool
+response's `usage_poll`; hidden while the poller is off), and a **Reload** button.
+While the tab is visible the page re-reads shunt's own state every 30 seconds:
+`GET /admin/api/pool` and the account stores, with the usage table rebuilt from
+the observations it already has. It never calls `GET /admin/api/observed` on that
+timer, because that endpoint asks each provider's usage API about every login on
+the host, uncached. On those timed reloads, a row that is both a pool account and
+a host login keeps the numbers the last full load drew, except where the pool's
+own window has changed since that load: the pool has then learned something the
+observation predates. A cached `waiting-for-traffic` is dropped the same way once
+the pool has seen the account's traffic. One timed reload runs at a time, so a
+backend slower than the interval still lands its answers. A hidden tab skips the timer and catches up once when it is
+shown again. When the last observation failed the timer leaves the error showing
+instead of repainting the table without the logins. **Reload** repeats the full
+page load, observations included. It is not the per-account **Refresh**, which
+exercises that account's refresh grant, and neither starts a usage-poller pass early.
+
 The usage table groups by provider: the provider is named once and its accounts
 nest beneath it, folding managed pool accounts in alongside the read-only
 observations rather than stranding them in the advanced section. An observation
@@ -468,9 +486,18 @@ managed state (`available`/`unseen`), which is the "Needs login" case this
 matching was built for.
 
 Within the managed states both tables run one ladder — `disabled`,
-`needs_relogin`, `!has_state`, account-wide cooldown, `near_quota`, Fable-only
-cooldown — so the same account cannot read `near quota` in the managed-pool
-table while the Accounts table calls it `Cooling` (issue #512). The cooldown is
+`needs_relogin`, `!has_state`, hard cap, used-up window, account-wide cooldown,
+`near_quota`, Fable cap, Fable-only cooldown — so the same account cannot read
+`near quota` in the managed-pool table while the Accounts table calls it
+`Cooling` (issue #512). A used-up window gets its own `exhausted` state
+("Exhausted", noted `Quota used up · clears when the window resets`), read from
+the pool snapshot's `exhausted` flag: the 5-hour or weekly window was rejected or
+reached 100% utilization. The rejection test is selection's own, so a stale
+aggregate `status` counts only when no per-window status has been recorded, and
+a Fable-only (`7d_oi`) rejection does not count. `near_quota` cannot carry that
+on its own, since the pool also sets it at the switch threshold (98% by default)
+while the account can still serve. Like a hard cap, it lasts until its window resets, so it
+sits above the short cooldown. The cooldown is
 tested before `near_quota` because it is the fact that *all* of the account's
 traffic is gated right now, while `near_quota` warns about what is coming. When
 both cooldowns are running the row's state is the account-wide one, and its note

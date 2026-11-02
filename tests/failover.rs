@@ -989,6 +989,7 @@ async fn mixed_chain_is_gated_and_strips_credentials_per_attempt() {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: tokens_env.clone(),
+        ..Default::default()
     });
     let gateway = start_gateway(config).await;
 

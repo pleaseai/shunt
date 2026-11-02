@@ -273,6 +273,74 @@ curl -N -i -X POST http://127.0.0.1:3001/v1/responses \
 [インバウンド Codex エンドポイント](/ja/guides/inbound-codex-endpoint/)を、登録されるルートは
 [HTTP エンドポイント](/ja/reference/endpoints/)を参照してください。
 
+## 7. ID プロバイダー経由でサインインする（gateway OAuth）
+
+手順 3 の共有トークンでは、全開発者が同じ ID になります。組織が ID プロバイダー（IdP）を運用している場合、Codex CLI のネイティブ `gateway_oauth` が開発者ごとに IdP 経由でサインインさせ、shunt は戻ってきたアクセストークンを**検証**するだけです。トークンを発行せず、セッションも保持しません。Codex は `Authorization` を予約しているため、トークンを Cookie またはカスタムヘッダーで渡し、任意の 2 つの `[server.auth]` キーで shunt がどちらを読むかを指定します。Codex 側の仕様は OpenAI の [Connect to a gateway](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway?gateway-auth=oauth) ガイドにあります。
+
+Codex 側では、shunt プロバイダーに `gateway_oauth` を追加し、`requires_openai_auth = false` のままにします:
+
+```toml
+# ~/.codex/config.toml
+model_provider = "shunt"
+
+[model_providers.shunt]
+name = "shunt"
+base_url = "https://shunt.example.com/v1"
+wire_api = "responses"
+requires_openai_auth = false
+
+[model_providers.shunt.gateway_oauth]
+authorization_url = "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize"
+token_url = "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token"
+client_id = "<codex public client id>"
+scopes = ["api://<shunt-app-id>/.default"]
+# resource = "..."                                  # 任意。IdP が必要とする場合
+delivery = { kind = "cookie", name = "auth-openid" }
+# または: delivery = { kind = "header", name = "X-Gateway-Token", scheme = "Bearer" }
+redirect_port = 8765                                # 固定の loopback ポート。下記参照
+```
+
+shunt 側では、同じ Cookie 名またはヘッダー名を指定し、issuer を記述します:
+
+```toml
+# shunt config.toml
+[server.auth]
+jwt_cookie = "auth-openid"          # kind = "cookie" のとき delivery.name と一致させる
+# jwt_header = "X-Gateway-Token"    # kind = "header" のとき delivery.name と一致させる
+
+[[server.auth.jwt]]
+issuer = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+audience = ["api://<shunt-app-id>"]
+authorized_parties = ["<codex public client id>"]
+require = { tid = "<tenant-id>" }
+identity_claim = "preferred_username"     # または不変の "oid"
+max_token_age_seconds = 5400
+```
+
+`delivery` の種類に合わせて、2 つのキーのどちらかを設定してください。どちらも任意で、hot-reload されます。検証済みの `identity_claim` は、bearer JWT と同じくログ、使用量、支出上限、sticky key の呼び出し元 ID になります。検証ルールはすべて[設定リファレンス](/ja/reference/configuration/)にあります。
+
+### Microsoft Entra ID の落とし穴
+
+上の例の各値は、次のいずれかのために必要です:
+
+- **アクセストークンは JWT でなければなりません。** shunt はローカルで検証し、introspection は行いません。shunt 用に登録した API スコープ（`scopes` の `api://<shunt-app-id>/.default`）を要求すると、Entra は JWT を発行します。Google OAuth のような opaque なアクセストークンは動作できません。
+- **v2 トークンを発行させてください。** API アプリ登録の `accessTokenAcceptedVersion` を `2` にします。v2 トークンの issuer は `https://login.microsoftonline.com/<tenant-id>/v2.0` です。v1 トークンは issuer が `https://sts.windows.net/<tenant-id>/` で、`azp` の代わりに `appid` を使うため、上のエントリでは通りません。
+- **トークンの `aud` に合わせてください。** `audience` には、トークンが持つ方に応じて `api://<shunt-app-id>` またはアプリ ID の GUID を指定します。
+- **`authorized_parties` に Codex クライアントを入れてください。** v2 トークンの `azp` は要求したクライアント（ここでは Codex の public client）で、`authorized_parties` の既定値は `audience` です。クライアント ID を明示しないと、すべてのトークンが拒否されます。
+- **`email_domains` は使わないでください。** Entra のアクセストークンには `email_verified` がなく、`email` もないことが多いため、メールのルールはすべてのトークンを拒否します。`require = { tid = "<tenant-id>" }` でテナントを認可し、ID は `preferred_username` または `oid` から取ります。
+- **`max_token_age_seconds` を上げてください。** アクセストークンの既定の有効期間は 60〜90 分の間でランダムに決まり、既定値の `3600` を超えることがあります。約 `5400` に設定してください。Microsoft のドキュメント[アクセストークン](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens)と[トークンの有効期間](https://learn.microsoft.com/en-us/entra/identity-platform/configurable-token-lifetimes)を参照してください。
+- **固定のリダイレクト URI を登録してください。** **public client** に `http://127.0.0.1:<redirect_port>/callback` を登録し、Codex 設定に同じ `redirect_port` を指定します。
+
+### 知っておくべき動作
+
+- **ブラウザと loopback コールバック。** ネイティブの gateway OAuth はブラウザを開き、loopback ポートで待ち受けます。device-code へのフォールバックはありません。SSH 経由なら `redirect_port` を設定し、`ssh -L <port>:127.0.0.1:<port>` で転送してください。
+- **スロットの順序。** shunt は静的トークン、`Authorization: Bearer` の JWT、`jwt_header`、`jwt_cookie` の順に試し、検証に成功した最初のものを採用します。そのため `Authorization` の ChatGPT bearer は Cookie にフォールスルーします。新しいスロットを読むのは[インバウンド Codex エンドポイント](/ja/guides/inbound-codex-endpoint/)だけで、`/v1/messages`、`/v1/models`、`/usage`、Codex の discovery パスは JWT を bearer でのみ受け付けます。
+- **Origin ルール。** Cookie を使うのは、リクエストに `Origin` がない、または `Host` と一致する `Origin` がある場合だけなので、Web サイトがブラウザ保持の Cookie で認証済みターンを起こすことはできません。Codex CLI はブラウザではなく、`Origin` を送りません。同じ理由で、`jwt_cookie` をブラウザがゲートウェイのドメインに対して保持する Cookie（例: SSO プロキシの `CF_Authorization`）に向けないでください。ヘッダースロットにはこのルールはありません。
+- **WebSocket での期限切れ。** ハンドシェイクの認証情報は毎ターン再検証されます。接続中に IdP トークンが期限切れになると、次のターンは `401` エラーフレームで失敗し、Codex は更新されたトークンで再接続します。
+- **転送されません。** 設定したヘッダーとすべての `cookie` ヘッダーは、アップストリームへのリクエスト前に取り除かれます。
+- **サイズ制限。** Entra のアクセストークンは数キロバイトになることがあります。`[server.limits] max_request_header_bytes` を設定している場合はその対象に含まれ、リバースプロキシは通常 Cookie を約 4 KB に制限します。どちらかが問題になるなら、Cookie の代わりに `delivery = { kind = "header", ... }` を使ってください。
+- **モデルのメタデータ。** OAuth だけではリモートのモデルカタログ discovery は有効になりません。独自のモデルメタデータには `model_catalog_json` を使ってください。
+
 ## HTTP/SSE と WebSocket
 
 このエンドポイントは同じ 3 つの Responses パスで HTTP `POST` リクエストと WebSocket `GET`
