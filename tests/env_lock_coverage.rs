@@ -421,13 +421,14 @@ fn raw_write_offsets_survive_crlf_line_endings() {
 const SHARED_MODULES: &[&str] = &["common", "judge_harness"];
 
 fn declared_shared_module(line: &str) -> Option<&'static str> {
-    let code = line.trim();
-    if code.starts_with("#[path") {
+    let raw = line.trim();
+    if raw.starts_with("#[path") {
         return SHARED_MODULES
             .iter()
             .copied()
-            .find(|module| code.contains(module));
+            .find(|module| raw.contains(module));
     }
+    let code = raw.split("//").next().unwrap_or("").trim();
     let tokens: Vec<&str> = code
         .split(|c: char| c.is_whitespace() || c == ';' || c == '{')
         .filter(|token| !token.is_empty())
@@ -437,6 +438,41 @@ fn declared_shared_module(line: &str) -> Option<&'static str> {
             .windows(2)
             .any(|pair| pair[0] == "mod" && pair[1] == *module)
     })
+}
+
+fn path_attr_dir(line: &str) -> Option<String> {
+    let raw = line.trim();
+    if !raw.starts_with("#[path") {
+        return None;
+    }
+    let target = raw.split('"').nth(1)?;
+    let (dir, _) = target.strip_prefix("../")?.rsplit_once('/')?;
+    Some(dir.to_owned())
+}
+
+#[test]
+fn shared_module_declarations_are_recognized_past_comments_and_paths() {
+    assert_eq!(
+        declared_shared_module("mod common; // shared"),
+        Some("common")
+    );
+    assert_eq!(
+        declared_shared_module("pub mod judge_harness;"),
+        Some("judge_harness")
+    );
+    assert_eq!(
+        declared_shared_module("use crate::common; // not mod common"),
+        None
+    );
+    assert_eq!(
+        declared_shared_module(r#"#[path = "..//common/mod.rs"]"#),
+        Some("common")
+    );
+    assert_eq!(
+        path_attr_dir(r#"#[path = "../judge_harness/mod.rs"]"#).as_deref(),
+        Some("judge_harness")
+    );
+    assert_eq!(path_attr_dir(r#"#[path = "postgres.rs"]"#), None);
 }
 
 #[test]
@@ -453,11 +489,24 @@ fn grouped_binaries_declare_shared_modules_only_in_their_root() {
          roots under tests/, found {roots:?}"
     );
 
+    let support_dirs: Vec<String> = sources
+        .iter()
+        .filter(|(name, _)| roots.iter().any(|dir| *name == format!("{dir}/main.rs")))
+        .flat_map(|(_, source)| code_lines(source).filter_map(|(_, line)| path_attr_dir(line)))
+        .collect();
+    assert!(
+        support_dirs.iter().any(|dir| dir == "judge_harness"),
+        "expected the group roots to pull in judge_harness through #[path], found {support_dirs:?}"
+    );
+
     let mut violations = Vec::new();
     for (name, source) in &sources {
         let in_group = roots
             .iter()
-            .any(|dir| name.starts_with(&format!("{dir}/")) && *name != format!("{dir}/main.rs"));
+            .any(|dir| name.starts_with(&format!("{dir}/")) && *name != format!("{dir}/main.rs"))
+            || support_dirs
+                .iter()
+                .any(|dir| name.starts_with(&format!("{dir}/")));
         if !in_group {
             continue;
         }
