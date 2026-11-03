@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.63.0](https://github.com/pleaseai/shunt/compare/v0.62.0...v0.63.0) (2026-11-03)
+
+
+### Features
+
+* **metrics:** export pool quota headroom as shunt.pool.quota_headroom_seconds ([#889](https://github.com/pleaseai/shunt/issues/889)) ([7835f0b](https://github.com/pleaseai/shunt/commit/7835f0be74d72104f63f6f0589273e3f7fd70e06))
+
 ## [0.62.0](https://github.com/pleaseai/shunt/compare/v0.61.0...v0.62.0) (2026-11-03)
 
 
