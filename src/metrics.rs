@@ -35,7 +35,7 @@ use opentelemetry::{
 };
 use sentry::protocol::Unit;
 
-use crate::client_attribution::ClientAttribution;
+use crate::{accounts::PoolHeadroom, client_attribution::ClientAttribution};
 
 /// OTel instruments on the global meter. Created lazily on first record so the
 /// meter provider (installed at startup, before any request) is already in
@@ -58,6 +58,7 @@ struct OtelInstruments {
     requests_shed: Counter<u64>,
     store_write_failures: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
+    _pool_headroom: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
     pool_reprobes: Counter<u64>,
     codex_ws_overflow: Counter<u64>,
@@ -65,6 +66,13 @@ struct OtelInstruments {
 }
 
 type PoolUtilizationValues = HashMap<(String, &'static str), Option<f64>>;
+
+type PoolHeadroomValues = HashMap<(String, &'static str), PoolHeadroom>;
+
+fn pool_headroom_values() -> &'static Mutex<PoolHeadroomValues> {
+    static VALUES: OnceLock<Mutex<PoolHeadroomValues>> = OnceLock::new();
+    VALUES.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 fn pool_utilization_values() -> &'static Mutex<PoolUtilizationValues> {
     static VALUES: OnceLock<Mutex<PoolUtilizationValues>> = OnceLock::new();
@@ -183,6 +191,36 @@ fn otel_instruments() -> &'static OtelInstruments {
                         };
                         observer.observe(
                             *value,
+                            &[
+                                KeyValue::new("provider", provider.clone()),
+                                KeyValue::new("window", *window),
+                            ],
+                        );
+                    }
+                })
+                .build(),
+            _pool_headroom: meter
+                .f64_observable_gauge("shunt.pool.quota_headroom_seconds")
+                .with_unit("s")
+                .with_description(
+                    "Projected seconds of quota margin before the window resets: the maximum \
+                     across enabled, unpaused pool accounts, projected to the hard threshold. \
+                     Burn speed is the window average (utilization / elapsed), not the recent \
+                     pace. Optimistic, because when other accounts run out traffic shifts to the \
+                     survivor and its burn rises. Negative means projected to run dry before \
+                     the reset, or minus the seconds until the reset when already exhausted",
+                )
+                .with_callback(|observer| {
+                    let now = crate::accounts::unix_now_secs();
+                    let values = pool_headroom_values()
+                        .lock()
+                        .expect("pool headroom metric lock poisoned");
+                    for ((provider, window), headroom) in values.iter() {
+                        let Some(value) = headroom.seconds_at(now) else {
+                            continue;
+                        };
+                        observer.observe(
+                            value,
                             &[
                                 KeyValue::new("provider", provider.clone()),
                                 KeyValue::new("window", *window),
@@ -325,6 +363,48 @@ pub fn record_pool_utilization(provider: &str, window: &'static str, utilization
         }
     }
     let _ = otel_instruments();
+}
+
+pub(crate) fn record_pool_headroom(
+    provider: &str,
+    window: &'static str,
+    headroom: Option<PoolHeadroom>,
+) {
+    let key = (provider.to_owned(), window);
+    match headroom {
+        Some(headroom) => {
+            if let Some(seconds) = headroom.seconds_now() {
+                sentry::metrics::gauge("shunt.pool.quota_headroom_seconds", seconds)
+                    .attribute("provider", provider.to_owned())
+                    .attribute("window", window.to_owned())
+                    .capture();
+            }
+            pool_headroom_values()
+                .lock()
+                .expect("pool headroom metric lock poisoned")
+                .insert(key, headroom);
+        }
+        None => {
+            pool_headroom_values()
+                .lock()
+                .expect("pool headroom metric lock poisoned")
+                .remove(&key);
+        }
+    }
+    let _ = otel_instruments();
+}
+
+#[cfg(test)]
+pub(crate) fn pool_headroom_value_for_tests(
+    provider: &str,
+    window: &'static str,
+    now: u64,
+) -> Option<f64> {
+    pool_headroom_values()
+        .lock()
+        .expect("pool headroom metric lock poisoned")
+        .get(&(provider.to_owned(), window))
+        .and_then(|headroom| headroom.seconds_at(now))
 }
 
 /// Test-only observation point for [`record_pool_utilization`]. The production
