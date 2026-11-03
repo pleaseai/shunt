@@ -383,6 +383,7 @@ async fn poll_all(state: &AppState) {
             _ => {}
         }
     }
+    crate::metrics::emit_pool_headroom_to_sentry(crate::accounts::unix_now_secs());
 }
 
 /// A successful, non-empty usage observation that can be applied to aliases

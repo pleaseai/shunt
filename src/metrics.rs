@@ -26,7 +26,8 @@
 
 use std::{
     collections::HashMap,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, Weak},
+    time::Duration,
 };
 
 use opentelemetry::{
@@ -35,7 +36,7 @@ use opentelemetry::{
 };
 use sentry::protocol::Unit;
 
-use crate::{accounts::PoolHeadroom, client_attribution::ClientAttribution};
+use crate::{accounts::AccountPool, client_attribution::ClientAttribution};
 
 /// OTel instruments on the global meter. Created lazily on first record so the
 /// meter provider (installed at startup, before any request) is already in
@@ -67,11 +68,59 @@ struct OtelInstruments {
 
 type PoolUtilizationValues = HashMap<(String, &'static str), Option<f64>>;
 
-type PoolHeadroomValues = HashMap<(String, &'static str), PoolHeadroom>;
+fn pool_headroom_source() -> &'static Mutex<Weak<AccountPool>> {
+    static SOURCE: OnceLock<Mutex<Weak<AccountPool>>> = OnceLock::new();
+    SOURCE.get_or_init(|| Mutex::new(Weak::new()))
+}
 
-fn pool_headroom_values() -> &'static Mutex<PoolHeadroomValues> {
-    static VALUES: OnceLock<Mutex<PoolHeadroomValues>> = OnceLock::new();
-    VALUES.get_or_init(|| Mutex::new(HashMap::new()))
+/// Point the `shunt.pool.quota_headroom_seconds` gauge at the live pool. The
+/// gauge is computed from the pool at each collection, so nothing is recorded
+/// per quota observation. The last registration wins and the pool is held
+/// weakly.
+pub(crate) fn register_pool_headroom_source(pool: &Arc<AccountPool>) {
+    *pool_headroom_source()
+        .lock()
+        .expect("pool headroom source lock poisoned") = Arc::downgrade(pool);
+    let _ = otel_instruments();
+}
+
+fn pool_headroom_series(now: u64) -> Vec<(String, &'static str, f64)> {
+    let pool = pool_headroom_source()
+        .lock()
+        .expect("pool headroom source lock poisoned")
+        .upgrade();
+    pool.map(|pool| pool.pool_headroom_seconds(now))
+        .unwrap_or_default()
+}
+
+/// Mirror the current pool headroom to Sentry gauges, one per series.
+pub(crate) fn emit_pool_headroom_to_sentry(now: u64) {
+    for (provider, window, seconds) in pool_headroom_series(now) {
+        sentry::metrics::gauge("shunt.pool.quota_headroom_seconds", seconds)
+            .attribute("provider", provider)
+            .attribute("window", window.to_owned())
+            .capture();
+    }
+}
+
+/// Sample the headroom into Sentry every 60 s, only when `[sentry] metrics` is
+/// on. The Sentry client is built once at boot, so this is decided once too.
+pub fn spawn_pool_headroom_sentry_sampler(config: &crate::config::Config) {
+    if !config
+        .sentry
+        .as_ref()
+        .is_some_and(|sentry| sentry.enabled() && sentry.metrics)
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            emit_pool_headroom_to_sentry(crate::accounts::unix_now_secs());
+        }
+    });
 }
 
 fn pool_utilization_values() -> &'static Mutex<PoolUtilizationValues> {
@@ -212,18 +261,12 @@ fn otel_instruments() -> &'static OtelInstruments {
                 )
                 .with_callback(|observer| {
                     let now = crate::accounts::unix_now_secs();
-                    let values = pool_headroom_values()
-                        .lock()
-                        .expect("pool headroom metric lock poisoned");
-                    for ((provider, window), headroom) in values.iter() {
-                        let Some(value) = headroom.seconds_at(now) else {
-                            continue;
-                        };
+                    for (provider, window, value) in pool_headroom_series(now) {
                         observer.observe(
                             value,
                             &[
-                                KeyValue::new("provider", provider.clone()),
-                                KeyValue::new("window", *window),
+                                KeyValue::new("provider", provider),
+                                KeyValue::new("window", window),
                             ],
                         );
                     }
@@ -363,48 +406,6 @@ pub fn record_pool_utilization(provider: &str, window: &'static str, utilization
         }
     }
     let _ = otel_instruments();
-}
-
-pub(crate) fn record_pool_headroom(
-    provider: &str,
-    window: &'static str,
-    headroom: Option<PoolHeadroom>,
-) {
-    let key = (provider.to_owned(), window);
-    match headroom {
-        Some(headroom) => {
-            if let Some(seconds) = headroom.seconds_now() {
-                sentry::metrics::gauge("shunt.pool.quota_headroom_seconds", seconds)
-                    .attribute("provider", provider.to_owned())
-                    .attribute("window", window.to_owned())
-                    .capture();
-            }
-            pool_headroom_values()
-                .lock()
-                .expect("pool headroom metric lock poisoned")
-                .insert(key, headroom);
-        }
-        None => {
-            pool_headroom_values()
-                .lock()
-                .expect("pool headroom metric lock poisoned")
-                .remove(&key);
-        }
-    }
-    let _ = otel_instruments();
-}
-
-#[cfg(test)]
-pub(crate) fn pool_headroom_value_for_tests(
-    provider: &str,
-    window: &'static str,
-    now: u64,
-) -> Option<f64> {
-    pool_headroom_values()
-        .lock()
-        .expect("pool headroom metric lock poisoned")
-        .get(&(provider.to_owned(), window))
-        .and_then(|headroom| headroom.seconds_at(now))
 }
 
 /// Test-only observation point for [`record_pool_utilization`]. The production

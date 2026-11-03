@@ -50,7 +50,7 @@ read it:
 | `shunt.router.judge_calls` | `Counter<u64>` | no |
 | `shunt.store.write_failures` | `Counter<u64>` | no |
 | `shunt.pool.quota_utilization` | `ObservableGauge<f64>` | **yes** — `pool_utilization_values()` (`src/metrics.rs:62`) |
-| `shunt.pool.quota_headroom_seconds` | `ObservableGauge<f64>` | **yes** — `pool_headroom_values()` (`src/metrics.rs`), stored as inputs and evaluated at collection |
+| `shunt.pool.quota_headroom_seconds` | `ObservableGauge<f64>` | **yes** — computed at collection from live `AccountPool` state through a registered source (`register_pool_headroom_source`, `src/metrics.rs`); Sentry gets a sample every 60 s and after each usage-poll pass |
 | `shunt.upstream.status` | `ObservableGauge<f64>` | **yes** — `upstream_status_values()` (`src/metrics.rs:74`) |
 
 `shunt.store.write_failures` (label `subsystem` = `pool` | `spend` | `gateway`) was

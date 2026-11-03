@@ -601,60 +601,11 @@ impl AccountSnapshot {
 }
 
 #[derive(Debug)]
-struct HardThreshold(Arc<AtomicU64>);
+struct HardThreshold(AtomicU64);
 
 impl Default for HardThreshold {
     fn default() -> Self {
-        Self(Arc::new(AtomicU64::new(SWITCH_THRESHOLD.to_bits())))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct HeadroomInput {
-    utilization: f64,
-    reset: Option<u64>,
-    expires_at: Option<u64>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PoolHeadroom {
-    window_len: u64,
-    threshold: Arc<AtomicU64>,
-    accounts: Vec<HeadroomInput>,
-}
-
-impl PoolHeadroom {
-    pub(crate) fn seconds_at(&self, now: u64) -> Option<f64> {
-        let threshold = f64::from_bits(self.threshold.load(Ordering::Relaxed));
-        let mut best: Option<f64> = None;
-        for account in &self.accounts {
-            let value = match account.expires_at {
-                Some(expires_at) if expires_at <= now => f64::INFINITY,
-                live_expiry => {
-                    let headroom = window_headroom(
-                        account.utilization,
-                        account.reset,
-                        self.window_len,
-                        threshold,
-                        now,
-                    );
-                    if headroom == f64::NEG_INFINITY {
-                        let Some(recovers_at) = live_expiry else {
-                            continue;
-                        };
-                        -(recovers_at.saturating_sub(now) as f64)
-                    } else {
-                        headroom
-                    }
-                }
-            };
-            best = Some(best.unwrap_or(value).max(value));
-        }
-        best.filter(|value| value.is_finite())
-    }
-
-    pub(crate) fn seconds_now(&self) -> Option<f64> {
-        self.seconds_at(unix_now())
+        Self(AtomicU64::new(SWITCH_THRESHOLD.to_bits()))
     }
 }
 
@@ -881,46 +832,18 @@ impl AccountPool {
                 .entry(account_key(upstream, account))
                 .or_default() |= !account.disabled;
         }
-        let changed = {
-            let mut memberships = self
-                .memberships
-                .lock()
-                .expect("account membership lock poisoned");
-            if memberships.get(upstream) == Some(&membership) {
-                false
-            } else {
-                memberships.insert(upstream.to_string(), membership);
-                true
-            }
-        };
-        if changed {
-            let entries = self.entries.lock().expect("account health lock poisoned");
-            self.record_pool_headroom(upstream, &entries, unix_now());
-        }
+        self.memberships
+            .lock()
+            .expect("account membership lock poisoned")
+            .insert(upstream.to_string(), membership);
     }
 
     pub(crate) fn note_pool_config(&self, pool: Option<&PoolConfig>) {
         let bits = pool
             .map_or(SWITCH_THRESHOLD, |pool| pool.hard_threshold)
             .to_bits();
-        if self.hard_threshold.0.load(Ordering::Relaxed) == bits {
-            return;
-        }
-        self.hard_threshold.0.store(bits, Ordering::Relaxed);
-        let upstreams: Vec<String> = self
-            .memberships
-            .lock()
-            .expect("account membership lock poisoned")
-            .keys()
-            .cloned()
-            .collect();
-        if upstreams.is_empty() {
-            return;
-        }
-        let entries = self.entries.lock().expect("account health lock poisoned");
-        let now = unix_now();
-        for upstream in &upstreams {
-            self.record_pool_headroom(upstream, &entries, now);
+        if self.hard_threshold.0.load(Ordering::Relaxed) != bits {
+            self.hard_threshold.0.store(bits, Ordering::Relaxed);
         }
     }
 
@@ -1539,7 +1462,6 @@ impl AccountPool {
             let (utilization, _quota_expired) =
                 self.pool_utilization_for(provider, &mut entries, now);
             record_pool_utilization(provider, utilization);
-            self.record_pool_headroom_for_account(provider, account, &entries, now);
         }
         self.mark_dirty();
     }
@@ -1597,7 +1519,6 @@ impl AccountPool {
             let (utilization, _quota_expired) =
                 self.pool_utilization_for(provider, &mut entries, now);
             record_pool_utilization(provider, utilization);
-            self.record_pool_headroom_for_account(provider, account, &entries, now);
         }
         self.mark_dirty();
     }
@@ -1652,7 +1573,6 @@ impl AccountPool {
             let (utilization, _quota_expired) =
                 self.pool_utilization_for(provider, &mut entries, now);
             record_pool_utilization(provider, utilization);
-            self.record_pool_headroom_for_account(provider, account, &entries, now);
         }
         self.mark_dirty();
     }
@@ -1737,7 +1657,6 @@ impl AccountPool {
             // header-derived state remains intact for the next normal sweep.
             let utilization = self.pool_utilization_for_readonly(provider, &entries, now);
             record_pool_utilization(provider, utilization);
-            self.record_pool_headroom_for_account(provider, account, &entries, now);
         }
         self.mark_dirty();
     }
@@ -1812,7 +1731,6 @@ impl AccountPool {
             let (utilization, _quota_expired) =
                 self.pool_utilization_for(provider, &mut entries, now);
             record_pool_utilization(provider, utilization);
-            self.record_pool_headroom_for_account(provider, account, &entries, now);
         }
         self.mark_dirty();
     }
@@ -2009,7 +1927,6 @@ impl AccountPool {
         } else {
             health.paused_providers.remove(provider);
         }
-        self.record_pool_headroom(provider, &entries, unix_now());
     }
 
     /// Whether an account is currently paused.
@@ -2480,26 +2397,11 @@ impl AccountPool {
         // `sync_enabled_accounts`, which never runs for a decommissioned
         // upstream). Empty inner maps are left in place — harmless, and reused on
         // the next sync.
-        let touched_upstreams: Vec<String> = {
-            let mut memberships = self
-                .memberships
-                .lock()
-                .expect("account membership lock poisoned");
-            memberships
-                .iter_mut()
-                .filter_map(|(upstream, members)| {
-                    let before = members.len();
-                    members.retain(|key, _| !matches(key));
-                    (members.len() != before).then(|| upstream.clone())
-                })
-                .collect()
-        };
-        if !touched_upstreams.is_empty() {
-            let entries = self.entries.lock().expect("account health lock poisoned");
-            for upstream in &touched_upstreams {
-                self.record_pool_headroom(upstream, &entries, unix_now());
-            }
-        }
+        self.memberships
+            .lock()
+            .expect("account membership lock poisoned")
+            .values_mut()
+            .for_each(|members| members.retain(|key, _| !matches(key)));
         // A forgotten identity must not keep a store-name verdict alive either:
         // `DELETE /admin/api/accounts/claude/{name}` reaches here through
         // `forget_pool_health_if_absent`, and a ref left behind would re-condemn
@@ -2933,119 +2835,70 @@ impl AccountPool {
         minimums
     }
 
-    fn pool_headroom_for(
-        &self,
-        upstream: &str,
-        entries: &HashMap<AccountKey, AccountHealth>,
-        now: u64,
-    ) -> [Option<PoolHeadroom>; 3] {
+    /// Per-upstream, per-window pool headroom in seconds at `now`, computed
+    /// from live state at call time. Only finite values are returned.
+    pub(crate) fn pool_headroom_seconds(&self, now: u64) -> Vec<(String, &'static str, f64)> {
+        let threshold = f64::from_bits(self.hard_threshold.0.load(Ordering::Relaxed));
+        let entries = self.entries.lock().expect("account health lock poisoned");
         let memberships = self
             .memberships
             .lock()
             .expect("account membership lock poisoned");
-        let Some(members) = memberships.get(upstream) else {
-            return [None, None, None];
-        };
-        let mut windows = [
-            (WINDOW_5H_SECS, Vec::new()),
-            (WINDOW_7D_SECS, Vec::new()),
-            (WINDOW_7D_SECS, Vec::new()),
-        ];
-        for (key, enabled) in members {
-            if !enabled {
-                continue;
-            }
-            let Some(health) = entries.get(key) else {
-                continue;
-            };
-            if health.paused_providers.contains(upstream) {
-                continue;
-            }
-            let mut quota = health.quota.clone();
-            expire_stale_quota(&mut quota, now);
-            let fields = [
-                (
-                    quota.utilization_5h,
-                    quota.reset_5h,
-                    quota.observed_at_5h,
-                    WINDOW_5H_SECS,
-                ),
-                (
-                    quota.utilization_7d,
-                    quota.reset_7d,
-                    quota.observed_at_7d,
-                    WINDOW_7D_SECS,
-                ),
-                (
-                    quota.utilization_7d_oi,
-                    quota.reset_7d_oi,
-                    quota.observed_at_7d_oi,
-                    WINDOW_7D_SECS,
-                ),
-            ];
-            for ((_, inputs), (utilization, reset, observed_at, len)) in
-                windows.iter_mut().zip(fields)
-            {
-                inputs.push(match utilization.filter(|value| value.is_finite()) {
-                    Some(utilization) => HeadroomInput {
-                        utilization: utilization.clamp(0.0, 1.0),
+        let mut series = Vec::new();
+        for (upstream, members) in memberships.iter() {
+            let mut best: [Option<f64>; 3] = [None; 3];
+            for (key, enabled) in members {
+                if !enabled {
+                    continue;
+                }
+                let Some(health) = entries.get(key) else {
+                    continue;
+                };
+                if health.paused_providers.contains(upstream) {
+                    continue;
+                }
+                let quota = &health.quota;
+                let windows = [
+                    (
+                        quota.utilization_5h,
+                        quota.reset_5h,
+                        quota.observed_at_5h,
+                        WINDOW_5H_SECS,
+                    ),
+                    (
+                        quota.utilization_7d,
+                        quota.reset_7d,
+                        quota.observed_at_7d,
+                        WINDOW_7D_SECS,
+                    ),
+                    (
+                        quota.utilization_7d_oi,
+                        quota.reset_7d_oi,
+                        quota.observed_at_7d_oi,
+                        WINDOW_7D_SECS,
+                    ),
+                ];
+                for (best, (utilization, reset, observed_at, len)) in best.iter_mut().zip(windows) {
+                    let Some(value) = account_window_headroom(
+                        utilization,
                         reset,
-                        expires_at: [reset, observed_at.map(|at| at.saturating_add(len))]
-                            .into_iter()
-                            .flatten()
-                            .min(),
-                    },
-                    None => HeadroomInput {
-                        utilization: 0.0,
-                        reset: None,
-                        expires_at: None,
-                    },
-                });
+                        observed_at,
+                        len,
+                        threshold,
+                        now,
+                    ) else {
+                        continue;
+                    };
+                    *best = Some(best.map_or(value, |current| current.max(value)));
+                }
+            }
+            for (window, value) in ["5h", "7d", "7d_oi"].into_iter().zip(best) {
+                if let Some(value) = value.filter(|value| value.is_finite()) {
+                    series.push((upstream.clone(), window, value));
+                }
             }
         }
-        windows.map(|(window_len, accounts)| {
-            (!accounts.is_empty()).then_some(PoolHeadroom {
-                window_len,
-                threshold: Arc::clone(&self.hard_threshold.0),
-                accounts,
-            })
-        })
-    }
-
-    fn record_pool_headroom(
-        &self,
-        upstream: &str,
-        entries: &HashMap<AccountKey, AccountHealth>,
-        now: u64,
-    ) {
-        let headroom = self.pool_headroom_for(upstream, entries, now);
-        for (window, headroom) in ["5h", "7d", "7d_oi"].into_iter().zip(headroom) {
-            crate::metrics::record_pool_headroom(upstream, window, headroom);
-        }
-    }
-
-    fn record_pool_headroom_for_account(
-        &self,
-        provider: &str,
-        account: &AccountConfig,
-        entries: &HashMap<AccountKey, AccountHealth>,
-        now: u64,
-    ) {
-        let key = account_key(provider, account);
-        let mut upstreams: Vec<String> = self
-            .memberships
-            .lock()
-            .expect("account membership lock poisoned")
-            .iter()
-            .filter(|(upstream, members)| {
-                upstream.as_str() != provider && members.contains_key(&key)
-            })
-            .map(|(upstream, _)| upstream.clone())
-            .collect();
-        upstreams.push(provider.to_owned());
-        for upstream in &upstreams {
-            self.record_pool_headroom(upstream, entries, now);
-        }
+        series
     }
 
     fn cancel_reprobe_token(&self, key: &AccountKey, token: u64) {
@@ -3800,6 +3653,42 @@ fn window_headroom(
     let time_to_exhaust = budget_left / burn_speed;
     let time_to_reset = reset.saturating_sub(now_clamped) as f64;
     time_to_exhaust - time_to_reset
+}
+
+/// One account's headroom for one window at `now`. +∞ when it has no live
+/// utilization (absent, or past the same reset/observation cap that
+/// `expire_stale_quota` applies); an account at or over `threshold`
+/// reports the negative time until its window recovers, or `None` (skip)
+/// when it has no recovery time.
+fn account_window_headroom(
+    utilization: Option<f64>,
+    reset: Option<u64>,
+    observed_at: Option<u64>,
+    window_len: u64,
+    threshold: f64,
+    now: u64,
+) -> Option<f64> {
+    let Some(utilization) = utilization.filter(|value| value.is_finite()) else {
+        return Some(f64::INFINITY);
+    };
+    let expiry = [reset, observed_at.map(|at| at.saturating_add(window_len))]
+        .into_iter()
+        .flatten()
+        .min();
+    if expiry.is_some_and(|expiry| expiry <= now) {
+        return Some(f64::INFINITY);
+    }
+    let headroom = window_headroom(
+        utilization.clamp(0.0, 1.0),
+        reset,
+        window_len,
+        threshold,
+        now,
+    );
+    if headroom != f64::NEG_INFINITY {
+        return Some(headroom);
+    }
+    expiry.map(|expiry| -(expiry.saturating_sub(now) as f64))
 }
 
 pub(crate) fn unix_now_secs() -> u64 {
@@ -10344,8 +10233,15 @@ mod tests {
         }
     }
 
-    fn headroom_5h(provider: &str, now: u64) -> Option<f64> {
-        crate::metrics::pool_headroom_value_for_tests(provider, "5h", now)
+    fn headroom(pool: &AccountPool, provider: &str, window: &str, now: u64) -> Option<f64> {
+        pool.pool_headroom_seconds(now)
+            .into_iter()
+            .find(|(upstream, w, _)| upstream == provider && *w == window)
+            .map(|(_, _, value)| value)
+    }
+
+    fn headroom_5h(pool: &AccountPool, provider: &str, now: u64) -> Option<f64> {
+        headroom(pool, provider, "5h", now)
     }
 
     #[test]
@@ -10361,11 +10257,8 @@ mod tests {
 
         let expected = window_headroom(0.1, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
         assert!(expected > 0.0);
-        assert_eq!(headroom_5h(provider, now), Some(expected));
-        assert_eq!(
-            crate::metrics::pool_headroom_value_for_tests(provider, "7d", now),
-            None
-        );
+        assert_eq!(headroom_5h(&pool, provider, now), Some(expected));
+        assert_eq!(headroom(&pool, provider, "7d", now), None);
     }
 
     #[test]
@@ -10388,11 +10281,11 @@ mod tests {
         pool.set_paused(provider, &paused, true);
 
         let expected = window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
-        assert_eq!(headroom_5h(provider, now), Some(expected));
+        assert_eq!(headroom_5h(&pool, provider, now), Some(expected));
 
         pool.set_paused(provider, &paused, false);
         let resumed = window_headroom(0.05, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
-        assert_eq!(headroom_5h(provider, now), Some(resumed));
+        assert_eq!(headroom_5h(&pool, provider, now), Some(resumed));
     }
 
     #[test]
@@ -10403,19 +10296,21 @@ mod tests {
         pool.sync_enabled_accounts(provider, std::slice::from_ref(&acct));
         let now = unix_now();
         pool.note_usage(provider, &acct, &usage_5h(0.0, now + 9_000));
-        assert_eq!(headroom_5h(provider, now), None);
+        assert_eq!(headroom_5h(&pool, provider, now), None);
 
-        let input = HeadroomInput {
-            utilization: 0.4,
-            reset: None,
-            expires_at: Some(now + 100),
-        };
-        let headroom = PoolHeadroom {
-            window_len: WINDOW_5H_SECS,
-            threshold: Arc::new(AtomicU64::new(SWITCH_THRESHOLD.to_bits())),
-            accounts: vec![input],
-        };
-        assert_eq!(headroom.seconds_at(now), None);
+        // Positive utilization with no reset projects nothing either.
+        let no_reset = account("no-reset");
+        let no_reset_provider = "headroom-no-reset";
+        pool.sync_enabled_accounts(no_reset_provider, std::slice::from_ref(&no_reset));
+        pool.note_quota(
+            no_reset_provider,
+            &no_reset,
+            &quota_headers(&[(
+                "anthropic-ratelimit-unified-5h-utilization",
+                "0.4".to_string(),
+            )]),
+        );
+        assert_eq!(headroom_5h(&pool, no_reset_provider, now), None);
     }
 
     #[test]
@@ -10434,7 +10329,7 @@ mod tests {
             .quota
             .utilization_5h = None;
         pool.note_usage(provider, &exhausted, &usage_5h(0.99, now + 1_800));
-        assert_eq!(headroom_5h(provider, now), None);
+        assert_eq!(headroom_5h(&pool, provider, now), None);
     }
 
     #[test]
@@ -10451,8 +10346,8 @@ mod tests {
         let reset = now + 9_000;
         pool.note_usage(alias_a, &shared, &usage_5h(0.5, reset));
         let expected = window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
-        assert_eq!(headroom_5h(alias_a, now), Some(expected));
-        assert_eq!(headroom_5h(alias_b, now), Some(expected));
+        assert_eq!(headroom_5h(&pool, alias_a, now), Some(expected));
+        assert_eq!(headroom_5h(&pool, alias_b, now), Some(expected));
     }
 
     #[test]
@@ -10463,17 +10358,7 @@ mod tests {
         pool.sync_enabled_accounts(provider, std::slice::from_ref(&acct));
         let now = unix_now();
         pool.note_usage(provider, &acct, &usage_5h(0.99, now + 1_800));
-        assert_eq!(headroom_5h(provider, now), Some(-1_800.0));
-        let headroom = PoolHeadroom {
-            window_len: WINDOW_5H_SECS,
-            threshold: Arc::new(AtomicU64::new(SWITCH_THRESHOLD.to_bits())),
-            accounts: vec![HeadroomInput {
-                utilization: 1.0,
-                reset: None,
-                expires_at: Some(now + 60),
-            }],
-        };
-        assert_eq!(headroom.seconds_at(now), Some(-60.0));
+        assert_eq!(headroom_5h(&pool, provider, now), Some(-1_800.0));
     }
 
     #[test]
@@ -10485,7 +10370,7 @@ mod tests {
         let now = unix_now();
         let reset = now + 9_000;
         pool.note_usage(provider, &acct, &usage_5h(0.985, reset));
-        assert_eq!(headroom_5h(provider, now), Some(-9_000.0));
+        assert_eq!(headroom_5h(&pool, provider, now), Some(-9_000.0));
 
         let strict = PoolConfig {
             hard_threshold: 0.99,
@@ -10494,7 +10379,7 @@ mod tests {
         pool.note_pool_config(Some(&strict));
         pool.note_usage(provider, &acct, &usage_5h(0.985, reset));
         let expected = window_headroom(0.985, Some(reset), WINDOW_5H_SECS, 0.99, now);
-        assert_eq!(headroom_5h(provider, now), Some(expected));
+        assert_eq!(headroom_5h(&pool, provider, now), Some(expected));
     }
 
     #[test]
@@ -10514,10 +10399,10 @@ mod tests {
         };
         pool.sync_enabled_accounts(provider, &[tight.clone(), disabled]);
         let expected = window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
-        assert_eq!(headroom_5h(provider, now), Some(expected));
+        assert_eq!(headroom_5h(&pool, provider, now), Some(expected));
 
         pool.sync_enabled_accounts(provider, &[]);
-        assert_eq!(headroom_5h(provider, now), None);
+        assert_eq!(headroom_5h(&pool, provider, now), None);
 
         let forgotten_provider = "headroom-forgotten";
         let mut stored = account("stored");
@@ -10525,9 +10410,9 @@ mod tests {
         stored.store_entry = true;
         pool.sync_enabled_accounts(forgotten_provider, std::slice::from_ref(&stored));
         pool.note_usage(forgotten_provider, &stored, &usage_5h(0.5, reset));
-        assert!(headroom_5h(forgotten_provider, now).is_some());
+        assert!(headroom_5h(&pool, forgotten_provider, now).is_some());
         pool.forget_identity(StoreFamily::Chatgpt, "stored", Some("stored"));
-        assert_eq!(headroom_5h(forgotten_provider, now), None);
+        assert_eq!(headroom_5h(&pool, forgotten_provider, now), None);
     }
 
     #[test]
@@ -10545,10 +10430,9 @@ mod tests {
             .unwrap()
             .quota
             .observed_at_5h = Some(now + 100 - WINDOW_5H_SECS);
-        pool.set_paused(provider, &acct, false);
 
-        assert!(headroom_5h(provider, now + 50).is_some());
-        assert_eq!(headroom_5h(provider, now + 200), None);
+        assert!(headroom_5h(&pool, provider, now + 50).is_some());
+        assert_eq!(headroom_5h(&pool, provider, now + 200), None);
     }
 
     #[test]
@@ -10561,18 +10445,14 @@ mod tests {
         let reset = now + 9_000;
         pool.note_usage(provider, &acct, &usage_5h(0.5, reset));
         let before = window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
-        assert_eq!(headroom_5h(provider, now), Some(before));
+        assert_eq!(headroom_5h(&pool, provider, now), Some(before));
 
         let strict = PoolConfig {
             hard_threshold: 0.4,
             ..Default::default()
         };
         pool.note_pool_config(Some(&strict));
-        assert_eq!(headroom_5h(provider, now), Some(-9_000.0));
-        assert_eq!(
-            crate::metrics::pool_headroom_value_for_tests(provider, "5h", now),
-            Some(-9_000.0)
-        );
+        assert_eq!(headroom_5h(&pool, provider, now), Some(-9_000.0));
     }
 
     #[test]
@@ -10585,15 +10465,15 @@ mod tests {
         let reset = now + 9_000;
         pool.note_usage(provider, &acct, &usage_5h(0.5, reset));
 
-        let at_start = headroom_5h(provider, now).unwrap();
+        let at_start = headroom_5h(&pool, provider, now).unwrap();
         let later = now + 3_000;
-        let at_later = headroom_5h(provider, later).unwrap();
+        let at_later = headroom_5h(&pool, provider, later).unwrap();
         assert_eq!(
             at_later,
             window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, later)
         );
         assert_ne!(at_start, at_later);
-        assert_eq!(headroom_5h(provider, reset), None);
+        assert_eq!(headroom_5h(&pool, provider, reset), None);
     }
 
     #[test]
