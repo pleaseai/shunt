@@ -95,10 +95,12 @@ impl AppState {
         let rate_limits = config.server.rate_limits.clone();
         let runtime = RuntimeState::from_config(config)?;
         let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
+        let accounts = Arc::new(AccountPool::new());
+        crate::metrics::register_pool_headroom_source(&accounts);
         Ok(Self::from_shared(
             shared,
             http_client,
-            Arc::new(AccountPool::new()),
+            accounts,
             Arc::new(StatusStore::new()),
             Arc::new(AdminStores::new()),
             Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
@@ -252,13 +254,15 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     let spend_state_path = spend_state_path(config);
     let rate_limits = config.server.rate_limits.clone();
     let shared: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(runtime));
+    let accounts = Arc::new(AccountPool::new());
+    crate::metrics::register_pool_headroom_source(&accounts);
     let state = AppState::from_shared(
         shared.clone(),
         reqwest::Client::builder()
             .redirect(crate::adapters::responses::request::codex_identity_redirect_policy())
             .build()
             .expect("build responses http client"),
-        Arc::new(AccountPool::new()),
+        accounts,
         Arc::new(StatusStore::new()),
         Arc::new(AdminStores::new()),
         Arc::new(GatewayStores::new(&rate_limits, spend_state_path)),
