@@ -601,11 +601,11 @@ impl AccountSnapshot {
 }
 
 #[derive(Debug)]
-struct HardThreshold(AtomicU64);
+struct HardThreshold(Arc<AtomicU64>);
 
 impl Default for HardThreshold {
     fn default() -> Self {
-        Self(AtomicU64::new(SWITCH_THRESHOLD.to_bits()))
+        Self(Arc::new(AtomicU64::new(SWITCH_THRESHOLD.to_bits())))
     }
 }
 
@@ -616,15 +616,16 @@ pub(crate) struct HeadroomInput {
     expires_at: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) struct PoolHeadroom {
     window_len: u64,
-    threshold: f64,
+    threshold: Arc<AtomicU64>,
     accounts: Vec<HeadroomInput>,
 }
 
 impl PoolHeadroom {
     pub(crate) fn seconds_at(&self, now: u64) -> Option<f64> {
+        let threshold = f64::from_bits(self.threshold.load(Ordering::Relaxed));
         let mut best: Option<f64> = None;
         for account in &self.accounts {
             let value = match account.expires_at {
@@ -634,7 +635,7 @@ impl PoolHeadroom {
                         account.utilization,
                         account.reset,
                         self.window_len,
-                        self.threshold,
+                        threshold,
                         now,
                     );
                     if headroom == f64::NEG_INFINITY {
@@ -880,10 +881,22 @@ impl AccountPool {
                 .entry(account_key(upstream, account))
                 .or_default() |= !account.disabled;
         }
-        self.memberships
-            .lock()
-            .expect("account membership lock poisoned")
-            .insert(upstream.to_string(), membership);
+        let changed = {
+            let mut memberships = self
+                .memberships
+                .lock()
+                .expect("account membership lock poisoned");
+            if memberships.get(upstream) == Some(&membership) {
+                false
+            } else {
+                memberships.insert(upstream.to_string(), membership);
+                true
+            }
+        };
+        if changed {
+            let entries = self.entries.lock().expect("account health lock poisoned");
+            self.record_pool_headroom(upstream, &entries, unix_now());
+        }
     }
 
     pub(crate) fn note_pool_config(&self, pool: Option<&PoolConfig>) {
@@ -2449,11 +2462,26 @@ impl AccountPool {
         // `sync_enabled_accounts`, which never runs for a decommissioned
         // upstream). Empty inner maps are left in place — harmless, and reused on
         // the next sync.
-        self.memberships
-            .lock()
-            .expect("account membership lock poisoned")
-            .values_mut()
-            .for_each(|members| members.retain(|key, _| !matches(key)));
+        let touched_upstreams: Vec<String> = {
+            let mut memberships = self
+                .memberships
+                .lock()
+                .expect("account membership lock poisoned");
+            memberships
+                .iter_mut()
+                .filter_map(|(upstream, members)| {
+                    let before = members.len();
+                    members.retain(|key, _| !matches(key));
+                    (members.len() != before).then(|| upstream.clone())
+                })
+                .collect()
+        };
+        if !touched_upstreams.is_empty() {
+            let entries = self.entries.lock().expect("account health lock poisoned");
+            for upstream in &touched_upstreams {
+                self.record_pool_headroom(upstream, &entries, unix_now());
+            }
+        }
         // A forgotten identity must not keep a store-name verdict alive either:
         // `DELETE /admin/api/accounts/claude/{name}` reaches here through
         // `forget_pool_health_if_absent`, and a ref left behind would re-condemn
@@ -2893,7 +2921,6 @@ impl AccountPool {
         entries: &HashMap<AccountKey, AccountHealth>,
         now: u64,
     ) -> [Option<PoolHeadroom>; 3] {
-        let threshold = f64::from_bits(self.hard_threshold.0.load(Ordering::Relaxed));
         let memberships = self
             .memberships
             .lock()
@@ -2947,14 +2974,17 @@ impl AccountPool {
                 inputs.push(HeadroomInput {
                     utilization: utilization.clamp(0.0, 1.0),
                     reset,
-                    expires_at: reset.or_else(|| observed_at.map(|at| at.saturating_add(len))),
+                    expires_at: [reset, observed_at.map(|at| at.saturating_add(len))]
+                        .into_iter()
+                        .flatten()
+                        .min(),
                 });
             }
         }
         windows.map(|(window_len, accounts)| {
             (!accounts.is_empty()).then_some(PoolHeadroom {
                 window_len,
-                threshold,
+                threshold: Arc::clone(&self.hard_threshold.0),
                 accounts,
             })
         })
@@ -10336,7 +10366,7 @@ mod tests {
         };
         let headroom = PoolHeadroom {
             window_len: WINDOW_5H_SECS,
-            threshold: SWITCH_THRESHOLD,
+            threshold: Arc::new(AtomicU64::new(SWITCH_THRESHOLD.to_bits())),
             accounts: vec![input],
         };
         assert_eq!(headroom.seconds_at(now), None);
@@ -10353,7 +10383,7 @@ mod tests {
         assert_eq!(headroom_5h(provider, now), Some(-1_800.0));
         let headroom = PoolHeadroom {
             window_len: WINDOW_5H_SECS,
-            threshold: SWITCH_THRESHOLD,
+            threshold: Arc::new(AtomicU64::new(SWITCH_THRESHOLD.to_bits())),
             accounts: vec![HeadroomInput {
                 utilization: 1.0,
                 reset: None,
@@ -10382,6 +10412,80 @@ mod tests {
         pool.note_usage(provider, &acct, &usage_5h(0.985, reset));
         let expected = window_headroom(0.985, Some(reset), WINDOW_5H_SECS, 0.99, now);
         assert_eq!(headroom_5h(provider, now), Some(expected));
+    }
+
+    #[test]
+    fn pool_headroom_follows_membership_changes_and_forgotten_identities() {
+        let pool = AccountPool::new();
+        let provider = "headroom-membership";
+        let (tight, loose) = (account("tight"), account("loose"));
+        pool.sync_enabled_accounts(provider, &[tight.clone(), loose.clone()]);
+        let now = unix_now();
+        let reset = now + 9_000;
+        pool.note_usage(provider, &tight, &usage_5h(0.5, reset));
+        pool.note_usage(provider, &loose, &usage_5h(0.1, reset));
+
+        let disabled = AccountConfig {
+            disabled: true,
+            ..loose.clone()
+        };
+        pool.sync_enabled_accounts(provider, &[tight.clone(), disabled]);
+        let expected = window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
+        assert_eq!(headroom_5h(provider, now), Some(expected));
+
+        pool.sync_enabled_accounts(provider, &[]);
+        assert_eq!(headroom_5h(provider, now), None);
+
+        let forgotten_provider = "headroom-forgotten";
+        let mut stored = account("stored");
+        stored.store_family = Some(StoreFamily::Chatgpt);
+        stored.store_entry = true;
+        pool.sync_enabled_accounts(forgotten_provider, std::slice::from_ref(&stored));
+        pool.note_usage(forgotten_provider, &stored, &usage_5h(0.5, reset));
+        assert!(headroom_5h(forgotten_provider, now).is_some());
+        pool.forget_identity(StoreFamily::Chatgpt, "stored", Some("stored"));
+        assert_eq!(headroom_5h(forgotten_provider, now), None);
+    }
+
+    #[test]
+    fn pool_headroom_expires_at_the_observation_cap_when_it_precedes_the_reset() {
+        let pool = AccountPool::new();
+        let provider = "headroom-cap";
+        let acct = account("a");
+        pool.sync_enabled_accounts(provider, std::slice::from_ref(&acct));
+        let now = unix_now();
+        pool.note_usage(provider, &acct, &usage_5h(0.5, now + 9_000));
+        pool.entries
+            .lock()
+            .unwrap()
+            .get_mut(&account_key(provider, &acct))
+            .unwrap()
+            .quota
+            .observed_at_5h = Some(now + 100 - WINDOW_5H_SECS);
+        pool.set_paused(provider, &acct, false);
+
+        assert!(headroom_5h(provider, now + 50).is_some());
+        assert_eq!(headroom_5h(provider, now + 200), None);
+    }
+
+    #[test]
+    fn pool_headroom_reads_the_live_hard_threshold() {
+        let pool = AccountPool::new();
+        let provider = "headroom-live-threshold";
+        let acct = account("a");
+        pool.sync_enabled_accounts(provider, std::slice::from_ref(&acct));
+        let now = unix_now();
+        let reset = now + 9_000;
+        pool.note_usage(provider, &acct, &usage_5h(0.5, reset));
+        let before = window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
+        assert_eq!(headroom_5h(provider, now), Some(before));
+
+        let strict = PoolConfig {
+            hard_threshold: 0.4,
+            ..Default::default()
+        };
+        pool.note_pool_config(Some(&strict));
+        assert_eq!(headroom_5h(provider, now), Some(-9_000.0));
     }
 
     #[test]
