@@ -903,8 +903,24 @@ impl AccountPool {
         let bits = pool
             .map_or(SWITCH_THRESHOLD, |pool| pool.hard_threshold)
             .to_bits();
-        if self.hard_threshold.0.load(Ordering::Relaxed) != bits {
-            self.hard_threshold.0.store(bits, Ordering::Relaxed);
+        if self.hard_threshold.0.load(Ordering::Relaxed) == bits {
+            return;
+        }
+        self.hard_threshold.0.store(bits, Ordering::Relaxed);
+        let upstreams: Vec<String> = self
+            .memberships
+            .lock()
+            .expect("account membership lock poisoned")
+            .keys()
+            .cloned()
+            .collect();
+        if upstreams.is_empty() {
+            return;
+        }
+        let entries = self.entries.lock().expect("account health lock poisoned");
+        let now = unix_now();
+        for upstream in &upstreams {
+            self.record_pool_headroom(upstream, &entries, now);
         }
     }
 
@@ -10553,6 +10569,10 @@ mod tests {
         };
         pool.note_pool_config(Some(&strict));
         assert_eq!(headroom_5h(provider, now), Some(-9_000.0));
+        assert_eq!(
+            crate::metrics::pool_headroom_value_for_tests(provider, "5h", now),
+            Some(-9_000.0)
+        );
     }
 
     #[test]

@@ -68,7 +68,7 @@ they read `Mutex<HashMap>` tables that the recording functions populate inside
 a `#[cfg(test)]` block (`src/metrics.rs:319-327`), not the instruments. Those
 tables do not exist in a release build.
 
-The two exceptions are the shape this document generalizes. An observable gauge
+The three exceptions are the shape this document generalizes. An observable gauge
 inverts the ownership: shunt keeps the value in a `Mutex<HashMap>` it owns, and
 the OTel callback *reads from it* at collection time. That is already the
 arrangement the dashboard needs — it was simply never applied to the other
@@ -132,7 +132,7 @@ so both sinks stay event-driven and no call site changes.
 
 The distinction is load-bearing for the nineteen counters and histograms. They
 push once per observation — Sentry `capture()`, OTel `add()`/`record()`
-(`src/metrics.rs:423-443`) — and only the two observable gauges are read by a
+(`src/metrics.rs:423-443`) — and only the three observable gauges are read by a
 callback at collection time. Feeding a running aggregate into `add()` would
 accumulate it a second time (1 + 2 + 3 + …), and replacing the per-observation
 writes with a callback would stop those series exporting at all. So the
