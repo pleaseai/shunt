@@ -900,10 +900,12 @@ impl AccountPool {
     }
 
     pub(crate) fn note_pool_config(&self, pool: Option<&PoolConfig>) {
-        let threshold = pool.map_or(SWITCH_THRESHOLD, |pool| pool.hard_threshold);
-        self.hard_threshold
-            .0
-            .store(threshold.to_bits(), Ordering::Relaxed);
+        let bits = pool
+            .map_or(SWITCH_THRESHOLD, |pool| pool.hard_threshold)
+            .to_bits();
+        if self.hard_threshold.0.load(Ordering::Relaxed) != bits {
+            self.hard_threshold.0.store(bits, Ordering::Relaxed);
+        }
     }
 
     /// Return account indices in the order an adapter should try them.
@@ -1521,7 +1523,7 @@ impl AccountPool {
             let (utilization, _quota_expired) =
                 self.pool_utilization_for(provider, &mut entries, now);
             record_pool_utilization(provider, utilization);
-            self.record_pool_headroom(provider, &entries, now);
+            self.record_pool_headroom_for_account(provider, account, &entries, now);
         }
         self.mark_dirty();
     }
@@ -1579,7 +1581,7 @@ impl AccountPool {
             let (utilization, _quota_expired) =
                 self.pool_utilization_for(provider, &mut entries, now);
             record_pool_utilization(provider, utilization);
-            self.record_pool_headroom(provider, &entries, now);
+            self.record_pool_headroom_for_account(provider, account, &entries, now);
         }
         self.mark_dirty();
     }
@@ -1634,7 +1636,7 @@ impl AccountPool {
             let (utilization, _quota_expired) =
                 self.pool_utilization_for(provider, &mut entries, now);
             record_pool_utilization(provider, utilization);
-            self.record_pool_headroom(provider, &entries, now);
+            self.record_pool_headroom_for_account(provider, account, &entries, now);
         }
         self.mark_dirty();
     }
@@ -1719,7 +1721,7 @@ impl AccountPool {
             // header-derived state remains intact for the next normal sweep.
             let utilization = self.pool_utilization_for_readonly(provider, &entries, now);
             record_pool_utilization(provider, utilization);
-            self.record_pool_headroom(provider, &entries, now);
+            self.record_pool_headroom_for_account(provider, account, &entries, now);
         }
         self.mark_dirty();
     }
@@ -1794,7 +1796,7 @@ impl AccountPool {
             let (utilization, _quota_expired) =
                 self.pool_utilization_for(provider, &mut entries, now);
             record_pool_utilization(provider, utilization);
-            self.record_pool_headroom(provider, &entries, now);
+            self.record_pool_headroom_for_account(provider, account, &entries, now);
         }
         self.mark_dirty();
     }
@@ -2968,16 +2970,20 @@ impl AccountPool {
             for ((_, inputs), (utilization, reset, observed_at, len)) in
                 windows.iter_mut().zip(fields)
             {
-                let Some(utilization) = utilization.filter(|value| value.is_finite()) else {
-                    continue;
-                };
-                inputs.push(HeadroomInput {
-                    utilization: utilization.clamp(0.0, 1.0),
-                    reset,
-                    expires_at: [reset, observed_at.map(|at| at.saturating_add(len))]
-                        .into_iter()
-                        .flatten()
-                        .min(),
+                inputs.push(match utilization.filter(|value| value.is_finite()) {
+                    Some(utilization) => HeadroomInput {
+                        utilization: utilization.clamp(0.0, 1.0),
+                        reset,
+                        expires_at: [reset, observed_at.map(|at| at.saturating_add(len))]
+                            .into_iter()
+                            .flatten()
+                            .min(),
+                    },
+                    None => HeadroomInput {
+                        utilization: 0.0,
+                        reset: None,
+                        expires_at: None,
+                    },
                 });
             }
         }
@@ -2999,6 +3005,30 @@ impl AccountPool {
         let headroom = self.pool_headroom_for(upstream, entries, now);
         for (window, headroom) in ["5h", "7d", "7d_oi"].into_iter().zip(headroom) {
             crate::metrics::record_pool_headroom(upstream, window, headroom);
+        }
+    }
+
+    fn record_pool_headroom_for_account(
+        &self,
+        provider: &str,
+        account: &AccountConfig,
+        entries: &HashMap<AccountKey, AccountHealth>,
+        now: u64,
+    ) {
+        let key = account_key(provider, account);
+        let mut upstreams: Vec<String> = self
+            .memberships
+            .lock()
+            .expect("account membership lock poisoned")
+            .iter()
+            .filter(|(upstream, members)| {
+                upstream.as_str() != provider && members.contains_key(&key)
+            })
+            .map(|(upstream, _)| upstream.clone())
+            .collect();
+        upstreams.push(provider.to_owned());
+        for upstream in &upstreams {
+            self.record_pool_headroom(upstream, entries, now);
         }
     }
 
@@ -10370,6 +10400,43 @@ mod tests {
             accounts: vec![input],
         };
         assert_eq!(headroom.seconds_at(now), None);
+    }
+
+    #[test]
+    fn pool_headroom_counts_an_account_without_utilization_as_unconstrained() {
+        let pool = AccountPool::new();
+        let provider = "headroom-unobserved";
+        let (fresh, exhausted) = (account("fresh"), account("exhausted"));
+        pool.sync_enabled_accounts(provider, &[fresh.clone(), exhausted.clone()]);
+        let now = unix_now();
+        pool.note_usage(provider, &fresh, &usage_5h(0.5, now + 9_000));
+        pool.entries
+            .lock()
+            .unwrap()
+            .get_mut(&account_key(provider, &fresh))
+            .unwrap()
+            .quota
+            .utilization_5h = None;
+        pool.note_usage(provider, &exhausted, &usage_5h(0.99, now + 1_800));
+        assert_eq!(headroom_5h(provider, now), None);
+    }
+
+    #[test]
+    fn pool_headroom_refreshes_every_provider_sharing_an_account() {
+        let pool = AccountPool::new();
+        let (alias_a, alias_b) = ("headroom-alias-a", "headroom-alias-b");
+        let mut shared = account("shared");
+        shared.store_family = Some(StoreFamily::Chatgpt);
+        shared.store_entry = true;
+        assert_eq!(account_key(alias_a, &shared), account_key(alias_b, &shared));
+        pool.sync_enabled_accounts(alias_a, std::slice::from_ref(&shared));
+        pool.sync_enabled_accounts(alias_b, std::slice::from_ref(&shared));
+        let now = unix_now();
+        let reset = now + 9_000;
+        pool.note_usage(alias_a, &shared, &usage_5h(0.5, reset));
+        let expected = window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
+        assert_eq!(headroom_5h(alias_a, now), Some(expected));
+        assert_eq!(headroom_5h(alias_b, now), Some(expected));
     }
 
     #[test]
