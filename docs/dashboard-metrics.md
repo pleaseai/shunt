@@ -1,6 +1,6 @@
 # Dashboard metrics — how the admin UI reads what shunt already measures
 
-shunt records 21 metric series and can show none of them in its own dashboard.
+shunt records 22 metric series and can show none of them in its own dashboard.
 This document records why, evaluates the ways out, and fixes three decisions —
 **shunt owns the aggregate**, **history is a bounded in-memory ring**, and
 **label cardinality is bounded before anything retains it** — so that a
@@ -50,17 +50,18 @@ read it:
 | `shunt.router.judge_calls` | `Counter<u64>` | no |
 | `shunt.store.write_failures` | `Counter<u64>` | no |
 | `shunt.pool.quota_utilization` | `ObservableGauge<f64>` | **yes** — `pool_utilization_values()` (`src/metrics.rs:62`) |
+| `shunt.pool.quota_headroom_seconds` | `ObservableGauge<f64>` | **yes** — `pool_headroom_values()` (`src/metrics.rs`), stored as inputs and evaluated at collection |
 | `shunt.upstream.status` | `ObservableGauge<f64>` | **yes** — `upstream_status_values()` (`src/metrics.rs:74`) |
 
 `shunt.store.write_failures` (label `subsystem` = `pool` | `spend` | `gateway`) was
 added with the optional store (`src/metrics.rs`, `record_store_write_failure`); it
 is also sent to Sentry as a counter of the same name when `[sentry] metrics` is on.
-The table lists all 21 instruments registered in `OtelInstruments`
+The table lists all 22 instruments registered in `OtelInstruments`
 (`src/metrics.rs`), the two `shunt.router.*` counters and
 `shunt.store.write_failures` included; the 19 counters and histograms are
-write-only and the two observable gauges are readable.
+write-only and the three observable gauges are readable.
 
-Nineteen of twenty-one are write-only: `Counter` and `Histogram` handles expose
+Nineteen of twenty-two are write-only: `Counter` and `Histogram` handles expose
 `add()` and `record()` and nothing that returns a value. The `*_for_tests`
 helpers (`src/metrics.rs:342`, `src/metrics.rs:677`) are not a counter-example —
 they read `Mutex<HashMap>` tables that the recording functions populate inside

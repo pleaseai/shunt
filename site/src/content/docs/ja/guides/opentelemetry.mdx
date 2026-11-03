@@ -66,6 +66,7 @@ authorization = "Bearer <token>"
 | `shunt.stage_router.flips` | カウンター | `model`, `from`, `to` | セッションを固定済みのティアから動かした決定。昇格は容易に、降格は難しくという設計なので、2 つの方向を分けて数える。 |
 | `shunt.requests_shed` | カウンター | — | `max_concurrent_requests` の上限で拒否されたインバウンドリクエスト。拒否自体は `debug!` でのみログ出力されるため、ゲートウェイの飽和を可視化するのはこのカウンターです。 |
 | `shunt.pool.quota_utilization` | ゲージ | `provider`, `window` | `5h`, `7d`, `7d_oi` ごとに、有効で観測済みかつ期限切れでない quota 値の最小 utilization。 |
+| `shunt.pool.quota_headroom_seconds` | ゲージ | `provider`, `window` | `5h`, `7d`, `7d_oi` ごとの、ウィンドウがリセットされるまでの quota の余裕秒数。有効で一時停止されていないアカウントの最大値で、ハードしきい値(`[server.pool] hard_threshold`、なければ 0.98)を基準にします。消費速度は直近のペースではなくウィンドウ平均(utilization / 経過時間)であり、他のアカウントが尽きるとトラフィックが残りのアカウントへ移り消費が速まるため、最大値は楽観的です。負の値はリセット前に枯渇する見込み、またはすでに枯渇している場合はリセットまでの秒数に負号を付けた値です。対象アカウントのいずれかが枯渇を見込まない(utilization 0 またはリセット時刻なし)間は、系列は出力されません。アラートは `shunt_pool_quota_headroom_seconds < 0` で設定します。 |
 | `shunt.pool.rotations` | カウンター | `provider`, `reason` | アカウントからの切り替えと pool exhaustion の回数。 |
 | `shunt.pool.reprobes` | カウンター | `provider` | 陳腐化した近接クォータの Codex/ChatGPT アカウントで、最初の HTTP 送信時にコミットされた再プローブ。WebSocket 有効プロバイダーは inbound HTTP のみを数える。 |
 | `shunt.store.write_failures` | カウンター | `subsystem` | オプションの [`[store]`](/ja/reference/configuration/#storeオプション) への書き込み失敗を `subsystem` ごとに集計: `pool`（write-behind フラッシュ）、`spend`、`gateway`（トークンエンドポイント）。失敗したプールのフラッシュは次の 15 秒周期で再試行されるが、このプロセスがストアの hold を失うとプールのフラッシュは停止する。失敗した支出の書き込みは管理者の呼び出し元に、失敗したトークンエンドポイントの書き込みはクライアントに報告され、バックグラウンドのゲートウェイのフラッシュ失敗は呼び出し元がないためログにのみ記録される。 |
