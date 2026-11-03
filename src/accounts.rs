@@ -648,7 +648,7 @@ impl PoolHeadroom {
                     }
                 }
             };
-            best = Some(best.map_or(value, |current| current.max(value)));
+            best = Some(best.unwrap_or(value).max(value));
         }
         best.filter(|value| value.is_finite())
     }
