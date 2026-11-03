@@ -630,7 +630,7 @@ impl PoolHeadroom {
         for account in &self.accounts {
             let value = match account.expires_at {
                 Some(expires_at) if expires_at <= now => f64::INFINITY,
-                expires_at => {
+                live_expiry => {
                     let headroom = window_headroom(
                         account.utilization,
                         account.reset,
@@ -639,10 +639,10 @@ impl PoolHeadroom {
                         now,
                     );
                     if headroom == f64::NEG_INFINITY {
-                        let Some(expires_at) = expires_at else {
+                        let Some(recovers_at) = live_expiry else {
                             continue;
                         };
-                        -(expires_at.saturating_sub(now) as f64)
+                        -(recovers_at.saturating_sub(now) as f64)
                     } else {
                         headroom
                     }
