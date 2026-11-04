@@ -121,6 +121,55 @@ store_contract_test!(an_undecodable_row_is_dropped_not_fatal, |store| {
     tx.rollback().await.unwrap();
 });
 
+store_contract_test!(load_bindings_reports_whether_a_row_was_dropped, |store| {
+    async fn insert(store: &Store, hash: String, account: String, last_used: i64) {
+        let mut tx = store.db().begin().await.unwrap();
+        tx.execute(
+            "INSERT INTO pool_session_binding (provider, session_hash, account_key, last_used) \
+             VALUES ($1, $2, $3, $4)",
+            &[
+                Value::from("anthropic"),
+                Value::from(hash.as_str()),
+                Value::from(account.as_str()),
+                Value::from(last_used),
+            ],
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+    async fn clear(store: &Store) {
+        let mut tx = store.db().begin().await.unwrap();
+        tx.execute("DELETE FROM pool_session_binding", &[])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    write(&store, &Snapshot::new(), &[row('a', "x", 3_600)]).await;
+    let (rows, dropped) = load_bindings(&store).await.unwrap();
+    assert_eq!(rows, [row('a', "x", 3_600)]);
+    assert!(!dropped, "only decodable rows: nothing dropped");
+
+    clear(&store).await;
+    insert(
+        &store,
+        "c".repeat(64),
+        serde_json::to_string(&key("x")).unwrap(),
+        -1,
+    )
+    .await;
+    let (rows, dropped) = load_bindings(&store).await.unwrap();
+    assert!(rows.is_empty(), "the negative last_used row is absent");
+    assert!(dropped, "a negative last_used row is a drop");
+
+    clear(&store).await;
+    insert(&store, "b".repeat(64), "not json".to_string(), 3_600).await;
+    let (rows, dropped) = load_bindings(&store).await.unwrap();
+    assert!(rows.is_empty(), "the undecodable key row is absent");
+    assert!(dropped, "an account key that is not JSON is a drop");
+});
+
 /// Migration `0002` is dollar-free on both engines and declares the same
 /// statements: only the header comment naming the sibling file differs.
 #[test]
