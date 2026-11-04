@@ -1002,6 +1002,7 @@ impl AccountPool {
     /// immediately eligible for a later request. Callers read the verdict only
     /// when the order is empty; `None` means no selectable representative is
     /// capped.
+    #[cfg(test)]
     pub(crate) fn select_order_deferred_with_cap(
         self: &Arc<Self>,
         provider: &str,
@@ -1082,6 +1083,7 @@ impl AccountPool {
     /// which still selects through the deferred entry point. Callers read
     /// the verdict only when the order is empty; `None` means no selectable
     /// representative is capped.
+    #[cfg(test)]
     pub(crate) fn select_order_without_reprobe_with_cap(
         &self,
         provider: &str,

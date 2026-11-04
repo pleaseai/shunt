@@ -615,13 +615,14 @@ pub(crate) async fn chain_attempt(
                     refused: false,
                 };
             }
-            let (order, reprobe, cap) = state.accounts.select_order_deferred_with_cap(
-                &route.provider,
-                &accounts,
-                session_id.as_deref(),
-                Some(route.upstream_model.as_str()),
-                state.config.server.pool.as_ref(),
-            );
+            let (order, reprobe, cap, ticket) =
+                state.accounts.select_order_deferred_with_cap_and_ticket(
+                    &route.provider,
+                    &accounts,
+                    session_id.as_deref(),
+                    Some(route.upstream_model.as_str()),
+                    state.config.server.pool.as_ref(),
+                );
             let events = pool_events_stream(PoolStreamContext {
                 state: state.clone(),
                 route: route.clone(),
@@ -634,6 +635,7 @@ pub(crate) async fn chain_attempt(
                 order,
                 cap,
                 reprobe,
+                ticket,
                 ramp_initial: state.config.storm_ramp_initial(),
                 record_metrics: false,
                 started_at: None,

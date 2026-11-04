@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use crate::{
     accounts::{self, CountAttempt, FailoverAction, ReprobeReservation},
-    adapters::AdapterError,
+    adapters::{session_commit::SessionCommit, AdapterError},
     auth::{self, codex::auth::CodexAuthStore, resolve_chatgpt_account, Credential},
     config::{AccountConfig, AuthMode},
     model::responses::ResponseEvent,
@@ -67,14 +67,20 @@ fn select_pool_order_with_cap(
     accounts: &[AccountConfig],
     session_id: Option<&str>,
     upstream_model: &str,
-) -> (Vec<usize>, Option<accounts::CapExhaustion>) {
-    state.accounts.select_order_without_reprobe_with_cap(
-        provider,
-        accounts,
-        session_id,
-        Some(upstream_model),
-        state.config.server.pool.as_ref(),
-    )
+) -> (
+    Vec<usize>,
+    Option<accounts::CapExhaustion>,
+    Option<accounts::BindingTicket>,
+) {
+    state
+        .accounts
+        .select_order_without_reprobe_with_cap_and_ticket(
+            provider,
+            accounts,
+            session_id,
+            Some(upstream_model),
+            state.config.server.pool.as_ref(),
+        )
 }
 
 pub(super) fn cancel_reprobe_for_account(
@@ -89,6 +95,19 @@ pub(super) fn cancel_reprobe_for_account(
             reservation.cancel();
         }
     }
+}
+
+/// Whether `index` is the stale account a re-probe promoted to the front of
+/// this request's order. Its serve refreshes quota, not the session's
+/// placement: the binding commit is skipped, so a probed near-quota account
+/// never becomes a session's binding and never takes one over (ADR-0008 §8).
+pub(super) fn is_reprobe_for_account(
+    reservation: &Option<ReprobeReservation>,
+    selected_index: usize,
+) -> bool {
+    reservation
+        .as_ref()
+        .is_some_and(|reservation| reservation.selected_index() == selected_index)
 }
 
 pub(super) fn commit_reprobe_for_account(
@@ -129,6 +148,9 @@ pub(super) struct PoolStreamContext {
     /// when that order is empty.
     pub(super) cap: Option<accounts::CapExhaustion>,
     pub(super) reprobe: Option<ReprobeReservation>,
+    /// The session's binding ticket from the selection that produced `order`,
+    /// committed when an account serves a success (ADR-0008).
+    pub(super) ticket: Option<accounts::BindingTicket>,
     pub(super) ramp_initial: Option<u32>,
     /// Whether this pool stream owns the request's `record_proxied_request`
     /// sample (the committed single-route paths) or the enclosing chain does.
@@ -349,13 +371,14 @@ pub(super) fn pool_or_single_events(
                         )
                     } else {
                         let accounts_config = std::sync::Arc::new(accounts);
-                        let (order, reprobe, cap) = state.accounts.select_order_deferred_with_cap(
-                            &route.provider,
-                            &accounts_config,
-                            session_id.as_deref(),
-                            Some(route.upstream_model.as_str()),
-                            state.config.server.pool.as_ref(),
-                        );
+                        let (order, reprobe, cap, ticket) =
+                            state.accounts.select_order_deferred_with_cap_and_ticket(
+                                &route.provider,
+                                &accounts_config,
+                                session_id.as_deref(),
+                                Some(route.upstream_model.as_str()),
+                                state.config.server.pool.as_ref(),
+                            );
                         Box::pin(pool_events_stream(PoolStreamContext {
                             state,
                             route,
@@ -369,6 +392,7 @@ pub(super) fn pool_or_single_events(
                             order,
                             cap,
                             reprobe,
+                            ticket,
                             ramp_initial,
                             record_metrics: true,
                             started_at: Some(attempt_started),
@@ -412,11 +436,14 @@ pub(super) fn pool_events_stream(
         order,
         cap,
         reprobe,
+        ticket,
         ramp_initial,
         record_metrics,
         started_at,
         attribution,
     } = context;
+    // Shared across the unfold's steps; committed at the serving account.
+    let session_commit = std::sync::Arc::new(SessionCommit::for_route(ticket, &route, auth));
     type Parsed = std::pin::Pin<Box<dyn Stream<Item = Result<ResponseEvent, Value>> + Send>>;
     enum Phase {
         NextAccount,
@@ -446,6 +473,7 @@ pub(super) fn pool_events_stream(
             let compact = compact.clone();
             let delegation = delegation.clone();
             let upstream_body = upstream_body.clone();
+            let session_commit = session_commit.clone();
             async move {
                 let mut phase = phase;
                 let mut order_iter = order_iter;
@@ -639,6 +667,7 @@ pub(super) fn pool_events_stream(
                                 ramp_initial,
                                 position,
                                 candidates,
+                                &session_commit,
                             )
                             .await
                             else {
@@ -759,6 +788,15 @@ pub(super) fn pool_events_stream(
                                         status.is_success(),
                                     );
                                     if status.is_success() {
+                                        // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
+                                        if !is_reprobe_for_account(&reprobe, index) {
+                                            session_commit.served(
+                                                &state.accounts,
+                                                &route.provider,
+                                                account,
+                                                status,
+                                            );
+                                        }
                                         record(StatusCode::OK);
                                         let parsed: Parsed = super::pool_plan::relay_events(
                                             &state,
@@ -924,6 +962,15 @@ pub(super) fn pool_events_stream(
                                                     account,
                                                     true,
                                                 );
+                                                // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
+                                                if !is_reprobe_for_account(&reprobe, index) {
+                                                    session_commit.served(
+                                                        &state.accounts,
+                                                        &route.provider,
+                                                        account,
+                                                        retry_status,
+                                                    );
+                                                }
                                                 record(StatusCode::OK);
                                                 let parsed: Parsed = super::pool_plan::relay_events(
                                                     &state,
@@ -1039,13 +1086,14 @@ pub(super) async fn forward_chatgpt_oauth(
         // loop-based paths do.
         let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
         let route_for_start = route.clone();
-        let (order, reprobe, cap) = state.accounts.select_order_deferred_with_cap(
-            &route.provider,
-            &accounts_config,
-            session_id.as_deref(),
-            Some(route.upstream_model.as_str()),
-            state.config.server.pool.as_ref(),
-        );
+        let (order, reprobe, cap, ticket) =
+            state.accounts.select_order_deferred_with_cap_and_ticket(
+                &route.provider,
+                &accounts_config,
+                session_id.as_deref(),
+                Some(route.upstream_model.as_str()),
+                state.config.server.pool.as_ref(),
+            );
         let events = pool_events_stream(PoolStreamContext {
             state: state.clone(),
             route: route.clone(),
@@ -1059,6 +1107,7 @@ pub(super) async fn forward_chatgpt_oauth(
             order,
             cap,
             reprobe,
+            ticket,
             ramp_initial: state.config.storm_ramp_initial(),
             record_metrics: true,
             started_at: None,
@@ -1073,17 +1122,19 @@ pub(super) async fn forward_chatgpt_oauth(
             ),
         ));
     }
-    let (order, mut reprobe_reservation, cap) = if ws_enabled {
-        let (order, cap) = select_pool_order_with_cap(
+    // The WebSocket branch takes its account from this same selection, so a
+    // conversation's WebSocket and HTTP turns share one binding (AC-016).
+    let (order, mut reprobe_reservation, cap, ticket) = if ws_enabled {
+        let (order, cap, ticket) = select_pool_order_with_cap(
             &state,
             &route.provider,
             &accounts_config,
             session_id.as_deref(),
             &route.upstream_model,
         );
-        (order, None, cap)
+        (order, None, cap, ticket)
     } else {
-        state.accounts.select_order_deferred_with_cap(
+        state.accounts.select_order_deferred_with_cap_and_ticket(
             &route.provider,
             &accounts_config,
             session_id.as_deref(),
@@ -1092,6 +1143,7 @@ pub(super) async fn forward_chatgpt_oauth(
         )
     };
     let auth = provider_auth(&state, &route);
+    let session_commit = SessionCommit::for_route(ticket, &route, auth);
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
@@ -1120,8 +1172,16 @@ pub(super) async fn forward_chatgpt_oauth(
         // (see `admit_and_resolve`); on a relayed success the guard moves
         // into the response body (`with_admission`), so the slot stays held
         // until the stream actually finishes.
-        let Some((admission, credential)) =
-            admit_and_resolve(&state, &route, account, ramp_initial, position, candidates).await
+        let Some((admission, credential)) = admit_and_resolve(
+            &state,
+            &route,
+            account,
+            ramp_initial,
+            position,
+            candidates,
+            &session_commit,
+        )
+        .await
         else {
             cancel_reprobe_for_account(&mut reprobe_reservation, index);
             continue;
@@ -1176,6 +1236,10 @@ pub(super) async fn forward_chatgpt_oauth(
                     state
                         .accounts
                         .mark_healthy(&route.provider, account, status.is_success());
+                    // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
+                    if !is_reprobe_for_account(&reprobe_reservation, index) {
+                        session_commit.served(&state.accounts, &route.provider, account, status);
+                    }
                     let response = crate::adapters::with_admission(response, admission);
                     return Ok((status, with_account_header(response, &account.name)));
                 }
@@ -1300,6 +1364,15 @@ pub(super) async fn forward_chatgpt_oauth(
                     .await;
                     super::pool_plan::cool_on_relayed_limit(&state, &route, account, &response);
                     let response = response?;
+                    // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
+                    if !is_reprobe_for_account(&reprobe_reservation, index) {
+                        session_commit.served(
+                            &state.accounts,
+                            &route.provider,
+                            account,
+                            response.status(),
+                        );
+                    }
                     let response = crate::adapters::with_admission(
                         with_account_header(response, &account.name),
                         admission,
@@ -1402,6 +1475,15 @@ pub(super) async fn forward_chatgpt_oauth(
                                 &state, &route, account, &response,
                             );
                             let response = response?;
+                            // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
+                            if !is_reprobe_for_account(&reprobe_reservation, index) {
+                                session_commit.served(
+                                    &state.accounts,
+                                    &route.provider,
+                                    account,
+                                    response.status(),
+                                );
+                            }
                             let response = crate::adapters::with_admission(
                                 with_account_header(response, &account.name),
                                 admission,
@@ -1598,6 +1680,7 @@ pub(super) async fn admit_and_resolve(
     ramp_initial: Option<u32>,
     position: usize,
     candidates: usize,
+    session: &SessionCommit,
 ) -> Option<(Option<accounts::AdmissionGuard>, Credential)> {
     let admission = state.accounts.admit_candidate(
         &route.provider,
@@ -1606,6 +1689,9 @@ pub(super) async fn admit_and_resolve(
         position,
         candidates,
     )?;
+    // Admitted: from here a failure (credential, send, status) is an attempt
+    // on this account that failed over, unlike the admission skip above.
+    session.attempting(account);
     let credential = resolve_or_cooldown(state, route, account).await?;
     Some((admission, credential))
 }
@@ -2534,7 +2620,9 @@ mod tests {
             pool_route(),
             PoolForward {
                 pool_key: Some("sess-1".to_string()),
-                session_id: Some("sess-1".to_string()),
+                // Sessionless, so it binds nothing: a bound session would keep
+                // acc-b on turn 2 (ADR-0008, FR-2).
+                session_id: None,
                 ..pool_turn(vec![pool_account("acc-b", "SHUNT_POOL_PROBE_B")], false)
             },
         )
@@ -3997,6 +4085,7 @@ mod tests {
             order,
             cap: None,
             reprobe,
+            ticket: None,
             ramp_initial: state.config.storm_ramp_initial(),
             record_metrics: false,
             started_at: None,
@@ -4356,3 +4445,8 @@ mod tests {
 #[cfg(test)]
 #[path = "pool_xai_tests.rs"]
 mod xai_tests;
+
+#[cfg(test)]
+#[path = "pool_binding_tests.rs"]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
+mod binding_tests;

@@ -250,7 +250,7 @@ async fn forward_claude_oauth(
         state.config.server.pool.as_ref(),
     );
     // Committed once, at the account that finally serves a success (ADR-0008).
-    let mut session_commit = SessionCommit::new(
+    let session_commit = SessionCommit::new(
         ticket,
         accounts::thinking_bound(&route.adapter, provider.auth, &route.upstream_model),
     );
@@ -897,7 +897,7 @@ async fn forward_kimi_oauth(
         state.config.server.pool.as_ref(),
     );
     // Committed once, at the account that finally serves a success (ADR-0008).
-    let mut session_commit = SessionCommit::new(
+    let session_commit = SessionCommit::new(
         ticket,
         accounts::thinking_bound(&route.adapter, provider.auth, &route.upstream_model),
     );
