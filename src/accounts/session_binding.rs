@@ -112,7 +112,7 @@ pub(crate) enum CommitOutcome {
     Placed,
     /// The serving account was already bound; `last_used` was refreshed.
     Touched,
-    /// The binding moved off `from`; its generation was bumped.
+    /// The binding moved off `from`; it took a fresh generation.
     Moved { from: AccountKey },
     /// The observed generation is older than the binding's: nothing changed.
     Stale,
@@ -139,6 +139,10 @@ pub(crate) struct SessionBindings {
     /// The persisted view ([`export`](Self::export)) changed since the last
     /// [`take_persist_dirty`](Self::take_persist_dirty).
     persist_dirty: bool,
+    /// Last generation handed out. Table-wide and never reused, so a binding
+    /// re-placed after removal or eviction always outranks any ticket issued
+    /// before it (NFR-1). 0 stays "unbound at selection".
+    last_generation: u64,
 }
 
 impl Default for SessionBindings {
@@ -170,7 +174,13 @@ impl SessionBindings {
             evictions: 0,
             last_sweep: 0,
             persist_dirty: false,
+            last_generation: 0,
         }
+    }
+
+    fn next_generation(&mut self) -> u64 {
+        self.last_generation += 1;
+        self.last_generation
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -252,7 +262,8 @@ impl SessionBindings {
                     return CommitOutcome::Touched;
                 }
                 let from = std::mem::replace(&mut binding.account, served.clone());
-                binding.generation += 1;
+                self.last_generation += 1;
+                binding.generation = self.last_generation;
                 self.persist_dirty = true;
                 CommitOutcome::Moved { from }
             }
@@ -326,6 +337,8 @@ impl SessionBindings {
                 Some(existing) => {
                     existing.account = row.account;
                     existing.last_used = last_used;
+                    self.last_generation += 1;
+                    existing.generation = self.last_generation;
                 }
                 None => self.insert_new(&row.provider, session, row.account, last_used),
             }
@@ -371,7 +384,7 @@ impl SessionBindings {
         let binding = Binding {
             account,
             last_used: now,
-            generation: 1,
+            generation: self.next_generation(),
         };
         let previous = match self.map.get_mut(provider) {
             Some(sessions) => sessions.insert(session, binding),

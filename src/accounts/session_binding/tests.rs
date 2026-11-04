@@ -327,3 +327,43 @@ fn bound_counts_are_per_provider_and_skip_expired_bindings() {
     assert_eq!(counts.len(), 2);
     assert!(t.bound_counts(10 + BINDING_IDLE_TTL_SECS + 1).is_empty());
 }
+
+#[test]
+fn a_ticket_from_before_removal_cannot_overwrite_a_replaced_binding() {
+    let s = h("s");
+    // Removal by account (forget_identity).
+    let mut t = SessionBindings::default();
+    t.commit("p", &s, &acct("a"), 0, 10);
+    let old = t.lookup("p", &s, 11).unwrap().generation;
+    t.remove_matching(|a| *a == acct("a"));
+    assert_eq!(t.commit("p", &s, &acct("b"), 0, 12), CommitOutcome::Placed);
+    assert_eq!(t.commit("p", &s, &acct("c"), old, 13), CommitOutcome::Stale);
+    assert_eq!(t.lookup("p", &s, 14).unwrap().account, acct("b"));
+
+    // Removal by idle expiry.
+    let mut t = SessionBindings::default();
+    t.commit("p", &s, &acct("a"), 0, 10);
+    let old = t.lookup("p", &s, 11).unwrap().generation;
+    let later = 10 + BINDING_IDLE_TTL_SECS + 1;
+    assert!(t.lookup("p", &s, later).is_none());
+    assert_eq!(
+        t.commit("p", &s, &acct("b"), 0, later),
+        CommitOutcome::Placed
+    );
+    assert_eq!(
+        t.commit("p", &s, &acct("c"), old, later + 1),
+        CommitOutcome::Stale
+    );
+    assert_eq!(t.lookup("p", &s, later + 2).unwrap().account, acct("b"));
+
+    // Removal by LRU eviction.
+    let mut t = SessionBindings::with_capacity(2);
+    t.commit("p", &s, &acct("a"), 0, 10);
+    let old = t.lookup("p", &s, 10).unwrap().generation;
+    t.commit("p", &h("x"), &acct("a"), 0, 20);
+    t.commit("p", &h("y"), &acct("a"), 0, 21);
+    assert!(t.lookup("p", &s, 22).is_none(), "evicted");
+    assert_eq!(t.commit("p", &s, &acct("b"), 0, 23), CommitOutcome::Placed);
+    assert_eq!(t.commit("p", &s, &acct("c"), old, 24), CommitOutcome::Stale);
+    assert_eq!(t.lookup("p", &s, 25).unwrap().account, acct("b"));
+}

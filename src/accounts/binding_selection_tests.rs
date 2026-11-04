@@ -737,3 +737,29 @@ fn a_placement_that_evicts_counts_the_evictions() {
         evicted
     );
 }
+
+#[test]
+fn soft_near_threshold_of_a_non_representative_alias_cannot_reset_the_debounce() {
+    let pool = AccountPool::new();
+    let mut accounts = pool_accounts(3);
+    accounts[0].uuid = Some("shared".to_string());
+    accounts[0].threshold = Some(0.5);
+    accounts[1].uuid = Some("shared".to_string());
+    accounts[1].threshold = Some(0.9);
+    let cfg = soft(0.5);
+    let session = (0..64)
+        .map(|i| format!("alias-{i}"))
+        .find(|s| serve(&pool, &accounts, s, Some(&cfg)).0 == 0)
+        .expect("some session binds to the shared identity");
+    note_5h(&pool, &accounts[0], "0.6");
+    // Stamps soft-near through the representative only.
+    pool.select_order(P, &accounts, Some(&session), None, Some(&cfg));
+    backdate_soft_near(&pool, &accounts[0], Duration::from_secs(61));
+    let (order, ticket) =
+        pool.select_order_with_ticket(P, &accounts, Some(&session), None, Some(&cfg));
+    assert_eq!(order[0], 2, "moves to the healthy alternative");
+    assert_eq!(
+        ticket.unwrap().prior_ineligible(),
+        Some(SwitchReason::Proactive)
+    );
+}

@@ -1179,9 +1179,10 @@ impl AccountPool {
             CommitOutcome::Placed => BindingCommit::Placed,
             CommitOutcome::Touched => BindingCommit::Touched,
             CommitOutcome::Stale => BindingCommit::Stale,
-            // Reachable without a reason only when the observed binding
-            // expired and a concurrent request re-placed the session before
-            // this commit; the served account still replaces it.
+            // Generations are never reused, so a ticket older than a
+            // re-placed binding is Stale; without a reason this is a
+            // same-generation commit by a ticket that observed no ineligibility
+            // of its bound account, and the served account still replaces it.
             CommitOutcome::Moved { .. } => {
                 BindingCommit::Moved(reason.unwrap_or(SwitchReason::Failover))
             }
@@ -1362,10 +1363,16 @@ impl AccountPool {
                 } else {
                     &mut health.soft_near_since
                 };
-                if assessment.soft_near() {
-                    soft_near_since.get_or_insert(now);
-                } else {
-                    *soft_near_since = None;
+                // Aliases of one identity share this stamp but may carry
+                // different thresholds, so only the representative's
+                // assessment drives it; an alias would otherwise reset the
+                // interval on every request.
+                if ident_reps.contains(&index) {
+                    if assessment.soft_near() {
+                        soft_near_since.get_or_insert(now);
+                    } else {
+                        *soft_near_since = None;
+                    }
                 }
                 let soft_near_since = *soft_near_since;
                 snapshots.push((
@@ -2603,8 +2610,6 @@ impl AccountPool {
             .unwrap_or(0)
     }
 
-    /// The pool's health entry for `key`, stamping a fresh generation when it
-    /// is created.
     /// [`Self::health_entry`], also caching the key's
     /// [`session_binding::account_digest`] on the entry when `digest` is set,
     /// in the same map lookup.
@@ -2637,6 +2642,8 @@ impl AccountPool {
         health
     }
 
+    /// The pool's health entry for `key`, stamping a fresh generation when it
+    /// is created.
     fn health_entry<'a>(
         &self,
         entries: &'a mut HashMap<AccountKey, AccountHealth>,
