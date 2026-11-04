@@ -47,7 +47,7 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool/anthropic/accounts/$ACCOUNT_REF" \
 
 ## 按最快重置排序
 
-`[server.pool] sort_by_reset`(默认 `false`)会改变 *available* 层的排序方式:不再按预计的燃烧速率余量最大排序,而是按已知的最早配额重置时间升序排序(最先恢复的账户被最先尝试;没有重置信号的账户排在最后)。这样做的思路是先耗尽最快恢复的账户,把重置更晚的账户留作缓冲。
+`[server.pool] sort_by_reset`(默认 `false`)会改变 *available* 层的排序方式:不再按预计的燃烧速率余量最大排序(带会话 ID 的请求则不再按会话自己的排名排序),而是按已知的最早配额重置时间升序排序(最先恢复的账户被最先尝试;没有重置信号的账户排在最后)。这样做的思路是先耗尽最快恢复的账户,把重置更晚的账户留作缓冲。
 
 `[server.pool]` —— 以及这个设置 —— 是进程级的,不是按 provider 划分的,因此切换它会同时影响池中的所有 provider。
 

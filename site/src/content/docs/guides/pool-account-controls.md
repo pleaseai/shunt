@@ -47,7 +47,7 @@ A capped account is still configured and signed in; only new routing is withheld
 
 ## Ranking by soonest reset
 
-`[server.pool] sort_by_reset` (default `false`) changes how the *available* tier is ordered: instead of largest projected burn-rate headroom, accounts sort by their earliest known quota reset (ascending — the account that recovers soonest is tried first; an account with no reset signal sorts last). The idea is to drain the account that will replenish earliest, keeping accounts with later resets in reserve as buffers.
+`[server.pool] sort_by_reset` (default `false`) changes how the *available* tier is ordered: instead of largest projected burn-rate headroom (or, for a request with a session id, the session's own ranking), accounts sort by their earliest known quota reset (ascending — the account that recovers soonest is tried first; an account with no reset signal sorts last). The idea is to drain the account that will replenish earliest, keeping accounts with later resets in reserve as buffers.
 
 `[server.pool]` — and therefore this setting — is process-wide, not per-provider, so toggling it affects every pooled provider at once.
 
