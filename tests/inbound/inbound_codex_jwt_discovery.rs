@@ -208,12 +208,9 @@ async fn anthropic_shaped_v1_models_ignores_the_jwt_header_and_cookie() {
     assert_eq!(by_cookie.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// An issuer whose JWKS port refuses connections.
+/// An issuer whose JWKS port refuses connections: port 1 needs root to bind.
 fn dead_issuer() -> String {
-    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let dead = format!("http://{}", closed.local_addr().unwrap());
-    drop(closed);
-    dead
+    "http://127.0.0.1:1".to_string()
 }
 
 #[tokio::test]
