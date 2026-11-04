@@ -34,8 +34,8 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-mod common;
-mod judge_harness;
+use crate::common;
+use crate::judge_harness;
 
 const KEY_ENV: &str = "SHUNT_TEST_SPEND_KEY";
 const TOKENS_ENV: &str = "SHUNT_TEST_SPEND_TOKENS";

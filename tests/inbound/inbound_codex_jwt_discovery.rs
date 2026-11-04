@@ -12,7 +12,7 @@ use shunt::{
     gateway::{approval::Identity, jwt as gateway_jwt},
 };
 
-mod common;
+use crate::common;
 use common::{
     codex_jwt::{auth, chatgpt_token, config, env, jwt_for, start, upstream, Gateway},
     codex_jwt::{JWT_COOKIE, JWT_HEADER},

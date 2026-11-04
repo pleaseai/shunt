@@ -130,7 +130,9 @@ jobs:
       # marginal cost is this crate compiled once with default features, not
       # every test binary rebuilt. A `#[cfg(not(feature = "ui"))]` arm added to
       # any *other* test file is not covered by this and needs its binary named
-      # here too. `prefill_router` is named for the same reason against a
+      # here too — for a module inside a grouped binary (`tests/<dir>/main.rs`,
+      # such as `tests/spend/`), that is the group's name (`--test spend`), not
+      # the file's. `prefill_router` is named for the same reason against a
       # different feature: its `#[cfg(not(feature = "prefill-router"))]` arm is
       # the one that proves a release binary refuses a `type = "prefill_router"`
       # entry by naming the cargo feature, and `--all-features` compiles that

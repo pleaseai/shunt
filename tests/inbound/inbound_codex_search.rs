@@ -1,6 +1,6 @@
 //! The Codex CLI's built-in web-search tool on the inbound Codex endpoint
 //! (`[server.codex_endpoint]`) — the companion to
-//! `tests/inbound_codex_endpoint.rs`, which covers Responses turns.
+//! `tests/inbound/inbound_codex_endpoint.rs`, which covers Responses turns.
 //!
 //! The CLI posts its `web.run` tool to `{base_url}/alpha/search`. These tests
 //! pin that every base-URL form reaches the backend's `/codex/alpha/search`
@@ -23,7 +23,7 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 /// A Codex CLI `web.run` request body. Its exact shape is the CLI's business:
 /// shunt relays it verbatim, so the tests only assert byte fidelity. It names a

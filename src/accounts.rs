@@ -455,6 +455,13 @@ pub struct AccountSnapshot {
     /// Fable `model`).
     pub available: bool,
     pub near_quota: bool,
+    /// A shared window (5h or 7d) is used up: the provider rejected it (or, with
+    /// no per-window status recorded, the aggregate status says `rejected`), or
+    /// its observed utilization reached 100%. Unlike `near_quota`, which is also
+    /// set at the switch threshold, this is only set once the window itself is
+    /// spent. Selection still keeps such an account as a last resort. See
+    /// [`shared_window_exhausted`].
+    pub exhausted: bool,
     /// A shared-window (5h or 7d) `max_utilization` cap excludes the account
     /// from selection for every model.
     pub capped: bool,
@@ -561,6 +568,7 @@ impl AccountSnapshot {
             has_state: false,
             available: !account.disabled && !paused,
             near_quota: false,
+            exhausted: false,
             capped: false,
             capped_fable: false,
             cap_clears_at: None,
@@ -589,6 +597,15 @@ impl AccountSnapshot {
             requests_cancelled: requests.cancelled(),
             mean_latency_ms: requests.mean_latency_ms(),
         }
+    }
+}
+
+#[derive(Debug)]
+struct HardThreshold(AtomicU64);
+
+impl Default for HardThreshold {
+    fn default() -> Self {
+        Self(AtomicU64::new(SWITCH_THRESHOLD.to_bits()))
     }
 }
 
@@ -650,6 +667,7 @@ pub struct AccountPool {
     /// (issue #817). Lives here because the pool is the process-lifetime state
     /// every `AppState` snapshot shares across reloads; memory-only.
     upstream_skips: UpstreamSkips,
+    hard_threshold: HardThreshold,
     /// When the usage poller last began a pass, and its interval. `None` until
     /// the first pass, and for good when `usage_refresh_seconds` leaves the
     /// poller off. Read by `GET /admin/api/pool` for the dashboard's
@@ -818,6 +836,15 @@ impl AccountPool {
             .lock()
             .expect("account membership lock poisoned")
             .insert(upstream.to_string(), membership);
+    }
+
+    pub(crate) fn note_pool_config(&self, pool: Option<&PoolConfig>) {
+        let bits = pool
+            .map_or(SWITCH_THRESHOLD, |pool| pool.hard_threshold)
+            .to_bits();
+        if self.hard_threshold.0.load(Ordering::Relaxed) != bits {
+            self.hard_threshold.0.store(bits, Ordering::Relaxed);
+        }
     }
 
     /// Return account indices in the order an adapter should try them.
@@ -1000,6 +1027,7 @@ impl AccountPool {
 
         let provider = provider.to_string();
         self.sync_enabled_accounts(&provider, accounts);
+        self.note_pool_config(pool);
         let ident_reps = collapse_representatives(&provider, accounts);
         let distinct = ident_reps.len();
         // An empty header is not a session. `Some("")` would otherwise take the
@@ -2554,6 +2582,7 @@ impl AccountPool {
                             && !capped
                             && !(is_fable && capped_fable),
                         near_quota: quota.near,
+                        exhausted: shared_window_exhausted(&health.quota),
                         capped,
                         capped_fable,
                         cap_clears_at: cap_exclusion(&health.quota, account, false, pool)
@@ -2804,6 +2833,72 @@ impl AccountPool {
             }
         }
         minimums
+    }
+
+    /// Per-upstream, per-window pool headroom in seconds at `now`, computed
+    /// from live state at call time. Only finite values are returned.
+    pub(crate) fn pool_headroom_seconds(&self, now: u64) -> Vec<(String, &'static str, f64)> {
+        let threshold = f64::from_bits(self.hard_threshold.0.load(Ordering::Relaxed));
+        let entries = self.entries.lock().expect("account health lock poisoned");
+        let memberships = self
+            .memberships
+            .lock()
+            .expect("account membership lock poisoned");
+        let mut series = Vec::new();
+        for (upstream, members) in memberships.iter() {
+            let mut best: [Option<f64>; 3] = [None; 3];
+            for (key, enabled) in members {
+                if !enabled {
+                    continue;
+                }
+                let Some(health) = entries.get(key) else {
+                    continue;
+                };
+                if health.paused_providers.contains(upstream) {
+                    continue;
+                }
+                let quota = &health.quota;
+                let windows = [
+                    (
+                        quota.utilization_5h,
+                        quota.reset_5h,
+                        quota.observed_at_5h,
+                        WINDOW_5H_SECS,
+                    ),
+                    (
+                        quota.utilization_7d,
+                        quota.reset_7d,
+                        quota.observed_at_7d,
+                        WINDOW_7D_SECS,
+                    ),
+                    (
+                        quota.utilization_7d_oi,
+                        quota.reset_7d_oi,
+                        quota.observed_at_7d_oi,
+                        WINDOW_7D_SECS,
+                    ),
+                ];
+                for (best, (utilization, reset, observed_at, len)) in best.iter_mut().zip(windows) {
+                    let Some(value) = account_window_headroom(
+                        utilization,
+                        reset,
+                        observed_at,
+                        len,
+                        threshold,
+                        now,
+                    ) else {
+                        continue;
+                    };
+                    *best = Some(best.map_or(value, |current| current.max(value)));
+                }
+            }
+            for (window, value) in ["5h", "7d", "7d_oi"].into_iter().zip(best) {
+                if let Some(value) = value.filter(|value| value.is_finite()) {
+                    series.push((upstream.clone(), window, value));
+                }
+            }
+        }
+        series
     }
 
     fn cancel_reprobe_token(&self, key: &AccountKey, token: u64) {
@@ -3244,6 +3339,21 @@ fn governing_cooldown(
         .max()
 }
 
+/// Whether a shared quota window (5-hour or weekly) is used up, for the admin
+/// view: rejected by the provider, or observed at 100%. The rejection test is
+/// [`assess_quota`]'s for a non-Fable request, so a stale aggregate `status`
+/// counts only when no per-window status has been recorded, and an isolated
+/// `7d_oi` rejection (Fable-only) does not count: other models are still served.
+fn shared_window_exhausted(quota: &QuotaState) -> bool {
+    let has_window_status =
+        quota.status_5h.is_some() || quota.status_7d.is_some() || quota.status_7d_oi.is_some();
+    let rejected = quota.status_5h.as_deref() == Some("rejected")
+        || quota.status_7d.as_deref() == Some("rejected")
+        || (!has_window_status && quota.status.as_deref() == Some("rejected"));
+    let used_up = |utilization: Option<f64>| utilization.is_some_and(|value| value >= 1.0);
+    rejected || used_up(quota.utilization_5h) || used_up(quota.utilization_7d)
+}
+
 fn governing_weekly_reset(quota: &QuotaState, is_fable: bool) -> Option<u64> {
     if is_fable && quota.utilization_7d_oi.is_some() {
         quota.reset_7d_oi
@@ -3543,6 +3653,46 @@ fn window_headroom(
     let time_to_exhaust = budget_left / burn_speed;
     let time_to_reset = reset.saturating_sub(now_clamped) as f64;
     time_to_exhaust - time_to_reset
+}
+
+/// One account's headroom for one window at `now`. +∞ when it has no live
+/// utilization (absent, or past the same reset/observation cap that
+/// `expire_stale_quota` applies); an account at or over `threshold`
+/// reports the negative time until its window recovers, or `None` (skip)
+/// when it has no recovery time.
+fn account_window_headroom(
+    utilization: Option<f64>,
+    reset: Option<u64>,
+    observed_at: Option<u64>,
+    window_len: u64,
+    threshold: f64,
+    now: u64,
+) -> Option<f64> {
+    let Some(utilization) = utilization.filter(|value| value.is_finite()) else {
+        return Some(f64::INFINITY);
+    };
+    let expiry = [reset, observed_at.map(|at| at.saturating_add(window_len))]
+        .into_iter()
+        .flatten()
+        .min();
+    if expiry.is_some_and(|expiry| expiry <= now) {
+        return Some(f64::INFINITY);
+    }
+    let headroom = window_headroom(
+        utilization.clamp(0.0, 1.0),
+        reset,
+        window_len,
+        threshold,
+        now,
+    );
+    if headroom != f64::NEG_INFINITY {
+        return Some(headroom);
+    }
+    expiry.map(|expiry| -(expiry.saturating_sub(now) as f64))
+}
+
+pub(crate) fn unix_now_secs() -> u64 {
+    unix_now()
 }
 
 fn unix_now() -> u64 {
@@ -9471,6 +9621,74 @@ mod tests {
         edit(&mut health.quota);
     }
 
+    #[test]
+    fn shared_window_exhausted_follows_the_per_window_rejection_rules() {
+        let quota = |edit: &dyn Fn(&mut QuotaState)| {
+            let mut quota = QuotaState::default();
+            edit(&mut quota);
+            shared_window_exhausted(&quota)
+        };
+        assert!(!quota(&|_| {}), "no observation is not exhausted");
+        assert!(
+            quota(&|q| q.status_7d = Some("rejected".into())),
+            "weekly rejected"
+        );
+        assert!(
+            quota(&|q| q.status_5h = Some("rejected".into())),
+            "5-hour rejected"
+        );
+        assert!(
+            quota(&|q| q.utilization_7d = Some(1.0)),
+            "weekly observed at 100%"
+        );
+        assert!(
+            !quota(&|q| q.utilization_5h = Some(0.99)),
+            "99% can still serve"
+        );
+        assert!(
+            !quota(&|q| q.status_7d_oi = Some("rejected".into())),
+            "a Fable-only rejection leaves other models served"
+        );
+        // A stale aggregate rejection is ignored once per-window statuses
+        // exist, exactly as selection ignores it.
+        assert!(!quota(&|q| {
+            q.status = Some("rejected".into());
+            q.status_7d = Some("allowed".into());
+        }));
+        assert!(
+            quota(&|q| q.status = Some("rejected".into())),
+            "with no per-window status the aggregate is all there is"
+        );
+    }
+
+    #[test]
+    fn snapshot_reports_exhausted_only_for_a_used_up_shared_window() {
+        let pool = AccountPool::new();
+        let accounts = vec![account("spent"), account("warned"), account("fable-out")];
+        set_quota(&pool, "anthropic", &accounts[0], |q| {
+            q.utilization_7d = Some(1.0);
+            q.status_7d = Some("rejected".into());
+        });
+        set_quota(&pool, "anthropic", &accounts[1], |q| {
+            q.utilization_5h = Some(0.99);
+            q.status_5h = Some("allowed_warning".into());
+        });
+        set_quota(&pool, "anthropic", &accounts[2], |q| {
+            q.utilization_7d_oi = Some(1.0);
+            q.status_7d_oi = Some("rejected".into());
+        });
+        // The snapshot reports observed accounts only; `set_quota` writes the
+        // quota alone.
+        for health in pool.entries.lock().unwrap().values_mut() {
+            health.observed = true;
+        }
+        let snaps = pool.snapshot("anthropic", &accounts, None, None);
+        assert!(snaps[0].exhausted);
+        assert!(!snaps[1].exhausted, "near its threshold, not out");
+        assert!(snaps[1].near_quota);
+        assert!(!snaps[2].exhausted, "Fable-only");
+    }
+
     const FABLE: Option<&str> = Some("claude-fable-5");
     const OPUS: Option<&str> = Some("claude-opus-4-8");
 
@@ -10002,6 +10220,260 @@ mod tests {
             resolved_threshold(QuotaWindow::Weekly, &account("bare"), None),
             SWITCH_THRESHOLD
         );
+    }
+
+    fn usage_5h(utilization: f64, resets_at: u64) -> UsageSnapshot {
+        UsageSnapshot {
+            five_hour: Some(UsageWindow {
+                utilization,
+                resets_at: Some(resets_at),
+            }),
+            seven_day: None,
+            seven_day_oi: None,
+        }
+    }
+
+    fn headroom(pool: &AccountPool, provider: &str, window: &str, now: u64) -> Option<f64> {
+        pool.pool_headroom_seconds(now)
+            .into_iter()
+            .find(|(upstream, w, _)| upstream == provider && *w == window)
+            .map(|(_, _, value)| value)
+    }
+
+    fn headroom_5h(pool: &AccountPool, provider: &str, now: u64) -> Option<f64> {
+        headroom(pool, provider, "5h", now)
+    }
+
+    #[test]
+    fn pool_headroom_is_the_maximum_across_enabled_accounts() {
+        let pool = AccountPool::new();
+        let provider = "headroom-max";
+        let (tight, loose) = (account("tight"), account("loose"));
+        pool.sync_enabled_accounts(provider, &[tight.clone(), loose.clone()]);
+        let now = unix_now();
+        let reset = now + 9_000;
+        pool.note_usage(provider, &tight, &usage_5h(0.5, reset));
+        pool.note_usage(provider, &loose, &usage_5h(0.1, reset));
+
+        let expected = window_headroom(0.1, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
+        assert!(expected > 0.0);
+        assert_eq!(headroom_5h(&pool, provider, now), Some(expected));
+        assert_eq!(headroom(&pool, provider, "7d", now), None);
+    }
+
+    #[test]
+    fn pool_headroom_excludes_disabled_and_paused_accounts() {
+        let pool = AccountPool::new();
+        let provider = "headroom-excluded";
+        let tight = account("tight");
+        let disabled = AccountConfig {
+            disabled: true,
+            ..account("disabled")
+        };
+        let paused = account("paused");
+        let all = [tight.clone(), disabled.clone(), paused.clone()];
+        pool.sync_enabled_accounts(provider, &all);
+        let now = unix_now();
+        let reset = now + 9_000;
+        pool.note_usage(provider, &tight, &usage_5h(0.5, reset));
+        pool.note_usage(provider, &disabled, &usage_5h(0.1, reset));
+        pool.note_usage(provider, &paused, &usage_5h(0.05, reset));
+        pool.set_paused(provider, &paused, true);
+
+        let expected = window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
+        assert_eq!(headroom_5h(&pool, provider, now), Some(expected));
+
+        pool.set_paused(provider, &paused, false);
+        let resumed = window_headroom(0.05, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
+        assert_eq!(headroom_5h(&pool, provider, now), Some(resumed));
+    }
+
+    #[test]
+    fn pool_headroom_omits_series_when_unconstrained() {
+        let pool = AccountPool::new();
+        let provider = "headroom-infinite";
+        let acct = account("a");
+        pool.sync_enabled_accounts(provider, std::slice::from_ref(&acct));
+        let now = unix_now();
+        pool.note_usage(provider, &acct, &usage_5h(0.0, now + 9_000));
+        assert_eq!(headroom_5h(&pool, provider, now), None);
+
+        // Positive utilization with no reset projects nothing either.
+        let no_reset = account("no-reset");
+        let no_reset_provider = "headroom-no-reset";
+        pool.sync_enabled_accounts(no_reset_provider, std::slice::from_ref(&no_reset));
+        pool.note_quota(
+            no_reset_provider,
+            &no_reset,
+            &quota_headers(&[(
+                "anthropic-ratelimit-unified-5h-utilization",
+                "0.4".to_string(),
+            )]),
+        );
+        assert_eq!(headroom_5h(&pool, no_reset_provider, now), None);
+    }
+
+    #[test]
+    fn pool_headroom_counts_an_account_without_utilization_as_unconstrained() {
+        let pool = AccountPool::new();
+        let provider = "headroom-unobserved";
+        let (fresh, exhausted) = (account("fresh"), account("exhausted"));
+        pool.sync_enabled_accounts(provider, &[fresh.clone(), exhausted.clone()]);
+        let now = unix_now();
+        pool.note_usage(provider, &fresh, &usage_5h(0.5, now + 9_000));
+        pool.entries
+            .lock()
+            .unwrap()
+            .get_mut(&account_key(provider, &fresh))
+            .unwrap()
+            .quota
+            .utilization_5h = None;
+        pool.note_usage(provider, &exhausted, &usage_5h(0.99, now + 1_800));
+        assert_eq!(headroom_5h(&pool, provider, now), None);
+    }
+
+    #[test]
+    fn pool_headroom_refreshes_every_provider_sharing_an_account() {
+        let pool = AccountPool::new();
+        let (alias_a, alias_b) = ("headroom-alias-a", "headroom-alias-b");
+        let mut shared = account("shared");
+        shared.store_family = Some(StoreFamily::Chatgpt);
+        shared.store_entry = true;
+        assert_eq!(account_key(alias_a, &shared), account_key(alias_b, &shared));
+        pool.sync_enabled_accounts(alias_a, std::slice::from_ref(&shared));
+        pool.sync_enabled_accounts(alias_b, std::slice::from_ref(&shared));
+        let now = unix_now();
+        let reset = now + 9_000;
+        pool.note_usage(alias_a, &shared, &usage_5h(0.5, reset));
+        let expected = window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
+        assert_eq!(headroom_5h(&pool, alias_a, now), Some(expected));
+        assert_eq!(headroom_5h(&pool, alias_b, now), Some(expected));
+    }
+
+    #[test]
+    fn pool_headroom_exhausted_window_reports_negative_time_to_reset() {
+        let pool = AccountPool::new();
+        let provider = "headroom-exhausted";
+        let acct = account("a");
+        pool.sync_enabled_accounts(provider, std::slice::from_ref(&acct));
+        let now = unix_now();
+        pool.note_usage(provider, &acct, &usage_5h(0.99, now + 1_800));
+        assert_eq!(headroom_5h(&pool, provider, now), Some(-1_800.0));
+    }
+
+    #[test]
+    fn pool_headroom_is_emitted_without_pool_config_and_follows_hard_threshold() {
+        let pool = AccountPool::new();
+        let provider = "headroom-no-pool";
+        let acct = account("a");
+        pool.sync_enabled_accounts(provider, std::slice::from_ref(&acct));
+        let now = unix_now();
+        let reset = now + 9_000;
+        pool.note_usage(provider, &acct, &usage_5h(0.985, reset));
+        assert_eq!(headroom_5h(&pool, provider, now), Some(-9_000.0));
+
+        let strict = PoolConfig {
+            hard_threshold: 0.99,
+            ..Default::default()
+        };
+        pool.note_pool_config(Some(&strict));
+        pool.note_usage(provider, &acct, &usage_5h(0.985, reset));
+        let expected = window_headroom(0.985, Some(reset), WINDOW_5H_SECS, 0.99, now);
+        assert_eq!(headroom_5h(&pool, provider, now), Some(expected));
+    }
+
+    #[test]
+    fn pool_headroom_follows_membership_changes_and_forgotten_identities() {
+        let pool = AccountPool::new();
+        let provider = "headroom-membership";
+        let (tight, loose) = (account("tight"), account("loose"));
+        pool.sync_enabled_accounts(provider, &[tight.clone(), loose.clone()]);
+        let now = unix_now();
+        let reset = now + 9_000;
+        pool.note_usage(provider, &tight, &usage_5h(0.5, reset));
+        pool.note_usage(provider, &loose, &usage_5h(0.1, reset));
+
+        let disabled = AccountConfig {
+            disabled: true,
+            ..loose.clone()
+        };
+        pool.sync_enabled_accounts(provider, &[tight.clone(), disabled]);
+        let expected = window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
+        assert_eq!(headroom_5h(&pool, provider, now), Some(expected));
+
+        pool.sync_enabled_accounts(provider, &[]);
+        assert_eq!(headroom_5h(&pool, provider, now), None);
+
+        let forgotten_provider = "headroom-forgotten";
+        let mut stored = account("stored");
+        stored.store_family = Some(StoreFamily::Chatgpt);
+        stored.store_entry = true;
+        pool.sync_enabled_accounts(forgotten_provider, std::slice::from_ref(&stored));
+        pool.note_usage(forgotten_provider, &stored, &usage_5h(0.5, reset));
+        assert!(headroom_5h(&pool, forgotten_provider, now).is_some());
+        pool.forget_identity(StoreFamily::Chatgpt, "stored", Some("stored"));
+        assert_eq!(headroom_5h(&pool, forgotten_provider, now), None);
+    }
+
+    #[test]
+    fn pool_headroom_expires_at_the_observation_cap_when_it_precedes_the_reset() {
+        let pool = AccountPool::new();
+        let provider = "headroom-cap";
+        let acct = account("a");
+        pool.sync_enabled_accounts(provider, std::slice::from_ref(&acct));
+        let now = unix_now();
+        pool.note_usage(provider, &acct, &usage_5h(0.5, now + 9_000));
+        pool.entries
+            .lock()
+            .unwrap()
+            .get_mut(&account_key(provider, &acct))
+            .unwrap()
+            .quota
+            .observed_at_5h = Some(now + 100 - WINDOW_5H_SECS);
+
+        assert!(headroom_5h(&pool, provider, now + 50).is_some());
+        assert_eq!(headroom_5h(&pool, provider, now + 200), None);
+    }
+
+    #[test]
+    fn pool_headroom_reads_the_live_hard_threshold() {
+        let pool = AccountPool::new();
+        let provider = "headroom-live-threshold";
+        let acct = account("a");
+        pool.sync_enabled_accounts(provider, std::slice::from_ref(&acct));
+        let now = unix_now();
+        let reset = now + 9_000;
+        pool.note_usage(provider, &acct, &usage_5h(0.5, reset));
+        let before = window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, now);
+        assert_eq!(headroom_5h(&pool, provider, now), Some(before));
+
+        let strict = PoolConfig {
+            hard_threshold: 0.4,
+            ..Default::default()
+        };
+        pool.note_pool_config(Some(&strict));
+        assert_eq!(headroom_5h(&pool, provider, now), Some(-9_000.0));
+    }
+
+    #[test]
+    fn pool_headroom_is_computed_at_collection_time() {
+        let pool = AccountPool::new();
+        let provider = "headroom-fresh";
+        let acct = account("a");
+        pool.sync_enabled_accounts(provider, std::slice::from_ref(&acct));
+        let now = unix_now();
+        let reset = now + 9_000;
+        pool.note_usage(provider, &acct, &usage_5h(0.5, reset));
+
+        let at_start = headroom_5h(&pool, provider, now).unwrap();
+        let later = now + 3_000;
+        let at_later = headroom_5h(&pool, provider, later).unwrap();
+        assert_eq!(
+            at_later,
+            window_headroom(0.5, Some(reset), WINDOW_5H_SECS, SWITCH_THRESHOLD, later)
+        );
+        assert_ne!(at_start, at_later);
+        assert_eq!(headroom_5h(&pool, provider, reset), None);
     }
 
     #[test]

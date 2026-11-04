@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.63.0](https://github.com/pleaseai/shunt/compare/v0.62.0...v0.63.0) (2026-11-03)
+
+
+### Features
+
+* **metrics:** export pool quota headroom as shunt.pool.quota_headroom_seconds ([#889](https://github.com/pleaseai/shunt/issues/889)) ([7835f0b](https://github.com/pleaseai/shunt/commit/7835f0be74d72104f63f6f0589273e3f7fd70e06))
+
+## [0.62.0](https://github.com/pleaseai/shunt/compare/v0.61.0...v0.62.0) (2026-11-03)
+
+
+### Features
+
+* add chatgpt-plan provider via Sign in with ChatGPT ([#871](https://github.com/pleaseai/shunt/issues/871)) ([48b24ec](https://github.com/pleaseai/shunt/commit/48b24ec5ba466c829ee6fcb5ecf0b61a0259eaf5))
+* **admin:** give the dashboard a favicon ([#842](https://github.com/pleaseai/shunt/issues/842)) ([6f6f7b1](https://github.com/pleaseai/shunt/commit/6f6f7b1ff049011e38b641d7cca0b3c5ea1477ed))
+* **admin:** keep the usage table current and show the next quota check ([#846](https://github.com/pleaseai/shunt/issues/846)) ([a33fc90](https://github.com/pleaseai/shunt/commit/a33fc9095e54ad70b455426761dbb85c574977e9))
+* **admin:** show a used-up account as Exhausted, not Near quota ([#844](https://github.com/pleaseai/shunt/issues/844)) ([b67d051](https://github.com/pleaseai/shunt/commit/b67d051cb71a0f655e388d75b129a614f31cb2e0))
+* **codex:** native tool search for gpt-6.1-terra ([#882](https://github.com/pleaseai/shunt/issues/882)) ([e54808d](https://github.com/pleaseai/shunt/commit/e54808d356fe7759a9b959659eb381bda590d05a))
+* **config:** add the Cheaper Inference preset ([#845](https://github.com/pleaseai/shunt/issues/845)) ([86fce6b](https://github.com/pleaseai/shunt/commit/86fce6b4d9871b0799a84dcbd53f581a6b09065d))
+
+
+### Bug Fixes
+
+* **proxy:** refuse cross-origin browser requests without inbound auth ([#840](https://github.com/pleaseai/shunt/issues/840)) ([1bb4360](https://github.com/pleaseai/shunt/commit/1bb4360e7433a1befa828c031779cda16e48743c))
+
 ## [0.61.0](https://github.com/pleaseai/shunt/compare/v0.60.0...v0.61.0) (2026-10-30)
 
 

@@ -1,5 +1,5 @@
 //! Inbound OpenAI Responses (Codex) endpoint (`[server.codex_endpoint]`, M11) —
-//! the raw-passthrough counterpart to `tests/codex_multi_account.rs`.
+//! the raw-passthrough counterpart to `tests/multi_account/codex_multi_account.rs`.
 //!
 //! Where the Anthropic Messages path (`/v1/messages`) translates a request into
 //! the Responses shape and re-shapes the reply, this endpoint forwards the
@@ -32,7 +32,7 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 /// A raw OpenAI Responses request body, exactly as the Codex CLI would send it —
 /// note `input`/`instructions` (Responses shape), not `messages` (Anthropic). It

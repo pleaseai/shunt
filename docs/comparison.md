@@ -277,7 +277,7 @@ toward being a fleet gateway and warrant a conscious decision first.
   genuinely mid-stream — restarting would duplicate output — so it is surfaced as a
   clean Anthropic `error` SSE event rather than replayed; mid-turn resume via
   `previous_response_id` is a deliberate non-goal (partial output is already
-  committed to the client). Covered by `tests/codex_websocket_fallback.rs`.
+  committed to the client). Covered by `tests/codex/codex_websocket_fallback.rs`.
 
 - **D. Codex WS: speculative prewarm (`generate:false`) (already tracked: [#47]).** Explicitly out of scope
   today (`docs/m7-codex-websocket.md:53-58`), but it is a real Codex latency

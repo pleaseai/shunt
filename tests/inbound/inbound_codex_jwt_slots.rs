@@ -26,7 +26,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, Web
 use tungstenite::client::IntoClientRequest;
 use wiremock::MockServer;
 
-mod common;
+use crate::common;
 use common::{
     codex_jwt::{
         auth, config, env, jwt_for, now, start, upstream, Gateway, ADMIN_ENV, ADMIN_TOKEN,

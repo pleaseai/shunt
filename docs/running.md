@@ -202,6 +202,7 @@ Both metric sinks export the same low-cardinality series:
 | `shunt.stage_router.decisions` | Counter | `model`, `tier`, `source` | Stage-router tier decisions, by the router's model id (as matched, so with any `[1m]` hint already stripped), the chosen tier, and why it was chosen; `count_tokens` probes are excluded. |
 | `shunt.stage_router.flips` | Counter | `model`, `from`, `to` | Decisions that moved a session off its pinned tier. The two directions stay separate because escalation is deliberately easier than de-escalation. |
 | `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, non-stale accounts for `5h`, `7d`, or `7d_oi`. |
+| `shunt.pool.quota_headroom_seconds` | Gauge | `provider`, `window` | Seconds of quota margin before the window resets, as the maximum across enabled, unpaused accounts at the hard threshold (`[server.pool] hard_threshold`, else 0.98), for `5h`, `7d`, or `7d_oi`. Burn speed is the window average (utilization / elapsed), not the recent pace, and the maximum is optimistic because traffic shifts to the surviving account and its burn rises. Negative means projected to run dry before the reset, or minus the seconds until the reset when already exhausted; the series is omitted while any such account projects no exhaustion (no utilization observed, utilization 0, or no reset time). Alert with `shunt_pool_quota_headroom_seconds < 0`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Account rotations and pool exhaustion by low-cardinality cause. |
 | `shunt.pool.reprobes` | Counter | `provider` | Reprobes committed at the first HTTP dispatch for stale near-quota Codex/ChatGPT accounts; WebSocket-enabled providers count inbound HTTP probes only. |
 
@@ -838,7 +839,7 @@ an accurate window, one model at a time. (Subagents are a separate path — see 
 > `gpt-5.2-codex`) — it only accepts the account's live-entitled slugs. The authoritative catalog of
 > Codex slugs (and the reasoning levels each accepts) is openai/codex's
 > [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-> The current listed slugs are **`gpt-6-astra`**, **`gpt-6-sol`**, **`gpt-6-luna`**, **`gpt-6.1-sol`** (latest),
+> The current listed slugs are **`gpt-6-astra`**, **`gpt-6-sol`**, **`gpt-6-luna`**, **`gpt-6.1-sol`**, **`gpt-6.1-terra`** (latest),
 > **`gpt-5.6-sol`**, **`gpt-5.6-terra`**, **`gpt-5.6-luna`** (frontier), and **`gpt-5.5`** /
 > **`gpt-5.4`**; older accounts may only be entitled to the
 > earlier ones. Use `upstream_model` in a route, or pass an entitled slug via

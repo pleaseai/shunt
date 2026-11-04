@@ -2,7 +2,7 @@
 //! WebSocket (codex-spend-caps, T003).
 //!
 //! Caps are created through the admin API and spend is seeded straight into
-//! the meter, as in `tests/codex_spend_enforcement.rs`. These pin what a Codex
+//! the meter, as in `tests/codex/codex_spend_enforcement.rs`. These pin what a Codex
 //! CLI sees when a `response.create` turn arrives at a cap: one terminal
 //! `error` frame (`status` 429, `usage_limit_reached`, `resets_at`, the promo
 //! header), no upstream request, and a socket that stays open and re-assesses
@@ -65,7 +65,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 const TOKENS_ENV: &str = "SHUNT_TEST_CODEX_SPEND_WS_TOKENS";
 const ADMIN_ENV: &str = "SHUNT_TEST_CODEX_SPEND_WS_ADMIN";
