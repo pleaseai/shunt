@@ -51,7 +51,7 @@ store_contract_test!(a_v3_snapshot_imports_its_bindings, |store| {
 
     let report = import_all(&store, &sources).await.unwrap();
     assert_eq!(report.pool, Outcome::Imported { rows: 1 });
-    let rows = pool_session_repo::load_bindings(&store).await.unwrap();
+    let rows = pool_session_repo::load_bindings(&store).await.unwrap().0;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].session_hash, "a".repeat(64));
     assert_eq!(rows[0].account, key("a"));

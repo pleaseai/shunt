@@ -72,7 +72,7 @@ fn bound(state: &AppState, accounts: &[AccountConfig], session: &str) -> Option<
 }
 
 async fn stored(store: &Store) -> Vec<BindingRow> {
-    pool_session_repo::load_bindings(store).await.unwrap()
+    pool_session_repo::load_bindings(store).await.unwrap().0
 }
 
 async fn table_len(store: &Store) -> i64 {
@@ -172,6 +172,10 @@ store_contract_test!(
         let state = pool_state(&["a"]);
         restore_from_store(&state, &store).await.unwrap();
         assert!(state.accounts.export_bindings().is_empty());
+        assert!(
+            state.accounts.take_dirty(),
+            "restore must leave the pool dirty so the flush deletes the dropped row"
+        );
         state.accounts.mark_dirty();
         let writer = persister(&state, &store);
         writer.flush_now().await.unwrap();

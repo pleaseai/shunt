@@ -11,8 +11,10 @@
 //! current export with the rows last written ([`Snapshot`]) and
 //! [`apply_diff`] upserts only new or changed rows and deletes the ones the
 //! export no longer holds (moved away, expired, evicted, forgotten). A binding
-//! is a cache, so [`load_bindings`] drops a row it cannot decode with a
-//! warning instead of failing boot.
+//! is a cache, so [`load_bindings`] drops a row whose account key is not valid
+//! JSON or whose `last_used` is negative with a warning instead of failing
+//! boot, and the next flush deletes it; a column of the wrong storage type is
+//! still a store error.
 
 use std::collections::HashMap;
 
@@ -145,16 +147,18 @@ pub(crate) async fn read_snapshot(tx: &mut Tx) -> Result<Snapshot, StoreError> {
         .collect()
 }
 
-/// Every stored binding that decodes. A row whose account key is not valid
-/// JSON or whose `last_used` is negative is dropped with a warning; it stays
-/// in the table until the first flush, which reads the table's own
-/// [`read_snapshot`] and so deletes it. Session-hash shape, expiry and the cap
-/// are left to `AccountPool::import_bindings`, as on the file path.
-pub(crate) async fn load_bindings(store: &Store) -> Result<Vec<BindingRow>, StoreError> {
+/// Every stored binding that decodes, and whether any row was dropped. A row
+/// whose account key is not valid JSON or whose `last_used` is negative is
+/// dropped with a warning; it stays in the table until the first flush, which
+/// reads the table's own [`read_snapshot`] and so deletes it. Session-hash
+/// shape, expiry and the cap are left to `AccountPool::import_bindings`, as on
+/// the file path.
+pub(crate) async fn load_bindings(store: &Store) -> Result<(Vec<BindingRow>, bool), StoreError> {
     let mut tx = store.db().begin().await?;
     let fetched = tx.fetch_all(SELECT, &[]).await;
     tx.rollback().await?;
     let mut rows = Vec::new();
+    let mut dropped = false;
     for row in fetched? {
         let provider = row.text(0)?;
         let account = match serde_json::from_str::<AccountKey>(&row.text(2)?) {
@@ -165,6 +169,7 @@ pub(crate) async fn load_bindings(store: &Store) -> Result<Vec<BindingRow>, Stor
                     %error,
                     "dropping a stored session binding whose account key does not decode"
                 );
+                dropped = true;
                 continue;
             }
         };
@@ -175,6 +180,7 @@ pub(crate) async fn load_bindings(store: &Store) -> Result<Vec<BindingRow>, Stor
                 last_used,
                 "dropping a stored session binding with a negative last_used"
             );
+            dropped = true;
             continue;
         };
         rows.push(BindingRow {
@@ -184,7 +190,7 @@ pub(crate) async fn load_bindings(store: &Store) -> Result<Vec<BindingRow>, Stor
             last_used,
         });
     }
-    Ok(rows)
+    Ok((rows, dropped))
 }
 
 #[cfg(test)]

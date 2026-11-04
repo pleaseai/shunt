@@ -120,8 +120,10 @@ Spend and gateway tokens do not have that window.
    store. Bindings are restored with the same filter as the state file: a
    binding is dropped when it has expired, its account is no longer configured
    for its provider, or its hash is malformed, and the 10,000 cap applies. A
-   row that does not decode is dropped with a warning instead of failing the
-   boot. The next flush deletes the dropped rows.
+   row whose account key is not valid JSON or whose `last_used` is negative is
+   dropped with a warning instead of failing the boot, and the pool is marked
+   dirty so the next flush deletes the dropped rows; a column of the wrong
+   storage type is still a store error.
 7. Renew the hold once more, refusing to boot if another process took it, and
    start the pool flush task.
 

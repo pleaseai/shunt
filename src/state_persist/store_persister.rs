@@ -31,7 +31,11 @@ pub async fn restore_from_store(state: &AppState, store: &Store) -> Result<(), S
     // Same filter as the file path: expired, unconfigured and malformed rows
     // are dropped (and the pool marked dirty so the next flush deletes them),
     // the cap holds, and `any_bindings` is raised.
-    let bindings = restore_bindings(state, pool_session_repo::load_bindings(store).await?).await;
+    let (rows, dropped) = pool_session_repo::load_bindings(store).await?;
+    if dropped {
+        state.accounts.mark_dirty();
+    }
+    let bindings = restore_bindings(state, rows).await;
     tracing::info!(
         accounts = count,
         bindings,

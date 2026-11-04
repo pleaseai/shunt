@@ -1558,9 +1558,11 @@ async fn exhausted_error(
 
 /// The pooled provider's auth mode — `chatgpt_oauth`, or `xai_oauth` since the
 /// xAI pool rides this loop (docs/m18-xai-multi-account.md) — read the way
-/// `forward` reads it. It only picks gateway-owned error wording
-/// ([`mapped_upstream_error`], [`no_upstream_response_message`]); credential
-/// resolution and classification key on each account's `store_family`.
+/// `forward` reads it. It picks the gateway-owned error wording
+/// ([`mapped_upstream_error`], [`no_upstream_response_message`]) and the auth
+/// `SessionCommit::for_route` reads for the `thinking_bound` switch label
+/// (always false on a Responses route); credential resolution and
+/// classification key on each account's `store_family`.
 pub(super) fn provider_auth(state: &AppState, route: &Route) -> AuthMode {
     state
         .config

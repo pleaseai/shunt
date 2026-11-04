@@ -35,7 +35,7 @@ async fn write(store: &Store, previous: &Snapshot, rows: &[BindingRow]) -> Snaps
 }
 
 async fn stored(store: &Store) -> Vec<BindingRow> {
-    let mut rows = load_bindings(store).await.unwrap();
+    let mut rows = load_bindings(store).await.unwrap().0;
     rows.sort_by(|a, b| a.session_hash.cmp(&b.session_hash));
     rows
 }
