@@ -15,7 +15,7 @@ use shunt::{
 };
 use tokio::task::JoinHandle;
 
-mod common;
+use crate::common;
 
 struct TestGateway {
     base_url: String,

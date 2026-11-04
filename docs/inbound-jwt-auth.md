@@ -286,12 +286,21 @@ stripped by name before forwarding.
 **The inbound Codex endpoint additionally reads two optional slots** (§1, "Codex gateway
 OAuth"), because Codex reserves `Authorization` for `gateway_oauth`. Its routes are the
 Responses routes (HTTP and WebSocket on `/v1/responses`, `/backend-api/codex/responses`,
-`/responses`), `/alpha/search`, and the analytics sink. The order is: static token, then
+`/responses`), `/alpha/search`, and the analytics sink. The Codex-shaped model discovery
+responses read them too: `GET /models`, `GET /backend-api/codex/models`, and `GET /v1/models`
+when `[server.codex_endpoint]` is enabled and the request carries the `client_version` query
+field. With ChatGPT sign-in and gateway OAuth both on, Codex fetches its catalog with the
+ChatGPT token in `Authorization` and the IdP token in the cookie or header, so discovery needs
+the slots to answer `200`; before this it answered `401`. The order is: static token, then
 `Authorization: Bearer` JWT, then `jwt_header` (the raw JWT or `Bearer <jwt>`, scheme in any
 case), then `jwt_cookie`; the first slot that verifies wins and the same
 `[[server.auth.jwt]]` rules apply to every slot. A ChatGPT token in `Authorization` fails
-issuer selection and the scan moves on. `/v1/messages`, `/v1/models`, `/usage`, and the
-Codex discovery paths stay `Authorization: Bearer`-only.
+issuer selection and the scan moves on. The discovery variants keep every credential they
+accepted before: static tokens in the configured header, `x-api-key`, or `Authorization:
+Bearer`, a Bearer JWT, and a `[server.gateway]` login token. The answer is still the empty
+Codex catalog `{"models":[]}`. `/v1/messages`, `/usage`, and the Anthropic-shaped
+`/v1/models` (no `client_version`, or the Codex endpoint off) stay `Authorization:
+Bearer`-only for JWTs.
 
 - **A slot is examined only when the scan reaches it.** A configured header or cookie name
   that appears more than once rejects the request, unless an earlier slot already
@@ -327,7 +336,8 @@ issuer is left alone, since it may be the caller's own upstream credential.
 
 The gate covers the routes `[server.auth]` already guards — injected-credential
 `/v1/messages` and `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`,
-`GET /api/oauth/usage` (off loopback only), and the inbound Codex Responses and analytics routes. Passthrough
+`GET /api/oauth/usage` (off loopback only), the Codex-shaped discovery paths (`GET /models`,
+`GET /backend-api/codex/models`), and the inbound Codex Responses and analytics routes. Passthrough
 inference is never checked, because the caller pays with their own credential; "per-user identity" therefore
 covers the gated routes, not the whole surface.
 

@@ -1,5 +1,5 @@
 //! Inbound OpenAI Responses (Codex) endpoint (`[server.codex_endpoint]`, M11) —
-//! the raw-passthrough counterpart to `tests/codex_multi_account.rs`.
+//! the raw-passthrough counterpart to `tests/multi_account/codex_multi_account.rs`.
 //!
 //! Where the Anthropic Messages path (`/v1/messages`) translates a request into
 //! the Responses shape and re-shapes the reply, this endpoint forwards the
@@ -31,7 +31,8 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
+use crate::common::session_id_for_account;
 
 /// A raw OpenAI Responses request body, exactly as the Codex CLI would send it —
 /// note `input`/`instructions` (Responses shape), not `messages` (Anthropic). It
@@ -752,7 +753,7 @@ async fn session_id_header_sticks_to_one_account() {
 
     // A session id that hashes to account-b (index 1); every request with it must
     // land on account-b.
-    let session_id = common::session_id_for_account(&gateway.state, 1).await;
+    let session_id = session_id_for_account(1, &["acct-sticky-a", "acct-sticky-b"]);
     for _ in 0..3 {
         let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1153,7 +1154,8 @@ async fn restored_stale_quota_reprobes_once_then_uses_healthy_account() {
         state_path,
     ))
     .await;
-    let session_id = common::session_id_for_account(&gateway.state, 0).await;
+    let session_id =
+        session_id_for_account(0, &["acct-inbound-restored-a", "acct-inbound-restored-b"]);
     let logs = Arc::new(Mutex::new(Vec::new()));
     let subscriber = reprobe_log_subscriber(&logs);
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
@@ -1223,7 +1225,8 @@ async fn missing_stale_probe_token_cancels_before_healthy_fallback() {
         state_path,
     ))
     .await;
-    let session_id = common::session_id_for_account(&gateway.state, 0).await;
+    let session_id =
+        session_id_for_account(0, &["acct-inbound-missing-a", "acct-inbound-missing-b"]);
     let logs = Arc::new(Mutex::new(Vec::new()));
     let subscriber = reprobe_log_subscriber(&logs);
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
@@ -1290,7 +1293,7 @@ async fn token_env_401_cools_down_and_rotates_to_next_account() {
 
     // A session id that maps to account-a (index 0) so the 401 account is tried
     // first, then the turn rotates to account-b.
-    let session_id = common::session_id_for_account(&gateway.state, 0).await;
+    let session_id = session_id_for_account(0, &["acct-401-a", "acct-401-b"]);
     let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1353,7 +1356,7 @@ async fn pooled_ttfb_timeout_returns_504_without_replaying() {
     );
     config.server.timeouts.upstream_ttfb_ms = 25;
     let gateway = start_gateway_with(config).await;
-    let session_id = common::session_id_for_account(&gateway.state, 0).await;
+    let session_id = session_id_for_account(0, &["acct-timeout-a", "acct-timeout-b"]);
 
     let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
@@ -1560,6 +1563,8 @@ async fn refresh_failure_cools_down_and_rotates_to_next_account() {
         .mount(&upstream)
         .await;
 
+    // Pin the store account first so its refresh-failure rotation is exercised.
+    let session = session_id_for_account(0, &["acct-refresh-fail-a", "acct-served-b"]);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -1568,8 +1573,6 @@ async fn refresh_failure_cools_down_and_rotates_to_next_account() {
         ],
     ))
     .await;
-    // Pin the store account first so its refresh-failure rotation is exercised.
-    let session = common::session_id_for_account(&gateway.state, 0).await;
 
     let response = post_responses(&gateway, "/responses", Some(&session), None).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1636,6 +1639,7 @@ async fn refresh_retry_still_unauthorized_rotates_to_next_account() {
         .mount(&upstream)
         .await;
 
+    let session = session_id_for_account(0, &["acct-still401-stale", "acct-still401-b"]);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -1644,7 +1648,6 @@ async fn refresh_retry_still_unauthorized_rotates_to_next_account() {
         ],
     ))
     .await;
-    let session = common::session_id_for_account(&gateway.state, 0).await;
 
     let response = post_responses(&gateway, "/responses", Some(&session), None).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1813,6 +1816,7 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
         .mount(&upstream)
         .await;
 
+    let session = session_id_for_account(0, &["acct-retry5xx-stale", "acct-retry5xx-b"]);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -1821,7 +1825,6 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
         ],
     ))
     .await;
-    let session = common::session_id_for_account(&gateway.state, 0).await;
 
     let response = post_responses(&gateway, "/responses", Some(&session), None).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1876,7 +1879,7 @@ async fn model_refusal_rotates_to_next_account() {
     ))
     .await;
 
-    let session_id = common::session_id_for_account(&gateway.state, 0).await;
+    let session_id = session_id_for_account(0, &["acct-refusal-a", "acct-refusal-b"]);
     let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1937,6 +1940,7 @@ async fn model_refusal_after_refresh_rotates_to_next_account() {
         .mount(&upstream)
         .await;
 
+    let session = session_id_for_account(0, &["acct-retryrefusal-stale", "acct-retryrefusal-b"]);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -1945,7 +1949,6 @@ async fn model_refusal_after_refresh_rotates_to_next_account() {
         ],
     ))
     .await;
-    let session = common::session_id_for_account(&gateway.state, 0).await;
 
     let response = post_responses(&gateway, "/responses", Some(&session), None).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -2112,7 +2115,7 @@ async fn inbound_moves_a_cooled_session_once_and_keeps_it() {
     .await;
     let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
     let state = &gateway.state;
-    let session = common::session_id_for_account(state, 0).await;
+    let session = common::session_id_placed_on(state, 0).await;
     let served = |response: &reqwest::Response| {
         response.headers()["x-shunt-account"]
             .to_str()

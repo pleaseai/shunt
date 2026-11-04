@@ -40,33 +40,6 @@ pub(crate) fn hash_session_key(key: &str) -> SessionHash {
     Sha256::digest(key.as_bytes()).into()
 }
 
-/// Stable 64-bit digest of an account key: the first 8 bytes (big-endian) of
-/// SHA-256 over its serde_json bytes. Computed once per pool health entry and
-/// cached there, so a selection does not hash every account again.
-pub(crate) fn account_digest(account: &AccountKey) -> u64 {
-    let digest = Sha256::digest(account_stable_bytes(account));
-    let mut head = [0u8; 8];
-    head.copy_from_slice(&digest[..8]);
-    u64::from_be_bytes(head)
-}
-
-/// Rendezvous weight of a session on an account: the splitmix64 finalizer
-/// over the session hash's first 8 bytes XOR the account digest. Stable across
-/// restarts because no randomized hasher is involved; cheap enough to run for
-/// every account on every session selection.
-pub(crate) fn weight(session: &SessionHash, account_digest: u64) -> u64 {
-    let mut head = [0u8; 8];
-    head.copy_from_slice(&session[..8]);
-    splitmix64(u64::from_be_bytes(head) ^ account_digest)
-}
-
-fn splitmix64(mut z: u64) -> u64 {
-    z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
-}
-
 /// Claude model families whose thinking blocks are bound to the account that
 /// produced them, so another account drops them (ADR-0008 Context).
 const THINKING_BOUND_MODEL_PREFIXES: [&str; 2] = ["claude-sonnet-5-5", "claude-haiku-5-5"];
@@ -84,11 +57,6 @@ pub(crate) fn thinking_bound(adapter: &AdapterKind, auth: AuthMode, upstream_mod
         && THINKING_BOUND_MODEL_PREFIXES
             .iter()
             .any(|prefix| upstream_model.starts_with(prefix))
-}
-
-fn account_stable_bytes(account: &AccountKey) -> Vec<u8> {
-    // Plain strings and unit enums only: serialization cannot fail.
-    serde_json::to_vec(account).unwrap_or_default()
 }
 
 #[derive(Clone)]

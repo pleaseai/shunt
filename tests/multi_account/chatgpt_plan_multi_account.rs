@@ -21,7 +21,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
 
 const PROVIDER: &str = "chatgpt-plan";
 const MODEL: &str = "plan-model";

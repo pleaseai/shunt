@@ -161,27 +161,6 @@ fn export_import_round_trip_drops_expired_and_clamps_future() {
         .is_none());
 }
 
-#[test]
-fn weight_is_deterministic_and_discriminating() {
-    let s = h("s");
-    let a = acct("a");
-    let digest = {
-        let d = Sha256::digest(serde_json::to_vec(&a).unwrap());
-        u64::from_be_bytes(d[..8].try_into().unwrap())
-    };
-    assert_eq!(account_digest(&a), digest);
-    let expected = {
-        let mut z = u64::from_be_bytes(s[..8].try_into().unwrap()) ^ digest;
-        z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    };
-    assert_eq!(weight(&s, digest), expected);
-    assert_ne!(weight(&s, digest), weight(&s, account_digest(&acct("b"))));
-    assert_ne!(weight(&s, digest), weight(&h("t"), digest));
-}
-
 mod thinking_bound_predicate {
     use super::super::thinking_bound;
     use crate::config::AuthMode;

@@ -124,7 +124,8 @@ pub(crate) struct SlotHealth {
     pub(crate) priority: u32,
     /// Governing weekly reset (unix seconds), when known.
     pub(crate) weekly_reset: Option<u64>,
-    /// Rendezvous weight of this session on this identity.
+    /// This identity's place in the session's rendezvous ranking
+    /// (`rank_for_session`), as a weight: the higher, the earlier it ranks.
     pub(crate) weight: u64,
 }
 
@@ -166,8 +167,8 @@ pub(crate) enum Bound {
 pub(crate) struct Placement {
     /// Slot that must lead the order, when one was chosen.
     pub(crate) head: Option<usize>,
-    /// Slot the rotation starts from (the head, or the session's own slot
-    /// when no head was chosen).
+    /// Slot that leads the rotation, ahead of the session's ranking (the
+    /// head, or the session's own slot when no head was chosen).
     pub(crate) start: usize,
     /// The head is the session's first choice and healthy, so the order is
     /// the rotation from it, exactly as today's sticky fast path.

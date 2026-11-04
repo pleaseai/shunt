@@ -1,11 +1,11 @@
 ---
 name: shunt-codex-multi-account-coverage
-description: shunt PR #114 (Codex/ChatGPT multi-account pooling) tests/codex_multi_account.rs + adapters/responses/mod.rs — gap analysis, mirrors PR #70's Anthropic review
+description: shunt PR #114 (Codex/ChatGPT multi-account pooling) tests/multi_account/codex_multi_account.rs + adapters/responses/mod.rs — gap analysis, mirrors PR #70's Anthropic review
 metadata:
   type: project
 ---
 
-Reviewed `tests/codex_multi_account.rs` (9 wiremock integration tests) against
+Reviewed `tests/multi_account/codex_multi_account.rs` (9 wiremock integration tests) against
 `forward_chatgpt_oauth()` in `src/adapters/responses/mod.rs`. Status-code failover matrix
 (401 static/refresh-success/refresh-still-401, 429 always-rotate, 5xx rotate, resolve-failure,
 all-fail 502, exhausted-pool translated envelope) is solidly covered with strong assertions
@@ -17,7 +17,7 @@ Real gaps found (see PR #114 review output for full confidence/severity):
    `provider.websocket = true`, so `ws_enabled` is always false in every one of the 9 tests —
    the entire `if ws_enabled { forward_websocket(...) }` branch (mod.rs ~226-299), including the
    account-name-prefixed pool key the PR's own doc comment calls "the key correctness
-   requirement of the WS integration," is never exercised. `tests/codex_websocket_fallback.rs`
+   requirement of the WS integration," is never exercised. `tests/codex/codex_websocket_fallback.rs`
    tests ws-fallback but has no `AccountConfig`/pool at all (single-account, pre-pool path).
 2. **`FailoverAction::Relay` with a non-success status (e.g. 400) is untested for the pool
    path.** No test proves a 4xx client error from account-a returns immediately (mod.rs

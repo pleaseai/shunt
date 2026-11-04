@@ -18,7 +18,10 @@ threshold. Otherwise it falls back along an order every displaced session shares
 priority, then headroom, or the soonest reset under `sort_by_reset`.
 [`docs/m8-anthropic-multi-account.md`](../../../docs/m8-anthropic-multi-account.md)
 promises the mapping is deterministic across restarts while the account list is
-unchanged.
+unchanged. #857, merged since, replaces the slot with a rendezvous ranking of the
+distinct identities (`accounts::session_score`) and orders a displaced session's
+fallbacks by that ranking instead of headroom. The account is still a function of
+the session id.
 
 The hash has three consequences, measured on a six-account Claude Max pool over
 11 hours ([#873](https://github.com/pleaseai/shunt/issues/873), comment by @shaharsha):
@@ -78,12 +81,15 @@ moved:
 
 | Value | Placement | On a move |
 | :-- | :-- | :-- |
-| `spread` (default) | Rendezvous (HRW) hash over the eligible distinct identities, priority ignored, as today | Highest-weight eligible identity within the best available priority tier |
+| `spread` (default) | Top of #857's rendezvous (HRW) ranking (`session_score`) over the eligible distinct identities, priority ignored | Highest-ranked eligible identity within the best available priority tier |
 | `soonest_weekly_reset` | Priority, then governing weekly reset ascending (unknown last), then configuration order | Same ordering among eligible identities |
 
 Rendezvous hashing keeps `spread` restart-stable without persistence. Adding an
 account moves about 1/(n+1) of new placements instead of most. Each displaced
-session also gets its own fallback order, which breaks up the herd.
+session also gets its own fallback order, which breaks up the herd. Bindings
+layer on #857's ranking rather than replace it: the ranking places new and
+displaced sessions, and behind a session's head it orders the in-request
+fallbacks in place of headroom.
 
 `[server.pool] sort_by_reset` and its admin override stay. Their effect narrows to
 the in-request failover order and sessionless traffic, and they never place or
@@ -178,8 +184,10 @@ not move it.
 - **Keep the hash; add policies to the fallback order only** (as `sort_by_reset`
   does): sessions stay spread, so nothing drains.
 - **Rendezvous hashing plus a per-session fallback order without bindings**
-  (#857): cuts switches 29 → 16 in the #873 replay, but sessions still return home
-  on recovery and draining policies stay inexpressible.
+  (#857): merged, and kept as the ranking `spread` places by, but rejected as a
+  replacement for bindings. It cuts switches 29 → 16 in the #873 replay, but
+  sessions still return home on recovery and draining policies stay
+  inexpressible.
 - **In-memory bindings only:** a restart moves every displaced session. That is
   a regression from today's restart-stable hash for anyone who persists quota.
 - **Configurable TTL and cap from day one:** more public surface before any data

@@ -1,5 +1,5 @@
 //! Multi-account pool and failover tests for `auth = "kimi_oauth"`, mirroring
-//! `tests/multi_account.rs`'s Claude coverage but scoped to the Kimi path:
+//! `tests/multi_account/multi_account.rs`'s Claude coverage but scoped to the Kimi path:
 //! no account-UUID rewrite, no `anthropic-beta` header, and every non-`Relay`
 //! classification (401, quota 429, 5xx, membership 402) collapses to
 //! cooldown-and-rotate rather than Claude's fuller Rotate/PauseSame/
@@ -18,7 +18,8 @@ use wiremock::{
     Match, Mock, MockServer, Request, ResponseTemplate,
 };
 
-mod common;
+use crate::common;
+use crate::common::session_id_for_account;
 
 struct BearerToken(String);
 
@@ -237,7 +238,7 @@ async fn pool_rotates_to_next_account_on_401() {
     // A session that hashes to account-a still lands on account-b, because
     // account-a is now cooling down (so the upstream never sees a second
     // account-a call at all).
-    let session_id = common::session_id_for_account(&gateway.state, 0).await;
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -304,7 +305,7 @@ async fn pool_rotates_to_next_account_on_402() {
 
     // A session that hashes to account-a still lands on account-b, because
     // account-a is now cooling down.
-    let session_id = common::session_id_for_account(&gateway.state, 0).await;
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -450,7 +451,7 @@ async fn disabled_account_is_skipped_in_favor_of_the_enabled_one() {
     // A session id that would hash to account-a's slot in a fully-enabled
     // two-account pool still lands on account-b, since account-a never
     // enters the selectable order at all.
-    let session_id = common::session_id_for_account(&gateway.state, 0).await;
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -472,7 +473,7 @@ async fn disabled_account_is_skipped_in_favor_of_the_enabled_one() {
 /// `resolve_kimi_account`: `forward_kimi_oauth`'s `Err` arm at the
 /// credential-resolve step must arm a cooldown and `continue` to the next
 /// candidate rather than failing the request, mirroring
-/// `unresolvable_account_cools_down_and_rotates` in `tests/multi_account.rs`.
+/// `unresolvable_account_cools_down_and_rotates` in `tests/multi_account/multi_account.rs`.
 #[tokio::test]
 async fn unresolvable_account_cools_down_and_rotates() {
     if !can_bind_loopback() {
@@ -518,7 +519,7 @@ async fn unresolvable_account_cools_down_and_rotates() {
 /// `last_response` stays `None` and `forward_kimi_oauth` surfaces a 502
 /// without ever calling the mock, exercising the currently-unreached
 /// `last_response == None` arm. Mirrors
-/// `all_accounts_unresolvable_returns_bad_gateway` in `tests/multi_account.rs`.
+/// `all_accounts_unresolvable_returns_bad_gateway` in `tests/multi_account/multi_account.rs`.
 #[tokio::test]
 async fn all_accounts_unresolvable_returns_bad_gateway() {
     if !can_bind_loopback() {
@@ -737,7 +738,7 @@ async fn a_session_moved_off_a_cooled_kimi_account_stays_after_it_recovers() {
     let gateway = start_gateway_with(binding_config(&upstream, stem)).await;
     let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
     let state = &gateway.state;
-    let session = common::session_id_for_account(state, 0).await;
+    let session = common::session_id_placed_on(state, 0).await;
 
     assert_eq!(
         served_by(&post_messages(&gateway, Some(&session)).await),
@@ -794,7 +795,7 @@ async fn a_failed_over_kimi_bound_account_moves_the_binding() {
     let gateway = start_gateway_with(binding_config(&upstream, stem)).await;
     let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
     let state = &gateway.state;
-    let session = common::session_id_for_account(state, 0).await;
+    let session = common::session_id_placed_on(state, 0).await;
 
     assert_eq!(
         served_by(&post_messages(&gateway, Some(&session)).await),

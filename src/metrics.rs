@@ -26,7 +26,8 @@
 
 use std::{
     collections::HashMap,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, Weak},
+    time::Duration,
 };
 
 use opentelemetry::{
@@ -35,7 +36,7 @@ use opentelemetry::{
 };
 use sentry::protocol::Unit;
 
-use crate::client_attribution::ClientAttribution;
+use crate::{accounts::AccountPool, client_attribution::ClientAttribution};
 
 /// OTel instruments on the global meter. Created lazily on first record so the
 /// meter provider (installed at startup, before any request) is already in
@@ -58,6 +59,7 @@ struct OtelInstruments {
     requests_shed: Counter<u64>,
     store_write_failures: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
+    _pool_headroom: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
     pool_reprobes: Counter<u64>,
     session_account_switches: Counter<u64>,
@@ -67,6 +69,61 @@ struct OtelInstruments {
 }
 
 type PoolUtilizationValues = HashMap<(String, &'static str), Option<f64>>;
+
+fn pool_headroom_source() -> &'static Mutex<Weak<AccountPool>> {
+    static SOURCE: OnceLock<Mutex<Weak<AccountPool>>> = OnceLock::new();
+    SOURCE.get_or_init(|| Mutex::new(Weak::new()))
+}
+
+/// Point the `shunt.pool.quota_headroom_seconds` gauge at the live pool. The
+/// gauge is computed from the pool at each collection, so nothing is recorded
+/// per quota observation. The last registration wins and the pool is held
+/// weakly.
+pub(crate) fn register_pool_headroom_source(pool: &Arc<AccountPool>) {
+    *pool_headroom_source()
+        .lock()
+        .expect("pool headroom source lock poisoned") = Arc::downgrade(pool);
+    let _ = otel_instruments();
+}
+
+fn pool_headroom_series(now: u64) -> Vec<(String, &'static str, f64)> {
+    let pool = pool_headroom_source()
+        .lock()
+        .expect("pool headroom source lock poisoned")
+        .upgrade();
+    pool.map(|pool| pool.pool_headroom_seconds(now))
+        .unwrap_or_default()
+}
+
+/// Mirror the current pool headroom to Sentry gauges, one per series.
+pub(crate) fn emit_pool_headroom_to_sentry(now: u64) {
+    for (provider, window, seconds) in pool_headroom_series(now) {
+        sentry::metrics::gauge("shunt.pool.quota_headroom_seconds", seconds)
+            .attribute("provider", provider)
+            .attribute("window", window.to_owned())
+            .capture();
+    }
+}
+
+/// Sample the headroom into Sentry every 60 s, only when `[sentry] metrics` is
+/// on. The Sentry client is built once at boot, so this is decided once too.
+pub fn spawn_pool_headroom_sentry_sampler(config: &crate::config::Config) {
+    if !config
+        .sentry
+        .as_ref()
+        .is_some_and(|sentry| sentry.enabled() && sentry.metrics)
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            emit_pool_headroom_to_sentry(crate::accounts::unix_now_secs());
+        }
+    });
+}
 
 fn pool_utilization_values() -> &'static Mutex<PoolUtilizationValues> {
     static VALUES: OnceLock<Mutex<PoolUtilizationValues>> = OnceLock::new();
@@ -188,6 +245,30 @@ fn otel_instruments() -> &'static OtelInstruments {
                             &[
                                 KeyValue::new("provider", provider.clone()),
                                 KeyValue::new("window", *window),
+                            ],
+                        );
+                    }
+                })
+                .build(),
+            _pool_headroom: meter
+                .f64_observable_gauge("shunt.pool.quota_headroom_seconds")
+                .with_unit("s")
+                .with_description(
+                    "Projected seconds of quota margin before the window resets: the maximum \
+                     across enabled, unpaused pool accounts, projected to the hard threshold. \
+                     Burn speed is the window average (utilization / elapsed), not the recent \
+                     pace. Optimistic, because when other accounts run out traffic shifts to the \
+                     survivor and its burn rises. Negative means projected to run dry before \
+                     the reset, or minus the seconds until the reset when already exhausted",
+                )
+                .with_callback(|observer| {
+                    let now = crate::accounts::unix_now_secs();
+                    for (provider, window, value) in pool_headroom_series(now) {
+                        observer.observe(
+                            value,
+                            &[
+                                KeyValue::new("provider", provider),
+                                KeyValue::new("window", window),
                             ],
                         );
                     }

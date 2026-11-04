@@ -821,6 +821,9 @@ async fn serve(config: Config, path: Option<PathBuf>) -> anyhow::Result<()> {
     // ChatGPT/Codex, and Antigravity OAuth usage APIs in the background,
     // sharing the router's account pool. A no-op when the key is unset.
     shunt::usage_poll::spawn_usage_poller(state.clone());
+    // Opt-in `[sentry] metrics`: sample the pool headroom gauge into Sentry
+    // every 60 s. The OTel gauge is computed at collection and needs no task.
+    shunt::metrics::spawn_pool_headroom_sentry_sampler(&state.config);
     let (drain_started_tx, drain_started_rx) = tokio::sync::oneshot::channel();
     let server = axum::serve(
         listener,

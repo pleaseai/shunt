@@ -109,6 +109,9 @@ pub fn spawn_usage_poller(state: AppState) {
 /// alias to receive the same observation.
 async fn poll_all(state: &AppState) {
     let state = state.refreshed();
+    state
+        .accounts
+        .note_pool_config(state.config.server.pool.as_ref());
     let mut cached = HashMap::<AccountKey, CachedUsage>::new();
     let mut pending = HashMap::<AccountKey, Vec<(String, AccountConfig)>>::new();
     let mut applied = HashSet::<(AccountKey, String)>::new();
@@ -380,6 +383,7 @@ async fn poll_all(state: &AppState) {
             _ => {}
         }
     }
+    crate::metrics::emit_pool_headroom_to_sentry(crate::accounts::unix_now_secs());
 }
 
 /// A successful, non-empty usage observation that can be applied to aliases
