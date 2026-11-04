@@ -11,7 +11,7 @@ description: 풀 쿼터, 게이트웨이 refresh token, 지출 한도를 JSON st
 
 | 하위 시스템 | 스냅샷 | 가져오는 조건 |
 | :-- | :-- | :-- |
-| 풀 쿼터 | `[server.pool] state_path` (기본값 없음) | `[store]`가 설정됨 |
+| 풀 쿼터와 세션 바인딩 | `[server.pool] state_path` (기본값 없음) | `[store]`가 설정됨 |
 | 게이트웨이 refresh token | `[server.gateway] state_path`, 기본값 `~/.shunt/gateway-sessions.json` | `[server.gateway]`가 설정됨 |
 | 지출 한도와 감사 기록 | `[server.spend] state_path`, 기본값 `~/.shunt/gateway-spend.json` | `[server.spend]`가 설정됨 |
 
@@ -93,3 +93,5 @@ SQLite에서 첫 부팅 이후 게이트웨이가 토큰을 발급, 갱신, 폐�
 ## 되돌리기
 
 가져오기는 동기화가 아니라 복사이며, shunt는 저장소 상태를 JSON으로 다시 내보내지 않습니다. `[store]`를 제거하면 각 하위 시스템은 가져오기 시점의 스냅샷에서 시작하므로, 그 사이에 폐기된 세션이 되살아나거나 변경한 지출 한도가 되돌려질 수 있습니다. 스냅샷이 가져온 뒤로 바뀌지 않았다면 저장소 없이 부팅할 때 이를 알리는 경고를 로그로 남깁니다. 자세한 내용은 [저장소 없이 되돌리기](https://github.com/pleaseai/shunt/blob/main/docs/store.md#going-back-to-no-store)(영문)를 참고하세요.
+
+이전 릴리스로 롤백하는 것은 별개의 단계입니다. `pool_session_binding` 테이블을 추가하는 저장소 마이그레이션 `0002`가 포함된 릴리스가 처음 부팅하면 저장소는 스키마 버전 2가 됩니다. 이전 릴리스는 더 새로운 스키마의 저장소를 거부하며 수정하지 않습니다. `[store]`를 설정한 채 롤백하려면 먼저 업그레이드 전에 만든 백업으로 저장소를 복원하세요. `state_path` 파일에는 이런 문제가 없습니다: 버전 3으로 유지되며 이전 릴리스가 읽을 수 있습니다.

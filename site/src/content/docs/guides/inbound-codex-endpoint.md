@@ -33,7 +33,7 @@ The Codex CLI's built-in web search tool (`web.run`) posts to `{base_url}/alpha/
 - `POST /alpha/search`
 - `POST /v1/alpha/search`
 
-A search uses the same `[server.auth]` policy and the same ChatGPT/Codex account pool (session-sticky selection, failover, refresh) as a Responses turn, and relays the request body and the reply verbatim to the backend's `/codex/alpha/search`. It always goes to `[server.codex_endpoint].provider`: a search is not a model turn, so `[[server.codex_endpoint.routes]]` does not apply. The routes accept `POST` only — the tool has no WebSocket form.
+A search uses the same `[server.auth]` policy and the same ChatGPT/Codex account pool (session bindings, failover, refresh) as a Responses turn, and relays the request body and the reply verbatim to the backend's `/codex/alpha/search`. It always goes to `[server.codex_endpoint].provider`: a search is not a model turn, so `[[server.codex_endpoint.routes]]` does not apply. The routes accept `POST` only — the tool has no WebSocket form.
 
 ## Client analytics sink
 

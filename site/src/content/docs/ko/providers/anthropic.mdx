@@ -100,7 +100,7 @@ auth = { mode = "claude_oauth", account = "primary" }
 `shunt login claude`에는 세 가지 모드가 있습니다: `--mode oauth`는 shunt 자체의 갱신 가능한 OAuth
 플로우를 실행하고(권장), `--mode import`는 현재 Claude Code 로그인을 복사하며, `--mode setup-token`은
 1년짜리 추론 전용 토큰을 생성합니다. `account`(그리고 `accounts`)를 생략하면 shunt가 관리하는 계정
-스토어 전체를 스캔합니다 — 스토어에 계정이 여러 개 있으면 이는 세션 고정성과 쿼터 인지 로테이션을 갖춘
+스토어 전체를 스캔합니다 — 스토어에 계정이 여러 개 있으면 이는 세션-계정 바인딩과 쿼터 인지 로테이션을 갖춘
 **부하 분산 풀**이 됩니다. 전체 풀링 동작 — 명시적 계정 항목, 계정별 임계값, `[server.pool]` 튜닝,
 페일오버 — 은 [Anthropic 멀티 계정](/ko/guides/anthropic-multi-account/)에 문서화되어 있습니다.
 

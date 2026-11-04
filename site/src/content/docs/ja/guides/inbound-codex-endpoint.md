@@ -33,7 +33,7 @@ Codex CLI の組み込み Web 検索ツール（`web.run`）は、`/responses` �
 - `POST /alpha/search`
 - `POST /v1/alpha/search`
 
-検索は Responses のターンと同じ `[server.auth]` ポリシーと同じ ChatGPT/Codex アカウントプール（セッション固定の選択、フェイルオーバー、リフレッシュ）を使い、リクエストボディとレスポンスをバックエンドの `/codex/alpha/search` へそのまま中継します。検索はモデルのターンではないため `[[server.codex_endpoint.routes]]` は適用されず、常に `[server.codex_endpoint].provider` へ送られます。これらのルートは `POST` のみを受け付けます。このツールには WebSocket 形式がありません。
+検索は Responses のターンと同じ `[server.auth]` ポリシーと同じ ChatGPT/Codex アカウントプール（セッションバインディング、フェイルオーバー、リフレッシュ）を使い、リクエストボディとレスポンスをバックエンドの `/codex/alpha/search` へそのまま中継します。検索はモデルのターンではないため `[[server.codex_endpoint.routes]]` は適用されず、常に `[server.codex_endpoint].provider` へ送られます。これらのルートは `POST` のみを受け付けます。このツールには WebSocket 形式がありません。
 
 ## クライアント analytics のシンク
 

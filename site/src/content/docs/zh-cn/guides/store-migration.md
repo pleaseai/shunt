@@ -11,7 +11,7 @@ description: 将池配额、网关 refresh token 和支出限制从 JSON state_p
 
 | 子系统 | 快照 | 导入条件 |
 | :-- | :-- | :-- |
-| 池配额 | `[server.pool] state_path`(无默认值) | 已设置 `[store]` |
+| 池配额和会话绑定 | `[server.pool] state_path`(无默认值) | 已设置 `[store]` |
 | 网关 refresh token | `[server.gateway] state_path`,默认 `~/.shunt/gateway-sessions.json` | 已配置 `[server.gateway]` |
 | 支出限制与审计记录 | `[server.spend] state_path`,默认 `~/.shunt/gateway-spend.json` | 已配置 `[server.spend]` |
 
@@ -93,3 +93,5 @@ shunt run
 ## 回退
 
 导入是复制,不是同步,shunt 也不会把存储中的状态导出回 JSON。移除 `[store]` 后,每个子系统都会从导入时的快照开始,这可能让已撤销的会话重新生效,并撤销此后所做的支出限制修改。只要快照自导入以来没有变化,不使用存储的启动会记录一条说明这一点的警告。详情见 [回到不使用存储](https://github.com/pleaseai/shunt/blob/main/docs/store.md#going-back-to-no-store)(英文)。
+
+回滚到旧版本是另一回事。包含存储迁移 `0002`(新增 `pool_session_binding` 表)的版本首次启动时,会把存储升级到 schema 版本 2。旧版本会拒绝 schema 更新的存储,且不会修改它。若要在设置了 `[store]` 的情况下回滚,请先用升级前的备份恢复存储。`state_path` 文件没有这个问题:它保持版本 3,旧版本可以读取。

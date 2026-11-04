@@ -33,7 +33,7 @@ Codex CLI 的内置网页搜索工具(`web.run`)会向 `{base_url}/alpha/search`
 - `POST /alpha/search`
 - `POST /v1/alpha/search`
 
-搜索与 Responses 轮次使用相同的 `[server.auth]` 策略和相同的 ChatGPT/Codex 账户池(会话粘性选择、故障转移、刷新),并把请求体和响应逐字中继到后端的 `/codex/alpha/search`。搜索不是模型轮次,因此 `[[server.codex_endpoint.routes]]` 不适用,它总是发往 `[server.codex_endpoint].provider`。这些路由只接受 `POST` —— 该工具没有 WebSocket 形式。
+搜索与 Responses 轮次使用相同的 `[server.auth]` 策略和相同的 ChatGPT/Codex 账户池(会话绑定、故障转移、刷新),并把请求体和响应逐字中继到后端的 `/codex/alpha/search`。搜索不是模型轮次,因此 `[[server.codex_endpoint.routes]]` 不适用,它总是发往 `[server.codex_endpoint].provider`。这些路由只接受 `POST` —— 该工具没有 WebSocket 形式。
 
 ## 客户端分析数据接收端
 
