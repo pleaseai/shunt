@@ -3321,8 +3321,9 @@ async fn a_plain_429_retries_the_bound_account_and_keeps_the_binding() {
     upstream.verify().await;
 }
 
-/// AC-004: the bound account is ineligible and no other account can serve, so
-/// the binding is unchanged and the ticket carries no switch reason.
+/// AC-004: the bound account is ineligible and no other account can serve. The
+/// ticket names the bound account's ineligibility (cooldown), but nothing
+/// serves, so the binding is unchanged and no switch is recorded.
 #[tokio::test]
 async fn a_bound_account_with_no_alternative_keeps_its_binding() {
     if !can_bind_loopback() {
