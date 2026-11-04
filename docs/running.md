@@ -204,6 +204,8 @@ Both metric sinks export the same low-cardinality series:
 | `shunt.pool.quota_utilization` | Gauge | `provider`, `window` | Minimum utilization across enabled, non-stale accounts for `5h`, `7d`, or `7d_oi`. |
 | `shunt.pool.rotations` | Counter | `provider`, `reason` | Account rotations and pool exhaustion by low-cardinality cause. |
 | `shunt.pool.reprobes` | Counter | `provider` | Reprobes committed at the first HTTP dispatch for stale near-quota Codex/ChatGPT accounts; WebSocket-enabled providers count inbound HTTP probes only. |
+| `shunt.pool.session_account_switches` | Counter | `provider`, `reason`, `thinking_bound` | Pooled sessions whose binding moved to another account (ADR-0008). `reason` is `proactive` (the bound account was soft-near for 60 s, hard-over, quota-rejected, capped, paused or disabled), `cooldown` (it was cooling down for the request's scope) or `failover` (it was attempted and failed over, or left the pool). `thinking_bound` is `true` only for a Claude subscription account on a `claude-sonnet-5-5*` or `claude-haiku-5-5*` model, whose thinking blocks are lost on another account. A first placement is not a switch. |
+| `shunt.pool.session_binding_evictions` | Counter | `provider` | Session bindings evicted, least recently used first, when an insert found the 10,000-binding table full. Labelled with the provider whose placement evicted. |
 
 The five per-request series above carry two extra attributes: `client_kind` is
 `claude-code`, `codex`, or `other`, derived from the request's own client

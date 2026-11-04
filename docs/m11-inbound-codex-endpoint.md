@@ -21,7 +21,7 @@ shunt → Codex) share an upstream but differ in kind:
 | On pool exhaustion | Re-shapes the last upstream response into an Anthropic-style error envelope (`build_upstream_error`) | Relays the last upstream response verbatim — **not** re-shaped (see below) |
 | Model selects provider? | Yes, via `[models.upstream_model]` / `[[routes]]` / `[[route_prefixes]]` | **Opt-in.** By default no — every request goes to the one configured provider and `model` forwards verbatim as a label only. With `[[server.codex_endpoint.routes]]`, an exactly-matching `model` selects that entry's provider instead |
 
-Everything else — the M10 account pool, session-sticky selection, cooldowns, and refresh — is
+Everything else — the M10 account pool, session-to-account bindings, cooldowns, and refresh — is
 shared unchanged between the two paths.
 
 ## Configuration
@@ -92,7 +92,7 @@ per base-URL form:
 | `POST` | `/v1/alpha/search` |
 
 They share the Responses routes' handler pipeline — `[server.auth]`, the request body limit, the
-session-sticky pool key, account selection, failover, refresh, and the OpenAI-shaped gateway errors
+session pool key, account selection, failover, refresh, and the OpenAI-shaped gateway errors
 (`concurrency::is_codex_path` classifies them too) — and relay the body and the upstream reply
 verbatim to `<base_url>/codex/alpha/search` (`<base_url>/alpha/search` for a non-ChatGPT base),
 selected by `adapters::responses::CodexOperation`. Two things differ from a turn. A search is not a
@@ -159,7 +159,7 @@ model the client asked for; only the wire body and `upstream_model` carry the up
 ### Routed requests to non-ChatGPT upstreams
 
 A route naming another `chatgpt_oauth` provider keeps the whole passthrough described below — its
-own account pool, session-sticky selection, failover, refresh, `x-shunt-account`, and verbatim
+own account pool, session bindings, failover, refresh, `x-shunt-account`, and verbatim
 header forwarding. One header is the exception: when the route rewrites `upstream_model`, the
 client's `x-codex-routing-hint` (which names the *public* model it asked for) no longer describes
 the body, so it is dropped rather than forwarded contradicting it. shunt does not re-synthesize the
@@ -293,14 +293,19 @@ about the client's own credential reaches the Codex backend.
 
 ## Account pool reuse (M10)
 
-Session-sticky quota-aware selection (issue #195), reactive failover, cooldowns, storm control, per-account refresh, and identity coalescing are all reused unchanged from [M10](m10-codex-multi-account.md) — this endpoint adds no new pool logic, only a new entry point into it. Account resolution goes through the shared `resolve_pool_accounts` path: configured entries are used directly, while an empty list uses the store directory-mtime cache and fills each scanned account's stable identity from its Codex `account_id`. The existing empty-store single-account fallback remains unchanged.
+Session-to-account bindings (ADR-0008), quota-aware selection (issue #195), reactive failover, cooldowns, storm control, per-account refresh, and identity coalescing are all reused unchanged from [M10](m10-codex-multi-account.md) — this endpoint adds no new pool logic, only a new entry point into it. Account resolution goes through the shared `resolve_pool_accounts` path: configured entries are used directly, while an empty list uses the store directory-mtime cache and fills each scanned account's stable identity from its Codex `account_id`. The existing empty-store single-account fallback remains unchanged.
 
-- **Sticky key.** The Codex CLI's own `session-id` request header selects the sticky account (same
-  hashing scheme as M10), falling back to `x-claude-code-session-id` for parity with the outbound
-  path. Same session id → same account, for as long as that account stays healthy. When
-  `[server.auth]` is configured, the sticky key is namespaced with the authenticated client name
-  (`{client}:{session-id}`, mirroring the outbound path) so that on a multi-tenant gateway one
-  client cannot pin another client's session onto a chosen account by replaying its `session-id`.
+- **Session key.** The Codex CLI's own `session-id` request header is the session key, falling
+  back to `x-claude-code-session-id` for parity with the outbound path. The session is bound to
+  one account in the binding table the outbound pool shares (see
+  [M8 session bindings](m8-anthropic-multi-account.md#session-bindings)). The table is keyed by
+  the key's SHA-256 hash, never the raw id. The binding stays on its account until that account
+  cannot serve and another account serves successfully, and it does not move back on recovery.
+  HTTP and WebSocket turns of one session share the binding. Only a `2xx` serve commits it, so a
+  verbatim-relayed error leaves the binding unchanged. When `[server.auth]` is configured, the
+  session key is namespaced with the authenticated client name (`{client}:{session-id}`,
+  mirroring the outbound path) so that on a multi-tenant gateway one client cannot pin another
+  client's session onto a chosen account by replaying its `session-id`.
 - **Failover** follows M10's rules exactly: every `429` rotates (cooldown = `retry-after` clamped
   1–3600s, default 60s); a `5xx` or transport failure cools the account for 30s and rotates; a
   `401` on a refreshable (store/`credentials`) account triggers a force-refresh and one retry (5

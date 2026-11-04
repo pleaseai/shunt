@@ -175,8 +175,8 @@ as well.
 ## 4. Hysteresis
 
 `StageRouterStore` keys on `(advertised model id, SHA-256 prefix of the session
-id, SHA-256 prefix of the agent id)` — both ids are hashed and never stored, at
-the sixteen-byte width `accounts::stable_session_index` keeps. The third element
+id, SHA-256 prefix of the agent id)` — both ids are hashed and never stored,
+and each prefix keeps the first sixteen bytes of the digest. The third element
 is all zeros for the session's own thread, so a parent and its children never
 share an entry: a `Task` child sends the parent's session id with its own
 `x-claude-code-agent-id`, and reads and writes a pin of its own. Before that
@@ -329,8 +329,8 @@ that triggered it (§9, issue #552).
 
 A tier flip forfeits the per-model prompt-cache prefix; it forces
 `ContinuationOutcome::Fallback` because `codex_continuation::signature` hashes
-`model`; and across providers it abandons the pooled socket and sticky account
-slot. Scored independently every turn, a long session can cost more routed than
+`model`; and across providers it abandons the pooled socket and the session's
+account binding on the other provider. Scored independently every turn, a long session can cost more routed than
 unrouted. Anything that makes de-escalation cheaper must re-derive this.
 
 ### 4.2 The compaction latch

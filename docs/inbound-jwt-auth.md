@@ -173,12 +173,12 @@ and names `repository` as the identity. Security notes:
 - **Prefer immutable ids** (`repository_owner_id`, `repository_id`) in `require`: org and
   repository names can be renamed and re-registered by someone else.
 - **Pick a bounded `identity_claim`** such as `repository`, not `sub`. The branch segment of
-  `sub` is caller-controlled, and the identity namespaces the Codex endpoint's sticky key and
-  appears in logs.
+  `sub` is caller-controlled, and the identity namespaces the Codex endpoint's session-binding key
+  and appears in logs.
 - **Identities share one namespace.** The identity is not prefixed with its issuer, so it is
   compared as a bare string with static `name:token` client names and with every other
   entry's identities. Equal strings become one caller for usage attribution, spend
-  accounting, and the Codex endpoint's sticky key. This is not an authorization bypass, but
+  accounting, and the Codex endpoint's session-binding key. This is not an authorization bypass, but
   choose an identity claim whose values cannot equal a static client name or another
   issuer's identities. `repository` (`org/repo`) cannot equal an email address, but a static
   client name may contain `/`, so do not give static clients `org/repo`-style names; a bare
@@ -216,10 +216,10 @@ become an identity or satisfy a rule. An entry with none of these does not read 
 **Identity.** The value of `identity_claim` (default `email`) becomes the caller identity, in
 place of the `name` from a `name:token` pair. It must be present as a non-empty JSON string.
 A value over 256 bytes is rejected (`401`), never truncated: the identity namespaces the
-account pool's sticky key on the inbound Codex endpoint, so an unbounded caller-controlled
+account pool's session-binding key on the inbound Codex endpoint, so an unbounded caller-controlled
 string there would be the failure mode issue #296 records for the Codex `model` label, and
 truncation would fold two values that share a prefix into one identity — and so into one
-sticky key.
+session-binding key.
 
 ### Key sets
 

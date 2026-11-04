@@ -47,7 +47,7 @@ Deliberate shunt mechanisms that change the request:
 |---|---|
 | handoff notes append a system block on stage-flip turns (`src/routing/handoff.rs`) | changes `instructions` on those turns; the module documents the cache-miss cost |
 | progressive tool reveal rebuilds `tools`/`tool_choice` when a tool loads | moot on the ChatGPT backend, where native `tool_search` is auto-on |
-| sticky-account rotation changes `chatgpt-account-id` mid-conversation (`src/accounts.rs`) | quota- and cooldown-driven; whether the backend scopes cache per account is unmeasured |
+| a session-binding move changes `chatgpt-account-id` mid-conversation (`src/accounts.rs`, ADR-0008) | only when the bound account cannot serve, quota- and cooldown-driven, and never back on recovery; whether the backend scopes cache per account is unmeasured |
 
 Checked and at parity: HTTP `previous_response_id` (neither client sends it), `x-client-request-id` stability on non-delegated turns, the WS continuation property-match shape, zstd `content-encoding`, `store:false`/`stream:true`, `max_output_tokens` handling, and the reasoning round-trip (an item whose `encrypted_content` is empty still round-trips its id).
 
