@@ -53,8 +53,9 @@ pub struct BindingTicket {
     pub(super) generation: u64,
     /// The account the session was bound to before this request.
     pub(super) prior: Option<AccountKey>,
-    /// Why `prior` could not serve this request, when it could not and a
-    /// healthy alternative existed (or `prior` has left the pool).
+    /// Why `prior` could not serve this request, when it could not (or has
+    /// left the pool). A soft-near `prior` counts only when a healthy
+    /// alternative existed.
     pub(super) prior_ineligible: Option<SwitchReason>,
 }
 
@@ -204,12 +205,18 @@ pub(crate) fn place(
                         fast: false,
                         prior_ineligible: Some(reason),
                     },
-                    // No healthy alternative: today's order, binding left alone.
+                    // No healthy alternative: today's order. Only a soft-near
+                    // move needs a healthy target (FR-5); every other
+                    // ineligibility still moves the binding if another
+                    // account serves.
                     None => Placement {
                         head: None,
                         start: bound_slot,
                         fast: false,
-                        prior_ineligible: None,
+                        prior_ineligible: (!health.selectable
+                            || health.cooling
+                            || health.immediate)
+                            .then_some(reason),
                     },
                 },
             }

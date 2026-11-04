@@ -76,7 +76,52 @@ fn no_healthy_candidate_leaves_todays_order_and_binding() {
     );
     assert_eq!(bound.head, None);
     assert_eq!(bound.start, 0);
-    assert_eq!(bound.prior_ineligible, None, "AC-004: nothing to move to");
+    assert_eq!(
+        bound.prior_ineligible,
+        Some(SwitchReason::Cooldown),
+        "AC-004 still holds: nothing commits unless another account serves"
+    );
+}
+
+#[test]
+fn paused_bound_slot_keeps_prior_ineligible_when_alternatives_are_soft_near() {
+    let mut slots = [
+        healthy(10),
+        soft_near(30, Duration::from_secs(5)),
+        soft_near(20, Duration::from_secs(5)),
+    ];
+    slots[0].selectable = false;
+    let placement = place(
+        PoolAssignment::Spread,
+        slots.len(),
+        |i| slots[i],
+        |i| slots[i].weight,
+        Bound::At(0),
+    );
+    assert_eq!(placement.head, None);
+    assert_eq!(placement.start, 0);
+    assert_eq!(placement.prior_ineligible, Some(SwitchReason::Proactive));
+}
+
+#[test]
+fn soft_near_bound_slot_without_healthy_alternative_stays_bound() {
+    let slots = [
+        soft_near(10, Duration::from_secs(61)),
+        soft_near(30, Duration::from_secs(5)),
+    ];
+    let placement = place(
+        PoolAssignment::Spread,
+        slots.len(),
+        |i| slots[i],
+        |i| slots[i].weight,
+        Bound::At(0),
+    );
+    assert_eq!(placement.head, None);
+    assert_eq!(placement.start, 0);
+    assert_eq!(
+        placement.prior_ineligible, None,
+        "FR-5 needs a healthy target"
+    );
 }
 
 #[test]

@@ -763,3 +763,25 @@ fn soft_near_threshold_of_a_non_representative_alias_cannot_reset_the_debounce()
         Some(SwitchReason::Proactive)
     );
 }
+
+#[test]
+fn paused_bound_account_moves_even_when_every_alternative_is_soft_near() {
+    // AC-008 / FR-3: only a soft-near move needs a healthy target.
+    let pool = AccountPool::new();
+    let accounts = pool_accounts(2);
+    let cfg = soft(0.5);
+    let (bound, _) = serve(&pool, &accounts, "s", Some(&cfg));
+    let other = 1 - bound;
+    note_5h(&pool, &accounts[other], "0.6");
+    pool.set_paused(P, &accounts[bound], true);
+    let (order, ticket) = pool.select_order_with_ticket(P, &accounts, Some("s"), None, Some(&cfg));
+    assert_eq!(order[0], other, "the soft-near account serves");
+    let ticket = ticket.unwrap();
+    assert_eq!(ticket.prior_ineligible(), Some(SwitchReason::Proactive));
+    assert_eq!(
+        pool.commit_session_binding(&ticket, &accounts[other], false),
+        BindingCommit::Moved(SwitchReason::Proactive)
+    );
+    pool.set_paused(P, &accounts[bound], false);
+    assert_eq!(head(&pool, &accounts, "s", Some(&cfg)), other);
+}

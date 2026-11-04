@@ -3368,8 +3368,8 @@ async fn a_bound_account_with_no_alternative_keeps_its_binding() {
     assert_eq!(
         common::binding_ticket(state, &provider, &accounts, &session, BINDING_MODEL)
             .prior_ineligible(),
-        None,
-        "no alternative means no move"
+        Some(shunt::accounts::SwitchReason::Cooldown),
+        "the bound account is ineligible; AC-004 still holds because nothing commits unless another account serves"
     );
     // Whatever the pool attempts answers a quota rejection, so nothing serves.
     let response = post_model(&gateway, &session, BINDING_MODEL).await;

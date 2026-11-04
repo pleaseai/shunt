@@ -331,7 +331,10 @@ async fn no_alternative_keeps_the_binding_without_a_switch() {
         Some(model),
         None,
     );
-    assert_eq!(ticket.unwrap().prior_ineligible(), None);
+    assert_eq!(
+        ticket.unwrap().prior_ineligible(),
+        Some(crate::accounts::SwitchReason::Cooldown)
+    );
     let (status, _) = pool.send(&pool.state, &session, model).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(pool.bound(&session, model), Some(0));
