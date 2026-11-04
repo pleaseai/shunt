@@ -23,6 +23,15 @@ pub(crate) const MAX_BINDINGS: usize = 10_000;
 const EVICT_TARGET_PERCENT: usize = 90;
 /// Minimum spacing between expired-entry sweeps.
 const SWEEP_INTERVAL_SECS: u64 = 300;
+/// Granularity of a persisted `last_used`: an exported stamp is rounded down
+/// to the hour, so a binding touched again within the same hour leaves the
+/// persisted view, and the state file, unchanged.
+pub(crate) const PERSISTED_LAST_USED_SECS: u64 = 60 * 60;
+
+/// `last_used` as it is persisted: rounded down to [`PERSISTED_LAST_USED_SECS`].
+pub(crate) fn persisted_last_used(last_used: u64) -> u64 {
+    last_used - last_used % PERSISTED_LAST_USED_SECS
+}
 
 pub(crate) type SessionHash = [u8; 32];
 
@@ -111,7 +120,6 @@ pub(crate) enum CommitOutcome {
 
 /// One persisted row. `session_hash` is lowercase hex of the SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "persisted by T006"))]
 pub(crate) struct BindingRow {
     pub(crate) provider: String,
     pub(crate) session_hash: String,
@@ -128,6 +136,9 @@ pub(crate) struct SessionBindings {
     max_entries: usize,
     evictions: u64,
     last_sweep: u64,
+    /// The persisted view ([`export`](Self::export)) changed since the last
+    /// [`take_persist_dirty`](Self::take_persist_dirty).
+    persist_dirty: bool,
 }
 
 impl Default for SessionBindings {
@@ -158,6 +169,7 @@ impl SessionBindings {
             max_entries: max_entries.max(1),
             evictions: 0,
             last_sweep: 0,
+            persist_dirty: false,
         }
     }
 
@@ -167,6 +179,13 @@ impl SessionBindings {
 
     pub(crate) fn evictions(&self) -> u64 {
         self.evictions
+    }
+
+    /// Whether the persisted view changed since the previous call: a
+    /// placement, a move, an eviction, a removal, or a touch that crossed into
+    /// a new [`PERSISTED_LAST_USED_SECS`] bucket. Clears the flag.
+    pub(crate) fn take_persist_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.persist_dirty)
     }
 
     /// The binding for `(provider, session)`. An entry idle past the TTL is
@@ -215,6 +234,7 @@ impl SessionBindings {
         match live {
             None => {
                 self.insert_new(provider, *session, served.clone(), now);
+                self.persist_dirty = true;
                 CommitOutcome::Placed
             }
             Some(current) if observed_generation < current => CommitOutcome::Stale,
@@ -224,12 +244,16 @@ impl SessionBindings {
                     .get_mut(provider)
                     .and_then(|sessions| sessions.get_mut(session))
                     .expect("checked live above");
-                binding.last_used = now;
+                let previous = std::mem::replace(&mut binding.last_used, now);
                 if binding.account == *served {
+                    if persisted_last_used(previous) != persisted_last_used(now) {
+                        self.persist_dirty = true;
+                    }
                     return CommitOutcome::Touched;
                 }
                 let from = std::mem::replace(&mut binding.account, served.clone());
                 binding.generation += 1;
+                self.persist_dirty = true;
                 CommitOutcome::Moved { from }
             }
         }
@@ -237,7 +261,9 @@ impl SessionBindings {
 
     /// Drop every binding whose account matches; returns how many were removed.
     pub(crate) fn remove_matching(&mut self, matches: impl Fn(&AccountKey) -> bool) -> usize {
-        self.retain(|_, b| !matches(&b.account))
+        let removed = self.retain(|_, b| !matches(&b.account));
+        self.persist_dirty |= removed > 0;
+        removed
     }
 
     /// Live bindings per account (expired entries not counted).
@@ -248,7 +274,8 @@ impl SessionBindings {
             .count()
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "persisted by T006"))]
+    /// Live bindings as persisted rows, `last_used` rounded down to the hour
+    /// ([`persisted_last_used`]).
     pub(crate) fn export(&self, now: u64) -> Vec<BindingRow> {
         self.bindings()
             .filter(|(_, _, b)| !expired(b.last_used, now))
@@ -256,14 +283,13 @@ impl SessionBindings {
                 provider: provider.to_string(),
                 session_hash: to_hex(session),
                 account: b.account.clone(),
-                last_used: b.last_used,
+                last_used: persisted_last_used(b.last_used),
             })
             .collect()
     }
 
     /// Load persisted rows. Malformed hashes and expired rows are dropped, a
     /// `last_used` in the future is clamped to `now`, and the cap still holds.
-    #[cfg_attr(not(test), expect(dead_code, reason = "restored by T006"))]
     pub(crate) fn import(&mut self, rows: impl IntoIterator<Item = BindingRow>, now: u64) {
         for row in rows {
             let Some(session) = from_hex(&row.session_hash) else {
@@ -368,10 +394,10 @@ impl SessionBindings {
             true
         });
         self.evictions += excess as u64;
+        self.persist_dirty = true;
     }
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "persisted by T006"))]
 fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes.iter().fold(String::with_capacity(64), |mut s, b| {
@@ -380,7 +406,6 @@ fn to_hex(bytes: &[u8]) -> String {
     })
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "restored by T006"))]
 fn from_hex(s: &str) -> Option<SessionHash> {
     if s.len() != 64 || !s.is_ascii() {
         return None;

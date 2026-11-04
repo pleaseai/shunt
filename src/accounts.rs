@@ -25,8 +25,10 @@ pub use assignment::{BindingCommit, BindingTicket, SwitchReason};
 pub use request_stats::AttemptOutcome;
 pub(crate) use request_stats::CountAttempt;
 use request_stats::RequestStats;
-pub(crate) use session_binding::thinking_bound;
+#[cfg(test)]
+pub(crate) use session_binding::persisted_last_used as persisted_last_used_for_tests;
 use session_binding::{hash_session_key, CommitOutcome, SessionBindings};
+pub(crate) use session_binding::{thinking_bound, BindingRow};
 pub(crate) use upstream_skip::UpstreamSkips;
 
 /// Credential-store namespace. Stable account ids only coalesce inside their
@@ -1143,7 +1145,7 @@ impl AccountPool {
             }
             _ => None,
         };
-        let (outcome, evicted) = {
+        let (outcome, evicted, persist) = {
             let mut bindings = self.bindings.lock().expect("session binding lock poisoned");
             let evictions_before = bindings.evictions();
             let outcome = bindings.commit(
@@ -1158,8 +1160,17 @@ impl AccountPool {
             if outcome == CommitOutcome::Placed {
                 self.any_bindings.store(true, Ordering::Release);
             }
-            (outcome, bindings.evictions() - evictions_before)
+            (
+                outcome,
+                bindings.evictions() - evictions_before,
+                bindings.take_persist_dirty(),
+            )
         };
+        // The state file is rewritten only when its view of the bindings
+        // changed (FR-11); a touch within the same hour leaves it alone.
+        if persist {
+            self.mark_dirty();
+        }
         // Emitted after the lock is released: only a placement can evict.
         if evicted > 0 {
             crate::metrics::record_session_binding_evictions(&ticket.provider, evicted);
@@ -2752,13 +2763,14 @@ impl AccountPool {
             .retain(|key, _| !matches(key));
         // Sessions bound to the forgotten identity are placed afresh on their
         // next request. Taken after `entries` is released (lock order).
-        {
+        let removed_bindings = {
             let mut bindings = self.bindings.lock().expect("session binding lock poisoned");
-            bindings.remove_matching(matches);
+            let removed = bindings.remove_matching(matches);
             if bindings.len() == 0 {
                 self.any_bindings.store(false, Ordering::Release);
             }
-        }
+            removed > 0
+        };
         // Purge the forgotten identity from every upstream's membership map too,
         // so a deleted/rotated account leaves no dead `AccountKey` behind (the
         // per-upstream map is otherwise only rebuilt on the next
@@ -2789,7 +2801,7 @@ impl AccountPool {
                         || marked.name == identity
                         || Some(marked.name.as_str()) == store_name))
             });
-        if removed_quota {
+        if removed_quota || removed_bindings {
             self.mark_dirty();
         }
     }
@@ -3053,6 +3065,47 @@ impl AccountPool {
             self.mark_dirty();
         }
         quotas
+    }
+
+    /// Snapshot every live session binding for persistence (ADR-0008 §6).
+    /// Rows carry the session hash, never a raw id, and `last_used` rounded
+    /// down to the hour.
+    pub(crate) fn export_bindings(&self) -> Vec<BindingRow> {
+        self.bindings
+            .lock()
+            .expect("session binding lock poisoned")
+            .export(unix_now())
+    }
+
+    /// Seed the binding table with rows restored at boot, keeping only those
+    /// `keep` accepts (an account still configured, FR-12). Expired and
+    /// malformed rows are dropped and the table's cap holds, as in
+    /// `SessionBindings::import`. Returns how many bindings the table holds
+    /// afterwards.
+    ///
+    /// Raises `any_bindings` under the bindings lock when the table is
+    /// non-empty, so the next selection takes the lock and follows a restored
+    /// binding instead of skipping the table.
+    pub(crate) fn import_bindings(
+        &self,
+        rows: impl IntoIterator<Item = BindingRow>,
+        keep: impl Fn(&BindingRow) -> bool,
+    ) -> usize {
+        let (len, evicted) = {
+            let mut bindings = self.bindings.lock().expect("session binding lock poisoned");
+            bindings.import(rows.into_iter().filter(|row| keep(row)), unix_now());
+            let len = bindings.len();
+            if len > 0 {
+                self.any_bindings.store(true, Ordering::Release);
+            }
+            // Set only when the cap evicted restored rows: rewrite the file
+            // without them.
+            (len, bindings.take_persist_dirty())
+        };
+        if evicted {
+            self.mark_dirty();
+        }
+        len
     }
 
     /// Seed the pool with quotas restored from disk at boot. Returns whether

@@ -261,3 +261,47 @@ mod thinking_bound_predicate {
         ));
     }
 }
+
+#[test]
+fn persisted_view_changes_on_placement_move_and_hour_crossing_only() {
+    let hour = PERSISTED_LAST_USED_SECS;
+    let start = 1_000 * hour + 10;
+    let mut t = SessionBindings::default();
+    assert_eq!(
+        t.commit("p", &h("s"), &acct("a"), 0, start),
+        CommitOutcome::Placed
+    );
+    assert!(
+        t.take_persist_dirty(),
+        "a placement changes the persisted view"
+    );
+    assert!(!t.take_persist_dirty(), "taking clears it");
+    assert_eq!(t.export(start)[0].last_used, 1_000 * hour);
+
+    // Touches within the same hour leave the persisted view alone.
+    for later in [start + 1, start + hour - 11] {
+        assert_eq!(
+            t.commit("p", &h("s"), &acct("a"), 1, later),
+            CommitOutcome::Touched
+        );
+        assert!(!t.take_persist_dirty(), "touch at +{}", later - start);
+    }
+    assert_eq!(t.export(start + hour - 11)[0].last_used, 1_000 * hour);
+
+    // Crossing into the next hour does change it.
+    let next = 1_001 * hour;
+    assert_eq!(
+        t.commit("p", &h("s"), &acct("a"), 1, next),
+        CommitOutcome::Touched
+    );
+    assert!(t.take_persist_dirty());
+    assert_eq!(t.export(next)[0].last_used, next);
+
+    assert!(matches!(
+        t.commit("p", &h("s"), &acct("b"), 1, next + 1),
+        CommitOutcome::Moved { .. }
+    ));
+    assert!(t.take_persist_dirty(), "a move changes it");
+    assert_eq!(t.remove_matching(|k| *k == acct("b")), 1);
+    assert!(t.take_persist_dirty(), "a removal changes it");
+}

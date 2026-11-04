@@ -27,20 +27,36 @@
 //! timestamp, whether restored from disk or recorded live, so polling one
 //! signal cannot keep the other alive indefinitely.
 //!
-//! Only quota is persisted. Cooldowns are a monotonic [`std::time::Instant`]
+//! Session-to-account bindings (ADR-0008 §6) ride in the same file as an
+//! optional `bindings` array, so the version stays 3: the previous release
+//! ignores the unknown field and keeps its quota. Each row carries the
+//! session's SHA-256 hash, never a raw session id, and a `last_used` rounded
+//! down to the hour, so re-serving a session within the hour does not rewrite
+//! the file. Restore keeps only unexpired rows whose account is still
+//! configured (FR-12).
+//!
+//! Cooldowns are not persisted. They are a monotonic [`std::time::Instant`]
 //! (not portable across a restart) and short-lived, so they are intentionally
 //! left to lapse on boot.
 
-use std::{fs, io, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fs, io,
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    accounts::{AccountKey, AccountPool, QuotaState},
+    accounts::{AccountKey, AccountPool, BindingRow, QuotaState},
     server::AppState,
     store::{import::LoadIssue, Store},
 };
 
+#[cfg(test)]
+mod binding_tests;
 mod store_persister;
 
 pub use store_persister::{restore_from_store, PoolPersister};
@@ -54,11 +70,50 @@ const STATE_VERSION: u32 = 3;
 /// most this much of the newest quota, which the next response re-derives anyway.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(15);
 
-/// On-disk envelope: a version tag plus one entry per observed account.
+/// On-disk envelope: a version tag plus one entry per observed account, and
+/// the session bindings. `bindings` is optional and omitted when empty, so a
+/// file without it (v2, or v3 written before bindings) loads with none.
+///
+/// Never add `deny_unknown_fields` here: the previous release reads a file
+/// with `bindings` only because it ignores fields it does not know (NFR-3).
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedPool {
     version: u32,
     accounts: Vec<PersistedAccount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    bindings: Vec<PersistedBinding>,
+}
+
+/// One session binding: the provider, lowercase hex of the session's SHA-256,
+/// the physical account, and `last_used` (unix seconds, rounded to the hour).
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedBinding {
+    provider: String,
+    session_hash: String,
+    account: AccountKey,
+    last_used: u64,
+}
+
+impl From<BindingRow> for PersistedBinding {
+    fn from(row: BindingRow) -> Self {
+        Self {
+            provider: row.provider,
+            session_hash: row.session_hash,
+            account: row.account,
+            last_used: row.last_used,
+        }
+    }
+}
+
+impl From<PersistedBinding> for BindingRow {
+    fn from(binding: PersistedBinding) -> Self {
+        Self {
+            provider: binding.provider,
+            session_hash: binding.session_hash,
+            account: binding.account,
+            last_used: binding.last_used,
+        }
+    }
 }
 
 /// One physical account's persisted quota.
@@ -110,9 +165,11 @@ pub async fn restore(state: &AppState) {
             if legacy || corrected {
                 state.accounts.mark_dirty();
             }
+            let bindings = restore_bindings(state, persisted.bindings).await;
             tracing::info!(
                 path = %path.display(),
                 accounts = count,
+                bindings,
                 "restored pool quota state from disk"
             );
         }
@@ -125,6 +182,67 @@ pub async fn restore(state: &AppState) {
         ),
         Err(error) => tracing::warn!(%error, "pool state restore task panicked"),
     }
+}
+
+/// Restore persisted session bindings, keeping only unexpired rows whose
+/// account is still configured for its provider (FR-12); the rest are dropped
+/// and those sessions are placed afresh on their next request. Returns how
+/// many bindings were restored. When rows were dropped the pool is marked
+/// dirty, so the next flush rewrites the file without them.
+async fn restore_bindings(state: &AppState, persisted: Vec<PersistedBinding>) -> usize {
+    if persisted.is_empty() {
+        return 0;
+    }
+    let total = persisted.len();
+    let configured = configured_accounts(state, &persisted).await;
+    let restored =
+        state
+            .accounts
+            .import_bindings(persisted.into_iter().map(BindingRow::from), |row| {
+                configured
+                    .get(row.provider.as_str())
+                    .is_some_and(|accounts| accounts.contains(&row.account))
+            });
+    if restored < total {
+        state.accounts.mark_dirty();
+    }
+    restored
+}
+
+/// The pool account keys each provider named in `bindings` resolves to now,
+/// as the request path resolves them. A provider that is gone, or whose pool
+/// fails to resolve, maps to no accounts, so its bindings are dropped: they
+/// are a cache, and a session without one is simply placed again.
+async fn configured_accounts(
+    state: &AppState,
+    bindings: &[PersistedBinding],
+) -> HashMap<String, HashSet<AccountKey>> {
+    let mut configured = HashMap::new();
+    for binding in bindings {
+        let provider = binding.provider.as_str();
+        if configured.contains_key(provider) {
+            continue;
+        }
+        let accounts = match state.config.provider(provider) {
+            Some(config) => match config.resolve_pool_accounts().await {
+                Ok(accounts) => accounts
+                    .iter()
+                    .map(|account| crate::accounts::account_key(provider, account))
+                    .collect(),
+                Err(error) => {
+                    tracing::warn!(
+                        provider,
+                        %error,
+                        "could not resolve pool accounts; dropping its restored session bindings"
+                    );
+                    HashSet::new()
+                }
+            },
+            None => HashSet::new(),
+        };
+        configured.insert(provider.to_string(), accounts);
+    }
+    configured
 }
 
 /// Spawn the background flush loop. With a `store`, quota is written to it
@@ -184,6 +302,11 @@ async fn flush(state: &AppState) {
                 .export_quotas()
                 .into_iter()
                 .map(|(key, quota)| PersistedAccount { key, quota })
+                .collect(),
+            bindings: accounts
+                .export_bindings()
+                .into_iter()
+                .map(PersistedBinding::from)
                 .collect(),
         };
         save(&path, &persisted)
@@ -297,6 +420,7 @@ mod tests {
     fn sample_pool() -> PersistedPool {
         PersistedPool {
             version: STATE_VERSION,
+            bindings: Vec::new(),
             accounts: vec![PersistedAccount {
                 key: crate::accounts::account_key("anthropic", &account("acct-a")),
                 quota: QuotaState {
@@ -352,6 +476,7 @@ mod tests {
             path,
             &PersistedPool {
                 version: LEGACY_STATE_VERSION,
+                bindings: Vec::new(),
                 accounts: vec![PersistedAccount {
                     key: key.clone(),
                     quota,
@@ -449,6 +574,7 @@ mod tests {
         save(&path, &sample_pool()).expect("initial save succeeds");
         let replacement = PersistedPool {
             version: STATE_VERSION,
+            bindings: Vec::new(),
             accounts: vec![PersistedAccount {
                 key: crate::accounts::account_key("codex", &account("acct-b")),
                 quota: QuotaState {
@@ -580,6 +706,7 @@ mod tests {
             &path,
             &PersistedPool {
                 version: LEGACY_STATE_VERSION,
+                bindings: Vec::new(),
                 accounts: vec![PersistedAccount {
                     key: crate::accounts::account_key("anthropic", &account),
                     quota: QuotaState {
@@ -634,6 +761,7 @@ mod tests {
             &path,
             &PersistedPool {
                 version: LEGACY_STATE_VERSION,
+                bindings: Vec::new(),
                 accounts: vec![PersistedAccount {
                     key: crate::accounts::account_key("anthropic", &account),
                     quota,
@@ -896,6 +1024,7 @@ mod tests {
             &path,
             &PersistedPool {
                 version: STATE_VERSION,
+                bindings: Vec::new(),
                 accounts: vec![PersistedAccount {
                     key: crate::accounts::account_key("anthropic", &account),
                     quota: QuotaState {
@@ -935,6 +1064,7 @@ mod tests {
         let path = temp_file("expired");
         let expired = PersistedPool {
             version: STATE_VERSION,
+            bindings: Vec::new(),
             accounts: vec![PersistedAccount {
                 key: crate::accounts::account_key("anthropic", &account("acct-a")),
                 quota: QuotaState {
@@ -1013,6 +1143,7 @@ mod tests {
         let future = before + 86_400;
         let legacy = PersistedPool {
             version: STATE_VERSION,
+            bindings: Vec::new(),
             accounts: vec![
                 PersistedAccount {
                     key: legacy_key.clone(),
