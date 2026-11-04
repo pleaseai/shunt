@@ -345,7 +345,7 @@ max_token_age_seconds = 5400
 ### 알아 둘 동작
 
 - **브라우저와 loopback 콜백.** 네이티브 gateway OAuth는 브라우저를 열고 loopback 포트에서 대기하며, device-code 대체 수단은 없습니다. SSH 접속 중이라면 `redirect_port`를 설정하고 `ssh -L <port>:127.0.0.1:<port>`로 포워딩하세요.
-- **슬롯 순서.** shunt는 정적 토큰, `Authorization: Bearer` JWT, `jwt_header`, `jwt_cookie` 순으로 시도하고 검증에 성공한 첫 슬롯을 채택합니다. 따라서 `Authorization`의 ChatGPT bearer는 쿠키로 넘어갑니다. 새 슬롯은 [인바운드 Codex 엔드포인트](/ko/guides/inbound-codex-endpoint/)만 읽으며, `/v1/messages`, `/v1/models`, `/usage`, Codex discovery 경로는 JWT를 bearer로만 받습니다.
+- **슬롯 순서.** shunt는 정적 토큰, `Authorization: Bearer` JWT, `jwt_header`, `jwt_cookie` 순으로 시도하고 검증에 성공한 첫 슬롯을 채택합니다. 따라서 `Authorization`의 ChatGPT bearer는 쿠키로 넘어갑니다. 새 슬롯은 [인바운드 Codex 엔드포인트](/ko/guides/inbound-codex-endpoint/)만 읽으며, Codex 형태 모델 탐색 응답(`GET /models`, `GET /backend-api/codex/models`, `client_version` 쿼리 필드가 있는 `GET /v1/models`)도 여기에 포함되므로 ChatGPT 로그인과 gateway OAuth를 함께 켜도 카탈로그 요청이 성공합니다. `/v1/messages`, `/usage`, Anthropic 형태의 `/v1/models`는 JWT를 bearer로만 받습니다.
 - **Origin 규칙.** 쿠키는 요청에 `Origin`이 없거나 `Host`와 일치하는 `Origin`이 있을 때만 사용하므로, 웹사이트가 브라우저에 있는 쿠키로 인증된 턴을 일으킬 수 없습니다. Codex CLI는 브라우저가 아니며 `Origin`을 보내지 않습니다. 같은 이유로 `jwt_cookie`가 브라우저가 게이트웨이 도메인에 대해 보유한 쿠키(예: SSO 프록시의 `CF_Authorization`)를 가리키게 하지 마세요. 헤더 슬롯에는 이 규칙이 없습니다.
 - **WebSocket 만료.** 핸드셰이크 자격 증명은 매 턴마다 다시 검증합니다. 연결 도중 IdP 토큰이 만료되면 다음 턴이 `401` 오류 프레임으로 실패하고, Codex는 갱신된 토큰으로 다시 연결합니다.
 - **전달되지 않음.** 구성된 헤더와 모든 `cookie` 헤더는 업스트림 요청 전에 제거됩니다.

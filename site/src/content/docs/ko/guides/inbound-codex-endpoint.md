@@ -23,7 +23,7 @@ shunt run
 
 시작 검증은 알 수 없는 `provider`나 `auth = "chatgpt_oauth"`를 쓰지 않는 프로바이더를 거부합니다 — 이 엔드포인트는 운영자의 Codex bearer를 주입하므로 `chatgpt_oauth` 프로바이더만 자격이 있습니다. 모든 키와 기본값은 [구성 레퍼런스](/ko/reference/configuration/#servercodex_endpoint-선택)를, 등록된 라우트는 [HTTP 엔드포인트](/ko/reference/endpoints/)를 참고하세요.
 
-이 옵트인은 Codex CLI 모델 탐색도 파싱 가능하게 만듭니다. `GET /models`와 `GET /backend-api/codex/models`는 유효한 폴백 `{"models":[]}`를 반환합니다. 공유 `GET /v1/models` 경로에서는 `client_version` 쿼리 필드가 Anthropic 형태의 헤더보다 우선하여 Codex 형태를 선택하고, 그 필드가 없으면 기존 Anthropic 탐색 응답은 변경되지 않습니다. 이 요청들은 기존 모델 탐색 인증 게이트를 거치며, shunt는 불완전한 Codex 모델 행을 만들지 않습니다.
+이 옵트인은 Codex CLI 모델 탐색도 파싱 가능하게 만듭니다. `GET /models`와 `GET /backend-api/codex/models`는 유효한 폴백 `{"models":[]}`를 반환합니다. 공유 `GET /v1/models` 경로에서는 `client_version` 쿼리 필드가 Anthropic 형태의 헤더보다 우선하여 Codex 형태를 선택하고, 그 필드가 없으면 기존 Anthropic 탐색 응답은 변경되지 않습니다. 이 요청들은 기존 모델 탐색 인증 게이트를 거치며, shunt는 불완전한 Codex 모델 행을 만들지 않습니다. Codex 형태 응답은 `[server.auth]`의 `jwt_header`와 `jwt_cookie` 슬롯도 읽으므로(아래 참고), ChatGPT와 gateway OAuth로 함께 로그인한 사용자도 `401` 대신 `200`을 받습니다. Anthropic 형태의 `/v1/models`는 JWT를 `Authorization: Bearer`로만 받습니다.
 
 ## 웹 검색
 
@@ -94,7 +94,7 @@ http_headers = { "x-shunt-token" = "<token>" }
 
 `[server.auth]`가 없으면 엔드포인트는 도달할 수 있는 누구에게나 열려 있습니다 — 루프백이나 개인 용도에는 받아들일 만하지만 공유 게이트웨이에는 적절하지 않습니다. 클라이언트가 제시한 자격 증명은 shunt에 인증하는 데에**만** 사용됩니다: 이 값은(그리고 CLI가 보내는 어떤 `Authorization`이든) 제거되며 업스트림으로 전달되지 않습니다. `[server.admin]` 자격 증명 헤더(기본값 `x-shunt-admin-token`, 또는 `[server.admin] header`가 지정한 이름)도 제거됩니다 — 관리 화면이 바로 그 슬롯에서 인증하며, 관리 자격 증명은 업스트림 계정을 프로비저닝할 수 있기 때문입니다. `cookie` 헤더도 통째로 제거됩니다: 관리 화면은 세션 쿠키 역시 그 슬롯에서 수락하고, shunt는 쿠키 저장소를 두지 않으므로 업스트림이 이에 의존할 일이 없습니다. `x-api-key`도 `[server.auth]`가 설정되지 않은 경우를 포함해 무조건 제거됩니다 — 대상 프로바이더는 부팅 시점에 `chatgpt_oauth` 전용으로 검증되므로, 인바운드 `x-api-key` 값은 이 업스트림에 대해 결코 유효한 자격 증명이 될 수 없습니다. Claude Code의 `apiKeyHelper`처럼 `Authorization`과 `x-api-key`에 같은 키를 넣는 클라이언트라도 두 번째 슬롯을 통해 그 키가 새어 나가지 않습니다. 인바운드 클라이언트가 실제 Codex CLI이므로, 패스스루는 그 요청 헤더를 그대로 전달하고(`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) 선택된 풀 계정의 `Authorization` bearer와 `chatgpt-account-id`**만** 바꿔 넣습니다. 전체 인증 안내는 [Codex CLI 연결](/ko/guides/connect-codex-cli/#3-shunt-클라이언트-토큰-제시-serverauth가-설정된-경우)을 참고하세요.
 
-Codex CLI의 `gateway_oauth`로 조직의 ID 공급자를 통해 개발자별로 로그인시키려면 `[server.auth]`의 `jwt_header` 또는 `jwt_cookie`를 설정합니다. 그러면 이 엔드포인트가 해당 헤더나 쿠키에서도 IdP JWT를 읽으며, 이 값은 다른 클라이언트 자격 증명처럼 제거됩니다. [Codex CLI 연결](/ko/guides/connect-codex-cli/#7-id-공급자로-로그인하기-gateway-oauth)을 참고하세요.
+Codex CLI의 `gateway_oauth`로 조직의 ID 공급자를 통해 개발자별로 로그인시키려면 `[server.auth]`의 `jwt_header` 또는 `jwt_cookie`를 설정합니다. 그러면 이 엔드포인트가(Codex 형태 모델 탐색 응답 포함) 해당 헤더나 쿠키에서도 IdP JWT를 읽으며, 이 값은 다른 클라이언트 자격 증명처럼 제거됩니다. [Codex CLI 연결](/ko/guides/connect-codex-cli/#7-id-공급자로-로그인하기-gateway-oauth)을 참고하세요.
 
 ## WebSocket 전송
 

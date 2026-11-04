@@ -334,7 +334,7 @@ max_token_age_seconds = 5400
 ### 知っておくべき動作
 
 - **ブラウザと loopback コールバック。** ネイティブの gateway OAuth はブラウザを開き、loopback ポートで待ち受けます。device-code へのフォールバックはありません。SSH 経由なら `redirect_port` を設定し、`ssh -L <port>:127.0.0.1:<port>` で転送してください。
-- **スロットの順序。** shunt は静的トークン、`Authorization: Bearer` の JWT、`jwt_header`、`jwt_cookie` の順に試し、検証に成功した最初のものを採用します。そのため `Authorization` の ChatGPT bearer は Cookie にフォールスルーします。新しいスロットを読むのは[インバウンド Codex エンドポイント](/ja/guides/inbound-codex-endpoint/)だけで、`/v1/messages`、`/v1/models`、`/usage`、Codex の discovery パスは JWT を bearer でのみ受け付けます。
+- **スロットの順序。** shunt は静的トークン、`Authorization: Bearer` の JWT、`jwt_header`、`jwt_cookie` の順に試し、検証に成功した最初のものを採用します。そのため `Authorization` の ChatGPT bearer は Cookie にフォールスルーします。新しいスロットを読むのは[インバウンド Codex エンドポイント](/ja/guides/inbound-codex-endpoint/)だけで、Codex 形式のモデル検出レスポンス（`GET /models`、`GET /backend-api/codex/models`、`client_version` クエリフィールド付きの `GET /v1/models`）も含まれるため、ChatGPT サインインと gateway OAuth を両方有効にしてもカタログ取得は成功します。`/v1/messages`、`/usage`、Anthropic 形式の `/v1/models` は JWT を bearer でのみ受け付けます。
 - **Origin ルール。** Cookie を使うのは、リクエストに `Origin` がない、または `Host` と一致する `Origin` がある場合だけなので、Web サイトがブラウザ保持の Cookie で認証済みターンを起こすことはできません。Codex CLI はブラウザではなく、`Origin` を送りません。同じ理由で、`jwt_cookie` をブラウザがゲートウェイのドメインに対して保持する Cookie（例: SSO プロキシの `CF_Authorization`）に向けないでください。ヘッダースロットにはこのルールはありません。
 - **WebSocket での期限切れ。** ハンドシェイクの認証情報は毎ターン再検証されます。接続中に IdP トークンが期限切れになると、次のターンは `401` エラーフレームで失敗し、Codex は更新されたトークンで再接続します。
 - **転送されません。** 設定したヘッダーとすべての `cookie` ヘッダーは、アップストリームへのリクエスト前に取り除かれます。
