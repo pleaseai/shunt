@@ -123,8 +123,9 @@ slots, with the same slot order, cookie `Origin` rule, and repeated-slot handlin
 Responses routes (see `inbound-jwt-auth.md`). They keep accepting every credential they accepted
 before: static tokens in the configured header, `x-api-key`, or `Authorization: Bearer`, a Bearer
 JWT, and a `[server.gateway]` login token. The Anthropic-shaped `/v1/models` response (no
-`client_version`) accepts a JWT only in `Authorization: Bearer`. The answer stays the empty
-Codex catalog.
+`client_version`) accepts a JWT only in `Authorization: Bearer`. Each Codex-shaped response
+stays the empty Codex catalog.
+
 ### Client analytics sink
 
 The same opt-in also registers `POST /backend-api/codex/analytics-events/events` and

@@ -40,4 +40,4 @@
 | TD-006 | spend-enforcement-20261003 | Inbound Codex endpoint (`/v1/responses`, WebSocket) not spend-enforced or metered (#733) | #814 | 2026-10-21 |
 | TD-014 | codex-spend-caps-20261021 | `response.refusal.delta` is not counted toward the streaming output floor | #814 | 2026-10-21 |
 | TD-021 | anthropic-account-refusal-20261022 | `classify` did not require the top-level `"type": "error"`, so a third-party body without it advanced the chain (#825) | #825 | 2026-10-23 |
-| TD-024 | inbound-jwt-header-cookie-20261030 | `tests/inbound_codex_jwt_slots.rs` was 558 lines, over the 500-line guideline; the shared harness moved to `tests/common/codex_jwt.rs` (now 445 lines) | #883 | 2026-11-02 |
+| TD-024 | inbound-jwt-header-cookie-20261030 | `tests/inbound_codex_jwt_slots.rs` was 558 lines, over the 500-line guideline; the shared harness moved to `tests/common/codex_jwt.rs` (158 lines), leaving the test at 445 lines | #883 | 2026-11-02 |

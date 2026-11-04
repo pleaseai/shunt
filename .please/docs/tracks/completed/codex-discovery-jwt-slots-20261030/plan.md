@@ -101,8 +101,6 @@ Considered and not built:
 - 2026-10-30: Implementation stays on `amondnet/firefish`, the branch that holds the track commit, instead of an issue-linked branch off `main`, which would have left that commit behind. Requirement tags added to T002/T003 for the coverage gate.
 
 ## Surprises & Discoveries
-</content>
-</invoke>
 
 ## Outcomes & Retrospective
 

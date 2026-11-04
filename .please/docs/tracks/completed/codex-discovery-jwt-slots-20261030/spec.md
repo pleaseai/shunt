@@ -66,5 +66,3 @@ records is a separate follow-up.
 - A rejected catalog request is not fatal in Codex (it logs and keeps its bundled catalog), so the user-visible gain is a consistent answer across the Codex routes and no error on each catalog refresh, not a different model list.
 - Reading the cookie on `GET /v1/models?client_version=…` is safe even though the query field is caller-chosen: the Codex-shaped answer is the fixed empty catalog and discloses nothing, and the `Origin` rule still applies.
 - Discovery forwards nothing upstream, so no header or cookie stripping is involved.
-</content>
-</invoke>
