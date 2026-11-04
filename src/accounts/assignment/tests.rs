@@ -116,7 +116,7 @@ fn soft_near_bound_slot_without_healthy_alternative_stays_bound() {
         |i| slots[i].weight,
         Bound::At(0),
     );
-    assert_eq!(placement.head, None);
+    assert_eq!(placement.head, Some(0));
     assert_eq!(placement.start, 0);
     assert_eq!(
         placement.prior_ineligible, None,
@@ -167,7 +167,7 @@ fn soft_near_past_debounce_stays_without_a_healthy_alternative() {
         |i| slots[i].weight,
         Bound::At(0),
     );
-    assert_eq!(placement.head, None);
+    assert_eq!(placement.head, Some(0));
     assert_eq!(placement.prior_ineligible, None, "FR-5");
 }
 

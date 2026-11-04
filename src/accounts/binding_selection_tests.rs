@@ -785,3 +785,27 @@ fn paused_bound_account_moves_even_when_every_alternative_is_soft_near() {
     pool.set_paused(P, &accounts[bound], false);
     assert_eq!(head(&pool, &accounts, "s", Some(&cfg)), other);
 }
+
+#[test]
+fn soft_near_bound_account_stays_head_when_no_alternative_is_healthy() {
+    // FR-5: only a healthy alternative displaces a soft-near binding, even
+    // when the other soft-near account ranks better on priority.
+    let pool = AccountPool::new();
+    let mut accounts = pool_accounts(2);
+    let cfg = soft(0.5);
+    let (bound, _) = serve(&pool, &accounts, "s", Some(&cfg));
+    let other = 1 - bound;
+    accounts[other].priority = 1;
+    note_5h(&pool, &accounts[bound], "0.6");
+    note_5h(&pool, &accounts[other], "0.6");
+    pool.select_order(P, &accounts, Some("s"), None, Some(&cfg));
+    backdate_soft_near(&pool, &accounts[bound], Duration::from_secs(61));
+    let (order, ticket) = pool.select_order_with_ticket(P, &accounts, Some("s"), None, Some(&cfg));
+    assert_eq!(order[0], bound, "the bound account keeps the head");
+    let ticket = ticket.unwrap();
+    assert_eq!(ticket.prior_ineligible(), None);
+    assert_eq!(
+        pool.commit_session_binding(&ticket, &accounts[bound], false),
+        BindingCommit::Touched
+    );
+}

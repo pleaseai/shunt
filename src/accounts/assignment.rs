@@ -205,19 +205,21 @@ pub(crate) fn place(
                         fast: false,
                         prior_ineligible: Some(reason),
                     },
-                    // No healthy alternative: today's order. Only a soft-near
-                    // move needs a healthy target (FR-5); every other
-                    // ineligibility still moves the binding if another
-                    // account serves.
-                    None => Placement {
-                        head: None,
-                        start: bound_slot,
-                        fast: false,
-                        prior_ineligible: (!health.selectable
-                            || health.cooling
-                            || health.immediate)
-                            .then_some(reason),
-                    },
+                    // No healthy alternative. A soft-near-only bound slot
+                    // stays the head and the binding (FR-5): without a head,
+                    // another soft-near account could lead on priority or
+                    // headroom. Every other ineligibility keeps today's order
+                    // and still moves the binding if another account serves.
+                    None => {
+                        let soft_near_only =
+                            health.selectable && !health.cooling && !health.immediate;
+                        Placement {
+                            head: soft_near_only.then_some(bound_slot),
+                            start: bound_slot,
+                            fast: false,
+                            prior_ineligible: (!soft_near_only).then_some(reason),
+                        }
+                    }
                 },
             }
         }
