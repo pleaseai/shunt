@@ -68,6 +68,14 @@ impl BindingTicket {
     pub fn prior_ineligible(&self) -> Option<SwitchReason> {
         self.prior_ineligible
     }
+
+    /// Whether the session was bound to `account` before this request, so an
+    /// adapter can tell that its attempt on the bound account failed over.
+    pub fn is_bound_to(&self, account: &crate::config::AccountConfig) -> bool {
+        self.prior
+            .as_ref()
+            .is_some_and(|prior| *prior == super::account_key(&self.provider, account))
+    }
 }
 
 // Hand-written so a Debug print never shows the session hash.

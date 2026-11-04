@@ -221,17 +221,8 @@ pub fn gzip(bytes: &[u8]) -> Vec<u8> {
 /// healthy and no binding yet". Panics unless exactly one provider configures
 /// accounts.
 pub async fn session_id_for_account(state: &shunt::server::AppState, index: usize) -> String {
-    let mut pooled = state
-        .config
-        .providers
-        .iter()
-        .filter(|(_, provider)| !provider.accounts.is_empty());
-    let (name, provider) = pooled.next().expect("a provider with accounts");
-    assert!(pooled.next().is_none(), "exactly one pooled provider");
-    let mut accounts = provider
-        .resolve_pool_accounts()
-        .await
-        .expect("pool accounts resolve");
+    let (name, mut accounts) = resolved_pool_accounts(state).await;
+    let name = name.as_str();
     // The session's own first choice, whether or not that account can serve:
     // a test may target a disabled account to show it is skipped.
     for account in &mut accounts {
@@ -253,4 +244,61 @@ pub async fn session_id_for_account(state: &shunt::server::AppState, index: usiz
                 == Some(&index)
         })
         .expect("a session id should map to the requested account")
+}
+
+/// The one pooled provider in `state`'s config and its accounts, resolved as
+/// the gateway resolves them: the keys pool health and bindings are held
+/// under. Panics unless exactly one provider configures accounts.
+pub async fn resolved_pool_accounts(
+    state: &shunt::server::AppState,
+) -> (String, Vec<shunt::config::AccountConfig>) {
+    let mut pooled = state
+        .config
+        .providers
+        .iter()
+        .filter(|(_, provider)| !provider.accounts.is_empty());
+    let (name, provider) = pooled.next().expect("a provider with accounts");
+    assert!(pooled.next().is_none(), "exactly one pooled provider");
+    let accounts = provider
+        .resolve_pool_accounts()
+        .await
+        .expect("pool accounts resolve");
+    (name.clone(), accounts)
+}
+
+/// The binding ticket a request for `session_id` on `model` would carry now,
+/// over `accounts` of `provider`. Selection only reads the binding table, so
+/// asking changes nothing.
+pub fn binding_ticket(
+    state: &shunt::server::AppState,
+    provider: &str,
+    accounts: &[shunt::config::AccountConfig],
+    session_id: &str,
+    model: &str,
+) -> shunt::accounts::BindingTicket {
+    state
+        .accounts
+        .select_order_with_ticket(
+            provider,
+            accounts,
+            Some(session_id),
+            Some(model),
+            state.config.server.pool.as_ref(),
+        )
+        .1
+        .expect("a session request carries a binding ticket")
+}
+
+/// Index in `accounts` of the account `session_id` is bound to, if any.
+pub fn bound_account(
+    state: &shunt::server::AppState,
+    provider: &str,
+    accounts: &[shunt::config::AccountConfig],
+    session_id: &str,
+    model: &str,
+) -> Option<usize> {
+    let ticket = binding_ticket(state, provider, accounts, session_id, model);
+    accounts
+        .iter()
+        .position(|account| ticket.is_bound_to(account))
 }

@@ -694,3 +694,46 @@ fn soft_near_since_is_cleared_on_any_non_near_selection() {
         .soft_near_since
         .is_none());
 }
+
+#[test]
+fn ticket_names_the_bound_account_only() {
+    let pool = AccountPool::new();
+    let accounts = pool_accounts(3);
+    let (_, ticket) = pool.select_order_with_ticket(P, &accounts, Some("s"), None, None);
+    let ticket = ticket.unwrap();
+    assert!(accounts.iter().all(|account| !ticket.is_bound_to(account)));
+    let (a, _) = serve(&pool, &accounts, "s", None);
+    let (_, ticket) = pool.select_order_with_ticket(P, &accounts, Some("s"), None, None);
+    let ticket = ticket.unwrap();
+    for (index, account) in accounts.iter().enumerate() {
+        assert_eq!(ticket.is_bound_to(account), index == a, "account {index}");
+    }
+}
+
+#[test]
+fn a_placement_that_evicts_counts_the_evictions() {
+    // AC-015 through the pool: the table is full, so the next placement
+    // evicts, and the eviction counter receives exactly what the table evicted.
+    let provider = "binding-eviction-metric";
+    let pool = AccountPool::new();
+    let accounts = pool_accounts(2);
+    let place = |session: &str| {
+        let (order, ticket) =
+            pool.select_order_with_ticket(provider, &accounts, Some(session), None, None);
+        pool.commit_session_binding(&ticket.unwrap(), &accounts[order[0]], false)
+    };
+    for i in 0..session_binding::MAX_BINDINGS {
+        assert_eq!(place(&format!("s-{i}")), BindingCommit::Placed);
+    }
+    assert_eq!(
+        crate::metrics::session_binding_eviction_count_for_tests(provider),
+        0
+    );
+    assert_eq!(place("one-more"), BindingCommit::Placed);
+    let evicted = pool.bindings.lock().unwrap().evictions();
+    assert!(evicted > 0, "a full table evicts on the next placement");
+    assert_eq!(
+        crate::metrics::session_binding_eviction_count_for_tests(provider),
+        evicted
+    );
+}

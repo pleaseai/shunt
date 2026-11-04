@@ -181,3 +181,83 @@ fn weight_is_deterministic_and_discriminating() {
     assert_ne!(weight(&s, digest), weight(&s, account_digest(&acct("b"))));
     assert_ne!(weight(&s, digest), weight(&h("t"), digest));
 }
+
+mod thinking_bound_predicate {
+    use super::super::thinking_bound;
+    use crate::config::AuthMode;
+    use crate::routing::AdapterKind;
+
+    fn claude(model: &str) -> bool {
+        thinking_bound(&AdapterKind::Anthropic, AuthMode::ClaudeOauth, model)
+    }
+
+    #[test]
+    fn sonnet_5_5_is_thinking_bound() {
+        assert!(claude("claude-sonnet-5-5"));
+        assert!(claude("claude-sonnet-5-5-20261001"));
+    }
+
+    #[test]
+    fn haiku_5_5_is_thinking_bound() {
+        assert!(claude("claude-haiku-5-5"));
+        assert!(claude("claude-haiku-5-5-20261001"));
+    }
+
+    #[test]
+    fn other_claude_families_are_not_thinking_bound() {
+        for model in [
+            "claude-opus-5-5",
+            "claude-fable-5",
+            "claude-sonnet-4-5",
+            "claude-haiku-4-5",
+            "claude-sonnet-5",
+        ] {
+            assert!(!claude(model), "{model}");
+        }
+    }
+
+    #[test]
+    fn kimi_is_not_thinking_bound() {
+        assert!(!thinking_bound(
+            &AdapterKind::Anthropic,
+            AuthMode::KimiOauth,
+            "kimi-for-coding"
+        ));
+        // The predicate keys on the pool, not on a model name it was handed.
+        assert!(!thinking_bound(
+            &AdapterKind::Anthropic,
+            AuthMode::KimiOauth,
+            "claude-sonnet-5-5"
+        ));
+    }
+
+    #[test]
+    fn responses_and_codex_are_not_thinking_bound() {
+        for auth in [AuthMode::ChatgptOauth, AuthMode::ChatgptPlanOauth] {
+            assert!(!thinking_bound(
+                &AdapterKind::Responses,
+                auth,
+                "gpt-5.5-codex"
+            ));
+            assert!(!thinking_bound(
+                &AdapterKind::Responses,
+                auth,
+                "claude-sonnet-5-5"
+            ));
+        }
+    }
+
+    #[test]
+    fn xai_is_not_thinking_bound() {
+        assert!(!thinking_bound(
+            &AdapterKind::Responses,
+            AuthMode::XaiOauth,
+            "grok-5"
+        ));
+        assert!(!thinking_bound(
+            &AdapterKind::Responses,
+            AuthMode::XaiOauth,
+            "claude-haiku-5-5"
+        ));
+    }
+}

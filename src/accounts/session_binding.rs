@@ -11,6 +11,8 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 use super::AccountKey;
+use crate::config::AuthMode;
+use crate::routing::AdapterKind;
 
 /// A binding idle for longer than this counts as absent.
 pub(crate) const BINDING_IDLE_TTL_SECS: u64 = 24 * 60 * 60;
@@ -54,6 +56,25 @@ fn splitmix64(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^ (z >> 31)
+}
+
+/// Claude model families whose thinking blocks are bound to the account that
+/// produced them, so another account drops them (ADR-0008 Context).
+const THINKING_BOUND_MODEL_PREFIXES: [&str; 2] = ["claude-sonnet-5-5", "claude-haiku-5-5"];
+
+/// Whether a request's thinking blocks are lost when its session moves to
+/// another account: the `thinking_bound` label of the switch metric (FR-13).
+///
+/// True only on the Anthropic adapter's Claude subscription pool for the
+/// families in [`THINKING_BOUND_MODEL_PREFIXES`]. Kimi shares the Anthropic
+/// adapter but signs its own thinking, and the Responses/Codex and xAI pools
+/// carry no Anthropic thinking blocks, so every other combination is false.
+pub(crate) fn thinking_bound(adapter: &AdapterKind, auth: AuthMode, upstream_model: &str) -> bool {
+    *adapter == AdapterKind::Anthropic
+        && auth == AuthMode::ClaudeOauth
+        && THINKING_BOUND_MODEL_PREFIXES
+            .iter()
+            .any(|prefix| upstream_model.starts_with(prefix))
 }
 
 fn account_stable_bytes(account: &AccountKey) -> Vec<u8> {
@@ -144,10 +165,6 @@ impl SessionBindings {
         self.len
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by the T004 eviction counter")
-    )]
     pub(crate) fn evictions(&self) -> u64 {
         self.evictions
     }

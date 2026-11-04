@@ -25,6 +25,7 @@ pub use assignment::{BindingCommit, BindingTicket, SwitchReason};
 pub use request_stats::AttemptOutcome;
 pub(crate) use request_stats::CountAttempt;
 use request_stats::RequestStats;
+pub(crate) use session_binding::thinking_bound;
 use session_binding::{hash_session_key, CommitOutcome, SessionBindings};
 pub(crate) use upstream_skip::UpstreamSkips;
 
@@ -1140,8 +1141,9 @@ impl AccountPool {
             }
             _ => None,
         };
-        let outcome = {
+        let (outcome, evicted) = {
             let mut bindings = self.bindings.lock().expect("session binding lock poisoned");
+            let evictions_before = bindings.evictions();
             let outcome = bindings.commit(
                 &ticket.provider,
                 &ticket.session,
@@ -1154,8 +1156,12 @@ impl AccountPool {
             if outcome == CommitOutcome::Placed {
                 self.any_bindings.store(true, Ordering::Release);
             }
-            outcome
+            (outcome, bindings.evictions() - evictions_before)
         };
+        // Emitted after the lock is released: only a placement can evict.
+        if evicted > 0 {
+            crate::metrics::record_session_binding_evictions(&ticket.provider, evicted);
+        }
         match outcome {
             CommitOutcome::Placed => BindingCommit::Placed,
             CommitOutcome::Touched => BindingCommit::Touched,
