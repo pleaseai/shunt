@@ -13,11 +13,11 @@ use std::time::Duration;
 
 use tokio::task::JoinHandle;
 
-use super::flush;
+use super::{flush, restore_bindings};
 use crate::{
-    accounts::AccountPool,
+    accounts::{AccountKey, AccountPool, BindingRow, QuotaState},
     server::AppState,
-    store::{pool_repo, Store, StoreError},
+    store::{pool_repo, pool_session_repo, Store, StoreError},
 };
 
 /// Restore pool quota from the store at boot. Fail-loud: a store that cannot be
@@ -28,15 +28,26 @@ pub async fn restore_from_store(state: &AppState, store: &Store) -> Result<(), S
     if state.accounts.import_quotas(quotas) {
         state.accounts.mark_dirty();
     }
-    tracing::info!(accounts = count, "restored pool quota state from the store");
+    // Same filter as the file path: expired, unconfigured and malformed rows
+    // are dropped (and the pool marked dirty so the next flush deletes them),
+    // the cap holds, and `any_bindings` is raised.
+    let bindings = restore_bindings(state, pool_session_repo::load_bindings(store).await?).await;
+    tracing::info!(
+        accounts = count,
+        bindings,
+        "restored pool quota state from the store"
+    );
     Ok(())
 }
 
 /// The store a persister writes to, plus what it needs to flush safely.
 struct StoreSink {
     store: Arc<Store>,
-    /// Serializes flushes so an older export can never land after a newer one.
-    gate: tokio::sync::Mutex<()>,
+    /// Serializes flushes so an older export can never land after a newer one,
+    /// and holds the binding rows last written (`None` until the first flush,
+    /// which reads them from the store), so a flush writes only the bindings
+    /// that changed.
+    gate: tokio::sync::Mutex<Option<pool_session_repo::Snapshot>>,
     /// Set once the instance hold is lost; flushing stops for good.
     halted: AtomicBool,
 }
@@ -50,7 +61,7 @@ impl StoreSink {
     /// `shunt.store.write_failures{subsystem="pool"}` and re-marks the pool
     /// dirty, except `HoldLost`, which halts flushing instead of spinning.
     async fn flush(&self, accounts: &AccountPool) -> Result<(), StoreError> {
-        let _gate = self.gate.lock().await;
+        let mut written = self.gate.lock().await;
         if self.halted() {
             return Err(StoreError::HoldLost {
                 target: self.store.target().to_string(),
@@ -60,7 +71,8 @@ impl StoreSink {
             return Ok(());
         }
         let exported = accounts.export_quotas();
-        let Err(error) = pool_repo::save_pool(&self.store, &exported).await else {
+        let bindings = accounts.export_bindings();
+        let Err(error) = self.write(&exported, &bindings, &mut written).await else {
             return Ok(());
         };
         crate::metrics::record_store_write_failure("pool");
@@ -72,6 +84,47 @@ impl StoreSink {
             tracing::warn!(%error, "failed to persist pool state to the store; will retry");
         }
         Err(error)
+    }
+}
+
+impl StoreSink {
+    /// Write the quota export and the binding delta in one durable
+    /// transaction. `written` becomes the new binding snapshot only once the
+    /// transaction commits; on a failure it keeps what the store still holds.
+    async fn write(
+        &self,
+        quotas: &[(AccountKey, QuotaState)],
+        bindings: &[BindingRow],
+        written: &mut Option<pool_session_repo::Snapshot>,
+    ) -> Result<(), StoreError> {
+        let current = pool_session_repo::snapshot_of(bindings)?;
+        let mut tx = self.store.begin_durable().await?;
+        let previous = match written.take() {
+            Some(previous) => Ok(previous),
+            None => pool_session_repo::read_snapshot(&mut tx).await,
+        };
+        let result = match previous {
+            Ok(previous) => {
+                let diff = pool_session_repo::diff(&previous, &current);
+                *written = Some(previous);
+                match pool_repo::write_pool(&mut tx, quotas).await {
+                    Ok(()) => pool_session_repo::apply_diff(&mut tx, &diff).await,
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(()) => {
+                tx.commit().await?;
+                *written = Some(current);
+                Ok(())
+            }
+            Err(error) => {
+                let _ = tx.rollback().await;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -105,7 +158,7 @@ impl PoolPersister {
     pub(super) fn store(state: AppState, store: Arc<Store>, interval: Duration) -> Self {
         let sink = Arc::new(StoreSink {
             store,
-            gate: tokio::sync::Mutex::new(()),
+            gate: tokio::sync::Mutex::new(None),
             halted: AtomicBool::new(false),
         });
         let task = tokio::spawn(store_loop(sink.clone(), state.clone(), interval));
@@ -187,3 +240,6 @@ async fn store_loop(sink: Arc<StoreSink>, state: AppState, interval: Duration) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod binding_tests;

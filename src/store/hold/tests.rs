@@ -66,7 +66,8 @@ async fn open_second(store: &Store, stale: u64) -> Result<Store, StoreError> {
     Store::open(&config, Mode::Serve).await
 }
 
-/// A migrator holding 0001 plus an extra 0002 (a table that must not appear).
+/// A migrator holding every real migration plus an extra `0003_probe` (a
+/// table that must not appear).
 async fn migrator_with_extra(store: &Store) -> &'static Migrator {
     let engine = match store.db() {
         Db::Sqlite(_) => "sqlite",
@@ -74,13 +75,13 @@ async fn migrator_with_extra(store: &Store) -> &'static Migrator {
         Db::Postgres(_) => "postgres",
     };
     let dir = crate::store::test_support::TempDir::new("extra-migration");
-    let source = format!(
-        "{}/migrations/{engine}/0001_init.sql",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::copy(source, dir.file("0001_init.sql")).unwrap();
+    let source = format!("{}/migrations/{engine}", env!("CARGO_MANIFEST_DIR"));
+    for entry in std::fs::read_dir(source).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::copy(&path, dir.file(path.file_name().unwrap().to_str().unwrap())).unwrap();
+    }
     std::fs::write(
-        dir.file("0002_probe.sql"),
+        dir.file("0003_probe.sql"),
         "CREATE TABLE hold_probe (x BIGINT);",
     )
     .unwrap();
@@ -123,7 +124,9 @@ store_contract_test!(live_holder_is_refused_with_label_and_age, |store| {
 });
 
 store_contract_test!(refused_opener_leaves_migrations_unchanged, |store| {
-    assert_eq!(migration_count(&store).await, 1);
+    let latest =
+        crate::store::migrate::supported_version(crate::store::migrate::embedded(store.db()));
+    assert_eq!(migration_count(&store).await, latest);
     let migrator = migrator_with_extra(&store).await;
     let mut config = store.config.clone();
     config.hold_stale_seconds = 30;
@@ -131,8 +134,8 @@ store_contract_test!(refused_opener_leaves_migrations_unchanged, |store| {
         .await
         .unwrap_err();
     assert!(matches!(error, StoreError::HoldHeld { .. }), "{error:?}");
-    assert_eq!(migration_count(&store).await, 1);
-    assert_eq!(store.schema_version().await.unwrap(), 1);
+    assert_eq!(migration_count(&store).await, latest);
+    assert_eq!(store.schema_version().await.unwrap(), latest);
 });
 
 store_contract_test!(stale_holder_is_taken_over_and_fenced_out, |store| {

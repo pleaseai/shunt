@@ -165,7 +165,15 @@ pub async fn restore(state: &AppState) {
             if legacy || corrected {
                 state.accounts.mark_dirty();
             }
-            let bindings = restore_bindings(state, persisted.bindings).await;
+            let bindings = restore_bindings(
+                state,
+                persisted
+                    .bindings
+                    .into_iter()
+                    .map(BindingRow::from)
+                    .collect(),
+            )
+            .await;
             tracing::info!(
                 path = %path.display(),
                 accounts = count,
@@ -188,21 +196,19 @@ pub async fn restore(state: &AppState) {
 /// account is still configured for its provider (FR-12); the rest are dropped
 /// and those sessions are placed afresh on their next request. Returns how
 /// many bindings were restored. When rows were dropped the pool is marked
-/// dirty, so the next flush rewrites the file without them.
-async fn restore_bindings(state: &AppState, persisted: Vec<PersistedBinding>) -> usize {
+/// dirty, so the next flush rewrites the file (or the store) without them.
+/// Shared by the file and store restores.
+async fn restore_bindings(state: &AppState, persisted: Vec<BindingRow>) -> usize {
     if persisted.is_empty() {
         return 0;
     }
     let total = persisted.len();
     let configured = configured_accounts(state, &persisted).await;
-    let restored =
-        state
-            .accounts
-            .import_bindings(persisted.into_iter().map(BindingRow::from), |row| {
-                configured
-                    .get(row.provider.as_str())
-                    .is_some_and(|accounts| accounts.contains(&row.account))
-            });
+    let restored = state.accounts.import_bindings(persisted, |row| {
+        configured
+            .get(row.provider.as_str())
+            .is_some_and(|accounts| accounts.contains(&row.account))
+    });
     if restored < total {
         state.accounts.mark_dirty();
     }
@@ -215,7 +221,7 @@ async fn restore_bindings(state: &AppState, persisted: Vec<PersistedBinding>) ->
 /// are a cache, and a session without one is simply placed again.
 async fn configured_accounts(
     state: &AppState,
-    bindings: &[PersistedBinding],
+    bindings: &[BindingRow],
 ) -> HashMap<String, HashSet<AccountKey>> {
     let mut configured = HashMap::new();
     for binding in bindings {
@@ -390,6 +396,20 @@ pub(crate) fn normalized_quotas(bytes: &[u8]) -> Result<Vec<(AccountKey, QuotaSt
         scratch.import_quotas(quotas);
     }
     Ok(scratch.export_quotas())
+}
+
+/// The bindings a snapshot carries, normalized as a boot would read them:
+/// malformed and expired rows dropped, a future `last_used` clamped, the cap
+/// applied, `last_used` rounded to the hour. Whether each account is still
+/// configured is decided at restore, not here. Strict on the envelope, like
+/// [`normalized_quotas`]; a v2 file has none.
+pub(crate) fn normalized_bindings(bytes: &[u8]) -> Result<Vec<BindingRow>, LoadIssue> {
+    let persisted = parse(bytes)?;
+    let scratch = AccountPool::new();
+    scratch.import_bindings(persisted.bindings.into_iter().map(BindingRow::from), |_| {
+        true
+    });
+    Ok(scratch.export_bindings())
 }
 
 /// Write the state atomically via [`crate::atomic_file::write_private_atomic`]:
