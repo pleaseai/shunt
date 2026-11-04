@@ -237,16 +237,8 @@ async fn unreachable_issuer_on_the_cookie_is_an_openai_shaped_503() {
     );
 }
 
-#[tokio::test]
-async fn gateway_login_token_wins_over_an_unreachable_issuer_on_the_cookie() {
-    // AC-009
-    let mut vars = env().await;
-    vars.set(GATEWAY_SECRET_ENV, GATEWAY_SECRET);
-    vars.set(GATEWAY_USERS_ENV, "dev@example.com:approval-secret");
-    let dead = dead_issuer();
-    let upstream = upstream("/codex/responses").await;
-    let auth = auth(&dead, &format!("{dead}/jwks"), None, Some(JWT_COOKIE));
-    let mut config: Config = config(&upstream.uri(), auth);
+/// Enables `[server.gateway]` on `config` and returns a login token for it.
+fn with_gateway(config: &mut Config) -> String {
     config.server.gateway = Some(GatewayConfig {
         desktop_bootstrap: None,
         public_url: GATEWAY_URL.to_string(),
@@ -260,7 +252,6 @@ async fn gateway_login_token_wins_over_an_unreachable_issuer_on_the_cookie() {
         oidc: None,
         session: None,
     });
-    let gateway = start(config).await;
     let login = gateway_jwt::mint(
         &Identity {
             sub: "dev".to_string(),
@@ -271,7 +262,21 @@ async fn gateway_login_token_wins_over_an_unreachable_issuer_on_the_cookie() {
         GATEWAY_SECRET.as_bytes(),
         3600,
     );
-    let bearer = format!("Bearer {login}");
+    format!("Bearer {login}")
+}
+
+#[tokio::test]
+async fn gateway_login_token_wins_over_an_unreachable_issuer_on_the_cookie() {
+    // AC-009
+    let mut vars = env().await;
+    vars.set(GATEWAY_SECRET_ENV, GATEWAY_SECRET);
+    vars.set(GATEWAY_USERS_ENV, "dev@example.com:approval-secret");
+    let dead = dead_issuer();
+    let upstream = upstream("/codex/responses").await;
+    let auth = auth(&dead, &format!("{dead}/jwks"), None, Some(JWT_COOKIE));
+    let mut config = config(&upstream.uri(), auth);
+    let bearer = with_gateway(&mut config);
+    let gateway = start(config).await;
     let cookie = format!("{JWT_COOKIE}={}", jwt_for(&dead, "alice", 300));
 
     let response = get(
@@ -282,4 +287,35 @@ async fn gateway_login_token_wins_over_an_unreachable_issuer_on_the_cookie() {
     .await;
 
     assert_catalog(response).await;
+}
+
+#[tokio::test]
+async fn gateway_login_token_skips_the_issuer_lookup_for_the_header_jwt() {
+    // A request the gateway login already authenticates must not wait on a
+    // JWKS fetch for the IdP token riding in `jwt_header`.
+    let mut vars = env().await;
+    vars.set(GATEWAY_SECRET_ENV, GATEWAY_SECRET);
+    vars.set(GATEWAY_USERS_ENV, "dev@example.com:approval-secret");
+    let issuer = jwt::issuer().await;
+    let upstream = upstream("/codex/responses").await;
+    let auth = auth(
+        &issuer.uri(),
+        &format!("{}/jwks", issuer.uri()),
+        Some(JWT_HEADER),
+        None,
+    );
+    let mut config = config(&upstream.uri(), auth);
+    let bearer = with_gateway(&mut config);
+    let gateway = start(config).await;
+    let token = jwt_for(&issuer.uri(), "alice", 300);
+
+    let response = get(
+        &gateway,
+        "/models",
+        &[("authorization", &bearer), (JWT_HEADER, &token)],
+    )
+    .await;
+
+    assert_catalog(response).await;
+    assert!(issuer.received_requests().await.unwrap().is_empty());
 }

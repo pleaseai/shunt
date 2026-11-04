@@ -145,17 +145,34 @@ async fn authentication_error(
     } else {
         gate::Slots::Client
     };
-    let inbound = match &state.inbound_auth {
-        Some(auth) => gate::authenticate(auth, &state.inbound_jwks, headers, slots).await,
-        None => gate::Outcome::Rejected,
-    };
-    // A gateway login token is checked before the `Unavailable` verdict: it
-    // needs no issuer, so an unreachable JWKS must not turn it into a 503.
+    // A gateway login token needs no issuer, so it is checked first: a request
+    // it authenticates must neither wait on a JWKS fetch for a token in another
+    // slot nor turn into a 503 when that issuer is unreachable.
     let gateway_identity = state
         .gateway_auth
         .as_ref()
         .and_then(|auth| auth.authenticate_bearer(headers));
-    if inbound == gate::Outcome::Unavailable && gateway_identity.is_none() {
+    if let Some(identity) = gateway_identity {
+        match state
+            .inbound_auth
+            .as_ref()
+            .and_then(|auth| auth.authenticate_client(headers))
+        {
+            Some(client) => {
+                tracing::info!(client = %client, "inbound client authenticated for GET /v1/models")
+            }
+            None => tracing::info!(
+                client = %identity.email,
+                "gateway user authenticated for GET /v1/models"
+            ),
+        }
+        return None;
+    }
+    let inbound = match &state.inbound_auth {
+        Some(auth) => gate::authenticate(auth, &state.inbound_jwks, headers, slots).await,
+        None => gate::Outcome::Rejected,
+    };
+    if inbound == gate::Outcome::Unavailable {
         tracing::warn!("GET /v1/models: cannot verify credential, JWT issuer key set unreachable");
         let response = gate::unavailable_response();
         return Some(if codex_shape {
@@ -168,10 +185,7 @@ async fn authentication_error(
         gate::Outcome::Authenticated { client, .. } => Some(client.as_str()),
         _ => None,
     };
-    if (state.inbound_auth.is_some() || state.gateway_auth.is_some())
-        && inbound_client.is_none()
-        && gateway_identity.is_none()
-    {
+    if (state.inbound_auth.is_some() || state.gateway_auth.is_some()) && inbound_client.is_none() {
         tracing::warn!(
             "inbound auth failed for GET /v1/models: missing or invalid client credential"
         );
@@ -200,8 +214,6 @@ async fn authentication_error(
     }
     if let Some(client) = inbound_client {
         tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
-    } else if let Some(identity) = gateway_identity.as_ref() {
-        tracing::info!(client = %identity.email, "gateway user authenticated for GET /v1/models");
     }
     None
 }
