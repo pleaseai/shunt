@@ -171,10 +171,21 @@ fn soft_near_tracking_is_separate_for_fable_requests() {
     let cfg = soft(0.5);
     note_5h(&pool, &accounts[0], "0.6");
     pool.select_order(P, &accounts, Some("s"), None, Some(&cfg));
-    let entries = pool.entries.lock().unwrap();
+    {
+        let entries = pool.entries.lock().unwrap();
+        let health = &entries[&account_key(P, &accounts[0])];
+        assert!(health.soft_near_since.is_some());
+        assert!(health.soft_near_since_fable.is_none());
+    }
+
+    // The Fable direction: a Fable request stamps only the Fable scope.
+    let fable_pool = AccountPool::new();
+    note_5h(&fable_pool, &accounts[0], "0.6");
+    fable_pool.select_order(P, &accounts, Some("s"), Some("claude-fable-5"), Some(&cfg));
+    let entries = fable_pool.entries.lock().unwrap();
     let health = &entries[&account_key(P, &accounts[0])];
-    assert!(health.soft_near_since.is_some());
-    assert!(health.soft_near_since_fable.is_none());
+    assert!(health.soft_near_since_fable.is_some());
+    assert!(health.soft_near_since.is_none());
 }
 
 #[test]
@@ -584,24 +595,38 @@ fn removed_account_rebinds_as_failover() {
 
 #[test]
 fn sort_by_reset_override_leaves_bound_heads_in_place() {
-    // AC-020 / FR-16.
+    // AC-020 / FR-16. Account 0 stays healthy with the soonest reset, so the
+    // sort would rank it first; the others are soft-near for under the
+    // debounce, which keeps selection off the fast path while place() pins
+    // each session's head to its bound account.
     let pool = AccountPool::new();
     let accounts = pool_accounts(4);
-    let cfg = PoolConfig::default();
+    let cfg = soft(0.5);
     let now = unix_now();
+    // Bind each session to an account that is NOT its unbound rendezvous head.
     let bound = (0..40)
         .map(|i| {
             let session = format!("s-{i}");
-            let (head, _) = serve(&pool, &accounts, &session, Some(&cfg));
-            (session, head)
+            let unbound_head = head(&pool, &accounts, &session, Some(&cfg));
+            let target = unbound_head % 3 + 1;
+            let (order, ticket) =
+                pool.select_order_with_ticket(P, &accounts, Some(&session), None, Some(&cfg));
+            assert_eq!(order[0], unbound_head);
+            pool.commit_session_binding(&ticket.unwrap(), &accounts[target], false);
+            assert_ne!(unbound_head, target);
+            (session, target)
         })
         .collect::<Vec<_>>();
+    for (session, target) in &bound {
+        assert_eq!(head(&pool, &accounts, session, Some(&cfg)), *target);
+    }
     for (index, account) in accounts.iter().enumerate() {
+        let utilization = if index == 0 { "0.1" } else { "0.6" };
         note(
             &pool,
             account,
             &[
-                ("anthropic-ratelimit-unified-5h-utilization", "0.1"),
+                ("anthropic-ratelimit-unified-5h-utilization", utilization),
                 (
                     "anthropic-ratelimit-unified-5h-reset",
                     &(now + 1_000 * (index as u64 + 1)).to_string(),
@@ -609,9 +634,15 @@ fn sort_by_reset_override_leaves_bound_heads_in_place() {
             ],
         );
     }
+    // Stamp soft-near on accounts 1..=3, then age it to 30 s (under the 60 s debounce).
+    pool.select_order(P, &accounts, None, None, Some(&cfg));
+    for account in &accounts[1..] {
+        backdate_soft_near(&pool, account, Duration::from_secs(30));
+    }
     pool.set_sort_by_reset_override(Some(true));
-    for (session, head_before) in bound {
-        assert_eq!(head(&pool, &accounts, &session, Some(&cfg)), head_before);
+    assert!(pool.effective_sort_by_reset(Some(&cfg)));
+    for (session, target) in bound {
+        assert_eq!(head(&pool, &accounts, &session, Some(&cfg)), target);
     }
 }
 
@@ -675,7 +706,7 @@ fn forget_identity_drops_its_bindings() {
 }
 
 #[test]
-fn soft_near_since_is_cleared_on_any_non_near_selection() {
+fn soft_near_since_is_cleared_when_the_account_stops_being_soft_near() {
     let pool = AccountPool::new();
     let accounts = pool_accounts(2);
     let cfg = soft(0.5);

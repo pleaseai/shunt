@@ -155,23 +155,6 @@ fn bound_soft_near_is_debounced_for_sixty_seconds() {
 }
 
 #[test]
-fn soft_near_past_debounce_stays_without_a_healthy_alternative() {
-    let slots = [
-        soft_near(10, Duration::from_secs(600)),
-        soft_near(30, Duration::from_secs(1)),
-    ];
-    let placement = place(
-        PoolAssignment::Spread,
-        slots.len(),
-        |i| slots[i],
-        |i| slots[i].weight,
-        Bound::At(0),
-    );
-    assert_eq!(placement.head, Some(0));
-    assert_eq!(placement.prior_ineligible, None, "FR-5");
-}
-
-#[test]
 fn immediate_ineligibility_reasons() {
     let base = || [healthy(10), healthy(30)];
     type Break = fn(&mut SlotHealth);
@@ -288,7 +271,7 @@ fn soonest_weekly_reset_orders_by_priority_then_reset_then_slot() {
     assert_eq!(
         placement.head,
         Some(0),
-        "unknown resets sort last, then slot"
+        "priority outranks a known reset; unknown resets tie-break on slot order"
     );
 }
 

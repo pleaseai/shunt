@@ -90,6 +90,18 @@ fn bound(state: &AppState, accounts: &[AccountConfig], session: &str) -> Option<
         .map(|account| account.name.clone())
 }
 
+/// Whether the pool holds any binding for `session`, whatever its account.
+fn has_binding(state: &AppState, accounts: &[AccountConfig], session: &str) -> bool {
+    let (_, ticket) = state.accounts.select_order_with_ticket(
+        PROVIDER,
+        accounts,
+        Some(session),
+        Some(MODEL),
+        None,
+    );
+    ticket.unwrap().is_bound()
+}
+
 /// AC-017 and FR-12: a restart restores every unexpired binding whose account
 /// is still configured and drops the rest; the file never carries a raw
 /// session id.
@@ -125,6 +137,10 @@ async fn a_restart_restores_live_bindings_of_configured_accounts_only() {
     let remaining = accounts_of(&after).await;
     assert_eq!(bound(&after, &remaining, kept).as_deref(), Some("a"));
     assert_eq!(bound(&after, &remaining, removed), None);
+    assert!(
+        !has_binding(&after, &remaining, removed),
+        "no binding survives for the removed account"
+    );
     assert_eq!(
         after.accounts.export_bindings().len(),
         1,

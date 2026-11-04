@@ -71,6 +71,15 @@ fn bound(state: &AppState, accounts: &[AccountConfig], session: &str) -> Option<
         .map(|account| account.name.clone())
 }
 
+/// Whether the pool holds any binding for `session`, whatever its account.
+fn has_binding(state: &AppState, accounts: &[AccountConfig], session: &str) -> bool {
+    let (_, ticket) =
+        state
+            .accounts
+            .select_order_with_ticket(PROVIDER, accounts, Some(session), None, None);
+    ticket.unwrap().is_bound()
+}
+
 async fn stored(store: &Store) -> Vec<BindingRow> {
     pool_session_repo::load_bindings(store).await.unwrap().0
 }
@@ -137,6 +146,15 @@ store_contract_test!(
             Some("a")
         );
         assert_eq!(bound(&after, &remaining, "raw-session-three"), None);
+        assert_eq!(
+            after.accounts.export_bindings().len(),
+            1,
+            "only the live row was restored"
+        );
+        assert!(
+            !has_binding(&after, &remaining, "raw-session-three"),
+            "no binding survives for the removed account"
+        );
         assert!(
             after.accounts.take_dirty(),
             "dropped rows mark the pool dirty"

@@ -66,8 +66,8 @@ async fn open_second(store: &Store, stale: u64) -> Result<Store, StoreError> {
     Store::open(&config, Mode::Serve).await
 }
 
-/// A migrator holding every real migration plus an extra `0003_probe` (a
-/// table that must not appear).
+/// A migrator holding every real migration plus an extra probe migration one
+/// version past the newest real one (a table that must not appear).
 async fn migrator_with_extra(store: &Store) -> &'static Migrator {
     let engine = match store.db() {
         Db::Sqlite(_) => "sqlite",
@@ -78,10 +78,14 @@ async fn migrator_with_extra(store: &Store) -> &'static Migrator {
     let source = format!("{}/migrations/{engine}", env!("CARGO_MANIFEST_DIR"));
     for entry in std::fs::read_dir(source).unwrap() {
         let path = entry.unwrap().path();
-        std::fs::copy(&path, dir.file(path.file_name().unwrap().to_str().unwrap())).unwrap();
+        if path.extension().is_some_and(|ext| ext == "sql") {
+            std::fs::copy(&path, dir.file(path.file_name().unwrap().to_str().unwrap())).unwrap();
+        }
     }
+    let next =
+        crate::store::migrate::supported_version(crate::store::migrate::embedded(store.db())) + 1;
     std::fs::write(
-        dir.file("0003_probe.sql"),
+        dir.file(&format!("{next:04}_probe.sql")),
         "CREATE TABLE hold_probe (x BIGINT);",
     )
     .unwrap();

@@ -152,7 +152,7 @@ fn export_import_round_trip_drops_expired_and_clamps_future() {
     assert_eq!(t.len(), 2);
     assert!(t.lookup("p", &h("fresh"), now).is_some());
     assert!(t.lookup("p", &h("old"), now).is_none());
-    // Clamped to now: still live a TTL later minus a second, gone after.
+    // Clamped to now: still live exactly a TTL later, gone a second after.
     assert!(t
         .lookup("p", &h("future"), now + BINDING_IDLE_TTL_SECS)
         .is_some());

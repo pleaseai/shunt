@@ -272,9 +272,25 @@ async fn a_relayed_client_error_commits_nothing() {
     .await;
     let session = pool.session_for(0);
     for stream in [false, true] {
-        pool.send(&session, stream).await;
+        let (status, _) = pool.send(&session, stream).await;
+        // Streaming commits the response as 200 before the loop; the 400
+        // arrives as an SSE error frame.
+        assert_eq!(
+            status,
+            if stream {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            "stream: {stream}"
+        );
         assert_eq!(pool.bound(&session), None, "stream: {stream}");
     }
+    assert_eq!(
+        upstream.received_requests().await.unwrap().len(),
+        2,
+        "account a answered both turns"
+    );
     assert_eq!(session_account_switch_total_for_tests(pool.provider()), 0);
 }
 
