@@ -267,11 +267,29 @@ impl SessionBindings {
     }
 
     /// Live bindings per account (expired entries not counted).
-    #[cfg_attr(not(test), expect(dead_code, reason = "read by the T008 admin view"))]
+    #[cfg(test)]
     pub(crate) fn bound_count(&self, account: &AccountKey, now: u64) -> usize {
         self.bindings()
             .filter(|(_, _, b)| b.account == *account && !expired(b.last_used, now))
             .count()
+    }
+
+    /// Live bindings counted per provider, then per bound account (expired
+    /// entries not counted), in one pass over the table. Counts only: no
+    /// session hash leaves the table this way.
+    pub(crate) fn bound_counts(&self, now: u64) -> HashMap<String, HashMap<AccountKey, usize>> {
+        let mut counts: HashMap<String, HashMap<AccountKey, usize>> = HashMap::new();
+        for (provider, _, binding) in self.bindings() {
+            if expired(binding.last_used, now) {
+                continue;
+            }
+            *counts
+                .entry(provider.to_string())
+                .or_default()
+                .entry(binding.account.clone())
+                .or_default() += 1;
+        }
+        counts
     }
 
     /// Live bindings as persisted rows, `last_used` rounded down to the hour

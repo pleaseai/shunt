@@ -3067,6 +3067,20 @@ impl AccountPool {
         quotas
     }
 
+    /// Live session bindings counted per provider, then per bound account key,
+    /// for the admin pool view (FR-14). Expired bindings are not counted. Takes
+    /// the bindings lock once, and never while `entries` is held; skips it
+    /// while the table has never held a binding.
+    pub(crate) fn bound_session_counts(&self) -> HashMap<String, HashMap<AccountKey, usize>> {
+        if !self.any_bindings.load(Ordering::Acquire) {
+            return HashMap::new();
+        }
+        self.bindings
+            .lock()
+            .expect("session binding lock poisoned")
+            .bound_counts(unix_now())
+    }
+
     /// Snapshot every live session binding for persistence (ADR-0008 §6).
     /// Rows carry the session hash, never a raw id, and `last_used` rounded
     /// down to the hour.

@@ -305,3 +305,25 @@ fn persisted_view_changes_on_placement_move_and_hour_crossing_only() {
     assert_eq!(t.remove_matching(|k| *k == acct("b")), 1);
     assert!(t.take_persist_dirty(), "a removal changes it");
 }
+
+#[test]
+fn bound_counts_are_per_provider_and_skip_expired_bindings() {
+    let mut t = SessionBindings::default();
+    t.commit("p", &h("1"), &acct("a"), 0, 10);
+    t.commit("p", &h("2"), &acct("a"), 0, 10);
+    t.commit("p", &h("3"), &acct("b"), 0, 10);
+    t.commit("q", &h("4"), &acct("a"), 0, 10);
+    t.commit("p", &h("old"), &acct("b"), 0, 1);
+    // `old` is idle past the TTL at `now`; the rest are not.
+    let now = 1 + BINDING_IDLE_TTL_SECS + 1;
+    let counts = t.bound_counts(now);
+    assert_eq!(counts["p"][&acct("a")], 2);
+    assert_eq!(
+        counts["p"][&acct("b")],
+        1,
+        "the expired binding is not counted"
+    );
+    assert_eq!(counts["q"][&acct("a")], 1);
+    assert_eq!(counts.len(), 2);
+    assert!(t.bound_counts(10 + BINDING_IDLE_TTL_SECS + 1).is_empty());
+}
