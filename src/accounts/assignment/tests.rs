@@ -29,6 +29,7 @@ fn spread_places_on_highest_weight_ignoring_priority() {
         PoolAssignment::Spread,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::Unbound,
     );
     assert_eq!(placement.head, Some(1));
@@ -45,6 +46,7 @@ fn spread_placement_skips_unhealthy_first_choice_without_fast_path() {
         PoolAssignment::Spread,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::Unbound,
     );
     assert_eq!(placement.head, Some(2));
@@ -60,6 +62,7 @@ fn no_healthy_candidate_leaves_todays_order_and_binding() {
         PoolAssignment::Spread,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::Unbound,
     );
     assert_eq!(unbound.head, None);
@@ -68,6 +71,7 @@ fn no_healthy_candidate_leaves_todays_order_and_binding() {
         PoolAssignment::Spread,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::At(0),
     );
     assert_eq!(bound.head, None);
@@ -86,6 +90,7 @@ fn bound_soft_near_is_debounced_for_sixty_seconds() {
         PoolAssignment::Spread,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::At(0),
     );
     assert_eq!(placement.head, Some(0), "AC-006");
@@ -97,6 +102,7 @@ fn bound_soft_near_is_debounced_for_sixty_seconds() {
         PoolAssignment::Spread,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::At(0),
     );
     assert_eq!(placement.head, Some(1));
@@ -113,6 +119,7 @@ fn soft_near_past_debounce_stays_without_a_healthy_alternative() {
         PoolAssignment::Spread,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::At(0),
     );
     assert_eq!(placement.head, None);
@@ -150,6 +157,7 @@ fn immediate_ineligibility_reasons() {
             PoolAssignment::Spread,
             slots.len(),
             |i| slots[i],
+            |i| slots[i].weight,
             Bound::At(0),
         );
         assert_eq!(placement.head, Some(1));
@@ -167,6 +175,7 @@ fn spread_move_stays_in_best_priority_tier() {
         PoolAssignment::Spread,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::At(0),
     );
     assert_eq!(
@@ -183,6 +192,7 @@ fn absent_binding_is_placed_again_as_failover() {
         PoolAssignment::Spread,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::Absent,
     );
     assert_eq!(placement.head, Some(1));
@@ -202,6 +212,7 @@ fn soonest_weekly_reset_orders_by_priority_then_reset_then_slot() {
         PoolAssignment::SoonestWeeklyReset,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::Unbound,
     );
     assert_eq!(placement.head, Some(2));
@@ -211,6 +222,7 @@ fn soonest_weekly_reset_orders_by_priority_then_reset_then_slot() {
         PoolAssignment::SoonestWeeklyReset,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::Unbound,
     );
     assert_eq!(
@@ -225,6 +237,7 @@ fn soonest_weekly_reset_orders_by_priority_then_reset_then_slot() {
         PoolAssignment::SoonestWeeklyReset,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::Unbound,
     );
     assert_eq!(
@@ -243,6 +256,7 @@ fn soonest_weekly_reset_never_moves_a_healthy_binding() {
         PoolAssignment::SoonestWeeklyReset,
         slots.len(),
         |i| slots[i],
+        |i| slots[i].weight,
         Bound::At(0),
     );
     assert_eq!(placement.head, Some(0), "AC-013");

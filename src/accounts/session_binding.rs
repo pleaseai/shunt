@@ -140,7 +140,6 @@ impl SessionBindings {
         }
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "read by the T004 metrics"))]
     pub(crate) fn len(&self) -> usize {
         self.len
     }

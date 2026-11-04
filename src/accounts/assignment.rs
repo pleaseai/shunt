@@ -168,10 +168,13 @@ pub(crate) struct Placement {
 
 /// Decide the head of the order for one session request over `len` slots,
 /// reading each slot's health through `slot` (no allocation on the hot path).
+/// `weight` reads only a slot's rendezvous weight, so the common `spread`
+/// case of a healthy first choice builds one [`SlotHealth`], not `len`.
 pub(crate) fn place(
     strategy: PoolAssignment,
     len: usize,
     slot: impl Fn(usize) -> SlotHealth,
+    weight: impl Fn(usize) -> u64,
     bound: Bound,
 ) -> Placement {
     debug_assert!(len > 0);
@@ -207,7 +210,11 @@ pub(crate) fn place(
             // The session's first choice with health ignored, the analogue of
             // today's sticky slot. When it is healthy it is also the
             // placement; otherwise it seeds the rotation if nothing is.
-            let home = first_choice(strategy, slots()).unwrap_or(0);
+            let home = match strategy {
+                PoolAssignment::Spread => best_weight((0..len).map(|index| (index, weight(index)))),
+                PoolAssignment::SoonestWeeklyReset => soonest_reset(slots()),
+            }
+            .unwrap_or(0);
             let home_healthy = slot(home).healthy();
             let target = if home_healthy {
                 Some(home)
@@ -233,7 +240,9 @@ fn first_choice(
     candidates: impl Iterator<Item = (usize, SlotHealth)>,
 ) -> Option<usize> {
     match strategy {
-        PoolAssignment::Spread => best_weight(candidates),
+        PoolAssignment::Spread => {
+            best_weight(candidates.map(|(slot, health)| (slot, health.weight)))
+        }
         PoolAssignment::SoonestWeeklyReset => soonest_reset(candidates),
     }
 }
@@ -249,20 +258,24 @@ fn move_target(
     match strategy {
         PoolAssignment::Spread => {
             let tier = healthy.clone().map(|(_, health)| health.priority).min()?;
-            best_weight(healthy.filter(|(_, health)| health.priority == tier))
+            best_weight(
+                healthy
+                    .filter(|(_, health)| health.priority == tier)
+                    .map(|(slot, health)| (slot, health.weight)),
+            )
         }
         PoolAssignment::SoonestWeeklyReset => soonest_reset(healthy),
     }
 }
 
 /// Highest weight; ties keep the earlier slot.
-fn best_weight(candidates: impl Iterator<Item = (usize, SlotHealth)>) -> Option<usize> {
+fn best_weight(candidates: impl Iterator<Item = (usize, u64)>) -> Option<usize> {
     candidates
         .fold(
             None,
-            |best: Option<(usize, u64)>, (slot, health)| match best {
-                Some((_, weight)) if weight >= health.weight => best,
-                _ => Some((slot, health.weight)),
+            |best: Option<(usize, u64)>, (slot, weight)| match best {
+                Some((_, top)) if top >= weight => best,
+                _ => Some((slot, weight)),
             },
         )
         .map(|(slot, _)| slot)

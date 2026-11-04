@@ -677,6 +677,16 @@ pub struct AccountPool {
     /// the entries lock, a commit takes it alone, and `forget_identity` takes
     /// it after releasing `entries`. Never held across an await.
     bindings: Mutex<SessionBindings>,
+    /// Whether the binding table might hold a binding. Selection skips the
+    /// bindings lock while it is `false`, so a pool that has never bound a
+    /// session (sessionless traffic, ticketless callers) pays no second lock,
+    /// as `any_needs_relogin` does for its scan.
+    ///
+    /// Conservative in one direction only: every insert raises it under the
+    /// bindings lock, and only a removal that leaves the table empty clears
+    /// it, also under that lock. `true` may outlive the last binding (an
+    /// expiry does not clear it) and cost one lock; `false` never hides one.
+    any_bindings: AtomicBool,
 }
 
 /// The usage poller's cadence as of its latest pass (`crate::usage_poll`).
@@ -851,6 +861,38 @@ impl AccountPool {
             .lock()
             .expect("account membership lock poisoned")
             .insert(upstream.to_string(), membership);
+    }
+
+    /// [`Self::sync_enabled_accounts`] for selection, which has already
+    /// derived `keys` and collapsed them to `ident_reps`. The membership map
+    /// is rebuilt only when it changed: an identity's entry is the OR of its
+    /// aliases' enabled bits, which is exactly its representative's bit
+    /// because a representative is enabled whenever any alias is.
+    fn sync_enabled_keys(
+        &self,
+        upstream: &str,
+        accounts: &[AccountConfig],
+        keys: &[AccountKey],
+        ident_reps: &[usize],
+    ) {
+        let mut memberships = self
+            .memberships
+            .lock()
+            .expect("account membership lock poisoned");
+        let unchanged = memberships.get(upstream).is_some_and(|current| {
+            current.len() == ident_reps.len()
+                && ident_reps
+                    .iter()
+                    .all(|&rep| current.get(&keys[rep]) == Some(&!accounts[rep].disabled))
+        });
+        if unchanged {
+            return;
+        }
+        let mut membership = HashMap::with_capacity(ident_reps.len());
+        for (account, key) in accounts.iter().zip(keys) {
+            *membership.entry(key.clone()).or_default() |= !account.disabled;
+        }
+        memberships.insert(upstream.to_string(), membership);
     }
 
     /// Return account indices in the order an adapter should try them.
@@ -1098,17 +1140,22 @@ impl AccountPool {
             }
             _ => None,
         };
-        let outcome = self
-            .bindings
-            .lock()
-            .expect("session binding lock poisoned")
-            .commit(
+        let outcome = {
+            let mut bindings = self.bindings.lock().expect("session binding lock poisoned");
+            let outcome = bindings.commit(
                 &ticket.provider,
                 &ticket.session,
                 &served,
                 ticket.generation,
                 unix_now(),
             );
+            // Raised under the lock, before any selection can observe the
+            // new binding through it.
+            if outcome == CommitOutcome::Placed {
+                self.any_bindings.store(true, Ordering::Release);
+            }
+            outcome
+        };
         match outcome {
             CommitOutcome::Placed => BindingCommit::Placed,
             CommitOutcome::Touched => BindingCommit::Touched,
@@ -1166,8 +1213,15 @@ impl AccountPool {
         }
 
         let provider = provider.to_string();
-        self.sync_enabled_accounts(&provider, accounts);
-        let ident_reps = collapse_representatives(&provider, accounts);
+        // Each account's key is derived once and shared by the collapse, the
+        // membership sync and the health pass below, which each used to
+        // derive (and allocate) their own.
+        let keys = accounts
+            .iter()
+            .map(|account| account_key(&provider, account))
+            .collect::<Vec<_>>();
+        let ident_reps = collapse_keyed_representatives(accounts, &keys);
+        self.sync_enabled_keys(&provider, accounts, &keys, &ident_reps);
         let distinct = ident_reps.len();
         // An empty header is not a session. `Some("")` would otherwise take the
         // session branch and share one binding of `sha256("")` — one account
@@ -1186,11 +1240,15 @@ impl AccountPool {
         // entries lock below, so the two are never held together.
         let binding = session_id.map(|session_id| {
             let hash = hash_session_key(session_id);
-            let view = self
-                .bindings
-                .lock()
-                .expect("session binding lock poisoned")
-                .lookup(&provider, &hash, unix_now);
+            // An empty table answers every lookup with a miss; skip its lock.
+            let view = if self.any_bindings.load(Ordering::Acquire) {
+                self.bindings
+                    .lock()
+                    .expect("session binding lock poisoned")
+                    .lookup(&provider, &hash, unix_now)
+            } else {
+                None
+            };
             (hash, view)
         });
         // Sessionless requests round-robin (FR-15); a session's start slot is
@@ -1237,8 +1295,7 @@ impl AccountPool {
             // Paused or hard-capped for this request: not selectable.
             let mut exclusions = vec![Exclusion::Selectable; accounts.len()];
             let mut quota_expired = false;
-            for (index, account) in accounts.iter().enumerate() {
-                let key = account_key(&provider, account);
+            for (index, (account, key)) in accounts.iter().zip(keys).enumerate() {
                 // Only the identity's representative stands for it.
                 if let Some((_, Some(view))) = &binding {
                     if bound_slot.is_none() && view.account == key {
@@ -1301,6 +1358,10 @@ impl AccountPool {
                     weight,
                 ));
             }
+            // Only the re-probe below reads or writes health past this point;
+            // everything else works on the snapshots, so a selection that
+            // cannot re-probe releases the lock here.
+            let mut entries = reprobe.is_some().then_some(entries);
             // A session's rotation starts at its head (ADR-0008 §2–§3);
             // a sessionless one at its round-robin slot.
             let placement = binding.as_ref().map(|(_, view)| {
@@ -1328,7 +1389,8 @@ impl AccountPool {
                     (Some(_), Some(slot)) => assignment::Bound::At(slot),
                 };
                 let strategy = pool.map(|pool| pool.assignment).unwrap_or_default();
-                assignment::place(strategy, distinct, slot_health, bound)
+                let weight = |slot: usize| snapshots[ident_reps[slot]].5;
+                assignment::place(strategy, distinct, slot_health, weight, bound)
             });
             let start_slot = match placement {
                 Some(placement) => placement.start,
@@ -1365,6 +1427,7 @@ impl AccountPool {
             // credential resolution can fail before any upstream request is
             // sent, so only the dispatch boundary may consume the interval.
             let probe_selection = reprobe.and_then(|interval| {
+                let entries = entries.as_ref()?;
                 let mut candidate: Option<(usize, Option<u64>)> = None;
                 for &index in &rotation {
                     let account = &accounts[index];
@@ -1435,6 +1498,8 @@ impl AccountPool {
                 let account = &accounts[index];
                 let key = account_key(&provider, account);
                 let health = entries
+                    .as_mut()
+                    .expect("a re-probe selection keeps the entries lock")
                     .get_mut(&key)
                     .expect("snapshot pass above just inserted this entry");
                 let token = self.next_reprobe_token.fetch_add(1, Ordering::Relaxed);
@@ -2679,10 +2744,13 @@ impl AccountPool {
             .retain(|key, _| !matches(key));
         // Sessions bound to the forgotten identity are placed afresh on their
         // next request. Taken after `entries` is released (lock order).
-        self.bindings
-            .lock()
-            .expect("session binding lock poisoned")
-            .remove_matching(matches);
+        {
+            let mut bindings = self.bindings.lock().expect("session binding lock poisoned");
+            bindings.remove_matching(matches);
+            if bindings.len() == 0 {
+                self.any_bindings.store(false, Ordering::Release);
+            }
+        }
         // Purge the forgotten identity from every upstream's membership map too,
         // so a deleted/rotated account leaves no dead `AccountKey` behind (the
         // per-upstream map is otherwise only rebuilt on the next
@@ -3419,11 +3487,20 @@ pub(crate) fn account_ref(upstream: &str, account: &AccountConfig) -> String {
 /// store-discovered collisions are caught once per store scan (see
 /// `crate::auth::shared::scan_cached`), not here.
 fn collapse_representatives(upstream: &str, accounts: &[AccountConfig]) -> Vec<usize> {
-    let mut slots = HashMap::<AccountKey, usize>::with_capacity(accounts.len());
+    let keys = accounts
+        .iter()
+        .map(|account| account_key(upstream, account))
+        .collect::<Vec<_>>();
+    collapse_keyed_representatives(accounts, &keys)
+}
+
+/// [`collapse_representatives`] over keys the caller already derived
+/// (`keys[i]` is `accounts[i]`'s [`account_key`]).
+fn collapse_keyed_representatives(accounts: &[AccountConfig], keys: &[AccountKey]) -> Vec<usize> {
+    let mut slots = HashMap::<&AccountKey, usize>::with_capacity(accounts.len());
     let mut representatives: Vec<usize> = Vec::with_capacity(accounts.len());
-    for (index, account) in accounts.iter().enumerate() {
-        let identity = account_key(upstream, account);
-        if let Some(&slot) = slots.get(&identity) {
+    for (index, (account, identity)) in accounts.iter().zip(keys).enumerate() {
+        if let Some(&slot) = slots.get(identity) {
             let current = &accounts[representatives[slot]];
             if (current.disabled && !account.disabled)
                 || (current.disabled == account.disabled && account.priority < current.priority)
