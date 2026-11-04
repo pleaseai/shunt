@@ -33,7 +33,7 @@ pub(crate) struct SessionCommit {
 impl SessionCommit {
     /// `ticket` is the session's binding ticket from selection, `None` for a
     /// sessionless request (which commits nothing, FR-15).
-    pub(crate) fn new(ticket: Option<BindingTicket>, thinking_bound: bool) -> Self {
+    fn new(ticket: Option<BindingTicket>, thinking_bound: bool) -> Self {
         Self {
             ticket,
             thinking_bound,

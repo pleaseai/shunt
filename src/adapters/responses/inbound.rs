@@ -30,8 +30,8 @@ use super::{
     error::own_error,
     pool::{
         admit_and_resolve, cancel_reprobe_for_account, classify_first, classify_retry,
-        commit_reprobe_for_account, force_refresh_or_cooldown, is_reprobe_for_account,
-        with_account_header, FirstOutcome, RetryOutcome,
+        commit_reprobe_for_account, commit_unless_reprobe, force_refresh_or_cooldown,
+        provider_auth, with_account_header, FirstOutcome, RetryOutcome,
     },
     request::{alpha_search_url, responses_url},
 };
@@ -213,12 +213,7 @@ async fn forward_codex_passthrough(
             selection_model,
             state.config.server.pool.as_ref(),
         );
-    let auth = state
-        .config
-        .provider(&route.provider)
-        .map(|provider| provider.auth)
-        .unwrap_or_default();
-    let session_commit = SessionCommit::for_route(ticket, &route, auth);
+    let session_commit = SessionCommit::for_route(ticket, &route, provider_auth(&state, &route));
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
@@ -292,10 +287,15 @@ async fn forward_codex_passthrough(
                 state
                     .accounts
                     .mark_healthy(&route.provider, account, status.is_success());
-                // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
-                if !is_reprobe_for_account(&reprobe_reservation, index) {
-                    session_commit.served(&state.accounts, &route.provider, account, status);
-                }
+                commit_unless_reprobe(
+                    &session_commit,
+                    &reprobe_reservation,
+                    index,
+                    &state,
+                    &route,
+                    account,
+                    status,
+                );
                 return Ok((
                     status,
                     crate::adapters::with_admission(
@@ -360,15 +360,15 @@ async fn forward_codex_passthrough(
                             account,
                             retry_status.is_success(),
                         );
-                        // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
-                        if !is_reprobe_for_account(&reprobe_reservation, index) {
-                            session_commit.served(
-                                &state.accounts,
-                                &route.provider,
-                                account,
-                                retry_status,
-                            );
-                        }
+                        commit_unless_reprobe(
+                            &session_commit,
+                            &reprobe_reservation,
+                            index,
+                            &state,
+                            &route,
+                            account,
+                            retry_status,
+                        );
                         return Ok((
                             retry_status,
                             crate::adapters::with_admission(

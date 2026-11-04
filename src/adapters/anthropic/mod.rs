@@ -250,10 +250,7 @@ async fn forward_claude_oauth(
         state.config.server.pool.as_ref(),
     );
     // Committed once, at the account that finally serves a success (ADR-0008).
-    let session_commit = SessionCommit::new(
-        ticket,
-        accounts::thinking_bound(&route.adapter, provider.auth, &route.upstream_model),
-    );
+    let session_commit = SessionCommit::for_route(ticket, &route, provider.auth);
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
@@ -897,10 +894,7 @@ async fn forward_kimi_oauth(
         state.config.server.pool.as_ref(),
     );
     // Committed once, at the account that finally serves a success (ADR-0008).
-    let session_commit = SessionCommit::new(
-        ticket,
-        accounts::thinking_bound(&route.adapter, provider.auth, &route.upstream_model),
-    );
+    let session_commit = SessionCommit::for_route(ticket, &route, provider.auth);
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);

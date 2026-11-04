@@ -1133,12 +1133,10 @@ impl AccountPool {
         let served = account_key(&ticket.provider, served);
         let reason = match &ticket.prior {
             Some(prior) if *prior != served => {
-                let reason = if bound_failed_over {
-                    Some(SwitchReason::Failover)
-                } else {
-                    ticket.prior_ineligible
-                };
-                let Some(reason) = reason else {
+                let Some(reason) = bound_failed_over
+                    .then_some(SwitchReason::Failover)
+                    .or(ticket.prior_ineligible)
+                else {
                     return BindingCommit::Unchanged;
                 };
                 Some(reason)
@@ -3112,7 +3110,7 @@ impl AccountPool {
         rows: impl IntoIterator<Item = BindingRow>,
         keep: impl Fn(&BindingRow) -> bool,
     ) -> usize {
-        let (len, evicted) = {
+        let (len, dirty) = {
             let mut bindings = self.bindings.lock().expect("session binding lock poisoned");
             bindings.import(rows.into_iter().filter(|row| keep(row)), unix_now());
             let len = bindings.len();
@@ -3123,7 +3121,7 @@ impl AccountPool {
             // without them.
             (len, bindings.take_persist_dirty())
         };
-        if evicted {
+        if dirty {
             self.mark_dirty();
         }
         len

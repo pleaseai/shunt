@@ -87,10 +87,7 @@ pub(super) fn cancel_reprobe_for_account(
     reservation: &mut Option<ReprobeReservation>,
     selected_index: usize,
 ) {
-    if reservation
-        .as_ref()
-        .is_some_and(|reservation| reservation.selected_index() == selected_index)
-    {
+    if is_reprobe_for_account(reservation, selected_index) {
         if let Some(reservation) = reservation.as_mut() {
             reservation.cancel();
         }
@@ -98,26 +95,37 @@ pub(super) fn cancel_reprobe_for_account(
 }
 
 /// Whether `index` is the stale account a re-probe promoted to the front of
-/// this request's order. Its serve refreshes quota, not the session's
-/// placement: the binding commit is skipped, so a probed near-quota account
-/// never becomes a session's binding and never takes one over (ADR-0008 §8).
-pub(super) fn is_reprobe_for_account(
-    reservation: &Option<ReprobeReservation>,
-    selected_index: usize,
-) -> bool {
+/// this request's order.
+fn is_reprobe_for_account(reservation: &Option<ReprobeReservation>, selected_index: usize) -> bool {
     reservation
         .as_ref()
         .is_some_and(|reservation| reservation.selected_index() == selected_index)
+}
+
+/// Commit the session binding for the serving account unless it is the
+/// re-probed one. A re-probe serve refreshes quota, not the session's
+/// placement: it neither places nor moves the binding, so a probed near-quota
+/// account never becomes a session's binding and never takes one over
+/// (ADR-0008 §8).
+pub(super) fn commit_unless_reprobe(
+    session_commit: &SessionCommit,
+    reprobe: &Option<ReprobeReservation>,
+    index: usize,
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    status: StatusCode,
+) {
+    if !is_reprobe_for_account(reprobe, index) {
+        session_commit.served(&state.accounts, &route.provider, account, status);
+    }
 }
 
 pub(super) fn commit_reprobe_for_account(
     reservation: &mut Option<ReprobeReservation>,
     selected_index: usize,
 ) {
-    if reservation
-        .as_ref()
-        .is_some_and(|reservation| reservation.selected_index() == selected_index)
-    {
+    if is_reprobe_for_account(reservation, selected_index) {
         if let Some(reservation) = reservation.as_mut() {
             reservation.commit();
         }
@@ -788,15 +796,15 @@ pub(super) fn pool_events_stream(
                                         status.is_success(),
                                     );
                                     if status.is_success() {
-                                        // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
-                                        if !is_reprobe_for_account(&reprobe, index) {
-                                            session_commit.served(
-                                                &state.accounts,
-                                                &route.provider,
-                                                account,
-                                                status,
-                                            );
-                                        }
+                                        commit_unless_reprobe(
+                                            &session_commit,
+                                            &reprobe,
+                                            index,
+                                            &state,
+                                            &route,
+                                            account,
+                                            status,
+                                        );
                                         record(StatusCode::OK);
                                         let parsed: Parsed = super::pool_plan::relay_events(
                                             &state,
@@ -962,15 +970,15 @@ pub(super) fn pool_events_stream(
                                                     account,
                                                     true,
                                                 );
-                                                // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
-                                                if !is_reprobe_for_account(&reprobe, index) {
-                                                    session_commit.served(
-                                                        &state.accounts,
-                                                        &route.provider,
-                                                        account,
-                                                        retry_status,
-                                                    );
-                                                }
+                                                commit_unless_reprobe(
+                                                    &session_commit,
+                                                    &reprobe,
+                                                    index,
+                                                    &state,
+                                                    &route,
+                                                    account,
+                                                    retry_status,
+                                                );
                                                 record(StatusCode::OK);
                                                 let parsed: Parsed = super::pool_plan::relay_events(
                                                     &state,
@@ -1236,10 +1244,15 @@ pub(super) async fn forward_chatgpt_oauth(
                     state
                         .accounts
                         .mark_healthy(&route.provider, account, status.is_success());
-                    // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
-                    if !is_reprobe_for_account(&reprobe_reservation, index) {
-                        session_commit.served(&state.accounts, &route.provider, account, status);
-                    }
+                    commit_unless_reprobe(
+                        &session_commit,
+                        &reprobe_reservation,
+                        index,
+                        &state,
+                        &route,
+                        account,
+                        status,
+                    );
                     let response = crate::adapters::with_admission(response, admission);
                     return Ok((status, with_account_header(response, &account.name)));
                 }
@@ -1364,15 +1377,15 @@ pub(super) async fn forward_chatgpt_oauth(
                     .await;
                     super::pool_plan::cool_on_relayed_limit(&state, &route, account, &response);
                     let response = response?;
-                    // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
-                    if !is_reprobe_for_account(&reprobe_reservation, index) {
-                        session_commit.served(
-                            &state.accounts,
-                            &route.provider,
-                            account,
-                            response.status(),
-                        );
-                    }
+                    commit_unless_reprobe(
+                        &session_commit,
+                        &reprobe_reservation,
+                        index,
+                        &state,
+                        &route,
+                        account,
+                        response.status(),
+                    );
                     let response = crate::adapters::with_admission(
                         with_account_header(response, &account.name),
                         admission,
@@ -1475,15 +1488,15 @@ pub(super) async fn forward_chatgpt_oauth(
                                 &state, &route, account, &response,
                             );
                             let response = response?;
-                            // A re-probe serving neither places nor moves the binding (ADR-0008 §8).
-                            if !is_reprobe_for_account(&reprobe_reservation, index) {
-                                session_commit.served(
-                                    &state.accounts,
-                                    &route.provider,
-                                    account,
-                                    response.status(),
-                                );
-                            }
+                            commit_unless_reprobe(
+                                &session_commit,
+                                &reprobe_reservation,
+                                index,
+                                &state,
+                                &route,
+                                account,
+                                response.status(),
+                            );
                             let response = crate::adapters::with_admission(
                                 with_account_header(response, &account.name),
                                 admission,
@@ -1548,7 +1561,7 @@ async fn exhausted_error(
 /// `forward` reads it. It only picks gateway-owned error wording
 /// ([`mapped_upstream_error`], [`no_upstream_response_message`]); credential
 /// resolution and classification key on each account's `store_family`.
-fn provider_auth(state: &AppState, route: &Route) -> AuthMode {
+pub(super) fn provider_auth(state: &AppState, route: &Route) -> AuthMode {
     state
         .config
         .provider(&route.provider)
