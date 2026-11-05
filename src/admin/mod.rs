@@ -137,6 +137,12 @@ impl AdminAuth {
         self.oidc.clone()
     }
 
+    /// The resolved `[server.admin.oidc] public_url` (a bare origin), when OIDC
+    /// sign-in is configured.
+    pub(crate) fn oidc_public_url(&self) -> Option<&str> {
+        self.oidc_public_url.as_deref()
+    }
+
     pub(crate) fn oidc_callback_url(&self) -> Option<String> {
         self.oidc_public_url
             .as_deref()

@@ -13,6 +13,13 @@ pub struct AccessControlConfig {
     /// trusted proxy that replaces client-supplied forwarding headers.
     #[serde(default)]
     pub trust_forwarded_for: bool,
+    /// Host names accepted in a request's `Host` header besides the built-in
+    /// ones (`localhost`, `*.localhost`, any IP literal, and the configured
+    /// gateway and admin OIDC `public_url` hosts). Empty means the check runs
+    /// only on a loopback bind; a non-empty list makes it run on any bind, and
+    /// `"*"` turns it off. See [`crate::host_guard`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
     #[serde(skip)]
     parsed_allow_cidrs: Vec<IpNet>,
     #[serde(skip)]
@@ -26,6 +33,14 @@ impl AccessControlConfig {
     pub(crate) fn validate(&mut self) -> Result<(), ConfigError> {
         self.parsed_allow_cidrs = parse_cidrs("allow_cidrs", &self.allow_cidrs)?;
         self.parsed_deny_cidrs = parse_cidrs("deny_cidrs", &self.deny_cidrs)?;
+        for (index, entry) in self.allowed_hosts.iter().enumerate() {
+            if !is_allowed_host_entry(entry) {
+                return Err(ConfigError::InvalidAllowedHost {
+                    index,
+                    value: entry.clone(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -59,6 +74,24 @@ impl AccessControlConfig {
                 .iter()
                 .any(|network| network.contains(&address))
     }
+}
+
+/// An `allowed_hosts` entry is `"*"`, or a host exactly as the guard compares
+/// it: lowercase, with no scheme, port, trailing dot or wildcard. The guard
+/// matches names exactly, so `*.example.com` would never match anything and is
+/// refused here rather than silently ignored.
+fn is_allowed_host_entry(entry: &str) -> bool {
+    if entry == crate::host_guard::ANY_HOST {
+        return true;
+    }
+    let name_chars = entry
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-._".contains(&byte));
+    let ipv6 = entry
+        .strip_prefix('[')
+        .and_then(|entry| entry.strip_suffix(']'))
+        .is_some_and(|address| address.parse::<std::net::Ipv6Addr>().is_ok());
+    (name_chars || ipv6) && crate::host_guard::host_name(entry).as_deref() == Some(entry)
 }
 
 fn parse_cidrs(field: &'static str, entries: &[String]) -> Result<Vec<IpNet>, ConfigError> {
@@ -222,6 +255,7 @@ mod tests {
         assert!(parsed.access_control.allow_cidrs.is_empty());
         assert!(parsed.access_control.deny_cidrs.is_empty());
         assert!(!parsed.access_control.trust_forwarded_for);
+        assert!(parsed.access_control.allowed_hosts.is_empty());
         assert_eq!(parsed.limits.max_request_bytes, 33_554_432);
         assert_eq!(parsed.limits.max_request_header_bytes, None);
         assert_eq!(parsed.limits.max_url_length, None);
@@ -279,5 +313,45 @@ mod tests {
         assert_eq!(parsed.timeouts.upstream_ttfb_ms, 900);
         assert_eq!(parsed.rate_limits.device_authorization.max, 3);
         assert_eq!(parsed.rate_limits.device_verify.window_seconds, 30);
+    }
+
+    #[test]
+    fn allowed_hosts_accepts_bare_lowercase_names_and_the_wildcard_only() {
+        for valid in [
+            vec![],
+            vec!["shunt.example.com"],
+            vec!["my_service"],
+            vec!["[::1]", "10.0.0.5"],
+            vec!["*"],
+        ] {
+            let mut config = AccessControlConfig {
+                allowed_hosts: valid.iter().map(ToString::to_string).collect(),
+                ..AccessControlConfig::default()
+            };
+            assert!(config.validate().is_ok(), "{valid:?} must validate");
+        }
+        for invalid in [
+            "https://shunt.example.com",
+            "shunt.example.com:8443",
+            "shunt.example.com/",
+            "Shunt.Example.com",
+            "shunt.example.com.",
+            "",
+            "ops@shunt.example.com",
+            "*.example.com",
+            "shunt*.example.com",
+        ] {
+            let mut config = AccessControlConfig {
+                allowed_hosts: vec!["ok.example".into(), invalid.into()],
+                ..AccessControlConfig::default()
+            };
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::InvalidAllowedHost { index: 1, .. })
+                ),
+                "{invalid:?} must be rejected"
+            );
+        }
     }
 }

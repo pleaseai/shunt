@@ -25,7 +25,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 ## HTTP 调优表
 
-`[server.access_control]` 提供 `allow_cidrs = []`、`deny_cidrs = []` 和 `trust_forwarded_for = false`。deny 规则优先，并且也适用于 `/` 和 `/health`。非空 allow 列表会启用默认拒绝，但这两个健康检查路径只免除 allow 检查。仅在可信代理会覆盖客户端提供的转发头时才信任这些头。更改后需要重启。
+`[server.access_control]` 提供 `allow_cidrs = []`、`deny_cidrs = []` 和 `trust_forwarded_for = false`。deny 规则优先，并且也适用于 `/` 和 `/health`。非空 allow 列表会启用默认拒绝，但这两个健康检查路径只免除 allow 检查。仅在可信代理会覆盖客户端提供的转发头时才信任这些头。`allowed_hosts = []` 调整 `Host` 头部检查（防御 DNS 重绑定）。在回环 bind 上，对 IP 字面量、`localhost`、`*.localhost` 以及已配置的 `[server.gateway]` 和 `[server.admin.oidc]` `public_url` 主机之外的名称发出的请求会以 `403` 被拒绝（`/` 和 `/health` 除外）。非空列表会添加名称，并在任何 bind 上启用该检查；`["*"]` 会关闭检查。如果你通过其他名称访问回环上的 shunt（例如保留原始 `Host` 的反向代理或隧道，或容器中的 `host.docker.internal`），请把该名称加入列表。更改后需要重启。
 
 此 `trust_forwarded_for` 设置与 `[server.gateway] trust_forwarded_for` 相互独立。access-control 设置仅影响 CIDR 允许/拒绝规则，gateway 设置仅影响设备流速率限制器。如果两个表面都在可信反向代理后运行，请同时启用这两个设置。只设置其中一个时，另一个表面仍会使用套接字对端地址。
 
