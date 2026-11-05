@@ -13,11 +13,13 @@
 //! and streaming token usage, Codex continuation decisions, Codex WebSocket
 //! dedicated-overflow admission outcomes, and sanitized client analytics event
 //! names, retries, and requests shed at the inbound concurrency limit. Pool
-//! metrics expose best-account quota utilization and account rotations. Gateway
-//! metrics count inbound OTLP telemetry payloads by signal and ingest outcome.
+//! metrics expose best-account quota utilization, account rotations, session
+//! account switches, and session binding evictions. Gateway metrics count
+//! inbound OTLP telemetry payloads by signal and ingest outcome.
 //!
 //! Attributes stay low-cardinality (provider/model/status/outcome/kind/window/
-//! reason/signal, the closed `client_kind`/`managed` pair the five per-request
+//! reason/signal, the boolean `thinking_bound` on session switches, the closed
+//! `client_kind`/`managed` pair the five per-request
 //! series carry — see `docs/otlp-client-attribution.md` — plus the sanitized,
 //! cardinality-capped `event` on `shunt.codex_client_events`) — never client
 //! names, account ids, session ids, or anything else request-derived. Token
