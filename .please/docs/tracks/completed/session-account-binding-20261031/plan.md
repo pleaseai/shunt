@@ -181,6 +181,8 @@ Rejected:
   Evidence: M8 restart wording replaced by ADR-0008's, plus a `Session bindings` subsection (hashed key, shared table, `assignment`, move/no-move rules, 60 s debounce, 24 h TTL, 10,000 cap, persistence, metrics, `bound_sessions`); m9 `bound_sessions` alias rule; m10/m11 binding semantics; `store.md` migration 0002, `pool_session_binding` columns, rollback-needs-store-restore, `shunt check` v2 example; metric rows in `running.md` and `dashboard-metrics.md`; the four READMEs' pool rows in their own languages; ADR-0008 Accepted (and `decisions/index.md`); stale sticky wording fixed in seven further docs. `rg -n "stable_session_index|deterministic across process restarts|tracks no sticky" docs README*.md` → no matches; the 8 remaining `sticky`/`hash mod` hits describe the router, stage router, load balancers or historical plans. Orchestrator spot-check: rg empty, ko README row reviewed.
 - [x] (2026-11-04 KST) T010 Update the documentation site and its locales — 1aed6f17
   Evidence: 13 pages in each of English, `ko`, `ja`, `zh-cn` (configuration `assignment` row, `sort_by_reset`, `state_path` bindings; endpoints `bound_sessions`; `shunt check` v2; anthropic guide `Session bindings` section; codex, pool-controls, store-migration rollback, OpenTelemetry metrics, inbound Codex, connect-codex-cli, comparison, anthropic provider, stage router); every page had a locale counterpart. `npm ci && npm run build` → 225 pages, no broken links; `npm run lint:docs` → 134 files clean; `npm run typecheck` → 0 errors. Locale anchors taken from `site/dist`: `session-bindings`, `세션-바인딩`, `セッションバインディング`, `会话绑定`. Orchestrator spot-check: ids present in each built locale guide, a ko cross-page link decodes to `#세션-바인딩`, ko CLI page shows `schema v2`.
+- [x] (2026-11-05 12:34 KST) Review-stage commits (SHA: `1c8e84e5`, `6c5c1607`, `992e0a82`, `96eb7613`, `ae6f223f`, `5714816c`, `2e612bf1`, `ba00ed94`, `0f1dadbf`, `560e8e40`, `eb5193bc`, `b3d68ab3`)
+  Evidence: on eb5193bc, fmt clean, clippy exit 0 (`bench` and `bench,store-postgres`), release build OK, workspace → 4741 passed, 0 failed, 2 ignored; CI `fmt · clippy · test` and CodSpeed green on b3d68ab3.
 
 ## Decision Log
 
@@ -193,10 +195,45 @@ Rejected:
 - 2026-11-02: The rendezvous weight is `splitmix64(session_hash[..8] ^ account_digest)`, where `account_digest` is the first 8 bytes of SHA-256 over the account key, cached per health entry. The SHA-256-per-pair weight from T002 cost +35 to +42 % on `account_pool_mixed_cycles`. It is still deterministic across restarts.
 - 2026-11-02: `SessionBindings` nests by provider, so a lookup does not allocate.
 - 2026-11-02: When the head is the session's first choice and healthy, the order is today's rotation from the head. Otherwise it is today's sorted failover order with the head moved to the front. `sort_by_reset` never decides a head.
-- 2026-11-02: An ineligible bound account with no healthy alternative leaves the binding (AC-004). The exception is a bound account that left the slice, whose ticket always carries `failover` (AC-018).
+- 2026-11-02: ~~An ineligible bound account with no healthy alternative leaves the binding (AC-004).~~ Superseded 2026-11-04 (6c5c1607, 992e0a82), see below. The exception is a bound account that left the slice, whose ticket always carries `failover` (AC-018).
 - 2026-11-02: Seven existing selection tests (burn-rate headroom, hard-threshold backstop, paused-sticky ranking, the three `sort_by_reset_*` tests, priority ordering) now observe their sort on a sessionless request, with assertions unchanged. A session's head is now its rendezvous placement (FR-7, FR-16). The user approved this.
 - 2026-11-02: The integration tests share `tests/common/mod.rs::session_id_for_account`, which searches with a fresh `AccountPool` over the gateway's resolved pool accounts.
 - 2026-11-04: `AccountPool::any_bindings` (a9a048a0) lets selection skip the bindings lock while the table never held a binding. Every path that inserts a binding must raise it under the bindings lock, so T006's restore (`SessionBindings::import`) must set it when it imports any row.
 - 2026-11-04: A serve by the re-probe-promoted account never creates a binding: on the Responses/Codex paths (the only ones that re-probe) the adapter skips the commit for it, so an unbound session stays unbound until a normal serve. This extends the plan's "no binding before: bind to the account that served" rule, which otherwise pinned a session to a stale near-quota account for the soft-near debounce (ADR-0008 §8). The user approved this.
 - 2026-11-04: `adapters::responses::pool::tests::pool_path_bump_evicts_the_conversations_sockets_under_every_account` sends turn 1 sessionless (pool key kept), because a bound healthy account now keeps the session (FR-2). No assertion changed. The user approved this.
 - 2026-11-04: The store schema is now v2, so the docs that show `shunt check` output as `schema v1 (binary supports v1)` (`docs/store.md` ~:220, `site/src/content/docs/reference/cli.mdx` ~:55 and its ko/ja/zh-cn copies) are bumped by T009/T010, not T007.
+- 2026-11-04 (review): An ineligible bound account keeps its reason on the ticket (`prior_ineligible`) even when every alternative is only soft-near, so whichever account serves next takes the binding (FR-3, AC-008). Only a soft-near move needs a fully healthy target (FR-5). With no alternative serving at all, the binding stays and no switch is counted (AC-004). A soft-near bound account past the debounce with no healthy alternative stays the head instead of being sorted among the other soft-near accounts (6c5c1607, 992e0a82). Three test assertions on an all-cooling pool now expect `Some(Cooldown)` instead of `None`; their AC-004 assertions are unchanged. The user approved this.
+- 2026-11-04 (review): Binding generations come from one table-wide counter, so a ticket issued before a removal (expiry, `forget_identity`, eviction) is `Stale` against the re-placed binding (NFR-1). Only the identity's representative stamps or clears `soft_near_since`, so an alias with a different threshold cannot reset the debounce (1c8e84e5).
+- 2026-11-04 (review): A store binding row that fails to decode (bad JSON, negative `last_used`) is dropped at restore and marks the pool dirty, so the next flush rewrites the table without it (5714816c, 2e612bf1).
+- 2026-11-04 (merge): Merged `origin/main` at ba00ed94 after #857 landed its rendezvous `session_score` (SHA-256 session prefix XOR FNV-1a identity hash, SplitMix64, identity-kind tie-break). `spread` placement now ranks with #857's score unchanged, and each health entry caches `IdentityHashes { identity, tie }` in place of this track's `key_digest`/`account_digest` weight (2026-11-02 entry above). The spread weight is the rank position, and a session's failover tail follows its ranking, not headroom. The user chose this over keeping this track's weight.
+- 2026-11-04 (merge): `sort_by_reset` never places or moves a binding (FR-16). Main's `sort_by_reset_runtime_override_wins_over_config_and_is_reversible` asserted a session's head under the override, so its session assertion now expects the binding strategy's placement (`order[0] == latest`, `order[1] == soonest`). The user approved this test change.
+- 2026-11-05: Deferred to #893: fB, a quota observation between selections does not reset the soft-near stamp, and fC, providers sharing one account share `soft_near_since`.
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+
+- A pool-owned, bounded session binding table (hashed key, 24 h TTL, 10,000 cap with LRU eviction, table-wide generations), consulted inside `select_order_inner`. A bound session stays on its account until that account cannot serve, or until it has been soft-near for 60 s with a healthy alternative available.
+- `[server.pool] assignment` (`spread`, the default, and `soonest_weekly_reset`) for first placement. `spread` ranks with #857's rendezvous `session_score`, merged at ba00ed94.
+- Commit-on-2xx at every pooled serve point: Anthropic, Kimi, the Responses/Codex HTTP loop, committed stream, WebSocket and inbound passthrough, and routed xAI. A relayed non-2xx and a re-probe-promoted serve commit nothing.
+- Persistence in the state file (optional `bindings`, still v3) and the store (migration `0002_pool_session_binding`, diffed upserts in the pool's transaction). Restore drops expired, unconfigured and undecodable rows and marks the pool dirty.
+- Observability: `shunt.pool.session_account_switches{provider,reason,thinking_bound}`, `shunt.pool.session_binding_evictions{provider}`, and per-account `bound_sessions` on `GET /admin/api/pool`.
+- ADR-0008 Accepted. Engineering docs, the four READMEs, and 13 site pages in each of four locales updated.
+
+### What Went Well
+
+- Measuring before trusting: the interleaved A/B caught a +5.6 to +10.6 % regression that an earlier stale-baseline comparison had reported as within 5 %. The a9a048a0 follow-up turned it into a −15 to −21 % improvement.
+- Mutation checks on every task (disabled debounce, forced `bound_attempted`, removed WebSocket commit, dropped `any_bindings` raise) each failed the test that names the behavior, so the suite guards what it claims.
+- Every test change that altered an assertion or its input went to the user first and is recorded in the Decision Log with its reason.
+
+### What Could Improve
+
+- The review loop found three real selection bugs after implementation was "done": stale generations after removal, alias resets of the debounce, and ineligible bindings that stuck when every alternative was soft-near (1c8e84e5, 6c5c1607, 992e0a82). The spec's move/no-move matrix did not cover "every alternative soft-near" or alias thresholds. A table-driven test over the matrix (bound state × best alternative state) at T003 would have caught all three earlier.
+- #857 landed a competing rendezvous score on `main` mid-track, and the conflict surfaced only at the post-review merge. Watching `main` for changes to `src/accounts.rs` selection while a selection-heavy track is open would have moved that decision before review.
+- Several tests passed for reasons other than the regression they name (eb5193bc). A test that asserts only a status code, or only an upstream request count, proves less than its name says. The relayed-400 test is still in that state (Known Issues).
+- greptile never ran: the CLI is not installed on the review machine, so one configured engine contributed nothing.
+
+### Tech Debt Created
+
+- #893 (fB, fC): the soft-near stamp is not reset by a quota observation between selections, and providers sharing one account share `soft_near_since`.
+- `a_relayed_client_error_commits_nothing` (`src/adapters/responses/pool_binding_tests.rs`) does not assert that both upstream requests carried account a's bearer, so a misrouted stream would still pass.

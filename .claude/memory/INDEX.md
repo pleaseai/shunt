@@ -4,3 +4,4 @@
 - [Codex CLI sends no Origin header](codex-cli-sends-no-origin-header.md) — why Origin-gating the cookie slot is safe
 - [Static reqwest client stalls across test runtimes](static-reqwest-client-stalls-across-test-runtimes.md) — order-dependent test hangs
 - [Test fixture guard field order](test-fixture-guard-field-order.md) — declare EnvVarGuards before the env lock
+- [CodeQL flags test account names and loopback tokens](codeql-flags-test-account-names-and-loopback-tokens.md) — red check, not a leak

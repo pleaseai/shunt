@@ -1,13 +1,13 @@
 {
   "track_id": "session-account-binding-20261031",
   "type": "feature",
-  "status": "in_progress",
+  "status": "completed",
   "created_at": "2026-10-30T15:55:51Z",
-  "updated_at": "2026-10-31T16:50:25Z",
+  "updated_at": "2026-11-05T03:36:05Z",
   "issue": "#873",
-  "pr": "https://github.com/pleaseai/shunt/pull/884",
+  "pr": "#884",
   "project": "2",
   "project_item_id": "PVTI_lADODf_st84BRosizhE9vCE",
   "code_branch": "amondnet/assign-pooled-sessions-to-accounts-instead-of-ha",
-  "code_pr": "https://github.com/pleaseai/shunt/pull/884"
+  "code_pr": "#884"
 }
