@@ -103,7 +103,7 @@ auth = { mode = "claude_oauth", account = "primary" }
 `shunt login claude` には 3 つのモードがあります。`--mode oauth` は shunt 自身のリフレッシュ可能な OAuth
 フローを実行し（推奨）、`--mode import` は現在の Claude Code のログインをコピーし、`--mode setup-token` は
 1 年間有効な推論専用トークンを作成します。`account`（および `accounts`）を省略すると shunt 管理下の
-アカウントストア全体をスキャンします — ストアに複数のアカウントがあれば、セッションスティッキネスと
+アカウントストア全体をスキャンします — ストアに複数のアカウントがあれば、セッションとアカウントのバインディングと
 クォータを考慮したローテーションを備えた**負荷分散プール**になります。明示的なアカウントエントリ、
 アカウント単位のしきい値、`[server.pool]` のチューニング、フェイルオーバーを含む完全なプーリングの挙動は
 [Anthropic マルチアカウント](/ja/guides/anthropic-multi-account/)に記載されています。

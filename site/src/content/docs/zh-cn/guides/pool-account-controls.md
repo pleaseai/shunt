@@ -49,6 +49,8 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool/anthropic/accounts/$ACCOUNT_REF" \
 
 `[server.pool] sort_by_reset`(默认 `false`)会改变 *available* 层的排序方式:不再按预计的燃烧速率余量最大排序(带会话 ID 的请求则不再按会话自己的排名排序),而是按已知的最早配额重置时间升序排序(最先恢复的账户被最先尝试;没有重置信号的账户排在最后)。这样做的思路是先耗尽最快恢复的账户,把重置更晚的账户留作缓冲。
 
+该设置不会迁移会话。会话的账户来自它的[绑定](/zh-cn/guides/anthropic-multi-account/#会话绑定),`sort_by_reset` 从不放置或迁移绑定;它只决定已绑定账户之后的故障转移顺序和无会话流量的顺序。若要先按 `priority`、再按周窗口最早重置的账户来放置新会话,请改为设置 `[server.pool] assignment = "soonest_weekly_reset"`。
+
 `[server.pool]` —— 以及这个设置 —— 是进程级的,不是按 provider 划分的,因此切换它会同时影响池中的所有 provider。
 
 在 `shunt.toml` 中设置:
@@ -78,4 +80,4 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool" \
 
 完全省略该字段不会有任何效果 —— 会保留当前的覆盖值(或其缺失状态)不变;只有显式的 `null` 才会清除它。
 
-`GET /admin/api/pool` 会以顶层的 `sort_by_reset` 布尔值报告当前生效的值(覆盖值或配置值)。若 `[server.pool]` 本身不存在,这个设置完全不起作用 —— 它原本要改变的旧版选择路径根本不会运行 —— 因此在 `[server.pool]` 存在之前,运行时切换和 `GET /admin/api/pool` 报告的值都没有意义。
+`GET /admin/api/pool` 会以顶层的 `sort_by_reset` 布尔值报告当前生效的值(覆盖值或配置值)。若 `[server.pool]` 本身不存在,这个设置完全不起作用 —— 它原本要改变的旧版选择路径根本不会运行 —— 因此在 `[server.pool]` 存在之前,运行时切换和 `GET /admin/api/pool` 报告的值都没有意义。切换它不会改变现有绑定,也不会改变各账户的 `bound_sessions`。

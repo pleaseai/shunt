@@ -1,6 +1,6 @@
 # Dashboard metrics — how the admin UI reads what shunt already measures
 
-shunt records 22 metric series and can show none of them in its own dashboard.
+shunt records 24 metric series and can show none of them in its own dashboard.
 This document records why, evaluates the ways out, and fixes three decisions —
 **shunt owns the aggregate**, **history is a bounded in-memory ring**, and
 **label cardinality is bounded before anything retains it** — so that a
@@ -45,6 +45,8 @@ read it:
 | `shunt.requests_shed` | `Counter<u64>` | no |
 | `shunt.pool.rotations` | `Counter<u64>` | no |
 | `shunt.pool.reprobes` | `Counter<u64>` | no |
+| `shunt.pool.session_account_switches` | `Counter<u64>` | no |
+| `shunt.pool.session_binding_evictions` | `Counter<u64>` | no |
 | `shunt.codex_ws_overflow` | `Counter<u64>` | no |
 | `shunt.router.decisions` | `Counter<u64>` | no |
 | `shunt.router.judge_calls` | `Counter<u64>` | no |
@@ -56,12 +58,17 @@ read it:
 `shunt.store.write_failures` (label `subsystem` = `pool` | `spend` | `gateway`) was
 added with the optional store (`src/metrics.rs`, `record_store_write_failure`); it
 is also sent to Sentry as a counter of the same name when `[sentry] metrics` is on.
-The table lists all 22 instruments registered in `OtelInstruments`
-(`src/metrics.rs`), the two `shunt.router.*` counters and
-`shunt.store.write_failures` included; the 19 counters and histograms are
+The two session-binding counters (ADR-0008) are sent to Sentry the same way:
+`shunt.pool.session_account_switches` (labels `provider`, `reason` =
+`proactive` | `cooldown` | `failover`, `thinking_bound`) and
+`shunt.pool.session_binding_evictions` (label `provider`).
+The table lists all 24 instruments registered in `OtelInstruments`
+(`src/metrics.rs`), the two `shunt.router.*` counters,
+`shunt.store.write_failures` and the two session-binding counters included; the
+21 counters and histograms are
 write-only and the three observable gauges are readable.
 
-Nineteen of twenty-two are write-only: `Counter` and `Histogram` handles expose
+Twenty-one of twenty-four are write-only: `Counter` and `Histogram` handles expose
 `add()` and `record()` and nothing that returns a value. The `*_for_tests`
 helpers (`src/metrics.rs:342`, `src/metrics.rs:677`) are not a counter-example —
 they read `Mutex<HashMap>` tables that the recording functions populate inside
@@ -72,7 +79,7 @@ The three exceptions are the shape this document generalizes. An observable gaug
 inverts the ownership: shunt keeps the value in a `Mutex<HashMap>` it owns, and
 the OTel callback *reads from it* at collection time. That is already the
 arrangement the dashboard needs — it was simply never applied to the other
-nineteen, because a gauge requires it and a counter does not.
+twenty-one, because a gauge requires it and a counter does not.
 
 ### The provider is conditional
 
@@ -130,7 +137,7 @@ is an **additional read model, not a replacement sink**: the recording functions
 in `src/metrics.rs` keep their present signatures *and* their present emissions,
 so both sinks stay event-driven and no call site changes.
 
-The distinction is load-bearing for the nineteen counters and histograms. They
+The distinction is load-bearing for the twenty-one counters and histograms. They
 push once per observation — Sentry `capture()`, OTel `add()`/`record()`
 (`src/metrics.rs:423-443`) — and only the three observable gauges are read by a
 callback at collection time. Feeding a running aggregate into `add()` would

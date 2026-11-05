@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use crate::{
     accounts::{self, CountAttempt, FailoverAction, ReprobeReservation},
-    adapters::AdapterError,
+    adapters::{session_commit::SessionCommit, AdapterError},
     auth::{self, codex::auth::CodexAuthStore, resolve_chatgpt_account, Credential},
     config::{AccountConfig, AuthMode},
     model::responses::ResponseEvent,
@@ -67,27 +67,57 @@ fn select_pool_order_with_cap(
     accounts: &[AccountConfig],
     session_id: Option<&str>,
     upstream_model: &str,
-) -> (Vec<usize>, Option<accounts::CapExhaustion>) {
-    state.accounts.select_order_without_reprobe_with_cap(
-        provider,
-        accounts,
-        session_id,
-        Some(upstream_model),
-        state.config.server.pool.as_ref(),
-    )
+) -> (
+    Vec<usize>,
+    Option<accounts::CapExhaustion>,
+    Option<accounts::BindingTicket>,
+) {
+    state
+        .accounts
+        .select_order_without_reprobe_with_cap_and_ticket(
+            provider,
+            accounts,
+            session_id,
+            Some(upstream_model),
+            state.config.server.pool.as_ref(),
+        )
 }
 
 pub(super) fn cancel_reprobe_for_account(
     reservation: &mut Option<ReprobeReservation>,
     selected_index: usize,
 ) {
-    if reservation
-        .as_ref()
-        .is_some_and(|reservation| reservation.selected_index() == selected_index)
-    {
+    if is_reprobe_for_account(reservation, selected_index) {
         if let Some(reservation) = reservation.as_mut() {
             reservation.cancel();
         }
+    }
+}
+
+/// Whether `index` is the stale account a re-probe promoted to the front of
+/// this request's order.
+fn is_reprobe_for_account(reservation: &Option<ReprobeReservation>, selected_index: usize) -> bool {
+    reservation
+        .as_ref()
+        .is_some_and(|reservation| reservation.selected_index() == selected_index)
+}
+
+/// Commit the session binding for the serving account unless it is the
+/// re-probed one. A re-probe serve refreshes quota, not the session's
+/// placement: it neither places nor moves the binding, so a probed near-quota
+/// account never becomes a session's binding and never takes one over
+/// (ADR-0008 §8).
+pub(super) fn commit_unless_reprobe(
+    session_commit: &SessionCommit,
+    reprobe: &Option<ReprobeReservation>,
+    index: usize,
+    state: &AppState,
+    route: &Route,
+    account: &AccountConfig,
+    status: StatusCode,
+) {
+    if !is_reprobe_for_account(reprobe, index) {
+        session_commit.served(&state.accounts, &route.provider, account, status);
     }
 }
 
@@ -95,10 +125,7 @@ pub(super) fn commit_reprobe_for_account(
     reservation: &mut Option<ReprobeReservation>,
     selected_index: usize,
 ) {
-    if reservation
-        .as_ref()
-        .is_some_and(|reservation| reservation.selected_index() == selected_index)
-    {
+    if is_reprobe_for_account(reservation, selected_index) {
         if let Some(reservation) = reservation.as_mut() {
             reservation.commit();
         }
@@ -129,6 +156,9 @@ pub(super) struct PoolStreamContext {
     /// when that order is empty.
     pub(super) cap: Option<accounts::CapExhaustion>,
     pub(super) reprobe: Option<ReprobeReservation>,
+    /// The session's binding ticket from the selection that produced `order`,
+    /// committed when an account serves a success (ADR-0008).
+    pub(super) ticket: Option<accounts::BindingTicket>,
     pub(super) ramp_initial: Option<u32>,
     /// Whether this pool stream owns the request's `record_proxied_request`
     /// sample (the committed single-route paths) or the enclosing chain does.
@@ -349,13 +379,14 @@ pub(super) fn pool_or_single_events(
                         )
                     } else {
                         let accounts_config = std::sync::Arc::new(accounts);
-                        let (order, reprobe, cap) = state.accounts.select_order_deferred_with_cap(
-                            &route.provider,
-                            &accounts_config,
-                            session_id.as_deref(),
-                            Some(route.upstream_model.as_str()),
-                            state.config.server.pool.as_ref(),
-                        );
+                        let (order, reprobe, cap, ticket) =
+                            state.accounts.select_order_deferred_with_cap_and_ticket(
+                                &route.provider,
+                                &accounts_config,
+                                session_id.as_deref(),
+                                Some(route.upstream_model.as_str()),
+                                state.config.server.pool.as_ref(),
+                            );
                         Box::pin(pool_events_stream(PoolStreamContext {
                             state,
                             route,
@@ -369,6 +400,7 @@ pub(super) fn pool_or_single_events(
                             order,
                             cap,
                             reprobe,
+                            ticket,
                             ramp_initial,
                             record_metrics: true,
                             started_at: Some(attempt_started),
@@ -412,11 +444,14 @@ pub(super) fn pool_events_stream(
         order,
         cap,
         reprobe,
+        ticket,
         ramp_initial,
         record_metrics,
         started_at,
         attribution,
     } = context;
+    // Shared across the unfold's steps; committed at the serving account.
+    let session_commit = std::sync::Arc::new(SessionCommit::for_route(ticket, &route, auth));
     type Parsed = std::pin::Pin<Box<dyn Stream<Item = Result<ResponseEvent, Value>> + Send>>;
     enum Phase {
         NextAccount,
@@ -446,6 +481,7 @@ pub(super) fn pool_events_stream(
             let compact = compact.clone();
             let delegation = delegation.clone();
             let upstream_body = upstream_body.clone();
+            let session_commit = session_commit.clone();
             async move {
                 let mut phase = phase;
                 let mut order_iter = order_iter;
@@ -639,6 +675,7 @@ pub(super) fn pool_events_stream(
                                 ramp_initial,
                                 position,
                                 candidates,
+                                &session_commit,
                             )
                             .await
                             else {
@@ -759,6 +796,15 @@ pub(super) fn pool_events_stream(
                                         status.is_success(),
                                     );
                                     if status.is_success() {
+                                        commit_unless_reprobe(
+                                            &session_commit,
+                                            &reprobe,
+                                            index,
+                                            &state,
+                                            &route,
+                                            account,
+                                            status,
+                                        );
                                         record(StatusCode::OK);
                                         let parsed: Parsed = super::pool_plan::relay_events(
                                             &state,
@@ -924,6 +970,15 @@ pub(super) fn pool_events_stream(
                                                     account,
                                                     true,
                                                 );
+                                                commit_unless_reprobe(
+                                                    &session_commit,
+                                                    &reprobe,
+                                                    index,
+                                                    &state,
+                                                    &route,
+                                                    account,
+                                                    retry_status,
+                                                );
                                                 record(StatusCode::OK);
                                                 let parsed: Parsed = super::pool_plan::relay_events(
                                                     &state,
@@ -1039,13 +1094,14 @@ pub(super) async fn forward_chatgpt_oauth(
         // loop-based paths do.
         let keepalive = Duration::from_secs(state.config.server.sse_keepalive_seconds);
         let route_for_start = route.clone();
-        let (order, reprobe, cap) = state.accounts.select_order_deferred_with_cap(
-            &route.provider,
-            &accounts_config,
-            session_id.as_deref(),
-            Some(route.upstream_model.as_str()),
-            state.config.server.pool.as_ref(),
-        );
+        let (order, reprobe, cap, ticket) =
+            state.accounts.select_order_deferred_with_cap_and_ticket(
+                &route.provider,
+                &accounts_config,
+                session_id.as_deref(),
+                Some(route.upstream_model.as_str()),
+                state.config.server.pool.as_ref(),
+            );
         let events = pool_events_stream(PoolStreamContext {
             state: state.clone(),
             route: route.clone(),
@@ -1059,6 +1115,7 @@ pub(super) async fn forward_chatgpt_oauth(
             order,
             cap,
             reprobe,
+            ticket,
             ramp_initial: state.config.storm_ramp_initial(),
             record_metrics: true,
             started_at: None,
@@ -1073,17 +1130,19 @@ pub(super) async fn forward_chatgpt_oauth(
             ),
         ));
     }
-    let (order, mut reprobe_reservation, cap) = if ws_enabled {
-        let (order, cap) = select_pool_order_with_cap(
+    // The WebSocket branch takes its account from this same selection, so a
+    // conversation's WebSocket and HTTP turns share one binding (AC-016).
+    let (order, mut reprobe_reservation, cap, ticket) = if ws_enabled {
+        let (order, cap, ticket) = select_pool_order_with_cap(
             &state,
             &route.provider,
             &accounts_config,
             session_id.as_deref(),
             &route.upstream_model,
         );
-        (order, None, cap)
+        (order, None, cap, ticket)
     } else {
-        state.accounts.select_order_deferred_with_cap(
+        state.accounts.select_order_deferred_with_cap_and_ticket(
             &route.provider,
             &accounts_config,
             session_id.as_deref(),
@@ -1092,6 +1151,7 @@ pub(super) async fn forward_chatgpt_oauth(
         )
     };
     let auth = provider_auth(&state, &route);
+    let session_commit = SessionCommit::for_route(ticket, &route, auth);
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
@@ -1120,8 +1180,16 @@ pub(super) async fn forward_chatgpt_oauth(
         // (see `admit_and_resolve`); on a relayed success the guard moves
         // into the response body (`with_admission`), so the slot stays held
         // until the stream actually finishes.
-        let Some((admission, credential)) =
-            admit_and_resolve(&state, &route, account, ramp_initial, position, candidates).await
+        let Some((admission, credential)) = admit_and_resolve(
+            &state,
+            &route,
+            account,
+            ramp_initial,
+            position,
+            candidates,
+            &session_commit,
+        )
+        .await
         else {
             cancel_reprobe_for_account(&mut reprobe_reservation, index);
             continue;
@@ -1176,6 +1244,15 @@ pub(super) async fn forward_chatgpt_oauth(
                     state
                         .accounts
                         .mark_healthy(&route.provider, account, status.is_success());
+                    commit_unless_reprobe(
+                        &session_commit,
+                        &reprobe_reservation,
+                        index,
+                        &state,
+                        &route,
+                        account,
+                        status,
+                    );
                     let response = crate::adapters::with_admission(response, admission);
                     return Ok((status, with_account_header(response, &account.name)));
                 }
@@ -1300,6 +1377,15 @@ pub(super) async fn forward_chatgpt_oauth(
                     .await;
                     super::pool_plan::cool_on_relayed_limit(&state, &route, account, &response);
                     let response = response?;
+                    commit_unless_reprobe(
+                        &session_commit,
+                        &reprobe_reservation,
+                        index,
+                        &state,
+                        &route,
+                        account,
+                        response.status(),
+                    );
                     let response = crate::adapters::with_admission(
                         with_account_header(response, &account.name),
                         admission,
@@ -1402,6 +1488,15 @@ pub(super) async fn forward_chatgpt_oauth(
                                 &state, &route, account, &response,
                             );
                             let response = response?;
+                            commit_unless_reprobe(
+                                &session_commit,
+                                &reprobe_reservation,
+                                index,
+                                &state,
+                                &route,
+                                account,
+                                response.status(),
+                            );
                             let response = crate::adapters::with_admission(
                                 with_account_header(response, &account.name),
                                 admission,
@@ -1463,10 +1558,12 @@ async fn exhausted_error(
 
 /// The pooled provider's auth mode — `chatgpt_oauth`, or `xai_oauth` since the
 /// xAI pool rides this loop (docs/m18-xai-multi-account.md) — read the way
-/// `forward` reads it. It only picks gateway-owned error wording
-/// ([`mapped_upstream_error`], [`no_upstream_response_message`]); credential
-/// resolution and classification key on each account's `store_family`.
-fn provider_auth(state: &AppState, route: &Route) -> AuthMode {
+/// `forward` reads it. It picks the gateway-owned error wording
+/// ([`mapped_upstream_error`], [`no_upstream_response_message`]) and the auth
+/// `SessionCommit::for_route` reads for the `thinking_bound` switch label
+/// (always false on a Responses route); credential resolution and
+/// classification key on each account's `store_family`.
+pub(super) fn provider_auth(state: &AppState, route: &Route) -> AuthMode {
     state
         .config
         .provider(&route.provider)
@@ -1598,6 +1695,7 @@ pub(super) async fn admit_and_resolve(
     ramp_initial: Option<u32>,
     position: usize,
     candidates: usize,
+    session: &SessionCommit,
 ) -> Option<(Option<accounts::AdmissionGuard>, Credential)> {
     let admission = state.accounts.admit_candidate(
         &route.provider,
@@ -1606,6 +1704,9 @@ pub(super) async fn admit_and_resolve(
         position,
         candidates,
     )?;
+    // Admitted: from here a failure (credential, send, status) is an attempt
+    // on this account that failed over, unlike the admission skip above.
+    session.attempting(account);
     let credential = resolve_or_cooldown(state, route, account).await?;
     Some((admission, credential))
 }
@@ -2534,7 +2635,9 @@ mod tests {
             pool_route(),
             PoolForward {
                 pool_key: Some("sess-1".to_string()),
-                session_id: Some("sess-1".to_string()),
+                // Sessionless, so it binds nothing: a bound session would keep
+                // acc-b on turn 2 (ADR-0008, FR-2).
+                session_id: None,
                 ..pool_turn(vec![pool_account("acc-b", "SHUNT_POOL_PROBE_B")], false)
             },
         )
@@ -2584,6 +2687,154 @@ mod tests {
             pool_contains_for_tests("acc-a\u{1f}sess-1"),
             "the post-bump socket pools under the serving account"
         );
+
+        clear_pool_for_tests();
+        server.abort();
+    }
+
+    /// The same eviction for a BOUND conversation that changes accounts:
+    /// turn 1 binds the session to acc-b and pools its socket there; acc-b
+    /// then cools down, so the binding moves and acc-a serves the marked turn
+    /// 2, whose bump must still evict acc-b's pre-compaction socket.
+    #[tokio::test]
+    async fn pool_path_bump_evicts_a_bound_conversations_socket_after_it_moves() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+        use tungstenite::protocol::WebSocketConfig;
+        use tungstenite::Message;
+
+        use crate::adapters::responses::codex_ws::{
+            clear_pool_for_tests, pool_contains_for_tests, window_for, POOL_TEST_LOCK,
+        };
+        use futures_util::{SinkExt, StreamExt};
+
+        let _env = crate::config::test_env_lock();
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let server_accepts = accepts.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                server_accepts.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async_with_config(
+                        socket,
+                        Some(WebSocketConfig::default()),
+                    )
+                    .await
+                    .unwrap();
+                    while let Some(message) = ws.next().await {
+                        match message.unwrap() {
+                            Message::Text(_) => {
+                                for event in [
+                                    r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                                    r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                                    r#"{"type":"response.completed","response":{}}"#,
+                                ] {
+                                    ws.send(Message::Text(event.to_string().into()))
+                                        .await
+                                        .unwrap();
+                                }
+                            }
+                            Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                            Message::Pong(_) => {}
+                            Message::Close(_) => break,
+                            other => panic!("unexpected frame: {other:?}"),
+                        }
+                    }
+                });
+            }
+        });
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = format!("http://{addr}");
+        config.providers.get_mut("codex").unwrap().websocket = true;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let accounts = vec![
+            pool_account("acc-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("acc-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let bound_to = |account: &AccountConfig| {
+            let (_, ticket) = state.accounts.select_order_with_ticket(
+                "codex",
+                &accounts,
+                Some("sess-1"),
+                None,
+                None,
+            );
+            ticket.unwrap().is_bound_to(account)
+        };
+
+        // Turn 1: only acc-b is offered, so it serves, binds the session and
+        // pools the conversation's socket under acc-b.
+        let (status, response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                ..pool_turn(vec![pool_account("acc-b", "SHUNT_POOL_PROBE_B")], false)
+            },
+        )
+        .await
+        .expect("turn 1 serves on acc-b");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            response.headers().get("x-shunt-account").unwrap(),
+            "acc-b",
+            "turn 1 is served by acc-b, the only offered account"
+        );
+        assert!(
+            pool_contains_for_tests("acc-b\u{1f}sess-1"),
+            "turn 1 pools the socket under acc-b"
+        );
+        assert!(bound_to(&accounts[1]), "turn 1 binds the session to acc-b");
+
+        // Turn 2: acc-b cools down, so the bound session moves to acc-a,
+        // which serves the compaction-marked turn. The bump must evict
+        // acc-b's pre-compaction socket along with acc-a's own.
+        state.accounts.cooldown(
+            "codex",
+            &accounts[1],
+            std::time::Duration::from_secs(300),
+            "test",
+        );
+        let (status, response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                compact: crate::request::CompactionMark::armed(true),
+                ..pool_turn(accounts.clone(), false)
+            },
+        )
+        .await
+        .expect("marked turn serves on acc-a");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            response.headers().get("x-shunt-account").unwrap(),
+            "acc-a",
+            "the cooling bound account yields to acc-a"
+        );
+        assert!(
+            !pool_contains_for_tests("acc-b\u{1f}sess-1"),
+            "the bump evicts the conversation's socket under the account it left"
+        );
+        assert_eq!(window_for("sess-1"), 1, "one compaction mark bumps once");
+        assert!(
+            pool_contains_for_tests("acc-a\u{1f}sess-1"),
+            "the post-bump socket pools under the serving account"
+        );
+        assert!(bound_to(&accounts[0]), "the binding moved to acc-a");
 
         clear_pool_for_tests();
         server.abort();
@@ -3997,6 +4248,7 @@ mod tests {
             order,
             cap: None,
             reprobe,
+            ticket: None,
             ramp_initial: state.config.storm_ramp_initial(),
             record_metrics: false,
             started_at: None,
@@ -4356,3 +4608,8 @@ mod tests {
 #[cfg(test)]
 #[path = "pool_xai_tests.rs"]
 mod xai_tests;
+
+#[cfg(test)]
+#[path = "pool_binding_tests.rs"]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
+mod binding_tests;

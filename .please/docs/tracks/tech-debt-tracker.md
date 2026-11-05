@@ -31,6 +31,8 @@
 | TD-028 | chatgpt-plan-provider-20261030 | A chatgpt-plan login can overwrite a newer sign-in after an intervening logout (ABA in `commit`) (#877) | Low | 2026-10-30 |
 | TD-029 | chatgpt-plan-provider-20261030 | Sign-in without the plan scope drops refresh tokens without revoking them (#878) | Medium | 2026-10-30 |
 | TD-030 | codex-discovery-jwt-slots-20261030 | `src/discovery.rs` is 918 lines, over the 500-line guideline | Low | 2026-11-02 |
+| TD-031 | session-account-binding-20261031 | The soft-near debounce stamp is not reset by a quota observation between selections, and providers sharing one account share `soft_near_since` (#893) | Low | 2026-11-05 |
+| TD-032 | session-account-binding-20261031 | `a_relayed_client_error_commits_nothing` does not pin the streaming turn's account; assert every received request's `authorization` equals `pool.bearer(0)` | Low | 2026-11-05 |
 
 ## Resolved
 

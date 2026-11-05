@@ -1,9 +1,9 @@
 ---
 title: Anthropic Multi-Account
-description: Pool Claude subscription OAuth accounts with session-sticky, model-aware proactive rotation and reactive failover.
+description: Pool Claude subscription OAuth accounts with session-to-account bindings, model-aware proactive rotation and reactive failover.
 ---
 
-shunt can pool multiple Claude subscription OAuth credentials behind the built-in `anthropic` provider. Requests are session-sticky when Claude Code supplies `x-claude-code-session-id`; requests without it use per-provider round-robin. shunt tracks each account's upstream quota headers and proactively rotates when the sticky account nears the model-relevant quota, while quota rejection, authentication failures, and upstream failures retain reactive failover as the safety floor.
+shunt can pool multiple Claude subscription OAuth credentials behind the built-in `anthropic` provider. When Claude Code supplies `x-claude-code-session-id`, each session is bound to one account and stays there until that account cannot serve, or has stayed near its quota for 60 seconds while a healthy alternative exists; requests without it use per-provider round-robin. shunt tracks each account's upstream quota headers and proactively moves a session off its account when that account nears the model-relevant quota, while quota rejection, authentication failures, and upstream failures retain reactive failover as the safety floor.
 
 
 
@@ -97,7 +97,7 @@ A successful refresh can return a replacement refresh token and invalidate the p
 | `threshold_5h` / `threshold_7d` / `threshold_fable` | no | Per-window soft thresholds; each beats `threshold` for its window. |
 | `max_utilization` | no | Per-account hard cap in `[0.0, 1.0]` for every window without a per-window value. An account at or above it in a governing window is excluded from selection (see [Hard caps](#hard-caps-max_utilization)). Works without `[server.pool]`. |
 | `max_utilization_5h` / `max_utilization_7d` / `max_utilization_fable` | no | Per-window hard caps; each beats `max_utilization` for its window. The Fable cap governs Fable-model requests only. |
-| `priority` | no | Selection priority when the sticky account is unhealthy; lower is preferred, default `100`. |
+| `priority` | no | Selection priority, lower first, default `100`. It orders failover and sessionless rotation and picks the tier a moved session lands in; `spread` ignores it when it first places a session. |
 | `disabled` | no | `true` removes the account from selection entirely while keeping it in config and on the admin dashboard. |
 
 Do not set both `credentials` and `token_env` on one account.
@@ -106,7 +106,7 @@ Do not set both `credentials` and `token_env` on one account.
 
 <Aside type="note" title="Duplicate names for one real account">
 
-`uuid` is also the pool's stable upstream identity. If two names carry the same UUID, shunt counts them as **one account**: they share quota, cooldown, usage, health, and refresh locks, and failover skips the duplicate alias. Sticky hashing and round-robin operate over distinct identities, so adding an alias does not move a session. The representative is the enabled alias with the lowest `priority`, then the first entry; only its token is attempted. shunt logs a duplicate-identity warning — configured (`[[providers.anthropic.accounts]]`) collisions are logged once per successful config load (including reload), while store-discovered collisions are logged once per distinct collision set (not once per request). Therefore, if that representative token is invalid while another alias token is valid, shunt still does not try the alias.
+`uuid` is also the pool's stable upstream identity. If two names carry the same UUID, shunt counts them as **one account**: they share quota, cooldown, usage, health, and refresh locks, and failover skips the duplicate alias. Session placement and round-robin operate over distinct identities, and a binding records the identity, so adding an alias does not move a session. The representative is the enabled alias with the lowest `priority`, then the first entry; only its token is attempted. shunt logs a duplicate-identity warning — configured (`[[providers.anthropic.accounts]]`) collisions are logged once per successful config load (including reload), while store-discovered collisions are logged once per distinct collision set (not once per request). Therefore, if that representative token is invalid while another alias token is valid, shunt still does not try the alias.
 
 Deleting a store-managed account through the admin web surface clears that identity's shared in-process health only once no other stored alias still resolves to the same identity; a scan failure preserves the health instead of guessing. This is admin-store delete semantics — removing an alias from the TOML config, or its credentials file directly, does not go through this cleanup.
 
@@ -116,19 +116,32 @@ Deleting a store-managed account through the admin web surface clears that ident
 
 ## Selection and proactive rotation
 
-- With `x-claude-code-session-id`: the session id ranks the pool's distinct accounts by rendezvous (highest-random-weight) hashing. The top-ranked account is the sticky one: if it is available and under the switch threshold, shunt keeps it first, and a request that fails on it tries the rest of the ranking in order. Adding an account moves only the sessions that now rank it first, about one in n for a pool of n accounts, and removing one moves only the sessions that were on it.
-- Without the header, or with it sent blank: each provider has its own round-robin counter. A blank value is not a conversation, so it shares that rotation instead of hashing to one fixed account.
+- With `x-claude-code-session-id`: the session's [binding](#session-bindings) picks the account. If that account is available and under the switch threshold, shunt keeps it first. The session id also ranks the pool's distinct accounts by rendezvous (highest-random-weight) hashing: `spread` places a new session on its top-ranked healthy account, and a request that fails on the bound account tries the rest of the ranking in order.
+- Without the header, or with it sent blank: each provider has its own round-robin counter. A blank value is not a conversation, so it shares that rotation instead of binding every blank-header client to one account.
 - On every upstream response handled by the `claude_oauth` account pool, shunt records these headers when present:
   - `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, and `anthropic-ratelimit-unified-7d_oi-utilization`;
   - `anthropic-ratelimit-unified-5h-reset`, `anthropic-ratelimit-unified-7d-reset`, and `anthropic-ratelimit-unified-7d_oi-reset` (Unix seconds); and
   - `anthropic-ratelimit-unified-status`, `anthropic-ratelimit-unified-5h-status`, `anthropic-ratelimit-unified-7d-status`, and `anthropic-ratelimit-unified-7d_oi-status`.
 - The default switch threshold is `0.98`. An account is near quota when its 5-hour status is `rejected`, shared `7d` status is `rejected`, a Fable request has `7d_oi` status `rejected`, shared 5-hour utilization reaches its threshold, or the governing weekly utilization reaches its threshold. Status rejection is evaluated independently of whether the matching utilization header is present. For utilization thresholds and headroom, Fable models use `7d_oi` when that utilization is present and shared `7d` otherwise. The aggregate status is a compatibility fallback only when no per-window status has been recorded. Thresholds can be lowered per account (`threshold*` fields above) or pool-wide (see [Tuning selection](#tuning-selection-serverpool)).
 - The 5-hour bucket applies to every model. Fable model ids use the `7d_oi` weekly bucket when its utilization is present, with shared `7d` as fallback. Every other model family uses shared `7d`; Sonnet also uses `7d` because there is no Sonnet-specific header today.
-- A near-quota, cooled, or disabled sticky account rotates off proactively. shunt prefers available under-threshold accounts ordered by `priority` (lower first), then by the soonest-resetting governing weekly bucket, spending use-or-lose quota first. Accounts with unknown weekly reset sort first. Available near-quota accounts follow, then cooled accounts ordered by soonest recovery. With `[server.pool]` configured, burn-rate headroom replaces the weekly-reset tiebreak (see below) for requests without a session id. A request with a session id uses its own ranking in place of headroom, so a displaced session stays on one fallback account instead of moving between accounts as their headroom changes.
+- A cooled, quota-rejected, disabled, paused, capped, removed, or past-`hard_threshold` bound account loses the session as soon as another account serves it. An account that is only soft-near keeps its sessions until it has stayed soft-near for 60 seconds, and only while a healthy alternative exists (see [Session bindings](#session-bindings)). Behind the head of the order, and for sessionless requests, shunt prefers available under-threshold accounts ordered by `priority` (lower first), then by the soonest-resetting governing weekly bucket, spending use-or-lose quota first. Accounts with unknown weekly reset sort first. Available near-quota accounts follow, then cooled accounts ordered by soonest recovery. With `[server.pool]` configured, burn-rate headroom replaces the weekly-reset tiebreak (see below) for requests without a session id. A request with a session id uses its own ranking in place of headroom, so a displaced session stays on one fallback account instead of moving between accounts as their headroom changes.
 - Local quota and cooldown state never empties the attempt order: every non-`disabled`, unpaused account remains in it, even if all are near quota or cooled. The one exception is a hard cap (`max_utilization*`, see [Hard caps](#hard-caps-max_utilization)), which excludes an account while its utilization is at or above the cap.
 - Utilization expires at the earlier of its own observation-time cap or that window's reset. If only the observation cap has passed while that window's reset is still in the future, shunt clears that window's utilization and its timestamp but preserves that future reset as standalone metadata. Per-window status expires at the earlier of its own observation-time cap or the reset boundary captured when that status was observed; clearing status also clears its captured boundary. Later usage and reset-only updates cannot move a captured status boundary. A passed reset for that window clears that window's utilization and reset, and clears status when its captured boundary has also passed. A stamped aggregate status has its own lifetime and survives an unrelated window expiry; only the legacy unstamped aggregate follows window expiry. A non-Fable success clears the account-wide cooldown but leaves a Fable-only cooldown intact; a Fable success clears both cooldowns.
 
 The pool's selection, cooldown, and quota state survives config hot reloads for the life of the process. Reactive failover remains active if proactive rotation cannot avoid the upstream limit.
+
+## Session bindings
+
+A request with `x-claude-code-session-id` is bound to one account. shunt keys the binding by the provider and the SHA-256 hash of the session id, so it never stores the raw id, and aliases of one account share a binding. The Codex, xAI and inbound Codex pools use the same table, and HTTP and WebSocket turns of one conversation share a binding.
+
+- **Placement.** The session's first successful response places the binding. `[server.pool] assignment` picks the account:
+  - `spread` (the default) uses a rendezvous hash of the session over the healthy accounts and ignores `priority`.
+  - `soonest_weekly_reset` takes the lowest `priority`, then the account whose governing weekly window resets soonest, with an unknown reset last.
+- **Moves.** A binding moves only when its account cannot serve the request and another account serves it successfully. A cooldown, a quota rejection, passing `hard_threshold`, a hard cap, a pause, `disabled`, or removal from the pool moves it at once. An account that is only past its soft threshold keeps its sessions until it has stayed there for 60 seconds, and only while a healthy alternative exists.
+- **What stays.** A recovered account takes new sessions only, and nothing moves back. A plain 429 waits on the same account. An error response relayed to the client changes nothing, and so does a serve by an account an opportunistic re-probe promoted. `sort_by_reset` orders failover and sessionless traffic only.
+- **Bounds.** A binding expires after 24 hours idle. The table holds 10,000 bindings across all providers, and an insert past that evicts the least recently used down to about 90 %. These limits are fixed.
+- **Restarts.** With `state_path` or [`[store]`](/reference/configuration/#store-optional), bindings survive a restart. Without either, `spread` places each session on the same account again only while the healthy candidate set is unchanged. Quota state is not persisted either, so a restart that changes that set can place existing sessions on a different account, and a session that had been moved is placed again. The first start after upgrading to this release reshuffles each session's account once.
+- **Visibility.** `GET /admin/api/pool` reports `bound_sessions` per account, and `shunt.pool.session_account_switches` counts moves (see [OpenTelemetry](/guides/opentelemetry/)).
 
 ## Tuning selection (`[server.pool]`)
 
@@ -142,12 +155,13 @@ default_threshold_5h = 0.95  # per-window overrides
 default_threshold_fable = 0.85
 burn_rate_avoidance = true   # avoid accounts projected to hit a threshold before reset
 usage_refresh_seconds = 300  # reconcile out-of-band usage for refreshable accounts
-state_path = "shunt-state.json"  # persist quota across restarts (warm start)
+state_path = "shunt-state.json"  # persist quota and session bindings across restarts
+# assignment = "spread"     # (default) or "soonest_weekly_reset"
 ramp_initial_concurrency = 2 # storm control: slow-start a freshly switched account
 
 [[providers.anthropic.accounts]]
 name = "primary"
-priority = 1                 # preferred whenever the sticky account is unhealthy
+priority = 1                 # preferred for failover and when a session moves
 
 [[providers.anthropic.accounts]]
 name = "backup"
@@ -201,6 +215,8 @@ Pool quota lives in memory, so a restart begins cold: every account looks unseen
 
 The file is a best-effort cache, not a source of truth — quota is re-derived from upstream responses regardless, so a missing, stale, or corrupt file only costs a cold start, never a boot failure. Writes use a private (`0600` on Unix) temp file, atomically rename it over the target, and happen on a 15-second background timer only when quota changed. Failed writes remain dirty and retry on the next tick. Cooldowns are not persisted (they lapse on restart), and any restored window whose reset has already passed is dropped during import, before the first selection or snapshot after restore. Utilization and per-window status have independent reset-less lifetimes; a future reset for that window may remain after that window's utilization expires, while a captured status reset is cleared with its status. Version-2 files migrate through the legacy path and are rewritten as version 3. An aggregate `status` without `observed_at_status` captures the earliest persisted `reset_5h`, `reset_7d`, or `reset_7d_oi` as an immutable deadline. If that reset has already passed, the expired reset, the unstamped aggregate status, and its synthesized stamp are removed during the same import. A reset beyond the plausible seven-day horizon is conservatively bounded at boot plus seven days; an aggregate with no reset starts its seven-day cap at boot. Existing v2 stamps are not reinterpreted from reset metadata, while normal import still normalizes orphan metadata, expires elapsed signals, clamps future timestamps to boot, and supplies boot time to a surviving unstamped aggregate when appropriate. Later reset-only or usage updates cannot extend the captured deadline, and the result remains equivalent after the v3 rewrite and a second restore. A version-3 reset-less status stays reset-less after reset-only updates. The path is fixed at boot; persistence is off when the field is absent.
 
+The file also holds the session bindings as an optional `bindings` array, with each session's SHA-256 hash and never its raw id. `last_used` is written rounded down to the hour, so a busy session does not rewrite the file on every flush. The file stays version 3, and the previous release reads it and ignores the array. Restore drops expired bindings and bindings whose account is no longer configured.
+
 ## Failover rules
 
 | Response | Behavior |
@@ -223,15 +239,16 @@ Anthropic-routed `POST /v1/messages/count_tokens` requests use the same pool.
 
 Anthropic binds the thinking blocks that Claude Sonnet 5.5 produces to the account that produced them ([Preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking#account-bound-thinking)). When a different account sends one of those blocks back, the API drops it before the model sees it. The request still succeeds, but the model answers without that earlier reasoning. Thinking blocks from earlier models are not affected.
 
-The pool is session-sticky, so a conversation normally stays on one account. It moves to another account in these cases:
+The pool binds each session to one account, so a conversation normally stays on it. It moves to another account in these cases:
 
-- The sticky account is near quota, cooled down, or disabled, so [proactive rotation](#selection-and-proactive-rotation) moves the session off it.
+- The bound account is cooled down, quota-rejected (a `rejected` status, even below `hard_threshold`), disabled, capped, or past `hard_threshold`, or has stayed past a soft threshold for 60 seconds while a healthy alternative exists, and another account serves the request, so [the binding moves](#session-bindings).
 - A response triggers a rotation under the [failover rules](#failover-rules): a quota 429, a 401 that a refresh does not fix (a setup token cannot be refreshed, so any 401 on one rotates), or a 5xx, or a transport failure that repeats on the immediate resend.
-- The pool gains a distinct account that this session now ranks first, for example a new `shunt login claude` store entry, which the pool picks up without a restart. In a pool of n accounts, about one session in n moves to the new account and the others keep theirs. Removing an account moves only the sessions that were on it.
+- The bound account leaves the pool, for example when its store entry is removed. Only the sessions bound to it move. Adding an account, for example a new `shunt login claude` store entry, does not move existing sessions; in a pool of n accounts, about one new session in n is placed on it.
+- shunt restarts without `state_path` or `[store]`, and the session had been moved. It is placed again, usually back on its first account.
 - The request has no `x-claude-code-session-id`, so it uses round-robin.
 - shunt is upgraded from a version that chose the sticky account by hashing the session id modulo the account count. Rendezvous ranking assigns sessions differently, so most of them move once.
 
-After a move, later Sonnet 5.5 turns run without the reasoning produced on the previous account. Nothing fails. shunt does not add the `thinking-binding-controls-2026-08-01` beta header, so the response does not report the drop unless the client sends that header itself (shunt keeps the client's `anthropic-beta` values and only appends `oauth-2025-04-20` when it is missing). shunt does not log the drop.
+`shunt.pool.session_account_switches` counts only a bound session moving to another account, not a first placement, so restart re-placements and sessionless round-robin requests are excluded. It has `thinking_bound = true` when the request is on a Claude subscription account for `claude-sonnet-5-5*` or `claude-haiku-5-5*`. After a move, later Sonnet 5.5 turns run without the reasoning produced on the previous account. Nothing fails. shunt does not add the `thinking-binding-controls-2026-08-01` beta header, so the response does not report the drop unless the client sends that header itself (shunt keeps the client's `anthropic-beta` values and only appends `oauth-2025-04-20` when it is missing). shunt does not log the drop.
 
 If you want every Sonnet 5.5 request on one account, give that model its own upstream scoped to that account. Account scoping uses the ordered `[[upstreams]]` form (see [Configuration](/reference/configuration/), section `[[upstreams]]`), which cannot be combined with `[providers.*]` in one config file. Store the accounts with `shunt login claude` and refer to them by name:
 

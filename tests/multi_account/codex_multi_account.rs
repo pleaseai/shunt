@@ -2401,3 +2401,249 @@ async fn streaming_refresh_retry_counts_two_attempts_on_one_account() {
     );
     assert!(snapshot.mean_latency_ms.is_some());
 }
+
+// Session bindings (ADR-0008) on the outbound Codex pool. The switch metric's
+// counts are asserted in `src/adapters/responses/pool_binding_tests.rs`,
+// whose `#[cfg(test)]` hooks this binary cannot reach; these tests read the
+// binding back through the selection ticket instead.
+
+const BINDING_MODEL: &str = "pooled-codex-model";
+
+async fn post_messages_streaming(gateway: &TestGateway, session_id: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("x-claude-code-session-id", session_id)
+        .body(
+            serde_json::json!({
+                "model": BINDING_MODEL,
+                "max_tokens": 16,
+                "stream": true,
+                "messages": [{"role": "user", "content": "hi"}]
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap()
+}
+
+/// Set both accounts' tokens and return them as `[a, b]`.
+fn binding_tokens(vars: &mut common::EnvVars, env_stem: &str) -> [String; 2] {
+    let tokens = [
+        chatgpt_token(FAR_FUTURE_EXP, &format!("{env_stem}-a")),
+        chatgpt_token(FAR_FUTURE_EXP, &format!("{env_stem}-b")),
+    ];
+    vars.set(&format!("{env_stem}_A"), &tokens[0]);
+    vars.set(&format!("{env_stem}_B"), &tokens[1]);
+    tokens
+}
+
+async fn answer_served(upstream: &MockServer, token: &str, text: &str, times: u64) {
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token.to_string()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sse_body(text)))
+        .up_to_n_times(times)
+        .expect(times)
+        .mount(upstream)
+        .await;
+}
+
+/// The HTTP-loop path (non-streaming): bound to A, A cools down, the session
+/// moves to B and stays there after A recovers.
+#[tokio::test]
+async fn http_loop_moves_a_cooled_session_once_and_keeps_it() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_CODEX_BIND_HTTP";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer_served(&upstream, &token_a, "a", 1).await;
+    answer_served(&upstream, &token_b, "b", 2).await;
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", &format!("{stem}_A")),
+        account("account-b", &format!("{stem}_B")),
+    ))
+    .await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    let response = post_messages(&gateway, Some(&session)).await;
+    assert_eq!(response.headers()["x-shunt-account"], "account-a");
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(0)
+    );
+    state.accounts.cooldown(
+        &provider,
+        &accounts[0],
+        std::time::Duration::from_secs(300),
+        "test",
+    );
+    assert_eq!(
+        common::binding_ticket(state, &provider, &accounts, &session, BINDING_MODEL)
+            .prior_ineligible(),
+        Some(shunt::accounts::SwitchReason::Cooldown)
+    );
+    let response = post_messages(&gateway, Some(&session)).await;
+    assert_eq!(response.headers()["x-shunt-account"], "account-b");
+    state.accounts.mark_healthy(&provider, &accounts[0], true);
+    let response = post_messages(&gateway, Some(&session)).await;
+    assert_eq!(response.headers()["x-shunt-account"], "account-b");
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(1)
+    );
+    upstream.verify().await;
+}
+
+/// The committed streaming path commits inside the stream: once the turn has
+/// been read, the session is bound to the account that served it, and a move
+/// off a cooled account rebinds it.
+#[tokio::test]
+async fn streaming_path_binds_and_moves_the_session() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_CODEX_BIND_STREAM";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer_served(&upstream, &token_a, "streamed by a", 1).await;
+    answer_served(&upstream, &token_b, "streamed by b", 1).await;
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", &format!("{stem}_A")),
+        account("account-b", &format!("{stem}_B")),
+    ))
+    .await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    let body = post_messages_streaming(&gateway, &session)
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("streamed by a"), "{body}");
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(0)
+    );
+    state.accounts.cooldown(
+        &provider,
+        &accounts[0],
+        std::time::Duration::from_secs(300),
+        "test",
+    );
+    let body = post_messages_streaming(&gateway, &session)
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("streamed by b"), "{body}");
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(1)
+    );
+    upstream.verify().await;
+}
+
+/// The success after a credential refresh is a serve point: a 401 that
+/// refreshes and then succeeds binds the session to that account.
+#[tokio::test]
+async fn a_refreshed_retry_that_succeeds_binds_the_session() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-bind-refresh");
+    let fresh = chatgpt_token(expires_at + 1, "acct-bind-refresh");
+    let accounts_dir = unique_temp_dir("bind-refresh");
+    write_store_account(&accounts_dir, "account-a", &stale, "refresh-token-a");
+    vars.set("SHUNT_CODEX_ACCOUNTS_DIR", &accounts_dir);
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    answer_served(&upstream, &fresh, "a after refresh", 1).await;
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_CODEX_BIND_REFRESH_B"),
+    ))
+    .await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    let response = post_messages(&gateway, Some(&session)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-shunt-account"], "account-a");
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(0)
+    );
+    upstream.verify().await;
+    auth.verify().await;
+    fs::remove_dir_all(&accounts_dir).ok();
+}
+
+/// A relayed client error is not a serve point: the session stays unbound.
+#[tokio::test]
+async fn a_relayed_client_error_leaves_the_session_unbound() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_CODEX_BIND_400";
+    let [token_a, _] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(400).set_body_string(
+            r#"{"error":{"message":"bad request","type":"invalid_request_error"}}"#,
+        ))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        account("account-a", &format!("{stem}_A")),
+        account("account-b", &format!("{stem}_B")),
+    ))
+    .await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    let response = post_messages(&gateway, Some(&session)).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        None
+    );
+    upstream.verify().await;
+}

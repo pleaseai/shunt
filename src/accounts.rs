@@ -14,12 +14,23 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::config::{AccountConfig, PoolConfig};
 
+mod assignment;
+#[cfg(test)]
+mod binding_selection_tests;
 mod request_stats;
+mod session_binding;
 mod upstream_skip;
 
+pub use assignment::{BindingCommit, BindingTicket, SwitchReason};
 pub use request_stats::AttemptOutcome;
 pub(crate) use request_stats::CountAttempt;
 use request_stats::RequestStats;
+#[cfg(test)]
+pub(crate) use session_binding::persisted_last_used as persisted_last_used_for_tests;
+#[cfg(feature = "bench")]
+pub(crate) use session_binding::MAX_BINDINGS;
+use session_binding::{hash_session_key, CommitOutcome, SessionBindings};
+pub(crate) use session_binding::{thinking_bound, BindingRow};
 pub(crate) use upstream_skip::UpstreamSkips;
 
 /// Credential-store namespace. Stable account ids only coalesce inside their
@@ -438,6 +449,17 @@ struct AccountHealth {
     /// Upstream attempts against this identity, recorded by
     /// [`AccountPool::note_attempt`]. Memory-only, like `cooldown_until`.
     requests: RequestStats,
+    /// When selection first saw this account soft-near (past a soft threshold
+    /// or projected to exhaust, but neither rejected nor hard-over) for a
+    /// non-Fable request, cleared by any other assessment. A bound session
+    /// leaves only after [`assignment::SOFT_NEAR_DEBOUNCE`] of it (FR-5).
+    /// Memory-only, like `cooldown_until`.
+    soft_near_since: Option<Instant>,
+    /// The same for Fable requests, whose assessment reads `7d_oi`.
+    soft_near_since_fable: Option<Instant>,
+    /// [`IdentityHashes`] of this entry's key, cached by the first session
+    /// selection so rendezvous scores cost no string hashing after.
+    identity_hashes: Option<IdentityHashes>,
 }
 
 /// Token-free, serializable view of one account's pool health for the admin
@@ -673,6 +695,21 @@ pub struct AccountPool {
     /// poller off. Read by `GET /admin/api/pool` for the dashboard's
     /// next-check countdown.
     usage_poll: Mutex<Option<UsagePollSchedule>>,
+    /// Session -> account bindings (ADR-0008). Its own lock, never held with
+    /// `entries`: selection takes it for the lookup and releases it before
+    /// the entries lock, a commit takes it alone, and `forget_identity` takes
+    /// it after releasing `entries`. Never held across an await.
+    bindings: Mutex<SessionBindings>,
+    /// Whether the binding table might hold a binding. Selection skips the
+    /// bindings lock while it is `false`, so a pool that has never bound a
+    /// session (sessionless traffic, ticketless callers) pays no second lock,
+    /// as `any_needs_relogin` does for its scan.
+    ///
+    /// Conservative in one direction only: every insert raises it under the
+    /// bindings lock, and only a removal that leaves the table empty clears
+    /// it, also under that lock. `true` may outlive the last binding (an
+    /// expiry does not clear it) and cost one lock; `false` never hides one.
+    any_bindings: AtomicBool,
 }
 
 /// The usage poller's cadence as of its latest pass (`crate::usage_poll`).
@@ -700,6 +737,17 @@ enum Exclusion {
     Paused,
     /// Held out by a hard cap; carries the verdict folded into the pool's.
     Capped(CapExhaustion),
+}
+
+/// One pass of [`AccountPool::select_order_inner`].
+#[derive(Debug, Default)]
+struct Selection {
+    order: Vec<usize>,
+    pending_reprobe: Option<PendingReprobe>,
+    /// Hard-cap verdict from the same pass that built the order.
+    cap: Option<CapExhaustion>,
+    /// Present for a request with a non-empty session id.
+    ticket: Option<BindingTicket>,
 }
 
 #[derive(Debug)]
@@ -838,6 +886,38 @@ impl AccountPool {
             .insert(upstream.to_string(), membership);
     }
 
+    /// [`Self::sync_enabled_accounts`] for selection, which has already
+    /// derived `keys` and collapsed them to `ident_reps`. The membership map
+    /// is rebuilt only when it changed: an identity's entry is the OR of its
+    /// aliases' enabled bits, which is exactly its representative's bit
+    /// because a representative is enabled whenever any alias is.
+    fn sync_enabled_keys(
+        &self,
+        upstream: &str,
+        accounts: &[AccountConfig],
+        keys: &[AccountKey],
+        ident_reps: &[usize],
+    ) {
+        let mut memberships = self
+            .memberships
+            .lock()
+            .expect("account membership lock poisoned");
+        let unchanged = memberships.get(upstream).is_some_and(|current| {
+            current.len() == ident_reps.len()
+                && ident_reps
+                    .iter()
+                    .all(|&rep| current.get(&keys[rep]) == Some(&!accounts[rep].disabled))
+        });
+        if unchanged {
+            return;
+        }
+        let mut membership = HashMap::with_capacity(ident_reps.len());
+        for (account, key) in accounts.iter().zip(keys) {
+            *membership.entry(key.clone()).or_default() |= !account.disabled;
+        }
+        memberships.insert(upstream.to_string(), membership);
+    }
+
     pub(crate) fn note_pool_config(&self, pool: Option<&PoolConfig>) {
         let bits = pool
             .map_or(SWITCH_THRESHOLD, |pool| pool.hard_threshold)
@@ -862,10 +942,11 @@ impl AccountPool {
     /// Per-account `priority`/`disabled` apply in both modes.
     ///
     /// A `session_id` ranks the distinct accounts by rendezvous hashing
-    /// ([`rank_for_session`]): the top one is the sticky account and the rest
-    /// are the session's fallbacks. Once the sticky account is displaced, that
-    /// ranking takes the place of headroom, so the session stays on one
-    /// fallback instead of following headroom between accounts.
+    /// (`rank_for_session`). Its bound account leads (ADR-0008); an unbound
+    /// or displaced session is placed by its `assignment` strategy, which for
+    /// `spread` reads that ranking. Behind the head, the ranking takes the
+    /// place of headroom, so the session stays on one fallback instead of
+    /// following headroom between accounts.
     pub fn select_order(
         &self,
         provider: &str,
@@ -874,8 +955,29 @@ impl AccountPool {
         model: Option<&str>,
         pool: Option<&PoolConfig>,
     ) -> Vec<usize> {
-        self.select_order_inner(provider, accounts, session_id, model, pool, false)
+        self.select_order_with_ticket(provider, accounts, session_id, model, pool)
             .0
+    }
+
+    /// [`select_order`](Self::select_order) plus the session's binding
+    /// ticket, present for a non-empty `session_id`.
+    ///
+    /// Selection only reads the binding table: the order leads with the bound
+    /// account while it can serve this request, and otherwise with the
+    /// account the `[server.pool] assignment` strategy places the session on
+    /// (ADR-0008). Pass the ticket to
+    /// [`commit_session_binding`](Self::commit_session_binding) once an
+    /// account has served; without a commit nothing is recorded.
+    pub fn select_order_with_ticket(
+        &self,
+        provider: &str,
+        accounts: &[AccountConfig],
+        session_id: Option<&str>,
+        model: Option<&str>,
+        pool: Option<&PoolConfig>,
+    ) -> (Vec<usize>, Option<BindingTicket>) {
+        let selection = self.select_order_inner(provider, accounts, session_id, model, pool, false);
+        (selection.order, selection.ticket)
     }
 
     /// [`select_order`](Self::select_order) plus the hard-cap verdict.
@@ -892,9 +994,24 @@ impl AccountPool {
         model: Option<&str>,
         pool: Option<&PoolConfig>,
     ) -> (Vec<usize>, Option<CapExhaustion>) {
-        let (order, _, cap) =
-            self.select_order_inner(provider, accounts, session_id, model, pool, false);
+        let (order, cap, _) =
+            self.select_order_with_cap_and_ticket(provider, accounts, session_id, model, pool);
         (order, cap)
+    }
+
+    /// [`select_order_with_cap`](Self::select_order_with_cap) plus the
+    /// session's binding ticket (see
+    /// [`select_order_with_ticket`](Self::select_order_with_ticket)).
+    pub(crate) fn select_order_with_cap_and_ticket(
+        &self,
+        provider: &str,
+        accounts: &[AccountConfig],
+        session_id: Option<&str>,
+        model: Option<&str>,
+        pool: Option<&PoolConfig>,
+    ) -> (Vec<usize>, Option<CapExhaustion>, Option<BindingTicket>) {
+        let selection = self.select_order_inner(provider, accounts, session_id, model, pool, false);
+        (selection.order, selection.cap, selection.ticket)
     }
 
     /// [`select_order_deferred_with_cap`](Self::select_order_deferred_with_cap)
@@ -923,6 +1040,7 @@ impl AccountPool {
     /// immediately eligible for a later request. Callers read the verdict only
     /// when the order is empty; `None` means no selectable representative is
     /// capped.
+    #[cfg(test)]
     pub(crate) fn select_order_deferred_with_cap(
         self: &Arc<Self>,
         provider: &str,
@@ -935,10 +1053,38 @@ impl AccountPool {
         Option<ReprobeReservation>,
         Option<CapExhaustion>,
     ) {
-        let (order, pending, cap) =
-            self.select_order_inner(provider, accounts, session_id, model, pool, true);
-        let reservation = pending.map(|pending| ReprobeReservation::new(Arc::clone(self), pending));
+        let (order, reservation, cap, _) = self
+            .select_order_deferred_with_cap_and_ticket(provider, accounts, session_id, model, pool);
         (order, reservation, cap)
+    }
+
+    /// [`select_order_deferred_with_cap`](Self::select_order_deferred_with_cap)
+    /// plus the session's binding ticket. A re-probe promotion leads the
+    /// order without moving the binding: committing a promoted account that
+    /// served leaves the binding where it was.
+    pub(crate) fn select_order_deferred_with_cap_and_ticket(
+        self: &Arc<Self>,
+        provider: &str,
+        accounts: &[AccountConfig],
+        session_id: Option<&str>,
+        model: Option<&str>,
+        pool: Option<&PoolConfig>,
+    ) -> (
+        Vec<usize>,
+        Option<ReprobeReservation>,
+        Option<CapExhaustion>,
+        Option<BindingTicket>,
+    ) {
+        let selection = self.select_order_inner(provider, accounts, session_id, model, pool, true);
+        let reservation = selection
+            .pending_reprobe
+            .map(|pending| ReprobeReservation::new(Arc::clone(self), pending));
+        (
+            selection.order,
+            reservation,
+            selection.cap,
+            selection.ticket,
+        )
     }
 
     /// [`select_order_without_reprobe_with_cap`](Self::select_order_without_reprobe_with_cap)
@@ -975,6 +1121,7 @@ impl AccountPool {
     /// which still selects through the deferred entry point. Callers read
     /// the verdict only when the order is empty; `None` means no selectable
     /// representative is capped.
+    #[cfg(test)]
     pub(crate) fn select_order_without_reprobe_with_cap(
         &self,
         provider: &str,
@@ -983,9 +1130,97 @@ impl AccountPool {
         model: Option<&str>,
         pool: Option<&PoolConfig>,
     ) -> (Vec<usize>, Option<CapExhaustion>) {
-        let (order, _, cap) =
-            self.select_order_inner(provider, accounts, session_id, model, pool, false);
+        let (order, cap, _) = self.select_order_without_reprobe_with_cap_and_ticket(
+            provider, accounts, session_id, model, pool,
+        );
         (order, cap)
+    }
+
+    /// [`select_order_without_reprobe_with_cap`](Self::select_order_without_reprobe_with_cap)
+    /// plus the session's binding ticket.
+    pub(crate) fn select_order_without_reprobe_with_cap_and_ticket(
+        &self,
+        provider: &str,
+        accounts: &[AccountConfig],
+        session_id: Option<&str>,
+        model: Option<&str>,
+        pool: Option<&PoolConfig>,
+    ) -> (Vec<usize>, Option<CapExhaustion>, Option<BindingTicket>) {
+        let selection = self.select_order_inner(provider, accounts, session_id, model, pool, false);
+        (selection.order, selection.cap, selection.ticket)
+    }
+
+    /// Record that `served` answered the request `ticket` was selected for
+    /// (ADR-0008 §2, §8). Call it only at a success point.
+    ///
+    /// `bound_failed_over` says the bound account was attempted on this
+    /// request and failed over (an upstream failure, a failed credential
+    /// refresh, a transport error). The binding is placed when the session
+    /// had none, touched when the bound account served, and moved only when
+    /// another account served and the bound one was ineligible or failed
+    /// over; any other serve (admission skip, re-probe promotion) leaves it.
+    /// A commit whose ticket observed an older generation changes nothing.
+    pub fn commit_session_binding(
+        &self,
+        ticket: &BindingTicket,
+        served: &AccountConfig,
+        bound_failed_over: bool,
+    ) -> BindingCommit {
+        let served = account_key(&ticket.provider, served);
+        let reason = match &ticket.prior {
+            Some(prior) if *prior != served => {
+                let Some(reason) = bound_failed_over
+                    .then_some(SwitchReason::Failover)
+                    .or(ticket.prior_ineligible)
+                else {
+                    return BindingCommit::Unchanged;
+                };
+                Some(reason)
+            }
+            _ => None,
+        };
+        let (outcome, evicted, persist) = {
+            let mut bindings = self.bindings.lock().expect("session binding lock poisoned");
+            let evictions_before = bindings.evictions();
+            let outcome = bindings.commit(
+                &ticket.provider,
+                &ticket.session,
+                &served,
+                ticket.generation,
+                unix_now(),
+            );
+            // Raised under the lock, before any selection can observe the
+            // new binding through it.
+            if outcome == CommitOutcome::Placed {
+                self.any_bindings.store(true, Ordering::Release);
+            }
+            (
+                outcome,
+                bindings.evictions() - evictions_before,
+                bindings.take_persist_dirty(),
+            )
+        };
+        // The state file is rewritten only when its view of the bindings
+        // changed (FR-11); a touch within the same hour leaves it alone.
+        if persist {
+            self.mark_dirty();
+        }
+        // Emitted after the lock is released: only a placement can evict.
+        if evicted > 0 {
+            crate::metrics::record_session_binding_evictions(&ticket.provider, evicted);
+        }
+        match outcome {
+            CommitOutcome::Placed => BindingCommit::Placed,
+            CommitOutcome::Touched => BindingCommit::Touched,
+            CommitOutcome::Stale => BindingCommit::Stale,
+            // Generations are never reused, so a ticket older than a
+            // re-placed binding is Stale; without a reason this is a
+            // same-generation commit by a ticket that observed no ineligibility
+            // of its bound account, and the served account still replaces it.
+            CommitOutcome::Moved { .. } => {
+                BindingCommit::Moved(reason.unwrap_or(SwitchReason::Failover))
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1015,7 +1250,7 @@ impl AccountPool {
         pool: Option<&PoolConfig>,
     ) -> Option<CapExhaustion> {
         self.select_order_inner(provider, accounts, None, model, pool, false)
-            .2
+            .cap
     }
 
     fn select_order_inner(
@@ -1026,21 +1261,29 @@ impl AccountPool {
         model: Option<&str>,
         pool: Option<&PoolConfig>,
         allow_reprobe: bool,
-    ) -> (Vec<usize>, Option<PendingReprobe>, Option<CapExhaustion>) {
+    ) -> Selection {
         if accounts.is_empty() {
-            return (Vec::new(), None, None);
+            return Selection::default();
         }
 
         let provider = provider.to_string();
-        self.sync_enabled_accounts(&provider, accounts);
+        // Each account's key is derived once and shared by the collapse, the
+        // membership sync and the health pass below, which each used to
+        // derive (and allocate) their own.
+        let keys = accounts
+            .iter()
+            .map(|account| account_key(&provider, account))
+            .collect::<Vec<_>>();
+        let ident_reps = collapse_keyed_representatives(accounts, &keys);
+        self.sync_enabled_keys(&provider, accounts, &keys, &ident_reps);
         self.note_pool_config(pool);
-        let mut ranked = collapse_representatives(&provider, accounts);
-        let distinct = ranked.len();
+        let distinct = ident_reps.len();
         // An empty header is not a session. `Some("")` would otherwise take the
-        // sticky branch and rank every account by `sha256("")` — one constant
-        // order shared by every client that sends a blank `x-claude-code-session-id`,
-        // concentrating them on a single account instead of spreading them the
-        // way a session-less request is spread (issue #566).
+        // session branch and share one binding and one ranking of `sha256("")`
+        // — one account shared by every client that sends a blank
+        // `x-claude-code-session-id`, concentrating them on a single account
+        // instead of spreading them the way a session-less request is spread
+        // (issue #566).
         //
         // The guard lives here rather than at each header read so the property
         // cannot depend on a caller remembering it: three public wrappers feed
@@ -1048,20 +1291,37 @@ impl AccountPool {
         // reading the header unfiltered. The stage-router store guards inside
         // its consumer for the same reason (issue #546).
         let session_id = session_id.filter(|session_id| !session_id.is_empty());
-        // `ranked` is the order this request tries identities in before quota
-        // and health reorder it. A session ranks them by rendezvous hashing, so
-        // its sticky account comes first and its failover order follows, the
-        // same on every request; a request without one starts at the
-        // provider's round-robin slot.
-        match session_id {
-            Some(session_id) => rank_for_session(&provider, session_id, accounts, &mut ranked),
-            None => {
-                let mut counters = self.rr.lock().expect("account round-robin lock poisoned");
-                let counter = counters.entry(provider.clone()).or_default();
-                ranked.rotate_left(*counter % distinct);
-                *counter = counter.wrapping_add(1);
-            }
-        }
+        let unix_now = unix_now();
+        // Bindings are looked up first and their lock released before the
+        // entries lock below, so the two are never held together.
+        let binding = session_id.map(|session_id| {
+            let hash = hash_session_key(session_id);
+            // An empty table answers every lookup with a miss; skip its lock.
+            let view = if self.any_bindings.load(Ordering::Acquire) {
+                self.bindings
+                    .lock()
+                    .expect("session binding lock poisoned")
+                    .lookup(&provider, &hash, unix_now)
+            } else {
+                None
+            };
+            (hash, view)
+        });
+        // The session's rendezvous key comes from the binding's SHA-256, so a
+        // request still hashes its session once.
+        let session_key = binding
+            .as_ref()
+            .map(|(hash, _)| session_key_from_hash(hash));
+        // Sessionless requests round-robin (FR-15); a session ranks the
+        // identities by rendezvous hashing inside the entries lock below,
+        // where each identity's hash is cached.
+        let rr_slot = binding.is_none().then(|| {
+            let mut counters = self.rr.lock().expect("account round-robin lock poisoned");
+            let counter = counters.entry(provider.clone()).or_default();
+            let start_slot = *counter % distinct;
+            *counter = counter.wrapping_add(1);
+            start_slot
+        });
 
         // The ranking is computed over distinct identities so adding or
         // removing an alias cannot move an existing session. Disabled
@@ -1077,21 +1337,32 @@ impl AccountPool {
         // that way) is what this avoids.
 
         let now = Instant::now();
-        let unix_now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
         let is_fable = is_fable_model(model);
         let model_key = model.map(str::to_ascii_lowercase);
         let reprobe = allow_reprobe.then(|| reprobe_interval(pool)).flatten();
-        let (snapshots, rotation, pending_reprobe, quota_expired, cap_verdict) = {
+        // Per-account rendezvous scores and the bound identity's slot,
+        // filled in by the loop below, which already computes every key.
+        let mut bound_slot = None;
+        let (snapshots, ranked, rotation, pending_reprobe, quota_expired, cap_verdict, placement) = {
             let mut entries = self.entries.lock().expect("account health lock poisoned");
             let mut snapshots = Vec::with_capacity(accounts.len());
             // Paused or hard-capped for this request: not selectable.
             let mut exclusions = vec![Exclusion::Selectable; accounts.len()];
             let mut quota_expired = false;
-            for (index, account) in accounts.iter().enumerate() {
-                let health = self.health_entry(&mut entries, account_key(&provider, account));
+            for (index, (account, key)) in accounts.iter().zip(keys).enumerate() {
+                // Only the identity's representative stands for it.
+                if let Some((_, Some(view))) = &binding {
+                    if bound_slot.is_none() && view.account == key {
+                        bound_slot = ident_reps.iter().position(|&rep| rep == index);
+                    }
+                }
+                let health =
+                    self.health_entry_with_hashes(&mut entries, key, session_key.is_some());
+                // Two mixes of cached hashes: no string is hashed per request.
+                let score = match (session_key, health.identity_hashes) {
+                    (Some(session_key), Some(hashes)) => hashes.score(session_key),
+                    _ => (0, 0),
+                };
                 health.enabled |= !account.disabled;
                 let paused = health.paused_providers.contains(&provider);
                 quota_expired |= expire_stale_quota(&mut health.quota, unix_now);
@@ -1121,7 +1392,89 @@ impl AccountPool {
                 // an expired entry would otherwise outlive its cooldown.
                 health.model_cooldowns.retain(|_, until| *until > now);
                 let cooldown_until = governing_cooldown(health, is_fable, model_key.as_deref());
-                snapshots.push((cooldown_until, assessment, weekly_reset, min_reset));
+                // Soft-near hysteresis (FR-5): stamped on the first soft-near
+                // assessment of this scope, cleared by any other.
+                let soft_near_since = if is_fable {
+                    &mut health.soft_near_since_fable
+                } else {
+                    &mut health.soft_near_since
+                };
+                // Aliases of one identity share this stamp but may carry
+                // different thresholds, so only the representative's
+                // assessment drives it; an alias would otherwise reset the
+                // interval on every request.
+                if ident_reps.contains(&index) {
+                    if assessment.soft_near() {
+                        soft_near_since.get_or_insert(now);
+                    } else {
+                        *soft_near_since = None;
+                    }
+                }
+                let soft_near_since = *soft_near_since;
+                snapshots.push((
+                    cooldown_until,
+                    assessment,
+                    weekly_reset,
+                    min_reset,
+                    soft_near_since,
+                    score,
+                ));
+            }
+            // Only the re-probe below reads or writes health past this point;
+            // everything else works on the snapshots, so a selection that
+            // cannot re-probe releases the lock here.
+            let mut entries = reprobe.is_some().then_some(entries);
+            // `ranked` is the order this request tries identities in before
+            // quota and health reorder it. A session ranks them by rendezvous
+            // score, exactly as `rank_for_session` does, so its fallback
+            // order is the same on every request; a sessionless request
+            // starts at the provider's round-robin slot.
+            let mut ranked = ident_reps.clone();
+            match rr_slot {
+                Some(slot) => ranked.rotate_left(slot),
+                None => ranked.sort_by(|&left, &right| snapshots[right].5.cmp(&snapshots[left].5)),
+            }
+            // A session's rotation starts at its head (ADR-0008 §2–§3), and
+            // `spread` places by the ranking: a slot's weight is its rank,
+            // highest first, so ties resolve as the ranking resolves them.
+            let placement = binding.as_ref().map(|(_, view)| {
+                let mut rank_weight = vec![0; accounts.len()];
+                for (rank, &index) in ranked.iter().enumerate() {
+                    rank_weight[index] = (distinct - rank) as u64;
+                }
+                let weight = |slot: usize| rank_weight[ident_reps[slot]];
+                let slot_health = |slot: usize| {
+                    let index = ident_reps[slot];
+                    let (cooldown_until, ref assessment, weekly_reset, _, soft_near_since, _) =
+                        snapshots[index];
+                    let account = &accounts[index];
+                    assignment::SlotHealth {
+                        selectable: !account.disabled
+                            && matches!(exclusions[index], Exclusion::Selectable),
+                        cooling: cooldown_until.is_some_and(|until| until > now),
+                        near: assessment.near,
+                        immediate: assessment.immediate(),
+                        soft_near_for: soft_near_since
+                            .map(|since| now.saturating_duration_since(since)),
+                        priority: account.priority,
+                        weekly_reset,
+                        weight: weight(slot),
+                    }
+                };
+                let bound = match (view, bound_slot) {
+                    (None, _) => assignment::Bound::Unbound,
+                    (Some(_), None) => assignment::Bound::Absent,
+                    (Some(_), Some(slot)) => assignment::Bound::At(slot),
+                };
+                let strategy = pool.map(|pool| pool.assignment).unwrap_or_default();
+                assignment::place(strategy, distinct, slot_health, weight, bound)
+            });
+            // The start slot leads the rotation; the rest keeps the ranking.
+            if let Some(placement) = placement {
+                let start = ident_reps[placement.start];
+                if let Some(position) = ranked.iter().position(|&index| index == start) {
+                    ranked[..=position].rotate_right(1);
+                }
             }
             // One visit per identity representative builds the rotation and
             // folds the cap verdict: an alias's own caps must not contribute
@@ -1153,6 +1506,7 @@ impl AccountPool {
             // credential resolution can fail before any upstream request is
             // sent, so only the dispatch boundary may consume the interval.
             let probe_selection = reprobe.and_then(|interval| {
+                let entries = entries.as_ref()?;
                 let mut candidate: Option<(usize, Option<u64>)> = None;
                 for &index in &rotation {
                     let account = &accounts[index];
@@ -1166,7 +1520,7 @@ impl AccountPool {
                     if account.store_family != Some(StoreFamily::Chatgpt) {
                         continue;
                     }
-                    let (cooldown_until, ref assessment, _, _) = snapshots[index];
+                    let (cooldown_until, ref assessment, _, _, _, _) = snapshots[index];
                     if cooldown_until.is_some_and(|until| until > now) || !assessment.near {
                         continue;
                     }
@@ -1223,6 +1577,8 @@ impl AccountPool {
                 let account = &accounts[index];
                 let key = account_key(&provider, account);
                 let health = entries
+                    .as_mut()
+                    .expect("a re-probe selection keeps the entries lock")
                     .get_mut(&key)
                     .expect("snapshot pass above just inserted this entry");
                 let token = self.next_reprobe_token.fetch_add(1, Ordering::Relaxed);
@@ -1238,10 +1594,12 @@ impl AccountPool {
 
             (
                 snapshots,
+                ranked,
                 rotation,
                 pending_reprobe,
                 quota_expired,
                 cap_verdict,
+                placement,
             )
         };
 
@@ -1267,15 +1625,39 @@ impl AccountPool {
             order
         };
 
-        let sticky = ranked[0];
-        let (sticky_cooldown, ref sticky_quota, _, _) = snapshots[sticky];
-        // `rotation` already excludes a disabled or paused sticky account, so
-        // membership in it covers both checks the fast path needs.
-        if rotation.contains(&sticky)
-            && sticky_cooldown.is_none_or(|until| until <= now)
-            && !sticky_quota.near
-        {
-            return (promote(rotation), pending_reprobe, cap_verdict);
+        let ticket = binding.map(|(session, view)| {
+            let (generation, prior) =
+                view.map_or((0, None), |view| (view.generation, Some(view.account)));
+            BindingTicket {
+                provider,
+                session,
+                generation,
+                prior,
+                prior_ineligible: placement.and_then(|placement| placement.prior_ineligible),
+            }
+        });
+        let head = placement.and_then(|placement| placement.head.map(|slot| ident_reps[slot]));
+
+        let fast = match placement {
+            Some(placement) => placement.fast,
+            None => {
+                let sticky = ranked[0];
+                let (sticky_cooldown, ref sticky_quota, _, _, _, _) = snapshots[sticky];
+                // `rotation` already excludes a disabled or paused sticky
+                // account, so membership in it covers both checks the fast
+                // path needs.
+                rotation.contains(&sticky)
+                    && sticky_cooldown.is_none_or(|until| until <= now)
+                    && !sticky_quota.near
+            }
+        };
+        if fast {
+            return Selection {
+                order: promote(rotation),
+                pending_reprobe,
+                cap: cap_verdict,
+                ticket,
+            };
         }
 
         let is_available =
@@ -1380,18 +1762,25 @@ impl AccountPool {
             .collect::<Vec<_>>();
         cooled.sort_by_key(|&index| snapshots[index].0);
 
-        (
-            promote(
-                available_under
-                    .into_iter()
-                    .chain(near_soft)
-                    .chain(over_hard)
-                    .chain(cooled)
-                    .collect(),
-            ),
+        let mut order: Vec<usize> = available_under
+            .into_iter()
+            .chain(near_soft)
+            .chain(over_hard)
+            .chain(cooled)
+            .collect();
+        // A chosen head leads; the rest keeps the failover order (FR-16).
+        if let Some(head) = head {
+            if let Some(position) = order.iter().position(|&index| index == head) {
+                order.remove(position);
+                order.insert(0, head);
+            }
+        }
+        Selection {
+            order: promote(order),
             pending_reprobe,
-            cap_verdict,
-        )
+            cap: cap_verdict,
+            ticket,
+        }
     }
 
     pub fn note_quota(&self, provider: &str, account: &AccountConfig, headers: &HeaderMap) {
@@ -2289,6 +2678,37 @@ impl AccountPool {
             .unwrap_or(0)
     }
 
+    /// [`Self::health_entry`], also caching the key's [`IdentityHashes`] on
+    /// the entry when `hashes` is set, in the same map lookup.
+    fn health_entry_with_hashes<'a>(
+        &self,
+        entries: &'a mut HashMap<AccountKey, AccountHealth>,
+        key: AccountKey,
+        hashes: bool,
+    ) -> &'a mut AccountHealth {
+        use std::collections::hash_map::Entry;
+        let health = match entries.entry(key) {
+            Entry::Occupied(mut occupied) => {
+                if hashes && occupied.get().identity_hashes.is_none() {
+                    let identity_hashes = IdentityHashes::of(occupied.key());
+                    occupied.get_mut().identity_hashes = Some(identity_hashes);
+                }
+                occupied.into_mut()
+            }
+            Entry::Vacant(vacant) => {
+                let identity_hashes = hashes.then(|| IdentityHashes::of(vacant.key()));
+                vacant.insert(AccountHealth {
+                    identity_hashes,
+                    ..AccountHealth::default()
+                })
+            }
+        };
+        if health.generation == 0 {
+            health.generation = self.next_entry_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        }
+        health
+    }
+
     /// The pool's health entry for `key`, stamping a fresh generation when it
     /// is created.
     fn health_entry<'a>(
@@ -2415,6 +2835,16 @@ impl AccountPool {
             .lock()
             .expect("account refresh-lock map poisoned")
             .retain(|key, _| !matches(key));
+        // Sessions bound to the forgotten identity are placed afresh on their
+        // next request. Taken after `entries` is released (lock order).
+        let removed_bindings = {
+            let mut bindings = self.bindings.lock().expect("session binding lock poisoned");
+            let removed = bindings.remove_matching(matches);
+            if bindings.len() == 0 {
+                self.any_bindings.store(false, Ordering::Release);
+            }
+            removed > 0
+        };
         // Purge the forgotten identity from every upstream's membership map too,
         // so a deleted/rotated account leaves no dead `AccountKey` behind (the
         // per-upstream map is otherwise only rebuilt on the next
@@ -2445,7 +2875,7 @@ impl AccountPool {
                         || marked.name == identity
                         || Some(marked.name.as_str()) == store_name))
             });
-        if removed_quota {
+        if removed_quota || removed_bindings {
             self.mark_dirty();
         }
     }
@@ -2710,6 +3140,61 @@ impl AccountPool {
             self.mark_dirty();
         }
         quotas
+    }
+
+    /// Live session bindings counted per provider, then per bound account key,
+    /// for the admin pool view (FR-14). Expired bindings are not counted. Takes
+    /// the bindings lock once, and never while `entries` is held; skips it
+    /// while the table has never held a binding.
+    pub(crate) fn bound_session_counts(&self) -> HashMap<String, HashMap<AccountKey, usize>> {
+        if !self.any_bindings.load(Ordering::Acquire) {
+            return HashMap::new();
+        }
+        self.bindings
+            .lock()
+            .expect("session binding lock poisoned")
+            .bound_counts(unix_now())
+    }
+
+    /// Snapshot every live session binding for persistence (ADR-0008 §6).
+    /// Rows carry the session hash, never a raw id, and `last_used` rounded
+    /// down to the hour.
+    pub(crate) fn export_bindings(&self) -> Vec<BindingRow> {
+        self.bindings
+            .lock()
+            .expect("session binding lock poisoned")
+            .export(unix_now())
+    }
+
+    /// Seed the binding table with rows restored at boot, keeping only those
+    /// `keep` accepts (an account still configured, FR-12). Expired and
+    /// malformed rows are dropped and the table's cap holds, as in
+    /// `SessionBindings::import`. Returns how many bindings the table holds
+    /// afterwards.
+    ///
+    /// Raises `any_bindings` under the bindings lock when the table is
+    /// non-empty, so the next selection takes the lock and follows a restored
+    /// binding instead of skipping the table.
+    pub(crate) fn import_bindings(
+        &self,
+        rows: impl IntoIterator<Item = BindingRow>,
+        keep: impl Fn(&BindingRow) -> bool,
+    ) -> usize {
+        let (len, dirty) = {
+            let mut bindings = self.bindings.lock().expect("session binding lock poisoned");
+            bindings.import(rows.into_iter().filter(|row| keep(row)), unix_now());
+            let len = bindings.len();
+            if len > 0 {
+                self.any_bindings.store(true, Ordering::Release);
+            }
+            // Set only when the cap evicted restored rows: rewrite the file
+            // without them.
+            (len, bindings.take_persist_dirty())
+        };
+        if dirty {
+            self.mark_dirty();
+        }
+        len
     }
 
     /// Seed the pool with quotas restored from disk at boot. Returns whether
@@ -3218,11 +3703,20 @@ pub(crate) fn account_ref(upstream: &str, account: &AccountConfig) -> String {
 /// store-discovered collisions are caught once per store scan (see
 /// `crate::auth::shared::scan_cached`), not here.
 fn collapse_representatives(upstream: &str, accounts: &[AccountConfig]) -> Vec<usize> {
-    let mut slots = HashMap::<AccountKey, usize>::with_capacity(accounts.len());
+    let keys = accounts
+        .iter()
+        .map(|account| account_key(upstream, account))
+        .collect::<Vec<_>>();
+    collapse_keyed_representatives(accounts, &keys)
+}
+
+/// [`collapse_representatives`] over keys the caller already derived
+/// (`keys[i]` is `accounts[i]`'s [`account_key`]).
+fn collapse_keyed_representatives(accounts: &[AccountConfig], keys: &[AccountKey]) -> Vec<usize> {
+    let mut slots = HashMap::<&AccountKey, usize>::with_capacity(accounts.len());
     let mut representatives: Vec<usize> = Vec::with_capacity(accounts.len());
-    for (index, account) in accounts.iter().enumerate() {
-        let identity = account_key(upstream, account);
-        if let Some(&slot) = slots.get(&identity) {
+    for (index, (account, identity)) in accounts.iter().zip(keys).enumerate() {
+        if let Some(&slot) = slots.get(identity) {
             let current = &accounts[representatives[slot]];
             if (current.disabled && !account.disabled)
                 || (current.disabled == account.disabled && account.priority < current.priority)
@@ -3240,7 +3734,7 @@ fn collapse_representatives(upstream: &str, accounts: &[AccountConfig]) -> Vec<u
 /// Reorder identity representatives for one session by rendezvous
 /// (highest-random-weight) hashing: each identity gets a [`session_score`],
 /// and the session tries them from the highest score down, so the top one is
-/// its sticky account and the rest are its fallbacks in order.
+/// its first choice and the rest are its fallbacks in order.
 ///
 /// A score depends only on the session and that one identity, so the ranking
 /// survives restarts and config reordering, and a pool change moves only the
@@ -3257,6 +3751,11 @@ fn collapse_representatives(upstream: &str, accounts: &[AccountConfig]) -> Vec<u
 /// also hashes the kind of identity [`account_key`] keys them apart by. The
 /// pair then splits sessions between them, and neither the configuration
 /// order nor where an alias is inserted decides which one a session gets.
+///
+/// Selection ranks the same way from the hashes cached on each health entry
+/// ([`IdentityHashes`]); this from-scratch ranking is the reference the tests
+/// hold selection to.
+#[cfg(test)]
 fn rank_for_session(
     upstream: &str,
     session_id: &str,
@@ -3274,11 +3773,7 @@ fn rank_for_session(
         })
         .collect::<Vec<_>>();
     let tie_score = |index: usize| {
-        let kind = match account_key(upstream, &accounts[index]).identity {
-            AccountStateIdentity::Verified { .. } => "verified",
-            AccountStateIdentity::StoreEntry { .. } => "store",
-            AccountStateIdentity::UpstreamInline { .. } => "inline",
-        };
+        let kind = identity_kind(&account_key(upstream, &accounts[index]).identity);
         let identity = format!("{kind}\0{}", account_identity(&accounts[index]));
         identity_score(key, &identity)
     };
@@ -3293,7 +3788,7 @@ fn rank_for_session(
     }
 }
 
-/// One identity's rendezvous score for one session, as [`rank_for_session`]
+/// One identity's rendezvous score for one session, as `rank_for_session`
 /// computes it: the first 8 bytes of `SHA-256(session_id)` (big-endian), XORed
 /// with the 64-bit FNV-1a hash of the identity, through the SplitMix64
 /// finalizer.
@@ -3308,20 +3803,80 @@ pub fn session_score(session_id: &str, identity: &str) -> u64 {
 }
 
 fn session_key(session_id: &str) -> u64 {
-    let digest = Sha256::digest(session_id.as_bytes());
-    u64::from_be_bytes(digest[..8].try_into().expect("SHA-256 prefix is 8 bytes"))
+    session_key_from_hash(&hash_session_key(session_id))
+}
+
+/// [`session_key`] of a session whose SHA-256 the caller already has.
+fn session_key_from_hash(hash: &session_binding::SessionHash) -> u64 {
+    u64::from_be_bytes(hash[..8].try_into().expect("SHA-256 prefix is 8 bytes"))
 }
 
 fn identity_score(session_key: u64, identity: &str) -> u64 {
+    mix(session_key ^ identity_hash(identity))
+}
+
+/// The 64-bit FNV-1a hash of an identity string: the half of a rendezvous
+/// score that does not depend on the session, so it can be cached.
+fn identity_hash(identity: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for &byte in identity.as_bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    let mut mixed = session_key ^ hash;
+    hash
+}
+
+/// The SplitMix64 finalizer.
+fn mix(mut mixed: u64) -> u64 {
     mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     mixed ^ (mixed >> 31)
+}
+
+/// The kind `rank_for_session`'s tie score hashes with the identity.
+fn identity_kind(identity: &AccountStateIdentity) -> &'static str {
+    match identity {
+        AccountStateIdentity::Verified { .. } => "verified",
+        AccountStateIdentity::StoreEntry { .. } => "store",
+        AccountStateIdentity::UpstreamInline { .. } => "inline",
+    }
+}
+
+/// One health entry's session-independent rendezvous hashes, cached on the
+/// entry by its first session selection so ranking a pool hashes no string
+/// per request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IdentityHashes {
+    /// [`identity_hash`] of the identity ([`account_identity`]).
+    identity: u64,
+    /// [`identity_hash`] of `"{kind}\0{identity}"`, the tie score's input.
+    tie: u64,
+}
+
+impl IdentityHashes {
+    /// The hashes for `key`. Its identity string is the one
+    /// [`account_identity`] returns for every account [`account_key`] maps
+    /// to it: the verified id, or the name.
+    fn of(key: &AccountKey) -> Self {
+        let identity = match &key.identity {
+            AccountStateIdentity::Verified { id } => id,
+            AccountStateIdentity::StoreEntry { name }
+            | AccountStateIdentity::UpstreamInline { name, .. } => name,
+        };
+        Self {
+            identity: identity_hash(identity),
+            tie: identity_hash(&format!("{}\0{identity}", identity_kind(&key.identity))),
+        }
+    }
+
+    /// The `(score, tie score)` pair `rank_for_session` orders by, highest
+    /// first, for the session whose [`session_key`] is `session_key`.
+    fn score(self, session_key: u64) -> (u64, u64) {
+        (
+            mix(session_key ^ self.identity),
+            mix(session_key ^ self.tie),
+        )
+    }
 }
 
 fn header_value<T: std::str::FromStr>(headers: &HeaderMap, name: &str) -> Option<T> {
@@ -3645,9 +4200,24 @@ struct QuotaAssessment {
     near: bool,
     /// Past the hard backstop; always sorts last among available accounts.
     over_hard: bool,
+    /// Upstream-rejected for a governing window. Part of `near`, but unlike a
+    /// soft threshold it moves a bound session at once (AC-008).
+    rejected: bool,
     /// Minimum burn-rate headroom in seconds across the governing windows
     /// (see [`window_headroom`]); +∞ when nothing suggests pressure.
     headroom: f64,
+}
+
+impl QuotaAssessment {
+    /// Near for a reason no debounce applies to: rejected or hard-over.
+    fn immediate(&self) -> bool {
+        self.rejected || self.over_hard
+    }
+
+    /// Near only through a soft threshold or projected burn.
+    fn soft_near(&self) -> bool {
+        self.near && !self.immediate()
+    }
 }
 
 fn assess_quota(
@@ -3682,6 +4252,7 @@ fn assess_quota(
     let mut assessment = QuotaAssessment {
         near: rejected,
         over_hard: false,
+        rejected,
         // An upstream rejection is zero headroom by definition, whatever the
         // utilization numbers said.
         headroom: if rejected {
@@ -5594,6 +6165,22 @@ mod tests {
         }
     }
 
+    /// Reset every provider's round-robin counter, so the next sessionless
+    /// selection starts at slot 0.
+    fn restart_round_robin(pool: &AccountPool) {
+        pool.rr.lock().unwrap().clear();
+    }
+
+    /// The account `spread` places an unbound session on when every identity
+    /// is healthy: the representative with the highest rendezvous score.
+    fn spread_placement(provider: &str, accounts: &[AccountConfig], session: &str) -> usize {
+        collapse_representatives(provider, accounts)
+            .into_iter()
+            .rev()
+            .max_by_key(|&index| session_score(session, account_identity(&accounts[index])))
+            .expect("non-empty pool")
+    }
+
     #[test]
     fn session_selection_is_stable_and_spreads_across_sessions() {
         let pool = AccountPool::new();
@@ -5602,6 +6189,11 @@ mod tests {
         assert_eq!(
             first,
             pool.select_order("anthropic", &accounts, Some("session-a"), None, None)
+        );
+        assert_eq!(
+            first[0],
+            spread_placement("anthropic", &accounts, "session-a"),
+            "an unbound session leads with its highest rendezvous weight"
         );
         assert_eq!(first[0], session_ranking("session-a", &accounts)[0]);
 
@@ -10754,9 +11346,11 @@ mod tests {
         for cfg in [None, Some(PoolConfig::default())] {
             let pool = AccountPool::new();
             let mut accounts = accounts();
-            let session = "priority";
-            let rotation =
-                pool.select_order("anthropic", &accounts, Some(session), None, cfg.as_ref());
+            // Sessionless: the failover sort is observed on a request whose
+            // round-robin start slot (0 on a fresh pool) is the near account. A
+            // session's head is its rendezvous placement instead (ADR-0008), so
+            // a session request no longer shows this sort at the front.
+            let rotation: Vec<usize> = (0..accounts.len()).collect();
             let sticky = rotation[0];
             pool.note_quota(
                 "anthropic",
@@ -10769,8 +11363,7 @@ mod tests {
             // Prefer what would otherwise be the last rotation slot.
             let preferred = *rotation.last().unwrap();
             accounts[preferred].priority = 1;
-            let order =
-                pool.select_order("anthropic", &accounts, Some(session), None, cfg.as_ref());
+            let order = pool.select_order("anthropic", &accounts, None, None, cfg.as_ref());
             assert_eq!(order[0], preferred, "pool config: {cfg:?}");
             assert_eq!(order.last(), Some(&sticky), "pool config: {cfg:?}");
         }
@@ -11064,6 +11657,37 @@ mod tests {
     }
 
     #[test]
+    fn cached_identity_hashes_score_exactly_as_session_score() {
+        // Selection scores each identity from the hashes its first session
+        // selection cached on the health entry. They must give exactly the
+        // scores `session_score` and the kind-aware tie score compute from
+        // the strings, or a session would rank differently in selection than
+        // in `rank_for_session`.
+        let pool = AccountPool::new();
+        let accounts = vec![
+            account("first"),
+            account_with_uuid("second", "first"),
+            account_with_uuid("verified", "uuid-1"),
+            account_with_uuid("alias", "uuid-1"),
+        ];
+        for session in ["pinned", "session-7", "another"] {
+            pool.select_order("anthropic", &accounts, Some(session), None, None);
+            let entries = pool.entries.lock().unwrap();
+            for (index, account) in accounts.iter().enumerate() {
+                let key = account_key("anthropic", account);
+                let hashes = entries[&key]
+                    .identity_hashes
+                    .expect("a session selection caches the hashes");
+                let (score, tie) = hashes.score(session_key(session));
+                let identity = account_identity(account);
+                assert_eq!(score, session_score(session, identity), "account #{index}");
+                let tied = format!("{}\0{identity}", identity_kind(&key.identity));
+                assert_eq!(tie, session_score(session, &tied), "account #{index}");
+            }
+        }
+    }
+
+    #[test]
     fn identities_sharing_one_string_split_sessions_whatever_the_order() {
         // An explicit uuid equal to another account's name: two distinct
         // identities that score the same for every session.
@@ -11105,12 +11729,15 @@ mod tests {
     fn accounts_past_hard_threshold_sort_after_soft_near_accounts() {
         let pool = AccountPool::new();
         let accounts = accounts();
-        let session = "hard-backstop";
         let cfg = PoolConfig {
             default_threshold: Some(0.5),
             ..Default::default()
         };
-        let rotation = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        // Sessionless: the failover sort is observed on a request whose
+        // round-robin start slot (0 on a fresh pool) is the near account. A
+        // session's head is its rendezvous placement instead (ADR-0008), so
+        // a session request no longer shows this sort at the front.
+        let rotation: Vec<usize> = (0..accounts.len()).collect();
         // Sticky account past the hard backstop, the next one past only the
         // soft threshold, the rest untouched.
         for (offset, utilization) in [(0usize, "0.99"), (1, "0.6")] {
@@ -11123,7 +11750,7 @@ mod tests {
                 )]),
             );
         }
-        let order = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        let order = pool.select_order("anthropic", &accounts, None, None, Some(&cfg));
         assert_eq!(order[..2], [rotation[2], rotation[3]]);
         assert_eq!(order[2], rotation[1], "soft-near sorts before hard-over");
         assert_eq!(order[3], rotation[0], "hard-over sorts last");
@@ -12107,8 +12734,11 @@ mod tests {
         let pool = AccountPool::new();
         let accounts = vec![account("a"), account("b"), account("c"), account("d")];
         let cfg = PoolConfig::default();
-        let session = "paused-sticky-ranks";
-        let rotation = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        // Sessionless: the failover sort is observed on a request whose
+        // round-robin start slot (0 on a fresh pool) is the near account. A
+        // session's head is its rendezvous placement instead (ADR-0008), so
+        // a session request no longer shows this sort at the front.
+        let rotation: Vec<usize> = (0..accounts.len()).collect();
         let sticky = rotation[0];
         let others: Vec<usize> = rotation[1..].to_vec();
         // The first fallback is near quota: ranked, it sorts after the other
@@ -12124,14 +12754,16 @@ mod tests {
 
         // Sanity: while the sticky account is healthy and un-paused, it still
         // takes the fast path, so `others` stay in raw rotation order.
-        let baseline = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        restart_round_robin(&pool);
+        let baseline = pool.select_order("anthropic", &accounts, None, None, Some(&cfg));
         assert_eq!(
             baseline, rotation,
             "a healthy sticky account takes the fast path"
         );
 
         pool.set_paused("anthropic", &accounts[sticky], true);
-        let order = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        restart_round_robin(&pool);
+        let order = pool.select_order("anthropic", &accounts, None, None, Some(&cfg));
         assert!(!order.contains(&sticky), "the paused account never appears");
         assert_eq!(
             order,
@@ -12180,10 +12812,12 @@ mod tests {
             sort_by_reset: true,
             ..Default::default()
         };
-        let session = "sort-by-reset";
         let now = unix_now();
-        let rotation = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
-        let sticky = rotation[0];
+        // Sessionless: the failover sort is observed on a request whose
+        // round-robin start slot (0 on a fresh pool) is the near account. A
+        // session's head is its rendezvous placement instead (ADR-0008), so
+        // a session request no longer shows this sort at the front.
+        let sticky = 0;
         // Push the sticky account near quota so the available_under sort runs.
         pool.note_quota(
             "anthropic",
@@ -12223,7 +12857,8 @@ mod tests {
                 ),
             ]),
         );
-        let order = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        restart_round_robin(&pool);
+        let order = pool.select_order("anthropic", &accounts, None, None, Some(&cfg));
         assert_eq!(order[0], soonest, "soonest-resetting account sorts first");
         assert_eq!(order[1], latest, "later-resetting account sorts after");
         assert_eq!(order.last(), Some(&sticky), "near sticky sorts last");
@@ -12310,10 +12945,12 @@ mod tests {
             sort_by_reset: true,
             ..Default::default()
         };
-        let session = "sort-by-reset-unknown";
         let now = unix_now();
-        let rotation = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
-        let sticky = rotation[0];
+        // Sessionless: the failover sort is observed on a request whose
+        // round-robin start slot (0 on a fresh pool) is the near account. A
+        // session's head is its rendezvous placement instead (ADR-0008), so
+        // a session request no longer shows this sort at the front.
+        let sticky = 0;
         pool.note_quota(
             "anthropic",
             &accounts[sticky],
@@ -12348,7 +12985,7 @@ mod tests {
                 "0.3".to_string(),
             )]),
         );
-        let order = pool.select_order("anthropic", &accounts, Some(session), None, Some(&cfg));
+        let order = pool.select_order("anthropic", &accounts, None, None, Some(&cfg));
         assert_eq!(
             order[0], known,
             "the account with a known reset sorts first"
@@ -12388,7 +13025,8 @@ mod tests {
         note_5h(&pool, &accounts[soonest], "0.9", 3_600);
         note_5h(&pool, &accounts[latest], "0.05", 16_200);
         // A session displaced from account 0 that ranks `latest` before
-        // `soonest`: only the reset order can put `soonest` first for it.
+        // `soonest`: its placement (ADR-0008 `spread`) is `latest`, and only
+        // the reset order can put `soonest` ahead of the rest of its order.
         let session = (0..1000)
             .map(|candidate| format!("session-{candidate}"))
             .find(|session| {
@@ -12406,17 +13044,23 @@ mod tests {
             "headroom order: larger margin sorts first"
         );
 
-        // The runtime override flips it without touching the config file, for
-        // a session too: a reset moves only when a window rolls over, so it
-        // does not move a session between accounts request by request.
+        // The runtime override flips it without touching the config file.
+        // Bindings own a session's placement, so the override leaves the
+        // session's head alone and orders only its in-request failover behind
+        // it, as it orders sessionless traffic.
         pool.set_sort_by_reset_override(Some(true));
         assert!(pool.effective_sort_by_reset(Some(&cfg)));
         let order = pool.select_order("anthropic", &accounts, None, None, Some(&cfg));
         assert_eq!(order[0], soonest, "override: soonest reset sorts first");
         let order = pool.select_order("anthropic", &accounts, Some(&session), None, Some(&cfg));
         assert_eq!(
-            order[0], soonest,
-            "override: a session takes the soonest reset too"
+            order[0], latest,
+            "override: a session's placement is the binding strategy's, not \
+             sort_by_reset's (ADR-0008 §3, FR-16)"
+        );
+        assert_eq!(
+            order[1], soonest,
+            "override: soonest reset leads the session's failover tail"
         );
 
         // Clearing the override reverts to the config's own value, under which

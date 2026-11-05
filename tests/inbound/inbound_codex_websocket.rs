@@ -983,3 +983,163 @@ async fn replacement_and_disconnect_drop_active_upstream_bodies() {
         .await
         .expect("disconnect did not drop the active upstream body");
 }
+
+/// The `chatgpt-account-id` each upstream turn carried, in arrival order.
+type ServedAccounts = Arc<Mutex<Vec<String>>>;
+
+async fn account_recording_upstream(
+    State(served): State<ServedAccounts>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    served.lock().unwrap().push(
+        headers
+            .get("chatgpt-account-id")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string(),
+    );
+    (
+        [(header::CONTENT_TYPE, "text/event-stream")],
+        "data: {\"type\":\"response.completed\"}\n\n",
+    )
+        .into_response()
+}
+
+/// A two-account inbound gateway whose upstream records which account served
+/// each turn, plus the request state that owns the pool.
+async fn start_two_account_gateway(
+    env: &mut common::EnvVars,
+) -> (
+    RunningServer,
+    RunningServer,
+    ServedAccounts,
+    server::AppState,
+) {
+    let served: ServedAccounts = Arc::default();
+    let upstream = start_server(
+        Router::new()
+            .route("/codex/responses", post(account_recording_upstream))
+            .with_state(served.clone()),
+    )
+    .await;
+    env.set("SHUNT_TEST_INBOUND_WS_BIND_A", access_token("account-1"))
+        .set("SHUNT_TEST_INBOUND_WS_BIND_B", access_token("account-2"))
+        .set("SHUNT_TEST_INBOUND_WS_BIND_CLIENT", "client:gateway-secret");
+    let mut config = Config::default();
+    let codex = config.providers.get_mut("codex").unwrap();
+    codex.base_url = format!("http://{}", upstream.address);
+    codex.accounts = ["A", "B"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, suffix)| AccountConfig {
+            name: format!("account-{}", index + 1),
+            token_env: Some(format!("SHUNT_TEST_INBOUND_WS_BIND_{suffix}")),
+            ..Default::default()
+        })
+        .collect();
+    config.server.codex_endpoint = Some(CodexEndpointConfig {
+        provider: "codex".to_string(),
+        routes: Vec::new(),
+    });
+    config.server.auth = Some(InboundAuthConfig {
+        jwt: Vec::new(),
+        header: "x-shunt-token".to_string(),
+        tokens_env: "SHUNT_TEST_INBOUND_WS_BIND_CLIENT".to_string(),
+        ..Default::default()
+    });
+    let (router, _, state) = server::build_router(config).unwrap();
+    (start_server(router).await, upstream, served, state)
+}
+
+/// The selection key the inbound endpoint uses for `session` from the
+/// authenticated client `client` (`codex_endpoint::pool_sticky_key`).
+fn inbound_key(session: &str) -> String {
+    format!("client:{session}")
+}
+
+/// A session whose first choice, every account healthy, is `index`.
+fn session_placed_on(
+    provider: &str,
+    accounts: &[AccountConfig],
+    index: usize,
+    tag: &str,
+) -> String {
+    let fresh = shunt::accounts::AccountPool::new();
+    (0..10_000)
+        .map(|candidate| format!("{tag}-{candidate}"))
+        .find(|session| {
+            fresh
+                .select_order(provider, accounts, Some(&inbound_key(session)), None, None)
+                .first()
+                == Some(&index)
+        })
+        .expect("a session id maps to the requested account")
+}
+
+async fn connect_with_session(
+    gateway: &RunningServer,
+    session: &str,
+) -> WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    let mut request = format!("ws://{}/v1/responses", gateway.address)
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer gateway-secret".parse().unwrap());
+    request
+        .headers_mut()
+        .insert("session-id", session.parse().unwrap());
+    connect_async(request).await.unwrap().0
+}
+
+/// AC-016: a conversation's HTTP and WebSocket turns with one session identity
+/// on one provider are served by one bound account. The HTTP turn moves the
+/// session off its cooled first choice; once that account recovers, the
+/// WebSocket turn still goes to the bound account. A WebSocket turn of a new
+/// session binds it, so the WebSocket path commits too.
+#[tokio::test]
+async fn http_and_websocket_turns_of_one_session_share_a_bound_account() {
+    let mut env = common::env_lock().await;
+    let (gateway, _upstream, served, state) = start_two_account_gateway(&mut env).await;
+    let (provider, accounts) = common::resolved_pool_accounts(&state).await;
+    let model = "gpt-5.4-mini";
+    let session = session_placed_on(&provider, &accounts, 0, "ws-bind");
+
+    state
+        .accounts
+        .cooldown(&provider, &accounts[0], Duration::from_secs(300), "test");
+    let http = reqwest::Client::new()
+        .post(format!("http://{}/v1/responses", gateway.address))
+        .header("x-shunt-token", "gateway-secret")
+        .header("session-id", &session)
+        .json(&serde_json::json!({"model": model, "stream": true, "input": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(http.status(), StatusCode::OK);
+    assert!(http.text().await.unwrap().contains("response.completed"));
+    assert_eq!(
+        common::bound_account(&state, &provider, &accounts, &inbound_key(&session), model),
+        Some(1)
+    );
+
+    state.accounts.mark_healthy(&provider, &accounts[0], true);
+    let mut socket = connect_with_session(&gateway, &session).await;
+    send_create_model(&mut socket, model, "ws-bound").await;
+    assert_eq!(next_json(&mut socket).await["type"], "response.completed");
+    assert_eq!(
+        *served.lock().unwrap(),
+        ["account-2", "account-2"],
+        "the WebSocket turn follows the binding, not the recovered first choice"
+    );
+
+    let fresh = session_placed_on(&provider, &accounts, 0, "ws-fresh");
+    let mut socket = connect_with_session(&gateway, &fresh).await;
+    send_create_model(&mut socket, model, "ws-fresh").await;
+    assert_eq!(next_json(&mut socket).await["type"], "response.completed");
+    assert_eq!(
+        common::bound_account(&state, &provider, &accounts, &inbound_key(&fresh), model),
+        Some(0),
+        "a WebSocket turn commits its binding"
+    );
+}

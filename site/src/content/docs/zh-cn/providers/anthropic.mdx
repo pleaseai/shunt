@@ -96,7 +96,7 @@ auth = { mode = "claude_oauth", account = "primary" }
 (推荐),`--mode import` 复制当前的 Claude Code 登录,`--mode setup-token`
 创建一个为期一年、仅用于推理的 token。省略 `account`(以及 `accounts`)会扫描整个
 shunt 托管的账号存储 —— 存储中有多个账号时,它就成了一个**负载均衡的池**,
-带会话粘性和配额感知轮换。完整的池化行为 —— 显式账号条目、按账号阈值、`[server.pool]` 调优,
+带会话账户绑定和配额感知轮换。完整的池化行为 —— 显式账号条目、按账号阈值、`[server.pool]` 调优,
 以及故障转移 —— 都记录在
 [Anthropic 多账户](/zh-cn/guides/anthropic-multi-account/) 中。
 

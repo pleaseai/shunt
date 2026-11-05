@@ -1,7 +1,7 @@
 # Optional store — SQLite or PostgreSQL
 
-shunt keeps pool quota, gateway refresh tokens, and spend limits plus their audit
-trail in memory, with an optional JSON snapshot per subsystem. The optional
+shunt keeps pool quota and session bindings, gateway refresh tokens, and spend
+limits plus their audit trail in memory, with an optional JSON snapshot per subsystem. The optional
 `[store]` table replaces those three snapshots with one transactional database.
 Without `[store]` nothing changes: the three snapshots, their `state_path` keys,
 and their restore paths run exactly as before.
@@ -19,7 +19,7 @@ The step-by-step move from JSON snapshots to a store is the
 
 | Subsystem | Tables | Store-backed when |
 | :-- | :-- | :-- |
-| Pool quota (`AccountPool` per-account quota state) | `pool_quota` | `[store]` is set. `[server.pool] state_path`, if any, is only an import source. |
+| Pool quota (`AccountPool` per-account quota state) and session bindings (ADR-0008) | `pool_quota`, `pool_session_binding` | `[store]` is set. `[server.pool] state_path`, if any, is only an import source. |
 | Gateway refresh tokens (`[server.gateway]` login sessions) | `refresh_token` | `[server.gateway]` is configured |
 | Spend limits and audit trail (`[server.spend]`) | `spend_limit`, `spend_audit`, `spend_meta` | `[server.spend]` is configured |
 
@@ -27,6 +27,31 @@ The schema also has `import_record` (what was imported, once) and `instance_hold
 (the single-instance hold). Both engines use identical table and column names;
 migrations are embedded in the binary (`migrations/sqlite/`,
 `migrations/postgres/`) and applied at boot.
+
+| Migration | Schema version | Adds |
+| :-- | :-- | :-- |
+| `0001_init` | 1 | `import_record`, `instance_hold`, `pool_quota`, `refresh_token`, the spend tables |
+| `0002_pool_session_binding` | 2 | `pool_session_binding` |
+
+`pool_session_binding` has one row per bound session, with these columns:
+
+- `provider`, the configured provider name.
+- `session_hash`, the lowercase hex SHA-256 of the session key. A raw session
+  id is never stored.
+- `account_key`, the bound account identity as JSON text, as in `pool_quota`.
+- `last_used`, in Unix seconds, rounded down to the hour.
+
+The primary key is `(provider, session_hash)`, and `last_used` has an index.
+
+### Rolling back after migration 0002
+
+A binary refuses a store migrated past the schema it supports
+(`SchemaTooNew`, see [boot order](#boot-and-shutdown-order)). The first boot of
+a release with migration `0002` moves the store to version 2. The previous
+release then refuses that store and does not modify it. To roll back with
+`[store]`, restore the store from a backup taken before the upgrade, or point
+`[store]` at that backup. A state file has no such issue: it stays at version 3,
+and the previous release reads it and ignores its `bindings` field.
 
 Not in the store: provider credential files (`~/.claude/.credentials.json`-shaped
 files and the other provider stores), admin browser sessions, pending provisioning
@@ -71,11 +96,11 @@ store; a source-scan test fails if either ever references `crate::store`.
 
 | Subsystem | When a change is durable | If the write fails |
 | :-- | :-- | :-- |
-| Pool quota | Write-behind: a background task flushes changed quota every 15 s, and once more at graceful shutdown | The state stays in memory and is re-flushed on the next tick with the then-current value; the pool keeps serving. Counted in `shunt.store.write_failures{subsystem="pool"}` |
+| Pool quota and session bindings | Write-behind: a background task flushes changed quota and bindings every 15 s, and once more at graceful shutdown. Quota replaces the `pool_quota` rows. Bindings are written as a delta in the same transaction: only new or changed rows are upserted, and the rows of bindings that moved away, expired, were evicted or were removed are deleted | The state stays in memory and is re-flushed on the next tick with the then-current value; the pool keeps serving. Counted in `shunt.store.write_failures{subsystem="pool"}` |
 | Spend limits and audit | Synchronous: the admin API call returns only after the write commits | The call returns the usual Anthropic-shaped `500` (`api_error`) and the in-memory state is unchanged. Counted with `subsystem="spend"` |
 | Gateway refresh tokens | Synchronous: a token is committed before the response that hands it to the client | See [token endpoint failures](#token-endpoint-failures). Counted with `subsystem="gateway"` |
 
-A hard crash can lose up to the last 15 s of pool quota. Quota is re-derived from
+A hard crash can lose up to the last 15 s of pool quota and binding moves. Quota is re-derived from
 upstream responses, so the cost is a short cold start for the affected accounts.
 Spend and gateway tokens do not have that window.
 
@@ -91,7 +116,14 @@ Spend and gateway tokens do not have that window.
 4. Start the hold heartbeat, so a slow import or restore cannot let the hold go
    stale.
 5. [Import](#import-once) the JSON snapshots that have not been imported yet.
-6. Restore pool quota, gateway tokens, and spend from the store.
+6. Restore pool quota, session bindings, gateway tokens, and spend from the
+   store. Bindings are restored with the same filter as the state file: a
+   binding is dropped when it has expired, its account is no longer configured
+   for its provider, or its hash is malformed, and the 10,000 cap applies. A
+   row whose account key is not valid JSON or whose `last_used` is negative is
+   dropped with a warning instead of failing the boot, and the pool is marked
+   dirty so the next flush deletes the dropped rows; a column of the wrong
+   storage type is still a store error.
 7. Renew the hold once more, refusing to boot if another process took it, and
    start the pool flush task.
 
@@ -128,6 +160,11 @@ recover from a first boot that missed a snapshot, is in
   keep their rows and records.
 - A version 2 pool snapshot is normalized to version 3 on the way in, by the same
   code the store-less restore uses.
+- The pool import carries the snapshot's session bindings into
+  `pool_session_binding`, normalized as a boot reads them. Expired and malformed
+  bindings are dropped, `last_used` is rounded to the hour, and the import's
+  `row_count` counts them. A binding whose account is no longer configured is
+  dropped at the following restore.
 
 ### Going back to no store
 
@@ -217,7 +254,7 @@ at 15 s. It reaches the network for a PostgreSQL store, unlike the rest of
 
 ```text
 config ok
-store ok: sqlite sqlite:/var/lib/shunt/shunt.db, schema v1 (binary supports v1)
+store ok: sqlite sqlite:/var/lib/shunt/shunt.db, schema v2 (binary supports v2)
 ```
 
 | Situation | Output after `config ok` | Exit |

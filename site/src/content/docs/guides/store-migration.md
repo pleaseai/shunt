@@ -11,7 +11,7 @@ The import runs once per subsystem and cannot be repeated. Get the paths right b
 
 | Subsystem | Snapshot | Imported when |
 | :-- | :-- | :-- |
-| Pool quota | `[server.pool] state_path` (no default) | `[store]` is set |
+| Pool quota and session bindings | `[server.pool] state_path` (no default) | `[store]` is set |
 | Gateway refresh tokens | `[server.gateway] state_path`, default `~/.shunt/gateway-sessions.json` | `[server.gateway]` is configured |
 | Spend limits and audit trail | `[server.spend] state_path`, default `~/.shunt/gateway-spend.json` | `[server.spend]` is configured |
 
@@ -93,3 +93,5 @@ On SQLite, if the gateway has not issued, refreshed, or revoked any token and no
 ## Going back
 
 The import is a copy, not a sync, and shunt does not export store state back to JSON. Removing `[store]` starts each subsystem from its snapshot as it was at import time, which can bring back revoked sessions and undo spend-limit changes made since. While a snapshot is unchanged since its import, a store-less boot logs a warning saying so. See [Going back to no store](https://github.com/pleaseai/shunt/blob/main/docs/store.md#going-back-to-no-store) for details.
+
+Rolling back to an older release is a separate step. The first boot of a release with store migration `0002`, which adds the `pool_session_binding` table, moves the store to schema version 2. An older release refuses a store at a newer schema and does not modify it. To roll back with `[store]` set, first restore the store from a backup taken before the upgrade. A `state_path` file has no such issue: it stays at version 3, and an older release reads it.

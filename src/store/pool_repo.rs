@@ -3,8 +3,10 @@
 //! `account_key` is the account's [`AccountKey`] and `quota_json` its
 //! [`QuotaState`], both as serde JSON text, so the rows carry exactly what the
 //! v3 state file carries and `import_quotas` sees the same values on either
-//! path. Pool quota is write-behind state: [`save_pool`] replaces the whole
-//! table with the latest export, never a delta.
+//! path. Pool quota is write-behind state: [`write_pool`] replaces the whole
+//! table with the latest export, never a delta. The store persister runs it
+//! in the same transaction as the session-binding delta
+//! (`super::pool_session_repo`).
 
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -33,6 +35,7 @@ fn decode_error(column: &str, error: &serde_json::Error) -> StoreError {
 /// the export no longer holds, in one transaction that starts with
 /// [`Store::begin_durable`] (so a lost hold writes nothing). Any failure rolls
 /// the whole write back.
+#[cfg(test)]
 pub(crate) async fn save_pool(
     store: &Store,
     exported: &[(AccountKey, QuotaState)],
@@ -47,7 +50,7 @@ pub(crate) async fn save_pool(
     }
 }
 
-/// The write body of [`save_pool`], inside a transaction the caller opened
+/// The write body of `save_pool`, inside a transaction the caller opened
 /// (and will commit or roll back), so the import can add its `import_record`.
 pub(crate) async fn write_pool(
     tx: &mut Tx,

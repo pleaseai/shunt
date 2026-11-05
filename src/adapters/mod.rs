@@ -14,6 +14,7 @@ mod error_body;
 pub mod gemini;
 pub mod noop;
 pub mod responses;
+pub(crate) mod session_commit;
 
 pub(crate) use error_body::{buffer_error_body, buffer_error_body_capped, error_body_limit};
 

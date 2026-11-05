@@ -546,6 +546,21 @@ WebSocket transport, served or failed, are not counted, since a WebSocket turn
 has no per-turn response headers to classify; an HTTP fallback after a failed
 WebSocket attempt is counted.
 
+Each row also carries `bound_sessions`, the number of that provider's live
+session bindings (ADR-0008) on the row's physical identity. A binding idle for
+more than 24 hours is expired and is not counted. Bindings are keyed by provider
+and session hash, with the physical account identity as the value, so aliases
+that resolve to one identity share an `account_ref`, and each of their rows
+reports that identity's one count. The count is never split
+per alias and never summed. A consumer that totals bound sessions dedupes by
+`account_ref`, as it would for the request counters. The count is scoped to the
+provider table: a session bound under another provider on the same physical
+account counts only in that provider's table, not here. The handler reads the binding
+table once per request, under the binding table's own lock, never while it
+holds `entries`. Only counts are returned, never a session hash or id. A
+runtime `PATCH /admin/api/pool` of `sort_by_reset` leaves every binding in
+place, because that override only reorders failover and sessionless traffic.
+
 ### `needs_relogin` — a dead credential, not a pause
 
 `needs_relogin` marks an account whose credential no operator-free retry can
@@ -700,9 +715,10 @@ carried them. It clears a `RefreshGrant`-caused mark, but deliberately not a
 serve, so its success is no evidence against a bearer the provider already
 rejected. The response's `needs_relogin` is read back from the pool *after* that
 clear, so a probe that succeeded against a still-dead account says so rather
-than reporting a recovery `/admin/pool` would contradict. `AccountPool` tracks no sticky flag or last-selected
-timestamp, so the dashboard reports what is actually stored rather than inventing
-it. `GET /admin/pool` enumerates each `claude_oauth` and `chatgpt_oauth`
+than reporting a recovery `/admin/pool` would contradict. The dashboard reports only what the pool actually stores. A session's account
+lives in the binding table (ADR-0008), which the pool view reports as a
+per-identity `bound_sessions` count. The pool keeps no last-selected timestamp,
+so none is shown. `GET /admin/pool` enumerates each `claude_oauth` and `chatgpt_oauth`
 provider's accounts (its configured list, or the corresponding Claude/Codex store
 scan for an empty list — the same resolution the adapters use). Codex successful
 responses now populate the 5h/7d fields from `x-codex-*` rate-limit headers;

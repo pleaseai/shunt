@@ -3,6 +3,7 @@ use std::path::Path;
 use sqlx::migrate::Migrator;
 
 use super::*;
+use crate::store::migrate::{embedded, supported_version};
 use crate::store::test_support::{sqlite_config, TempDir};
 
 fn dir_snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
@@ -60,8 +61,9 @@ async fn pending_migrations_apply_before_open_returns() {
     let dir = TempDir::new("migrate");
     let config = sqlite_config(&dir.file("s.db"));
     let store = Store::open(&config, Mode::Serve).await.unwrap();
-    assert_eq!(store.schema_version().await.unwrap(), 1);
-    assert_eq!(store.supported_version(), 1);
+    let latest = supported_version(embedded(store.db()));
+    assert_eq!(store.schema_version().await.unwrap(), latest);
+    assert_eq!(store.supported_version(), latest);
     assert_eq!(store.pending_migrations().await.unwrap(), 0);
     store.release_hold().await.unwrap();
     store.close().await;
@@ -69,7 +71,7 @@ async fn pending_migrations_apply_before_open_returns() {
     // An existing, already-migrated file reopens without error once the
     // previous holder released the instance hold.
     let again = Store::open(&config, Mode::Serve).await.unwrap();
-    assert_eq!(again.schema_version().await.unwrap(), 1);
+    assert_eq!(again.schema_version().await.unwrap(), latest);
     again.close().await;
 }
 
@@ -159,6 +161,7 @@ async fn too_new_schema_is_refused_and_the_file_is_untouched() {
     let config = sqlite_config(&path);
 
     let store = Store::open(&config, Mode::Serve).await.unwrap();
+    let latest = supported_version(embedded(store.db()));
     let mut tx = store.db().begin().await.unwrap();
     tx.execute(
         "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
@@ -177,9 +180,9 @@ async fn too_new_schema_is_refused_and_the_file_is_untouched() {
             error,
             StoreError::SchemaTooNew {
                 found: 9999,
-                supported: 1,
+                supported,
                 ..
-            }
+            } if supported == latest
         ),
         "{error:?}"
     );
@@ -216,7 +219,10 @@ async fn inspect_reads_versions_and_never_modifies_the_database_file() {
     // unchanged; sidecar files are deliberately not compared.
     let before = std::fs::read(&path).unwrap();
     let store = Store::open(&config, Mode::Inspect).await.unwrap();
-    assert_eq!(store.check_schema().await.unwrap(), 1);
+    assert_eq!(
+        store.check_schema().await.unwrap(),
+        supported_version(embedded(store.db()))
+    );
     assert_eq!(store.pending_migrations().await.unwrap(), 0);
     let mut tx = store.db().begin().await.unwrap();
     assert!(tx.execute("DELETE FROM pool_quota", &[]).await.is_err());
@@ -234,7 +240,11 @@ async fn inspect_of_an_unmigrated_file_sees_version_zero() {
         .await
         .unwrap();
     assert_eq!(store.schema_version().await.unwrap(), 0);
-    assert_eq!(store.pending_migrations().await.unwrap(), 1);
+    // Every embedded migration is pending on an unmigrated file.
+    assert_eq!(
+        store.pending_migrations().await.unwrap(),
+        embedded(store.db()).iter().count()
+    );
     store.close().await;
 }
 

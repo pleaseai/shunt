@@ -208,15 +208,17 @@ name = "backup"     # each declared name must be provisioned above; an unprovisi
                     # account is skipped on failover (its credential fails to resolve)
 ```
 
-Selection is **session-sticky**: the Codex CLI's own `session-id` request header keys the account,
-so one conversation stays on one account for as long as it stays healthy, then fails over (429 →
-rotate, 401 → refresh + retry, 5xx → cool down + rotate). A successful pooled response on this endpoint carries an `x-shunt-account: <name>` header —
+Each conversation is **bound to one account**: the Codex CLI's own `session-id` request header is
+the session key, and the conversation stays on its account until that account cannot serve, or stays past its soft threshold for 60 seconds while a healthy alternative exists
+(429 → rotate, 401 → refresh + retry, 5xx → cool down + rotate). The binding then moves to the
+account that served, and it does not move back when the first account recovers. HTTP and WebSocket
+turns share the binding. See [session bindings](/guides/anthropic-multi-account/#session-bindings). A successful pooled response on this endpoint carries an `x-shunt-account: <name>` header —
 streaming included, since the inbound passthrough commits only after the winning upstream
 responds. (The outbound Responses pool's early-committed HTTP streaming attributes the account
 with an `event: account` frame instead; see the Codex multi-account guide.) On a shared gateway with [`[server.auth]`](/reference/configuration/)
-enabled, the sticky key is scoped per authenticated client, so different clients that happen to send
-the same `session-id` use distinct sticky keys — preventing cross-client sticky-key collisions. (The
-keys are distinct; two distinct keys can still hash to the same account.)
+enabled, the session key is scoped per authenticated client, so different clients that happen to send
+the same `session-id` get distinct bindings — preventing cross-client collisions. (The keys are
+distinct; two distinct sessions can still be bound to the same account.)
 
 With **no** `[[providers.codex.accounts]]` configured and an empty store, the endpoint falls back to
 the single default `~/.codex/auth.json` credential — no pool, no failover — so one Codex login works

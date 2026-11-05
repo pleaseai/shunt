@@ -13,11 +13,13 @@
 //! and streaming token usage, Codex continuation decisions, Codex WebSocket
 //! dedicated-overflow admission outcomes, and sanitized client analytics event
 //! names, retries, and requests shed at the inbound concurrency limit. Pool
-//! metrics expose best-account quota utilization and account rotations. Gateway
-//! metrics count inbound OTLP telemetry payloads by signal and ingest outcome.
+//! metrics expose best-account quota utilization, account rotations, session
+//! account switches, and session binding evictions. Gateway metrics count
+//! inbound OTLP telemetry payloads by signal and ingest outcome.
 //!
 //! Attributes stay low-cardinality (provider/model/status/outcome/kind/window/
-//! reason/signal, the closed `client_kind`/`managed` pair the five per-request
+//! reason/signal, the boolean `thinking_bound` on session switches, the closed
+//! `client_kind`/`managed` pair the five per-request
 //! series carry — see `docs/otlp-client-attribution.md` — plus the sanitized,
 //! cardinality-capped `event` on `shunt.codex_client_events`) — never client
 //! names, account ids, session ids, or anything else request-derived. Token
@@ -62,6 +64,8 @@ struct OtelInstruments {
     _pool_headroom: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
     pool_reprobes: Counter<u64>,
+    session_account_switches: Counter<u64>,
+    session_binding_evictions: Counter<u64>,
     codex_ws_overflow: Counter<u64>,
     _upstream_status: ObservableGauge<f64>,
 }
@@ -282,6 +286,18 @@ fn otel_instruments() -> &'static OtelInstruments {
                     "Opportunistic re-probes of a stale near-quota Codex/ChatGPT account; WebSocket-enabled providers count inbound HTTP probes only",
                 )
                 .build(),
+            session_account_switches: meter
+                .u64_counter("shunt.pool.session_account_switches")
+                .with_description(
+                    "Pooled sessions moved to another account (ADR-0008), by provider, reason and whether the request's model produces account-bound thinking blocks",
+                )
+                .build(),
+            session_binding_evictions: meter
+                .u64_counter("shunt.pool.session_binding_evictions")
+                .with_description(
+                    "Session-to-account bindings evicted from the full binding table (least recently used first)",
+                )
+                .build(),
             codex_ws_overflow: meter
                 .u64_counter("shunt.codex_ws_overflow")
                 .with_description(
@@ -479,6 +495,110 @@ pub fn pool_reprobe_count_for_tests(provider: &str) -> u64 {
 
 #[cfg(test)]
 fn test_pool_reprobe_counts() -> &'static Mutex<HashMap<String, u64>> {
+    static COUNTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record one pooled session moving to another account (ADR-0008 §2, FR-13).
+/// `reason` is [`crate::accounts::SwitchReason::as_str`]; `thinking_bound` says
+/// whether the request's model produces thinking blocks tied to the account.
+/// Account- and session-free, like [`record_pool_rotation`].
+pub fn record_session_account_switch(provider: &str, reason: &'static str, thinking_bound: bool) {
+    #[cfg(test)]
+    {
+        *test_session_account_switch_counts()
+            .lock()
+            .expect("test session switch counter lock poisoned")
+            .entry((provider.to_owned(), reason, thinking_bound))
+            .or_insert(0) += 1;
+    }
+
+    sentry::metrics::counter("shunt.pool.session_account_switches", 1)
+        .attribute("provider", provider.to_owned())
+        .attribute("reason", reason.to_owned())
+        .attribute("thinking_bound", thinking_bound)
+        .capture();
+
+    let attributes = [
+        KeyValue::new("provider", provider.to_owned()),
+        KeyValue::new("reason", reason),
+        KeyValue::new("thinking_bound", thinking_bound),
+    ];
+    otel_instruments()
+        .session_account_switches
+        .add(1, &attributes);
+}
+
+/// Test-only observation point for [`record_session_account_switch`].
+#[cfg(test)]
+pub fn session_account_switch_count_for_tests(
+    provider: &str,
+    reason: &'static str,
+    thinking_bound: bool,
+) -> u64 {
+    *test_session_account_switch_counts()
+        .lock()
+        .expect("test session switch counter lock poisoned")
+        .get(&(provider.to_owned(), reason, thinking_bound))
+        .unwrap_or(&0)
+}
+
+/// Every switch recorded for `provider`, whatever its reason or label.
+#[cfg(test)]
+pub fn session_account_switch_total_for_tests(provider: &str) -> u64 {
+    test_session_account_switch_counts()
+        .lock()
+        .expect("test session switch counter lock poisoned")
+        .iter()
+        .filter(|((recorded, _, _), _)| recorded == provider)
+        .map(|(_, count)| count)
+        .sum()
+}
+
+#[cfg(test)]
+type SessionSwitchCounts = HashMap<(String, &'static str, bool), u64>;
+
+#[cfg(test)]
+fn test_session_account_switch_counts() -> &'static Mutex<SessionSwitchCounts> {
+    static COUNTS: OnceLock<Mutex<SessionSwitchCounts>> = OnceLock::new();
+    COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record `evicted` session bindings dropped to make room in the full binding
+/// table (ADR-0008 §4). Labelled by provider only: the provider whose
+/// placement evicted, not the evicted bindings' providers.
+pub fn record_session_binding_evictions(provider: &str, evicted: u64) {
+    #[cfg(test)]
+    {
+        *test_session_binding_eviction_counts()
+            .lock()
+            .expect("test binding eviction counter lock poisoned")
+            .entry(provider.to_owned())
+            .or_insert(0) += evicted;
+    }
+
+    sentry::metrics::counter("shunt.pool.session_binding_evictions", evicted as f64)
+        .attribute("provider", provider.to_owned())
+        .capture();
+
+    let attributes = [KeyValue::new("provider", provider.to_owned())];
+    otel_instruments()
+        .session_binding_evictions
+        .add(evicted, &attributes);
+}
+
+/// Test-only observation point for [`record_session_binding_evictions`].
+#[cfg(test)]
+pub fn session_binding_eviction_count_for_tests(provider: &str) -> u64 {
+    *test_session_binding_eviction_counts()
+        .lock()
+        .expect("test binding eviction counter lock poisoned")
+        .get(provider)
+        .unwrap_or(&0)
+}
+
+#[cfg(test)]
+fn test_session_binding_eviction_counts() -> &'static Mutex<HashMap<String, u64>> {
     static COUNTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
     COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -1405,6 +1525,51 @@ mod tests {
         assert_eq!(
             codex_ws_overflow_count_for_tests(provider, CodexWsOverflowOutcome::Refused),
             1
+        );
+    }
+
+    /// Each switch counts once under its own `(provider, reason,
+    /// thinking_bound)` series, and evictions add their batch size, so the
+    /// test hooks read back exactly what was recorded and nothing else.
+    #[test]
+    fn session_switch_and_eviction_counters_count_by_label() {
+        use super::{
+            record_session_account_switch, record_session_binding_evictions,
+            session_account_switch_count_for_tests, session_account_switch_total_for_tests,
+            session_binding_eviction_count_for_tests,
+        };
+        let provider = "metrics-test-session-switches";
+        record_session_account_switch(provider, "cooldown", true);
+        record_session_account_switch(provider, "cooldown", true);
+        record_session_account_switch(provider, "failover", false);
+        assert_eq!(
+            session_account_switch_count_for_tests(provider, "cooldown", true),
+            2
+        );
+        assert_eq!(
+            session_account_switch_count_for_tests(provider, "cooldown", false),
+            0
+        );
+        assert_eq!(
+            session_account_switch_count_for_tests(provider, "failover", false),
+            1
+        );
+        assert_eq!(
+            session_account_switch_count_for_tests(provider, "proactive", false),
+            0
+        );
+        assert_eq!(session_account_switch_total_for_tests(provider), 3);
+        assert_eq!(
+            session_account_switch_total_for_tests("metrics-test-other"),
+            0
+        );
+
+        record_session_binding_evictions(provider, 3);
+        record_session_binding_evictions(provider, 2);
+        assert_eq!(session_binding_eviction_count_for_tests(provider), 5);
+        assert_eq!(
+            session_binding_eviction_count_for_tests("metrics-test-other"),
+            0
         );
     }
 }

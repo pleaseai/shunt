@@ -49,6 +49,8 @@ A capped account is still configured and signed in; only new routing is withheld
 
 `[server.pool] sort_by_reset` (default `false`) changes how the *available* tier is ordered: instead of largest projected burn-rate headroom (or, for a request with a session id, the session's own ranking), accounts sort by their earliest known quota reset (ascending — the account that recovers soonest is tried first; an account with no reset signal sorts last). The idea is to drain the account that will replenish earliest, keeping accounts with later resets in reserve as buffers.
 
+This setting does not move sessions. A session's account comes from its [binding](/guides/anthropic-multi-account/#session-bindings), which `sort_by_reset` never places or moves; it orders only the failover order behind the bound account and sessionless traffic. To place new sessions by `priority` first, then on the account whose weekly window resets soonest, set `[server.pool] assignment = "soonest_weekly_reset"` instead.
+
 `[server.pool]` — and therefore this setting — is process-wide, not per-provider, so toggling it affects every pooled provider at once.
 
 Set it in `shunt.toml`:
@@ -78,4 +80,4 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool" \
 
 Omitting the field entirely is a no-op — it leaves the current override (or its absence) untouched; only an explicit `null` clears it.
 
-`GET /admin/api/pool` reports the effective value (override or config) as a top-level `sort_by_reset` boolean. This setting has no effect at all while `[server.pool]` itself is absent — the legacy selection path it would otherwise change never runs — so both the runtime toggle and `GET /admin/api/pool`'s reported value are inert until `[server.pool]` exists.
+`GET /admin/api/pool` reports the effective value (override or config) as a top-level `sort_by_reset` boolean. This setting has no effect at all while `[server.pool]` itself is absent — the legacy selection path it would otherwise change never runs — so both the runtime toggle and `GET /admin/api/pool`'s reported value are inert until `[server.pool]` exists. Toggling it leaves every existing binding, and each account's `bound_sessions`, in place.

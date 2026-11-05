@@ -33,7 +33,7 @@ Codex CLI의 내장 웹 검색 도구(`web.run`)는 `/responses`를 붙이는 �
 - `POST /alpha/search`
 - `POST /v1/alpha/search`
 
-검색은 Responses 턴과 같은 `[server.auth]` 정책과 같은 ChatGPT/Codex 계정 풀(세션 고정 선택, 장애 조치, 갱신)을 사용하며, 요청 본문과 응답을 백엔드의 `/codex/alpha/search`로 그대로 중계합니다. 검색은 모델 턴이 아니므로 `[[server.codex_endpoint.routes]]`가 적용되지 않고 항상 `[server.codex_endpoint].provider`로 전달됩니다. 이 라우트는 `POST`만 받습니다 — 이 도구에는 WebSocket 형식이 없습니다.
+검색은 Responses 턴과 같은 `[server.auth]` 정책과 같은 ChatGPT/Codex 계정 풀(세션 바인딩, 장애 조치, 갱신)을 사용하며, 요청 본문과 응답을 백엔드의 `/codex/alpha/search`로 그대로 중계합니다. 검색은 모델 턴이 아니므로 `[[server.codex_endpoint.routes]]`가 적용되지 않고 항상 `[server.codex_endpoint].provider`로 전달됩니다. 이 라우트는 `POST`만 받습니다 — 이 도구에는 WebSocket 형식이 없습니다.
 
 ## 클라이언트 analytics sink
 

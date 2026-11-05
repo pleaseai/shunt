@@ -1,2 +1,3 @@
 - [Auth machinery map](reference_auth_machinery.md) — reusable OAuth/store/lock/JWKS helpers in shunt for new per-account OAuth providers
 - [Inbound auth/credential slot map](project_inbound_auth_map.md) — gate.rs, slots.rs strip wiring, Codex endpoint auth path, config literal count
+- [Pool selection callers map](project_pool_selection_callers.md) — select_order* callers, session key per adapter, success/failover points

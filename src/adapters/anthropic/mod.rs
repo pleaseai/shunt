@@ -9,7 +9,7 @@ use futures_util::StreamExt;
 
 use crate::{
     accounts::{self, CountAttempt, FailoverAction},
-    adapters::{Adapter, AdapterError, AdapterFuture},
+    adapters::{session_commit::SessionCommit, Adapter, AdapterError, AdapterFuture},
     auth::{
         self, claude::auth::ClaudeAuthStore, resolve_claude_account_classified, resolve_credential,
         resolve_kimi_account, Credential,
@@ -242,13 +242,15 @@ async fn forward_claude_oauth(
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok());
     let is_fable = accounts::is_fable_model(Some(route.upstream_model.as_str()));
-    let (order, cap) = state.accounts.select_order_with_cap(
+    let (order, cap, ticket) = state.accounts.select_order_with_cap_and_ticket(
         &route.provider,
         &accounts,
         session_id,
         Some(route.upstream_model.as_str()),
         state.config.server.pool.as_ref(),
     );
+    // Committed once, at the account that finally serves a success (ADR-0008).
+    let session_commit = SessionCommit::for_route(ticket, &route, provider.auth);
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
@@ -277,6 +279,7 @@ async fn forward_claude_oauth(
             Some(admission) => admission,
             None => continue,
         };
+        session_commit.attempting(account);
         // The per-account refresh_lock serializes only credential refreshes for
         // one account: resolve_claude_account can refresh-on-read and write the
         // token back, and the explicit force_refresh in the RefreshRetry branch
@@ -384,6 +387,7 @@ async fn forward_claude_oauth(
                 return relay_response(&state, &route, upstream, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
+                        session_commit.served(&state.accounts, &route.provider, account, status);
                         (
                             status,
                             hold_admission_on_success(status, response, admission),
@@ -498,6 +502,7 @@ async fn forward_claude_oauth(
                 return relay_response(&state, &route, retry, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
+                        session_commit.served(&state.accounts, &route.provider, account, status);
                         (
                             status,
                             hold_admission_on_success(status, response, admission),
@@ -706,6 +711,12 @@ async fn forward_claude_oauth(
                         return relay_response(&state, &route, retry, Some(&account.name), bounds)
                             .await
                             .map(|(status, response)| {
+                                session_commit.served(
+                                    &state.accounts,
+                                    &route.provider,
+                                    account,
+                                    status,
+                                );
                                 (
                                     status,
                                     hold_admission_on_success(status, response, admission),
@@ -875,13 +886,15 @@ async fn forward_kimi_oauth(
     let session_id = headers
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok());
-    let (order, cap) = state.accounts.select_order_with_cap(
+    let (order, cap, ticket) = state.accounts.select_order_with_cap_and_ticket(
         &route.provider,
         &accounts,
         session_id,
         Some(route.upstream_model.as_str()),
         state.config.server.pool.as_ref(),
     );
+    // Committed once, at the account that finally serves a success (ADR-0008).
+    let session_commit = SessionCommit::for_route(ticket, &route, provider.auth);
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
@@ -909,6 +922,7 @@ async fn forward_kimi_oauth(
             Some(admission) => admission,
             None => continue,
         };
+        session_commit.attempting(account);
         // Per-account refresh_lock, held only around the credential resolve
         // (which may refresh-on-read and write the token back) — never across
         // the upstream POST — so concurrent same-account requests are not
@@ -980,6 +994,7 @@ async fn forward_kimi_oauth(
                 return relay_response(&state, &route, upstream, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
+                        session_commit.served(&state.accounts, &route.provider, account, status);
                         (
                             status,
                             hold_admission_on_success(status, response, admission),
@@ -1905,6 +1920,10 @@ fn error_envelope_from_body(status: StatusCode, body: Option<&[u8]>) -> serde_js
             })
         })
 }
+
+#[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
+mod binding_tests;
 
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.

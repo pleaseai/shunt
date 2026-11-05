@@ -29,7 +29,9 @@ pub(crate) const MAX_TRACKED_SESSIONS: usize = 4096;
 /// key removes, arriving through eviction instead (ADR-0005 §5).
 pub(crate) const MAX_TRACKED_CHILD_PINS: usize = 4096;
 
-/// Sixteen-byte SHA-256 prefix of an id, so the id itself is never stored.
+/// Sixteen-byte SHA-256 prefix of an id, so the id itself is never stored:
+/// the first sixteen bytes of the digest the pool's session binding table
+/// (`accounts::session_binding`) keys the same id by.
 pub(crate) type IdDigest = [u8; 16];
 
 /// `(advertised model id, digest of the session id, digest of the agent id)`.

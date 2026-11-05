@@ -2074,3 +2074,169 @@ async fn refresh_retry_counts_two_attempts_on_one_account() {
 
     fs::remove_dir_all(&dir).ok();
 }
+
+// Session bindings (ADR-0008) on the inbound passthrough. Without inbound
+// auth the selection key is the bare `session-id`, so the shared helpers
+// apply unchanged. Switch counts are asserted in-crate
+// (`src/adapters/responses/pool_binding_tests.rs`).
+
+const BINDING_MODEL: &str = "gpt-5.6-sol";
+
+/// Bound to A, A cools down, the session moves to B and stays after A
+/// recovers.
+#[tokio::test]
+async fn inbound_moves_a_cooled_session_once_and_keeps_it() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-bind-inbound-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-bind-inbound-b");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_INBOUND_BIND_A", &token_a);
+    vars.set("SHUNT_TEST_INBOUND_BIND_B", &token_b);
+    let upstream = MockServer::start().await;
+    for (token, times) in [(&token_a, 1), (&token_b, 2)] {
+        Mock::given(method("POST"))
+            .and(path("/codex/responses"))
+            .and(BearerToken(token.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+            .up_to_n_times(times)
+            .expect(times)
+            .mount(&upstream)
+            .await;
+    }
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_INBOUND_BIND_A"),
+            account("account-b", "SHUNT_TEST_INBOUND_BIND_B"),
+        ],
+    ))
+    .await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+    let served = |response: &reqwest::Response| {
+        response.headers()["x-shunt-account"]
+            .to_str()
+            .unwrap()
+            .to_string()
+    };
+
+    let response = post_responses(&gateway, "/responses", Some(&session), None).await;
+    assert_eq!(served(&response), "account-a");
+    state.accounts.cooldown(
+        &provider,
+        &accounts[0],
+        std::time::Duration::from_secs(300),
+        "test",
+    );
+    assert_eq!(
+        common::binding_ticket(state, &provider, &accounts, &session, BINDING_MODEL)
+            .prior_ineligible(),
+        Some(shunt::accounts::SwitchReason::Cooldown)
+    );
+    let response = post_responses(&gateway, "/responses", Some(&session), None).await;
+    assert_eq!(served(&response), "account-b");
+    state.accounts.mark_healthy(&provider, &accounts[0], true);
+    let response = post_responses(&gateway, "/responses", Some(&session), None).await;
+    assert_eq!(served(&response), "account-b");
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(1)
+    );
+    upstream.verify().await;
+}
+
+/// The passthrough's success after a credential refresh binds the session.
+#[tokio::test]
+async fn inbound_refreshed_retry_that_succeeds_binds_the_session() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-bind-inbound-refresh");
+    let fresh = chatgpt_token(expires_at + 1, "acct-bind-inbound-refresh");
+    let dir = unique_temp_dir("bind-refresh");
+    let store_path = dir.join("account-a.json");
+    write_store_file(&store_path, &stale, "refresh-token-a");
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![store_account_at("account-a", &store_path)],
+    ))
+    .await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = "inbound-bind-refresh-session";
+
+    let response = post_responses(&gateway, "/responses", Some(session), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, session, BINDING_MODEL),
+        Some(0)
+    );
+    upstream.verify().await;
+    auth.verify().await;
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// A relayed client error passes through verbatim but binds nothing.
+#[tokio::test]
+async fn inbound_relayed_client_error_leaves_the_session_unbound() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-bind-inbound-400");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_INBOUND_BIND_400_A", &token_a);
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"error":"bad"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![account("account-a", "SHUNT_TEST_INBOUND_BIND_400_A")],
+    ))
+    .await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = "inbound-bind-400-session";
+
+    let response = post_responses(&gateway, "/responses", Some(session), None).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, session, BINDING_MODEL),
+        None
+    );
+    upstream.verify().await;
+}

@@ -654,7 +654,7 @@ tracking), which is fine when routing to Codex.
 
 Everything above describes a single `chatgpt_oauth` credential (`~/.codex/auth.json`). The
 `codex` provider (or any `chatgpt_oauth` provider) can instead pool several ChatGPT accounts with
-session-sticky, quota-aware selection and reactive failover:
+session-to-account bindings, quota-aware selection and reactive failover:
 
 ```bash
 # Log in with the Codex CLI, then import that login into shunt's account store.

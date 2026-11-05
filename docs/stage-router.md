@@ -329,8 +329,8 @@ that triggered it (§9, issue #552).
 
 A tier flip forfeits the per-model prompt-cache prefix; it forces
 `ContinuationOutcome::Fallback` because `codex_continuation::signature` hashes
-`model`; and across providers it abandons the pooled socket and sticky account
-slot. Scored independently every turn, a long session can cost more routed than
+`model`; and across providers it abandons the pooled socket and the session's
+account binding on the other provider. Scored independently every turn, a long session can cost more routed than
 unrouted. Anything that makes de-escalation cheaper must re-derive this.
 
 ### 4.2 The compaction latch
