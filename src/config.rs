@@ -296,6 +296,22 @@ pub struct PoolConfig {
     /// never probed (see `reprobe_interval`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reprobe_seconds: Option<u64>,
+    /// How a new session is assigned to a pool account: `spread` (default) or
+    /// `soonest_weekly_reset`. Values are case-sensitive.
+    #[serde(default)]
+    pub assignment: PoolAssignment,
+}
+
+/// Session-to-account assignment strategy for `[server.pool] assignment`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolAssignment {
+    /// Spread new sessions across accounts (the default).
+    #[default]
+    Spread,
+    /// Take the lowest `priority` account first, then the account whose
+    /// governing weekly window resets soonest (an unknown reset sorts last).
+    SoonestWeeklyReset,
 }
 
 pub(crate) fn default_hard_threshold() -> f64 {
@@ -320,6 +336,7 @@ impl Default for PoolConfig {
             state_path: None,
             ramp_initial_concurrency: None,
             reprobe_seconds: None,
+            assignment: PoolAssignment::default(),
         }
     }
 }
@@ -2448,7 +2465,7 @@ fn model_supports_tool_search(model: &str) -> bool {
     // exactly: the catalog lists no gpt-6 family, only these slugs.
     matches!(
         model,
-        "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna" | "gpt-6.1-sol"
+        "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna" | "gpt-6.1-sol" | "gpt-6.1-terra"
     )
 }
 
@@ -6207,10 +6224,10 @@ mod tests {
         CodexEndpointConfig, CodexRouteConfig, Config, ConfigError, ConfigFormat, GatewayConfig,
         GatewayOidcConfig, GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig,
         GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, InboundJwtConfig,
-        ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolConfig, PricingConfig,
-        PricingOverride, ProviderConfig, ProviderKind, ResponsesFlavor, RetryConfig, RouteConfig,
-        RoutePrefixConfig, Secret, SpendConfig, StatusConfig, StatusSource, UsageEndpointConfig,
-        CONFIG_ENV_LOCK, MAX_SHUTDOWN_TIMEOUT_SECONDS,
+        ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolAssignment, PoolConfig,
+        PricingConfig, PricingOverride, ProviderConfig, ProviderKind, ResponsesFlavor, RetryConfig,
+        RouteConfig, RoutePrefixConfig, Secret, SpendConfig, StatusConfig, StatusSource,
+        UsageEndpointConfig, CONFIG_ENV_LOCK, MAX_SHUTDOWN_TIMEOUT_SECONDS,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -7461,6 +7478,30 @@ confidence_threshold = 0.6
                 ..Default::default()
             };
             assert_eq!(pool.storm_ramp_initial(), expected, "{configured:?}");
+        }
+    }
+
+    #[test]
+    fn pool_assignment_parses_and_rejects_other_values() {
+        let parse = |t: &str| {
+            figment::Figment::from(figment::providers::Toml::string(t))
+                .extract::<PoolConfig>()
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(parse("").unwrap().assignment, PoolAssignment::Spread);
+        assert_eq!(
+            parse("assignment = \"spread\"").unwrap().assignment,
+            PoolAssignment::Spread
+        );
+        assert_eq!(
+            parse("assignment = \"soonest_weekly_reset\"")
+                .unwrap()
+                .assignment,
+            PoolAssignment::SoonestWeeklyReset
+        );
+        for bad in ["Spread", "bogus", "SOONEST_WEEKLY_RESET"] {
+            let err = parse(&format!("assignment = \"{bad}\"")).unwrap_err();
+            assert!(err.contains("assignment"), "{bad}: {err}");
         }
     }
 
@@ -12851,6 +12892,9 @@ target = "judge-alias"
         // Codex catalog slug `gpt-6.1-sol` (rust-v0.159.3, same flag).
         assert!(config.native_tool_search("codex", "gpt-6.1-sol"));
         assert!(config.native_tool_search("openai", "gpt-6.1-sol"));
+        // Codex catalog slug `gpt-6.1-terra` (openai/codex#57293, same flag).
+        assert!(config.native_tool_search("codex", "gpt-6.1-terra"));
+        assert!(config.native_tool_search("openai", "gpt-6.1-terra"));
         for model in [
             "openai/gpt-6-astra",
             "gpt-6-astra-preview",
@@ -12860,6 +12904,8 @@ target = "judge-alias"
             "gpt-6-luna[1m]",
             "gpt-6.1-sol-preview",
             "gpt-6.1-sol[1m]",
+            "gpt-6.1-terra-preview",
+            "gpt-6.1-terra[1m]",
         ] {
             assert!(!config.native_tool_search("codex", model), "{model}");
         }

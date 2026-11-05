@@ -10,6 +10,8 @@ server:
   default_provider: anthropic
   # shutdown_timeout_seconds: 30 # valid range 1..=3600; restart-only
   # max_concurrent_requests: 1024 # 0 disables
+  # pool:
+  #   assignment: spread # (default) or soonest_weekly_reset; case-sensitive
 
 providers:
   anthropic:

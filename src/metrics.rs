@@ -13,11 +13,13 @@
 //! and streaming token usage, Codex continuation decisions, Codex WebSocket
 //! dedicated-overflow admission outcomes, and sanitized client analytics event
 //! names, retries, and requests shed at the inbound concurrency limit. Pool
-//! metrics expose best-account quota utilization and account rotations. Gateway
-//! metrics count inbound OTLP telemetry payloads by signal and ingest outcome.
+//! metrics expose best-account quota utilization, account rotations, session
+//! account switches, and session binding evictions. Gateway metrics count
+//! inbound OTLP telemetry payloads by signal and ingest outcome.
 //!
 //! Attributes stay low-cardinality (provider/model/status/outcome/kind/window/
-//! reason/signal, the closed `client_kind`/`managed` pair the five per-request
+//! reason/signal, the boolean `thinking_bound` on session switches, the closed
+//! `client_kind`/`managed` pair the five per-request
 //! series carry — see `docs/otlp-client-attribution.md` — plus the sanitized,
 //! cardinality-capped `event` on `shunt.codex_client_events`) — never client
 //! names, account ids, session ids, or anything else request-derived. Token
@@ -26,7 +28,8 @@
 
 use std::{
     collections::HashMap,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, Weak},
+    time::Duration,
 };
 
 use opentelemetry::{
@@ -35,7 +38,7 @@ use opentelemetry::{
 };
 use sentry::protocol::Unit;
 
-use crate::client_attribution::ClientAttribution;
+use crate::{accounts::AccountPool, client_attribution::ClientAttribution};
 
 /// OTel instruments on the global meter. Created lazily on first record so the
 /// meter provider (installed at startup, before any request) is already in
@@ -58,13 +61,71 @@ struct OtelInstruments {
     requests_shed: Counter<u64>,
     store_write_failures: Counter<u64>,
     _pool_utilization: ObservableGauge<f64>,
+    _pool_headroom: ObservableGauge<f64>,
     pool_rotations: Counter<u64>,
     pool_reprobes: Counter<u64>,
+    session_account_switches: Counter<u64>,
+    session_binding_evictions: Counter<u64>,
     codex_ws_overflow: Counter<u64>,
     _upstream_status: ObservableGauge<f64>,
 }
 
 type PoolUtilizationValues = HashMap<(String, &'static str), Option<f64>>;
+
+fn pool_headroom_source() -> &'static Mutex<Weak<AccountPool>> {
+    static SOURCE: OnceLock<Mutex<Weak<AccountPool>>> = OnceLock::new();
+    SOURCE.get_or_init(|| Mutex::new(Weak::new()))
+}
+
+/// Point the `shunt.pool.quota_headroom_seconds` gauge at the live pool. The
+/// gauge is computed from the pool at each collection, so nothing is recorded
+/// per quota observation. The last registration wins and the pool is held
+/// weakly.
+pub(crate) fn register_pool_headroom_source(pool: &Arc<AccountPool>) {
+    *pool_headroom_source()
+        .lock()
+        .expect("pool headroom source lock poisoned") = Arc::downgrade(pool);
+    let _ = otel_instruments();
+}
+
+fn pool_headroom_series(now: u64) -> Vec<(String, &'static str, f64)> {
+    let pool = pool_headroom_source()
+        .lock()
+        .expect("pool headroom source lock poisoned")
+        .upgrade();
+    pool.map(|pool| pool.pool_headroom_seconds(now))
+        .unwrap_or_default()
+}
+
+/// Mirror the current pool headroom to Sentry gauges, one per series.
+pub(crate) fn emit_pool_headroom_to_sentry(now: u64) {
+    for (provider, window, seconds) in pool_headroom_series(now) {
+        sentry::metrics::gauge("shunt.pool.quota_headroom_seconds", seconds)
+            .attribute("provider", provider)
+            .attribute("window", window.to_owned())
+            .capture();
+    }
+}
+
+/// Sample the headroom into Sentry every 60 s, only when `[sentry] metrics` is
+/// on. The Sentry client is built once at boot, so this is decided once too.
+pub fn spawn_pool_headroom_sentry_sampler(config: &crate::config::Config) {
+    if !config
+        .sentry
+        .as_ref()
+        .is_some_and(|sentry| sentry.enabled() && sentry.metrics)
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            emit_pool_headroom_to_sentry(crate::accounts::unix_now_secs());
+        }
+    });
+}
 
 fn pool_utilization_values() -> &'static Mutex<PoolUtilizationValues> {
     static VALUES: OnceLock<Mutex<PoolUtilizationValues>> = OnceLock::new();
@@ -191,6 +252,30 @@ fn otel_instruments() -> &'static OtelInstruments {
                     }
                 })
                 .build(),
+            _pool_headroom: meter
+                .f64_observable_gauge("shunt.pool.quota_headroom_seconds")
+                .with_unit("s")
+                .with_description(
+                    "Projected seconds of quota margin before the window resets: the maximum \
+                     across enabled, unpaused pool accounts, projected to the hard threshold. \
+                     Burn speed is the window average (utilization / elapsed), not the recent \
+                     pace. Optimistic, because when other accounts run out traffic shifts to the \
+                     survivor and its burn rises. Negative means projected to run dry before \
+                     the reset, or minus the seconds until the reset when already exhausted",
+                )
+                .with_callback(|observer| {
+                    let now = crate::accounts::unix_now_secs();
+                    for (provider, window, value) in pool_headroom_series(now) {
+                        observer.observe(
+                            value,
+                            &[
+                                KeyValue::new("provider", provider),
+                                KeyValue::new("window", window),
+                            ],
+                        );
+                    }
+                })
+                .build(),
             pool_rotations: meter
                 .u64_counter("shunt.pool.rotations")
                 .with_description("Account-pool rotations by low-cardinality reason")
@@ -199,6 +284,18 @@ fn otel_instruments() -> &'static OtelInstruments {
                 .u64_counter("shunt.pool.reprobes")
                 .with_description(
                     "Opportunistic re-probes of a stale near-quota Codex/ChatGPT account; WebSocket-enabled providers count inbound HTTP probes only",
+                )
+                .build(),
+            session_account_switches: meter
+                .u64_counter("shunt.pool.session_account_switches")
+                .with_description(
+                    "Pooled sessions moved to another account (ADR-0008), by provider, reason and whether the request's model produces account-bound thinking blocks",
+                )
+                .build(),
+            session_binding_evictions: meter
+                .u64_counter("shunt.pool.session_binding_evictions")
+                .with_description(
+                    "Session-to-account bindings evicted from the full binding table (least recently used first)",
                 )
                 .build(),
             codex_ws_overflow: meter
@@ -398,6 +495,110 @@ pub fn pool_reprobe_count_for_tests(provider: &str) -> u64 {
 
 #[cfg(test)]
 fn test_pool_reprobe_counts() -> &'static Mutex<HashMap<String, u64>> {
+    static COUNTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record one pooled session moving to another account (ADR-0008 §2, FR-13).
+/// `reason` is [`crate::accounts::SwitchReason::as_str`]; `thinking_bound` says
+/// whether the request's model produces thinking blocks tied to the account.
+/// Account- and session-free, like [`record_pool_rotation`].
+pub fn record_session_account_switch(provider: &str, reason: &'static str, thinking_bound: bool) {
+    #[cfg(test)]
+    {
+        *test_session_account_switch_counts()
+            .lock()
+            .expect("test session switch counter lock poisoned")
+            .entry((provider.to_owned(), reason, thinking_bound))
+            .or_insert(0) += 1;
+    }
+
+    sentry::metrics::counter("shunt.pool.session_account_switches", 1)
+        .attribute("provider", provider.to_owned())
+        .attribute("reason", reason.to_owned())
+        .attribute("thinking_bound", thinking_bound)
+        .capture();
+
+    let attributes = [
+        KeyValue::new("provider", provider.to_owned()),
+        KeyValue::new("reason", reason),
+        KeyValue::new("thinking_bound", thinking_bound),
+    ];
+    otel_instruments()
+        .session_account_switches
+        .add(1, &attributes);
+}
+
+/// Test-only observation point for [`record_session_account_switch`].
+#[cfg(test)]
+pub fn session_account_switch_count_for_tests(
+    provider: &str,
+    reason: &'static str,
+    thinking_bound: bool,
+) -> u64 {
+    *test_session_account_switch_counts()
+        .lock()
+        .expect("test session switch counter lock poisoned")
+        .get(&(provider.to_owned(), reason, thinking_bound))
+        .unwrap_or(&0)
+}
+
+/// Every switch recorded for `provider`, whatever its reason or label.
+#[cfg(test)]
+pub fn session_account_switch_total_for_tests(provider: &str) -> u64 {
+    test_session_account_switch_counts()
+        .lock()
+        .expect("test session switch counter lock poisoned")
+        .iter()
+        .filter(|((recorded, _, _), _)| recorded == provider)
+        .map(|(_, count)| count)
+        .sum()
+}
+
+#[cfg(test)]
+type SessionSwitchCounts = HashMap<(String, &'static str, bool), u64>;
+
+#[cfg(test)]
+fn test_session_account_switch_counts() -> &'static Mutex<SessionSwitchCounts> {
+    static COUNTS: OnceLock<Mutex<SessionSwitchCounts>> = OnceLock::new();
+    COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record `evicted` session bindings dropped to make room in the full binding
+/// table (ADR-0008 §4). Labelled by provider only: the provider whose
+/// placement evicted, not the evicted bindings' providers.
+pub fn record_session_binding_evictions(provider: &str, evicted: u64) {
+    #[cfg(test)]
+    {
+        *test_session_binding_eviction_counts()
+            .lock()
+            .expect("test binding eviction counter lock poisoned")
+            .entry(provider.to_owned())
+            .or_insert(0) += evicted;
+    }
+
+    sentry::metrics::counter("shunt.pool.session_binding_evictions", evicted as f64)
+        .attribute("provider", provider.to_owned())
+        .capture();
+
+    let attributes = [KeyValue::new("provider", provider.to_owned())];
+    otel_instruments()
+        .session_binding_evictions
+        .add(evicted, &attributes);
+}
+
+/// Test-only observation point for [`record_session_binding_evictions`].
+#[cfg(test)]
+pub fn session_binding_eviction_count_for_tests(provider: &str) -> u64 {
+    *test_session_binding_eviction_counts()
+        .lock()
+        .expect("test binding eviction counter lock poisoned")
+        .get(provider)
+        .unwrap_or(&0)
+}
+
+#[cfg(test)]
+fn test_session_binding_eviction_counts() -> &'static Mutex<HashMap<String, u64>> {
     static COUNTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
     COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -1324,6 +1525,51 @@ mod tests {
         assert_eq!(
             codex_ws_overflow_count_for_tests(provider, CodexWsOverflowOutcome::Refused),
             1
+        );
+    }
+
+    /// Each switch counts once under its own `(provider, reason,
+    /// thinking_bound)` series, and evictions add their batch size, so the
+    /// test hooks read back exactly what was recorded and nothing else.
+    #[test]
+    fn session_switch_and_eviction_counters_count_by_label() {
+        use super::{
+            record_session_account_switch, record_session_binding_evictions,
+            session_account_switch_count_for_tests, session_account_switch_total_for_tests,
+            session_binding_eviction_count_for_tests,
+        };
+        let provider = "metrics-test-session-switches";
+        record_session_account_switch(provider, "cooldown", true);
+        record_session_account_switch(provider, "cooldown", true);
+        record_session_account_switch(provider, "failover", false);
+        assert_eq!(
+            session_account_switch_count_for_tests(provider, "cooldown", true),
+            2
+        );
+        assert_eq!(
+            session_account_switch_count_for_tests(provider, "cooldown", false),
+            0
+        );
+        assert_eq!(
+            session_account_switch_count_for_tests(provider, "failover", false),
+            1
+        );
+        assert_eq!(
+            session_account_switch_count_for_tests(provider, "proactive", false),
+            0
+        );
+        assert_eq!(session_account_switch_total_for_tests(provider), 3);
+        assert_eq!(
+            session_account_switch_total_for_tests("metrics-test-other"),
+            0
+        );
+
+        record_session_binding_evictions(provider, 3);
+        record_session_binding_evictions(provider, 2);
+        assert_eq!(session_binding_eviction_count_for_tests(provider), 5);
+        assert_eq!(
+            session_binding_eviction_count_for_tests("metrics-test-other"),
+            0
         );
     }
 }

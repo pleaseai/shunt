@@ -275,7 +275,7 @@ to**, and **rejects the `gpt-*-codex` slugs** (e.g. `gpt-5.2-codex`) with a `400
 
 - The authoritative catalog of Codex slugs (and the reasoning levels each accepts) is openai/codex's
   [`codex-rs/models-manager/models.json`](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json).
-- Current listed slugs: **`gpt-6-astra`**, **`gpt-6-sol`**, **`gpt-6-luna`**, **`gpt-6.1-sol`** (latest),
+- Current listed slugs: **`gpt-6-astra`**, **`gpt-6-sol`**, **`gpt-6-luna`**, **`gpt-6.1-sol`**, **`gpt-6.1-terra`** (latest),
   **`gpt-5.6-sol`**, **`gpt-5.6-terra`**, **`gpt-5.6-luna`** (frontier), and **`gpt-5.5`** /
   **`gpt-5.4`**. Older accounts may only be entitled to the
   earlier ones; a **free** account has resolved to `gpt-5.5` in testing.
@@ -654,7 +654,7 @@ tracking), which is fine when routing to Codex.
 
 Everything above describes a single `chatgpt_oauth` credential (`~/.codex/auth.json`). The
 `codex` provider (or any `chatgpt_oauth` provider) can instead pool several ChatGPT accounts with
-session-sticky, quota-aware selection and reactive failover:
+session-to-account bindings, quota-aware selection and reactive failover:
 
 ```bash
 # Log in with the Codex CLI, then import that login into shunt's account store.

@@ -1182,6 +1182,11 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let deadline = tokio::time::Instant::now()
         .checked_add(budgets.total)
         .unwrap_or_else(tokio::time::Instant::now);
+    // Live session bindings (FR-14), read under one bindings lock for the
+    // whole request and released before any await below. Keyed by provider,
+    // then by account key: aliases that resolve to one physical identity
+    // share a key, so each of their rows reports the identity's one count.
+    let bound_sessions = state.accounts.bound_session_counts();
     let mut providers = Vec::new();
     for (name, provider) in &state.config.providers {
         if !matches!(
@@ -1302,6 +1307,15 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                     if let Some(plan) = plan {
                         map.insert("plan".to_string(), Value::String(plan));
                     }
+                    // This provider's live sessions bound to the row's identity:
+                    // rows sharing an `account_ref` share one count, never a
+                    // per-alias split or a sum.
+                    let bound = bound_sessions
+                        .get(name.as_str())
+                        .and_then(|counts| counts.get(&crate::accounts::account_key(name, account)))
+                        .copied()
+                        .unwrap_or(0);
+                    map.insert("bound_sessions".to_string(), Value::from(bound));
                 }
                 value
             })
@@ -2242,6 +2256,9 @@ pub(super) fn too_many_requests(message: &str) -> Response {
 pub(super) fn not_found() -> Response {
     ShuntError::new(StatusCode::NOT_FOUND, "not_found_error", "not found").into_response()
 }
+
+#[cfg(test)]
+mod pool_binding_tests;
 
 #[cfg(test)]
 mod tests {

@@ -18,6 +18,7 @@ use wiremock::{
 };
 
 use crate::common;
+use crate::common::session_id_for_account;
 use common::{error_envelope, CREDIT_BALANCE_MESSAGE, SPEND_LIMIT_MESSAGE};
 
 struct BearerToken(String);
@@ -59,6 +60,8 @@ impl Match for AccountUuidBody {
 
 struct TestGateway {
     base_url: String,
+    /// The router's state, so a test can resolve the pool the way it does.
+    state: shunt::server::AppState,
     task: JoinHandle<()>,
 }
 
@@ -156,13 +159,14 @@ async fn start_gateway_with(mut config: Config) -> TestGateway {
         .await
         .unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let (app, _shared, _state) = server::build_router(config).unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
 
     TestGateway {
         base_url: format!("http://{addr}"),
+        state,
         task,
     }
 }
@@ -184,6 +188,7 @@ async fn start_gateway_with_state(mut config: Config) -> (TestGateway, shunt::se
     (
         TestGateway {
             base_url: format!("http://{addr}"),
+            state: state.clone(),
             task,
         },
         state,
@@ -234,22 +239,6 @@ fn can_bind_loopback() -> bool {
         }
         Err(error) => panic!("unexpected loopback bind failure: {error}"),
     }
-}
-
-/// A session id that maps to `index` under the real bucket assignment
-/// (`accounts::stable_session_index`: first 8 bytes of SHA-256, big-endian,
-/// mod count).
-fn session_id_for_account(index: usize, account_count: usize) -> String {
-    use sha2::{Digest, Sha256};
-
-    (0..1000)
-        .map(|candidate| format!("session-{candidate}"))
-        .find(|session_id| {
-            let digest = Sha256::digest(session_id.as_bytes());
-            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
-            prefix % account_count as u64 == index as u64
-        })
-        .expect("a session id should map to the requested account")
 }
 
 async fn post_messages(gateway: &TestGateway, session_id: Option<&str>) -> reqwest::Response {
@@ -596,7 +585,7 @@ async fn quota_429_rotates_and_cools_down_the_rejected_account() {
         "account-b"
     );
 
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-a", "uuid-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -655,7 +644,7 @@ async fn unauthorized_static_account_cools_down_and_rotates() {
 
     // A session that hashes to account-a still lands on account-b because
     // account-a is now cooled down (so the upstream never sees a second a call).
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-a", "uuid-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -887,7 +876,7 @@ async fn repeated_transport_failure_cools_down_and_rotates() {
 
     // A session that hashes to account-a lands on account-b because account-a
     // is cooled down; the upstream sees no third account-a send.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-a", "uuid-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1364,7 +1353,7 @@ async fn server_error_rotates_and_cools_down_the_failing_account() {
 
     // A session that hashes to account-a still lands on account-b because
     // account-a is cooled down (the upstream never sees a second a call).
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-a", "uuid-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1755,7 +1744,7 @@ async fn storm_control_spills_concurrent_request_to_next_account() {
     let gateway = start_gateway_with(config).await;
 
     // Both requests carry a session id that maps to account-a.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-storm-a", "uuid-storm-b"]);
 
     let first = {
         let gateway_url = gateway.base_url.clone();
@@ -2901,7 +2890,7 @@ async fn an_account_refusal_rotates_and_cools_the_refusing_account() {
     assert_cooled_for_the_default_refusal_window(&state, &account_a);
 
     // A session that maps to account A still lands on B while A cools.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["uuid-a", "uuid-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_served_by(&response, "account-b");
     upstream.verify().await;
@@ -3134,6 +3123,475 @@ async fn a_validation_400_is_relayed_without_rotating_or_cooling() {
         .snapshot("anthropic", &[account_a], None, None)[0];
     assert_eq!(snapshot.cooldown_secs_remaining, None);
     upstream.verify().await;
+}
+
+// Session bindings (ADR-0008): a session is bound to the account that first
+// served it and moves only when that account cannot serve and another one
+// does. The switch metric's counts are asserted in the crate's own adapter
+// tests (`src/adapters/anthropic/binding_tests.rs`), whose `#[cfg(test)]`
+// hooks an integration binary cannot reach; these tests read the binding back
+// through the selection ticket instead.
+
+/// The model every binding test sends unless it names a Fable model.
+const BINDING_MODEL: &str = "pooled-model";
+const FABLE_MODEL: &str = "claude-fable-5";
+
+/// Like [`start_gateway_with`], but also hands back the [`SharedState`] a hot
+/// reload swaps.
+///
+/// [`SharedState`]: shunt::reload::SharedState
+async fn start_gateway_with_shared(
+    mut config: Config,
+) -> (TestGateway, shunt::reload::SharedState) {
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (
+        TestGateway {
+            base_url: format!("http://{addr}"),
+            state,
+            task,
+        },
+        shared,
+    )
+}
+
+/// A two-account pool whose tokens live in `{env_stem}_A` / `{env_stem}_B`,
+/// with a Fable route next to the pooled one.
+fn binding_config(upstream: &MockServer, env_stem: &str) -> Config {
+    let mut config = test_config(
+        &upstream.uri(),
+        account("account-a", &format!("{env_stem}_A"), "uuid-a"),
+        account("account-b", &format!("{env_stem}_B"), "uuid-b"),
+    );
+    config.routes.push(RouteConfig {
+        model: FABLE_MODEL.to_string(),
+        provider: "anthropic".to_string(),
+        upstream_model: None,
+        effort: None,
+        service_tier: None,
+    });
+    config
+}
+
+/// Set both accounts' tokens and return them as `[a, b]`.
+fn binding_tokens(vars: &mut common::EnvVars, env_stem: &str) -> [String; 2] {
+    let tokens = [
+        ["fake-oauth-", env_stem, "-a"].concat(),
+        ["fake-oauth-", env_stem, "-b"].concat(),
+    ];
+    vars.set(&format!("{env_stem}_A"), &tokens[0]);
+    vars.set(&format!("{env_stem}_B"), &tokens[1]);
+    tokens
+}
+
+/// Answer `times` requests bearing `token` with a 200 (`0`: expect none).
+async fn answer_ok(upstream: &MockServer, token: &str, times: u64) {
+    let mock = Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token.to_string()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#));
+    let mock = if times == 0 {
+        mock
+    } else {
+        mock.up_to_n_times(times)
+    };
+    mock.expect(times).mount(upstream).await;
+}
+
+async fn post_model(gateway: &TestGateway, session_id: &str, model: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .header("x-claude-code-session-id", session_id)
+        .json(&serde_json::json!({
+            "model": model,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// AC-002: bound to A, A cools down, the session moves to B and stays on B
+/// after A recovers.
+#[tokio::test]
+async fn a_session_moved_off_a_cooled_account_stays_after_it_recovers() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_BIND_COOLDOWN";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer_ok(&upstream, &token_a, 1).await;
+    answer_ok(&upstream, &token_b, 2).await;
+    let gateway = start_gateway_with(binding_config(&upstream, stem)).await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    assert_served_by(
+        &post_model(&gateway, &session, BINDING_MODEL).await,
+        "account-a",
+    );
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(0)
+    );
+
+    state.accounts.cooldown(
+        &provider,
+        &accounts[0],
+        std::time::Duration::from_secs(300),
+        "test",
+    );
+    assert_eq!(
+        common::binding_ticket(state, &provider, &accounts, &session, BINDING_MODEL)
+            .prior_ineligible(),
+        Some(shunt::accounts::SwitchReason::Cooldown)
+    );
+    assert_served_by(
+        &post_model(&gateway, &session, BINDING_MODEL).await,
+        "account-b",
+    );
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(1)
+    );
+
+    state.accounts.mark_healthy(&provider, &accounts[0], true);
+    assert_served_by(
+        &post_model(&gateway, &session, BINDING_MODEL).await,
+        "account-b",
+    );
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(1),
+        "a recovered account does not pull the session back"
+    );
+    upstream.verify().await;
+}
+
+/// AC-003: a 429 without a `rejected` quota status retries the bound account,
+/// and the binding is unchanged.
+#[tokio::test]
+async fn a_plain_429_retries_the_bound_account_and_keeps_the_binding() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_BIND_THROTTLE";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer_ok(&upstream, &token_a, 1).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    answer_ok(&upstream, &token_a, 1).await;
+    answer_ok(&upstream, &token_b, 0).await;
+    let gateway = start_gateway_with(binding_config(&upstream, stem)).await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    assert_served_by(
+        &post_model(&gateway, &session, BINDING_MODEL).await,
+        "account-a",
+    );
+    let response = post_model(&gateway, &session, BINDING_MODEL).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_served_by(&response, "account-a");
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(0)
+    );
+    upstream.verify().await;
+}
+
+/// AC-004: the bound account is ineligible and no other account can serve. The
+/// ticket names the bound account's ineligibility (cooldown), but nothing
+/// serves, so the binding is unchanged and no switch is recorded.
+#[tokio::test]
+async fn a_bound_account_with_no_alternative_keeps_its_binding() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_BIND_NO_ALTERNATIVE";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer_ok(&upstream, &token_a, 1).await;
+    let rejected = || {
+        ResponseTemplate::new(429)
+            .insert_header("retry-after", "300")
+            .insert_header("anthropic-ratelimit-unified-5h-status", "rejected")
+            .set_body_string(r#"{"error":"quota exhausted"}"#)
+    };
+    for token in [&token_a, &token_b] {
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(BearerToken(token.clone()))
+            .respond_with(rejected())
+            .mount(&upstream)
+            .await;
+    }
+    let gateway = start_gateway_with(binding_config(&upstream, stem)).await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    assert_served_by(
+        &post_model(&gateway, &session, BINDING_MODEL).await,
+        "account-a",
+    );
+    // Both accounts cool down: the bound one is ineligible and nothing can
+    // take the session, so selection keeps the binding where it is.
+    for account in &accounts {
+        state.accounts.cooldown(
+            &provider,
+            account,
+            std::time::Duration::from_secs(300),
+            "test",
+        );
+    }
+    assert_eq!(
+        common::binding_ticket(state, &provider, &accounts, &session, BINDING_MODEL)
+            .prior_ineligible(),
+        Some(shunt::accounts::SwitchReason::Cooldown),
+        "the bound account is ineligible; AC-004 still holds because nothing commits unless another account serves"
+    );
+    // Whatever the pool attempts answers a quota rejection, so nothing serves.
+    let response = post_model(&gateway, &session, BINDING_MODEL).await;
+    assert_ne!(response.status(), StatusCode::OK);
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(0)
+    );
+}
+
+/// AC-005: a Fable request whose bound account is limited only by the
+/// Fable-scoped weekly window is served elsewhere and rebinds; a non-Fable
+/// request before it stays on the bound account.
+#[tokio::test]
+async fn a_fable_scoped_limit_rebinds_the_fable_request() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_BIND_FABLE";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer_ok(&upstream, &token_a, 2).await;
+    answer_ok(&upstream, &token_b, 1).await;
+    let gateway = start_gateway_with(binding_config(&upstream, stem)).await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    assert_served_by(
+        &post_model(&gateway, &session, FABLE_MODEL).await,
+        "account-a",
+    );
+    state.accounts.cooldown_scoped(
+        &provider,
+        &accounts[0],
+        std::time::Duration::from_secs(300),
+        "test",
+        shunt::accounts::CooldownScope::Fable,
+    );
+    assert_served_by(
+        &post_model(&gateway, &session, BINDING_MODEL).await,
+        "account-a",
+    );
+    assert_eq!(
+        common::binding_ticket(state, &provider, &accounts, &session, FABLE_MODEL)
+            .prior_ineligible(),
+        Some(shunt::accounts::SwitchReason::Cooldown)
+    );
+    assert_served_by(
+        &post_model(&gateway, &session, FABLE_MODEL).await,
+        "account-b",
+    );
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, FABLE_MODEL),
+        Some(1)
+    );
+    upstream.verify().await;
+}
+
+/// AC-008, paused as the representative case: the session moves on the same
+/// request. The other immediate causes (hard-over, rejected, disabled, capped,
+/// cooling) are covered at the selection level by
+/// `accounts::binding_selection_tests::immediate_ineligibility_moves_on_the_same_request`.
+#[tokio::test]
+async fn pausing_the_bound_account_moves_the_session_on_the_same_request() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_BIND_PAUSED";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer_ok(&upstream, &token_a, 1).await;
+    answer_ok(&upstream, &token_b, 1).await;
+    let gateway = start_gateway_with(binding_config(&upstream, stem)).await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    assert_served_by(
+        &post_model(&gateway, &session, BINDING_MODEL).await,
+        "account-a",
+    );
+    state.accounts.set_paused(&provider, &accounts[0], true);
+    assert_eq!(
+        common::binding_ticket(state, &provider, &accounts, &session, BINDING_MODEL)
+            .prior_ineligible(),
+        Some(shunt::accounts::SwitchReason::Proactive)
+    );
+    assert_served_by(
+        &post_model(&gateway, &session, BINDING_MODEL).await,
+        "account-b",
+    );
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(1)
+    );
+    upstream.verify().await;
+}
+
+/// AC-018: a hot reload removes the bound account, and the next request
+/// rebinds with switch reason `failover`.
+#[tokio::test]
+async fn a_reload_removing_the_bound_account_rebinds_it_as_failover() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_BIND_RELOAD";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer_ok(&upstream, &token_a, 1).await;
+    answer_ok(&upstream, &token_b, 1).await;
+    let config = binding_config(&upstream, stem);
+    let (gateway, shared) = start_gateway_with_shared(config.clone()).await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+    assert_served_by(
+        &post_model(&gateway, &session, BINDING_MODEL).await,
+        "account-a",
+    );
+
+    let mut reloaded = config;
+    reloaded
+        .providers
+        .get_mut("anthropic")
+        .unwrap()
+        .accounts
+        .remove(0);
+    shared.store(std::sync::Arc::new(
+        shunt::reload::RuntimeState::from_config(reloaded).unwrap(),
+    ));
+    let remaining = &accounts[1..];
+    let ticket = common::binding_ticket(state, &provider, remaining, &session, BINDING_MODEL);
+    assert!(ticket.is_bound(), "still bound to the removed account");
+    assert_eq!(
+        ticket.prior_ineligible(),
+        Some(shunt::accounts::SwitchReason::Failover)
+    );
+    assert_served_by(
+        &post_model(&gateway, &session, BINDING_MODEL).await,
+        "account-b",
+    );
+    assert_eq!(
+        common::bound_account(state, &provider, remaining, &session, BINDING_MODEL),
+        Some(0)
+    );
+    upstream.verify().await;
+}
+
+/// The post-refresh Relay is a serve point: a 401 that refreshes and then
+/// succeeds binds the session to that account.
+#[tokio::test]
+async fn a_refreshed_retry_that_succeeds_binds_the_session() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stale = ["fake-oauth-", "bind-refresh-stale"].concat();
+    let fresh = ["fake-oauth-", "bind-refresh-fresh"].concat();
+    let accounts_dir = unique_temp_dir("bind-refresh");
+    write_store_account(
+        &accounts_dir,
+        "account-a",
+        &stale,
+        "refresh-token-a",
+        "uuid-a",
+        future_expiry_ms(),
+    );
+    vars.set("SHUNT_CLAUDE_ACCOUNTS_DIR", &accounts_dir);
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!(r#"{{"access_token":"{fresh}","expires_in":3600}}"#)),
+        )
+        .expect(1)
+        .mount(&auth)
+        .await;
+    vars.set(
+        "SHUNT_CLAUDE_TOKEN_URL",
+        format!("{}/oauth/token", auth.uri()),
+    );
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    answer_ok(&upstream, &fresh, 1).await;
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        store_account("account-a"),
+        account("account-b", "SHUNT_TEST_BIND_REFRESH_B", "uuid-b"),
+    ))
+    .await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        None
+    );
+    assert_served_by(
+        &post_model(&gateway, &session, BINDING_MODEL).await,
+        "account-a",
+    );
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(0)
+    );
+    upstream.verify().await;
+    auth.verify().await;
+    fs::remove_dir_all(&accounts_dir).ok();
 }
 
 /// A pool response names the account that served it, once. A label the

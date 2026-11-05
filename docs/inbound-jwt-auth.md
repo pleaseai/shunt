@@ -173,12 +173,12 @@ and names `repository` as the identity. Security notes:
 - **Prefer immutable ids** (`repository_owner_id`, `repository_id`) in `require`: org and
   repository names can be renamed and re-registered by someone else.
 - **Pick a bounded `identity_claim`** such as `repository`, not `sub`. The branch segment of
-  `sub` is caller-controlled, and the identity namespaces the Codex endpoint's sticky key and
-  appears in logs.
+  `sub` is caller-controlled, and the identity namespaces the Codex endpoint's session-binding key
+  and appears in logs.
 - **Identities share one namespace.** The identity is not prefixed with its issuer, so it is
   compared as a bare string with static `name:token` client names and with every other
   entry's identities. Equal strings become one caller for usage attribution, spend
-  accounting, and the Codex endpoint's sticky key. This is not an authorization bypass, but
+  accounting, and the Codex endpoint's session-binding key. This is not an authorization bypass, but
   choose an identity claim whose values cannot equal a static client name or another
   issuer's identities. `repository` (`org/repo`) cannot equal an email address, but a static
   client name may contain `/`, so do not give static clients `org/repo`-style names; a bare
@@ -216,10 +216,10 @@ become an identity or satisfy a rule. An entry with none of these does not read 
 **Identity.** The value of `identity_claim` (default `email`) becomes the caller identity, in
 place of the `name` from a `name:token` pair. It must be present as a non-empty JSON string.
 A value over 256 bytes is rejected (`401`), never truncated: the identity namespaces the
-account pool's sticky key on the inbound Codex endpoint, so an unbounded caller-controlled
+account pool's session-binding key on the inbound Codex endpoint, so an unbounded caller-controlled
 string there would be the failure mode issue #296 records for the Codex `model` label, and
 truncation would fold two values that share a prefix into one identity — and so into one
-sticky key.
+session-binding key.
 
 ### Key sets
 
@@ -286,12 +286,21 @@ stripped by name before forwarding.
 **The inbound Codex endpoint additionally reads two optional slots** (§1, "Codex gateway
 OAuth"), because Codex reserves `Authorization` for `gateway_oauth`. Its routes are the
 Responses routes (HTTP and WebSocket on `/v1/responses`, `/backend-api/codex/responses`,
-`/responses`), `/alpha/search`, and the analytics sink. The order is: static token, then
+`/responses`), `/alpha/search`, and the analytics sink. The Codex-shaped model discovery
+responses read them too: `GET /models`, `GET /backend-api/codex/models`, and `GET /v1/models`
+when `[server.codex_endpoint]` is enabled and the request carries the `client_version` query
+field. With ChatGPT sign-in and gateway OAuth both on, Codex fetches its catalog with the
+ChatGPT token in `Authorization` and the IdP token in the cookie or header, so discovery needs
+the slots to answer `200`; before this it answered `401`. The order is: static token, then
 `Authorization: Bearer` JWT, then `jwt_header` (the raw JWT or `Bearer <jwt>`, scheme in any
 case), then `jwt_cookie`; the first slot that verifies wins and the same
 `[[server.auth.jwt]]` rules apply to every slot. A ChatGPT token in `Authorization` fails
-issuer selection and the scan moves on. `/v1/messages`, `/v1/models`, `/usage`, and the
-Codex discovery paths stay `Authorization: Bearer`-only.
+issuer selection and the scan moves on. The discovery variants keep every credential they
+accepted before: static tokens in the configured header, `x-api-key`, or `Authorization:
+Bearer`, a Bearer JWT, and a `[server.gateway]` login token. The answer is still the empty
+Codex catalog `{"models":[]}`. `/v1/messages`, `/usage`, and the Anthropic-shaped
+`/v1/models` (no `client_version`, or the Codex endpoint off) stay `Authorization:
+Bearer`-only for JWTs.
 
 - **A slot is examined only when the scan reaches it.** A configured header or cookie name
   that appears more than once rejects the request, unless an earlier slot already
@@ -327,7 +336,8 @@ issuer is left alone, since it may be the caller's own upstream credential.
 
 The gate covers the routes `[server.auth]` already guards — injected-credential
 `/v1/messages` and `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`,
-`GET /api/oauth/usage` (off loopback only), and the inbound Codex Responses and analytics routes. Passthrough
+`GET /api/oauth/usage` (off loopback only), the Codex-shaped discovery paths (`GET /models`,
+`GET /backend-api/codex/models`), and the inbound Codex Responses and analytics routes. Passthrough
 inference is never checked, because the caller pays with their own credential; "per-user identity" therefore
 covers the gated routes, not the whole surface.
 

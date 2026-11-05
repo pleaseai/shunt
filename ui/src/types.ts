@@ -89,6 +89,8 @@ export interface PoolAccount {
   utilization_7d_oi?: number | null;
   reset_7d_oi?: number | null;
   quota_buckets?: QuotaBucket[];
+  /** Live sessions bound to this row's identity; rows sharing an `account_ref` share one count. */
+  bound_sessions?: number;
 }
 
 export interface PoolProvider {

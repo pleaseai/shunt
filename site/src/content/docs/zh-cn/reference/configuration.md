@@ -43,8 +43,8 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 | :-- | :-- | :-- |
 | `header` | `x-shunt-token` | 携带客户端 token 的头部 |
 | `tokens_env` | `SHUNT_CLIENT_TOKENS` | 保存逗号分隔的 `name:token` 对的环境变量 |
-| `jwt_header` | 未设置 | 入站 Codex 端点额外从中读取 IdP JWT 的头部,对应 Codex `gateway_oauth` 的 `delivery.kind = "header"` |
-| `jwt_cookie` | 未设置 | 入站 Codex 端点额外从中读取 IdP JWT 的 cookie,对应 `delivery.kind = "cookie"` |
+| `jwt_header` | 未设置 | 入站 Codex 端点(及 Codex 形状的模型发现)额外从中读取 IdP JWT 的头部,对应 Codex `gateway_oauth` 的 `delivery.kind = "header"` |
+| `jwt_cookie` | 未设置 | 入站 Codex 端点(及 Codex 形状的模型发现)额外从中读取 IdP JWT 的 cookie,对应 `delivery.kind = "cookie"` |
 
 指定的环境变量必须包含至少一个凭据,例如 `SHUNT_CLIENT_TOKENS="alice:<token>,bob:<token>"`。若此表存在但该变量未设置、为空或格式错误,启动会安全失败(fail closed)。被门控的路由(映射的 `/v1/messages` 推理和 `GET /v1/models` 发现)接受 token 出现在配置的头部、`Authorization: Bearer` 或 `x-api-key` 中 —— 当多个槽位携带有效 token 时,专用头部优先。
 
@@ -92,7 +92,7 @@ identity_claim = "repository"
 
 只要存在至少一个条目,`tokens_env` 就可以解析为空 —— 完全通过 IdP 认证的部署没有静态 token 需要设置。既没有可解析的 token 列表也没有条目时,`[server.auth]` 仍然启动失败。
 
-JWT 通过 `Authorization: Bearer` 接受,这正是 Claude Code 已经发送 `ANTHROPIC_AUTH_TOKEN` 的槽位。仅在入站 Codex 端点上,还可通过下文可选的 `jwt_header` 和 `jwt_cookie` 槽位接受;配置的 `header` 和 `x-api-key` 从不读取 JWT。在受控路由上先检查静态 token,该路由接受时再检查 gateway JWT,然后按 `iss` 检查 JWT 条目。验证会从 config 固定算法(token header 里的 `alg` 永远不参与选择)、要求 `kid`,并检查 `exp`/`nbf`、`aud`、`azp`、`exp - iat`、已配置的 `require`/`subject_prefix` 运算符,邮箱允许列表,以及(条目读取 `email` 时)`email_verified = true`。验证通过的身份声明(默认是邮箱)成为日志和用量归属中的调用方身份;超过 256 字节的值会被拒绝,而不是截断。受控路由就是 `[server.auth]` 已经保护的那些路由:注入凭据的 `/v1/messages` 和 `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`(仅在非 loopback 监听时),以及入站 Codex 端点(HTTP、WebSocket 和 analytics)。
+JWT 通过 `Authorization: Bearer` 接受,这正是 Claude Code 已经发送 `ANTHROPIC_AUTH_TOKEN` 的槽位。仅在入站 Codex 端点和 Codex 形状的模型发现上,还可通过下文可选的 `jwt_header` 和 `jwt_cookie` 槽位接受;配置的 `header` 和 `x-api-key` 从不读取 JWT。在受控路由上先检查静态 token,该路由接受时再检查 gateway JWT,然后按 `iss` 检查 JWT 条目。验证会从 config 固定算法(token header 里的 `alg` 永远不参与选择)、要求 `kid`,并检查 `exp`/`nbf`、`aud`、`azp`、`exp - iat`、已配置的 `require`/`subject_prefix` 运算符,邮箱允许列表,以及(条目读取 `email` 时)`email_verified = true`。验证通过的身份声明(默认是邮箱)成为日志和用量归属中的调用方身份;超过 256 字节的值会被拒绝,而不是截断。受控路由就是 `[server.auth]` 已经保护的那些路由:注入凭据的 `/v1/messages` 和 `/v1/messages/count_tokens`、`GET /v1/models`、`GET /usage`、`GET /api/oauth/usage`(仅在非 loopback 监听时),以及入站 Codex 端点(HTTP、WebSocket 和 analytics)。
 
 key set 按 issuer 在首次使用时惰性拉取,因此 IdP 不可达不会阻塞启动。缓存的 key set 最多信任 5 分钟,之后由下一个请求尝试重新拉取(受 60 秒重新拉取下限约束);拉取成功会整体替换 key set,因此 issuer 撤下的密钥大约 5 分钟内就不再参与验证。拉取失败时会继续使用已过期的 key set,以免 IdP 故障变成全面故障;discovery 本身失败时则改为尝试上次发现的 `jwks_uri`。只有条目的 `issuer` 和 `jwks_url` 都未变化时,config reload 才会保留已缓存的密钥。未知的 `kid` 在每个 key set 的 60 秒窗口内最多触发一次重新拉取。没有任何条目能验证的 token 返回 `401`;没有任何条目验证通过、且与 token 的 issuer 匹配的条目中存在既无缓存 key set 又拉取失败的条目时,返回 **`503`**,这样 IdP 故障就不会被报告成凭据错误。
 
@@ -109,7 +109,7 @@ jwt_cookie = "auth-openid"        # Codex: delivery = { kind = "cookie", name = 
 ```
 
 - **校验。** 启动时会拒绝:没有 `[[server.auth.jwt]]` 条目却设置了任一键、空值、无效的头部名称,以及等于 `authorization`、`x-api-key`、`cookie`、`x-shunt-token`、`x-shunt-admin-token`、`x-shunt-inbound-client`、shunt 在 Codex 端点上读取或改写的头部(`session-id`, `x-claude-code-session-id`, `content-type`, `content-length`, `content-encoding`, `transfer-encoding`, `host`, `origin`, `upgrade`, `connection`, `openai-beta`, `sec-websocket-*`)、Codex CLI 发送或 shunt 在该处合成的头部(`originator`, `x-codex-routing-hint`, `thread-id`, `x-client-request-id`, `x-codex-window-id`)、`[server.auth]` 的 `header` 或 `[server.admin]` 的 `header` 的头部名称。cookie 名称必须是 RFC 6265 的 token,且不能是管理仪表板的 `shunt_admin_session`。两个键都支持 hot-reload。
-- **范围。** 只有入站 Codex 端点读取它们:Responses 路由(`/v1/responses`、`/backend-api/codex/responses`、`/responses` 上的 HTTP 与 WebSocket)、`/alpha/search` 以及 analytics sink。`/v1/messages`、`/v1/models`、`/usage` 和 Codex discovery 路径仍只接受 `Authorization: Bearer` 中的 JWT。
+- **范围。** 只有入站 Codex 端点读取它们:Responses 路由(`/v1/responses`、`/backend-api/codex/responses`、`/responses` 上的 HTTP 与 WebSocket)、`/alpha/search`、analytics sink,以及 Codex 形状的模型发现响应(`GET /models`、`GET /backend-api/codex/models`,以及启用 `[server.codex_endpoint]` 且请求带 `client_version` 查询字段时的 `GET /v1/models`)。发现仍接受此前接受的所有凭据,并仍返回空的 Codex 目录 `{"models":[]}`。`/v1/messages`、`/usage` 和 Anthropic 形状的 `/v1/models`(无 `client_version` 或未启用 Codex 端点)仍只接受 `Authorization: Bearer` 中的 JWT。
 - **槽位顺序。** 静态 token、`Authorization: Bearer` JWT、`jwt_header`(原始 JWT 或 `Bearer <jwt>`,scheme 大小写不限)、`jwt_cookie`。第一个验证成功的槽位生效,因此 `Authorization` 中的 ChatGPT token 会落到 cookie 上。只有扫描到某个槽位时才会检查它;配置的头部或 cookie 名称出现多次时,除非更早的槽位已经完成认证,否则请求被拒绝。凭据缺失或无效返回 `401`,issuer 的密钥无法获取返回 `503`,在此端点上两者都使用 OpenAI 错误格式。
 - **Origin 规则。** 仅当请求没有 `Origin` 头部,或恰好有一个与请求的 scheme、`Host` 和有效端口都匹配的 `Origin` 时,才会使用 cookie。scheme 取第一个 `X-Forwarded-Proto` 值(`http` 或 `https`),没有时为 `http`,因为 shunt 本身以明文 HTTP 监听;位于终止 TLS 的代理之后时,请让代理发送 `X-Forwarded-Proto`。跨源(包括 scheme 不同)、`null`、无法解析或重复的 `Origin`,以及出现在没有 `Host` 或 `X-Forwarded-Proto` 无法识别的请求上的 `Origin`会禁用 cookie 槽位,头部槽位不受影响。浏览器会为网关域名附带它持有的 cookie,所以不要让 `jwt_cookie` 指向这类 cookie,例如 shunt 前面 SSO 代理的 cookie(Cloudflare Access 的 `CF_Authorization`)。
 - **转发。** 配置的头部和所有 `cookie` 头部在发往上游之前都会被移除,账户池和被路由的提供商均如此。
@@ -359,9 +359,10 @@ headers = { "x-api-key" = "..." }
 | `default_max_utilization_7d` | 未设置 | 共享周(`7d`)窗口的硬上限默认值 |
 | `default_max_utilization_fable` | 未设置 | 仅 fable 的周(`7d_oi`)窗口的硬上限默认值;只作用于 Fable 模型请求 |
 | `burn_rate_avoidance` | `false` | 同时避开按预测会在窗口重置之前耗尽其软阈值的账户 |
-| `sort_by_reset` | `false` | 按配额重置时间最早排序(升序;未知重置排最后)可用账户,而不是按燃烧速率余量排序。可在不编辑 `shunt.toml` 的情况下,通过管理仪表盘或 `PATCH /admin/api/pool` 在运行时切换 —— 参见[账户池控制](/zh-cn/guides/pool-account-controls/) |
+| `sort_by_reset` | `false` | 按配额重置时间最早排序(升序;未知重置排最后)可用账户,而不是按燃烧速率余量排序。可在不编辑 `shunt.toml` 的情况下,通过管理仪表盘或 `PATCH /admin/api/pool` 在运行时切换 —— 参见[账户池控制](/zh-cn/guides/pool-account-controls/)。它只影响故障转移顺序和无会话流量的顺序,从不放置或迁移会话绑定 |
+| `assignment` | `spread` | 新会话绑定到哪个账户的方式([会话绑定](/zh-cn/guides/anthropic-multi-account/#会话绑定))。`spread` 按会话在健康账户上的 rendezvous 哈希放置,忽略 `priority`。`soonest_weekly_reset` 先按 `priority`,再按起决定作用的周重置最早排序(未知重置排最后)放置。取值区分大小写,其他取值是配置错误 |
 | `usage_refresh_seconds` | 禁用(`0`/未设置) | Claude `GET /api/oauth/usage`、Codex `GET /wham/usage`、Antigravity `POST :retrieveUserQuotaSummary` 和池中 xAI(Grok)账户的 `GET /billing` 的轮询间隔(秒);低于 60 的正值会向上取到 60 秒下限 |
-| `state_path` | 未设置 | 用于持久化池中按账户配额状态的文件;重启时从最后观测到的使用率热启动,而非从空池开始。未设置则禁用持久化(默认)。设置 [`[store]`](#store可选) 后,配额保存在存储中,此文件只作为导入来源 |
+| `state_path` | 未设置 | 用于持久化池中按账户配额状态和会话绑定的文件;重启时从最后观测到的使用率热启动,而非从空池开始,并让每个会话留在原账户上。未设置则禁用持久化(默认)。设置 [`[store]`](#store可选) 后,配额和绑定保存在存储中,此文件只作为导入来源 |
 | `ramp_initial_concurrency` | 禁用(`0`/未设置) | 风暴控制:对刚开始承接流量的账户身份的初始并发准入额度。`0` 或未设置则禁用准入门控 |
 | `reprobe_seconds` | 只要该表存在就是 `900`;`0` 则禁用 | 对陈旧的近配额 Codex/ChatGPT 账户进行机会性重新探测的间隔(秒);低于 60 的正值会向上取到 60 秒下限。`0` 禁用重新探测;若 `[server.pool]` 本身不存在,无论该值为何都禁用重新探测(#135 之前的行为)。非 WebSocket 的 outbound Responses 选择和可选的 inbound Codex HTTP 端点会保留重新探测;WebSocket 启用时的 outbound 选择会禁用重新探测 |
 
@@ -373,7 +374,7 @@ headers = { "x-api-key" = "..." }
 
 正的 `usage_refresh_seconds` 会启动后台轮询器,分别读取 Claude 的官方 usage API、Codex/ChatGPT 的非官方 `wham/usage`、Antigravity 的非公开 `retrieveUserQuotaSummary` RPC,以及为池中可刷新的 xAI 账户(存储中的登录,以及带 `credentials` 文件的内联条目)读取的 Grok CLI 代理非公开 `billing` 端点;未设置或为 `0` 时禁用(默认)。只轮询 imported(可刷新)账户;长期 `claude setup-token` 与 `token_env` 凭据会被跳过。Claude 会对账每个报告窗口的用量、重置时刻和用量观测时间,status 的新鲜度仍来自响应头。Codex 会对账用量与观测时间,重置元数据来自响应,status 元数据仍来自头部;未来的已存重置会保留,已经过去的重置会在写入新用量前清除,wham 的 `reset_at` 不会被当作实际重置元数据。Antigravity 会通过现有 daily-host resolver 规范化生产主机写法,并只把 Gemini / Claude+GPT 的 grouped windows 写入仪表盘 quota-bucket 字段,不会写入通用的选择 quota state。xAI 会以同样仅供显示的方式写入池中每个账户的积分总量和各产品用量(例如 "Grok Build");无论提供方把推理请求发往哪个主机,都始终请求 Grok CLI 代理。非公开 schema 采用 fail-soft 解析;轮询间隔在启动时固定,配置重载不会启动、停止或重新调整轮询器。
 
-`state_path` 会把池的配额状态(所有 provider 账户的按窗口使用率与各窗口自身的重置时刻,使用率和 status 的独立观测时间及捕获的 status 重置边界)写入磁盘。不设置时,重启会从空池开始:每个账户在重启后首个响应之前都显示为未观测,这会禁用 burn-rate 规避,并使 `GET /usage` 在流量重新填充池之前返回空值。该文件是尽力而为的缓存,而非权威来源 —— 配额无论如何都会从上游响应重新导出,因此文件缺失、陈旧或损坏只会导致冷启动,绝不会导致启动失败。写入使用私有 temp 文件(Unix 上为 `0600`)并将其原子重命名覆盖目标,且仅在配额发生变化时按后台定时器进行。写入失败时会在下一个 tick 重试。冷却不会被持久化(重启即失效),恢复的窗口中重置已过期的会在恢复时的 import 阶段、首次选择或 snapshot 之前丢弃。使用率在自身观测时间上限和该窗口的重置之间较早者到达时过期;仅上限经过时该窗口的未来重置仍可保留。按窗口 status 在自身观测时间上限和观测时捕获的 status 重置边界之间较早者到达时过期,捕获边界也会随 status 清除。版本2文件通过明确的迁移路径重写为版本3;版本3的无重置 status 在仅重置更新后仍保持无重置。路径在启动时固定;配置重载不会启动、停止或改变持久化路径。
+`state_path` 会把池的配额状态(所有 provider 账户的按窗口使用率与各窗口自身的重置时刻,使用率和 status 的独立观测时间及捕获的 status 重置边界)写入磁盘。它还会把会话绑定作为可选的 `bindings` 数组写入同一个版本 3 文件。每个条目包含 provider、会话的 SHA-256 十六进制哈希(从不保存原始 ID)、所绑定的账户,以及向下取整到小时的 `last_used`。上一个版本会读取该文件并忽略这个数组;恢复时会丢弃已过期的绑定,以及账户已不在配置中的绑定。既不设置它、也不配置会自行持久化同一状态的 `[store]` 时,重启会从空池开始:每个账户在重启后首个响应之前都显示为未观测,这会禁用 burn-rate 规避,并使 `GET /usage` 在流量重新填充池之前返回空值。该文件是尽力而为的缓存,而非权威来源,未配置 `[store]` 时,文件缺失、陈旧或损坏绝不会导致启动失败。配置了 `[store]` 时,首次启动会导入该文件一次:文件缺失时跳过,之后才出现的文件也不会再导入;而无法读取、不是有效 JSON 或版本不受支持的文件会使启动停止。配额无论如何都会从上游响应重新导出,因此只会导致冷启动;会话绑定不会被重新导出,丢失后现有会话会被重新放置,可能落到其他账户上。写入使用私有 temp 文件(Unix 上为 `0600`)并将其原子重命名覆盖目标,且仅在配额或会话绑定发生变化时按后台定时器进行。写入失败时会在下一个 tick 重试。冷却不会被持久化(重启即失效),恢复的窗口中重置已过期的会在恢复时的 import 阶段、首次选择或 snapshot 之前丢弃。使用率在自身观测时间上限和该窗口的重置之间较早者到达时过期;仅上限经过时该窗口的未来重置仍可保留。按窗口 status 在自身观测时间上限和观测时捕获的 status 重置边界之间较早者到达时过期,捕获边界也会随 status 清除。版本2文件通过明确的迁移路径重写为版本3;版本3的无重置 status 在仅重置更新后仍保持无重置。路径在启动时固定;配置重载不会启动、停止或改变持久化路径。
 
 正的 `ramp_initial_concurrency` 会在每个账户池上启用**风暴控制(storm control)**:一次故障转移切换之后,在途的并发请求本会全部同时落到刚选中的账户上。开启该门控后,刚开始承接流量的身份(全新、刚从冷却回来,或空闲 60 秒)最多准入所配置数量的并发请求;每次成功响应把额度翻倍(slow start),一次达到故障转移条件的失败会重启该 ramp,被拒绝的请求则顺延到选择顺序中的下一个账户。无论门控如何,最后一个候选始终会被尝试,因此门控只能推迟、而绝不会失败一个未门控的池本会服务的请求。这也意味着,若池中所有账户都解析到同一个上游身份,则该池实际上不受门控:唯一的候选同时也是最后一个候选,因此该设置仅在存在两个及以上不同账户身份时才生效。
 

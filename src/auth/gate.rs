@@ -33,6 +33,19 @@ pub enum Slots {
     /// `[server.auth] jwt_header` slot, and the `jwt_cookie` slot. `Client`
     /// never reads the `jwt_header` / `jwt_cookie` slots (only the bearer JWT).
     Codex,
+    /// Codex-shaped model discovery (`/models`, `/backend-api/codex/models`,
+    /// `/v1/models?client_version=…`): the static-token slots of [`Self::Client`]
+    /// — discovery has always accepted `x-api-key` — paired with the same JWT
+    /// slot scan as [`Self::Codex`].
+    CodexDiscovery,
+}
+
+impl Slots {
+    /// Whether this posture also verifies a JWT from the `[server.auth]`
+    /// `jwt_header` / `jwt_cookie` slots, beyond `Authorization: Bearer`.
+    fn reads_jwt_slots(self) -> bool {
+        matches!(self, Self::Codex | Self::CodexDiscovery)
+    }
 }
 
 /// What the presented credentials resolved to.
@@ -67,7 +80,7 @@ pub async fn authenticate(
     slots: Slots,
 ) -> Outcome {
     let static_client = match slots {
-        Slots::Client => auth.authenticate_client(headers),
+        Slots::Client | Slots::CodexDiscovery => auth.authenticate_client(headers),
         Slots::Codex => auth.authenticate_bearer(headers),
     };
     if let Some(client) = static_client {
@@ -80,7 +93,7 @@ pub async fn authenticate(
         return Outcome::Rejected;
     }
     let mut presented = vec![bearer_credential(headers)];
-    if slots == Slots::Codex {
+    if slots.reads_jwt_slots() {
         presented.extend(
             auth.jwt_header()
                 .map(|name| header_credential(headers, name)),

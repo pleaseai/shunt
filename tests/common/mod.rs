@@ -8,6 +8,7 @@
 // it is code this binary happens not to need.
 #![allow(dead_code)]
 
+pub mod codex_jwt;
 pub mod jwt;
 
 /// Serializes every test in a binary that touches the process environment.
@@ -208,4 +209,138 @@ pub fn gzip(bytes: &[u8]) -> Vec<u8> {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(bytes).unwrap();
     encoder.finish().unwrap()
+}
+
+/// A session id whose sticky account is `identities[index]`.
+///
+/// Production ranks a session's accounts by `shunt::accounts::session_score`
+/// of each account's identity, highest first. The identity is the one shunt
+/// resolves: the `uuid`; for a ChatGPT account without one, the
+/// `chatgpt_account_id` its token or credential file carries; else the name.
+pub fn session_id_for_account(index: usize, identities: &[&str]) -> String {
+    let identities = identities
+        .iter()
+        .map(std::slice::from_ref)
+        .collect::<Vec<_>>();
+    session_id_for_any_identity(index, &identities)
+}
+
+/// [`session_id_for_account`] for a pool whose identities the test does not
+/// fully fix: each account lists every identity it may resolve to, and the
+/// session ranks `identities[index]` first under all of them. A `token_env`
+/// account whose variable the test leaves unset is one: it falls back to its
+/// name unless an earlier test in the same process already cached the
+/// identity of the token under that variable.
+pub fn session_id_for_any_identity(index: usize, identities: &[&[&str]]) -> String {
+    use shunt::accounts::session_score as score;
+
+    (0..1000)
+        .map(|candidate| format!("session-{candidate}"))
+        .find(|session_id| {
+            let target = identities[index]
+                .iter()
+                .map(|identity| score(session_id, identity))
+                .min()
+                .expect("the target account has an identity");
+            identities
+                .iter()
+                .enumerate()
+                .filter(|&(slot, _)| slot != index)
+                .flat_map(|(_, alternatives)| alternatives.iter())
+                .all(|identity| score(session_id, identity) < target)
+        })
+        .expect("a session id should map to the requested account")
+}
+
+/// A session id whose first-choice account is the one at `index` of the
+/// pooled provider in `state`'s config: where selection places it while every
+/// account is healthy.
+///
+/// Unlike [`session_id_for_account`], it asks selection itself, so it honours
+/// the configured `assignment` strategy (ADR-0008) and resolves identities
+/// the way the gateway does. The accounts are resolved exactly as the
+/// gateway resolves them, and a fresh pool stands in for "every account
+/// healthy and no binding yet". Panics unless exactly one provider configures
+/// accounts.
+pub async fn session_id_placed_on(state: &shunt::server::AppState, index: usize) -> String {
+    let (name, mut accounts) = resolved_pool_accounts(state).await;
+    let name = name.as_str();
+    // The session's own first choice, whether or not that account can serve:
+    // a test may target a disabled account to show it is skipped.
+    for account in &mut accounts {
+        account.disabled = false;
+    }
+    assert!(index < accounts.len(), "account index {index} out of range");
+    let pool = shunt::accounts::AccountPool::new();
+    (0..10_000)
+        .map(|candidate| format!("session-{candidate}"))
+        .find(|session_id| {
+            pool.select_order(
+                name,
+                &accounts,
+                Some(session_id),
+                None,
+                state.config.server.pool.as_ref(),
+            )
+            .first()
+                == Some(&index)
+        })
+        .expect("a session id should map to the requested account")
+}
+
+/// The one pooled provider in `state`'s config and its accounts, resolved as
+/// the gateway resolves them: the keys pool health and bindings are held
+/// under. Panics unless exactly one provider configures accounts.
+pub async fn resolved_pool_accounts(
+    state: &shunt::server::AppState,
+) -> (String, Vec<shunt::config::AccountConfig>) {
+    let mut pooled = state
+        .config
+        .providers
+        .iter()
+        .filter(|(_, provider)| !provider.accounts.is_empty());
+    let (name, provider) = pooled.next().expect("a provider with accounts");
+    assert!(pooled.next().is_none(), "exactly one pooled provider");
+    let accounts = provider
+        .resolve_pool_accounts()
+        .await
+        .expect("pool accounts resolve");
+    (name.clone(), accounts)
+}
+
+/// The binding ticket a request for `session_id` on `model` would carry now,
+/// over `accounts` of `provider`. Selection only reads the binding table, so
+/// asking changes nothing.
+pub fn binding_ticket(
+    state: &shunt::server::AppState,
+    provider: &str,
+    accounts: &[shunt::config::AccountConfig],
+    session_id: &str,
+    model: &str,
+) -> shunt::accounts::BindingTicket {
+    state
+        .accounts
+        .select_order_with_ticket(
+            provider,
+            accounts,
+            Some(session_id),
+            Some(model),
+            state.config.server.pool.as_ref(),
+        )
+        .1
+        .expect("a session request carries a binding ticket")
+}
+
+/// Index in `accounts` of the account `session_id` is bound to, if any.
+pub fn bound_account(
+    state: &shunt::server::AppState,
+    provider: &str,
+    accounts: &[shunt::config::AccountConfig],
+    session_id: &str,
+    model: &str,
+) -> Option<usize> {
+    let ticket = binding_ticket(state, provider, accounts, session_id, model);
+    accounts
+        .iter()
+        .position(|account| ticket.is_bound_to(account))
 }

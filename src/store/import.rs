@@ -5,7 +5,9 @@
 //! skipped)" even when the subsystem's tables are empty, and a snapshot that
 //! appears after a no-snapshot boot is ignored. A missing record triggers the
 //! import: read the snapshot, decode it strictly, and write its rows and the
-//! record in one transaction. Any failure rolls both back and the error names
+//! record in one transaction. The one exception is a pool session binding row
+//! that does not decode: it is dropped with a warning, exactly as a store-less
+//! boot drops it, since it could never be restored either way. Any failure rolls both back and the error names
 //! the subsystem and the path, so boot can refuse to start. The snapshot is
 //! only read; a sidecar next to it ([`super::marker`]) records the import.
 
@@ -13,8 +15,11 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::marker::{self, ImportMarker};
-use super::{pool_repo, sessions_repo, spend_repo, to_i64, Db, Store, StoreError, Tx, Value};
-use crate::accounts::{AccountKey, QuotaState};
+use super::{
+    pool_repo, pool_session_repo, sessions_repo, spend_repo, to_i64, Db, Store, StoreError, Tx,
+    Value,
+};
+use crate::accounts::{AccountKey, BindingRow, QuotaState};
 use crate::config::Config;
 use crate::gateway::spend::{persist as spend_persist, store::SpendState};
 use crate::gateway::{persist as gateway_persist, refresh::RefreshRecord};
@@ -141,7 +146,8 @@ pub async fn import_all(
 
 /// Rows decoded from a snapshot, ready to write.
 enum Prepared {
-    Pool(Vec<(AccountKey, QuotaState)>),
+    /// Quota rows and the session bindings the snapshot carries.
+    Pool(Vec<(AccountKey, QuotaState)>, Vec<BindingRow>),
     Gateway(Vec<RefreshRecord>),
     Spend(Box<SpendState>),
 }
@@ -150,9 +156,10 @@ impl Prepared {
     fn decode(subsystem: Subsystem, bytes: &[u8], path: &Path) -> Result<Self, String> {
         let issue = |issue: LoadIssue| issue.to_string();
         Ok(match subsystem {
-            Subsystem::Pool => {
-                Self::Pool(crate::state_persist::normalized_quotas(bytes).map_err(issue)?)
-            }
+            Subsystem::Pool => Self::Pool(
+                crate::state_persist::normalized_quotas(bytes).map_err(issue)?,
+                crate::state_persist::normalized_bindings(bytes).map_err(issue)?,
+            ),
             Subsystem::Gateway => Self::Gateway(unique_tokens(
                 gateway_persist::parse_records(bytes).map_err(issue)?,
             )?),
@@ -164,7 +171,7 @@ impl Prepared {
 
     fn row_count(&self) -> usize {
         match self {
-            Self::Pool(quotas) => quotas.len(),
+            Self::Pool(quotas, bindings) => quotas.len() + bindings.len(),
             Self::Gateway(records) => records.len(),
             Self::Spend(state) => {
                 state.limits.len()
@@ -177,7 +184,13 @@ impl Prepared {
 
     async fn write(&self, tx: &mut Tx) -> Result<(), StoreError> {
         match self {
-            Self::Pool(quotas) => pool_repo::write_pool(tx, quotas).await,
+            Self::Pool(quotas, bindings) => {
+                pool_repo::write_pool(tx, quotas).await?;
+                let none = pool_session_repo::Snapshot::new();
+                let diff =
+                    pool_session_repo::diff(&none, &pool_session_repo::snapshot_of(bindings)?);
+                pool_session_repo::apply_diff(tx, &diff).await
+            }
             Self::Gateway(records) => {
                 let none = std::collections::HashMap::new();
                 let diff = sessions_repo::diff(&none, &sessions_repo::index(records.clone()));
@@ -370,3 +383,6 @@ fn backend_name(db: &Db) -> &'static str {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod binding_tests;

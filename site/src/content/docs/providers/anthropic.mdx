@@ -102,7 +102,7 @@ auth = { mode = "claude_oauth", account = "primary" }
 (recommended), `--mode import` copies the current Claude Code login, and `--mode setup-token`
 creates a one-year inference-only token. Omit `account` (and `accounts`) to scan the whole
 shunt-managed account store — with several accounts in the store this becomes a **load-balanced
-pool** with session stickiness and quota-aware rotation. The full pooling behavior — explicit
+pool** with session-to-account bindings and quota-aware rotation. The full pooling behavior — explicit
 account entries, per-account thresholds, `[server.pool]` tuning, and failover — is documented in
 [Anthropic Multi-Account](/guides/anthropic-multi-account/).
 

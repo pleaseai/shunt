@@ -8,7 +8,6 @@
 use std::{io::ErrorKind, net::SocketAddr};
 
 use reqwest::StatusCode;
-use sha2::{Digest, Sha256};
 use shunt::{
     config::{AccountConfig, AuthMode, Config, RouteConfig},
     server,
@@ -20,6 +19,7 @@ use wiremock::{
 };
 
 use crate::common;
+use crate::common::session_id_for_account;
 
 struct BearerToken(String);
 
@@ -109,20 +109,6 @@ fn can_bind_loopback() -> bool {
         }
         Err(error) => panic!("unexpected loopback bind failure: {error}"),
     }
-}
-
-/// Brute-force a session id that `accounts::stable_session_index` (SHA-256
-/// prefix mod account count) maps to the requested pool slot, so a test can
-/// deliberately target a specific account via sticky routing.
-fn session_id_for_account(index: usize, account_count: usize) -> String {
-    (0..1000)
-        .map(|candidate| format!("session-{candidate}"))
-        .find(|session_id| {
-            let digest = Sha256::digest(session_id.as_bytes());
-            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
-            (prefix % account_count as u64) as usize == index
-        })
-        .expect("a session id should map to the requested account")
 }
 
 async fn post_messages(gateway: &TestGateway, session_id: Option<&str>) -> reqwest::Response {
@@ -252,7 +238,7 @@ async fn pool_rotates_to_next_account_on_401() {
     // A session that hashes to account-a still lands on account-b, because
     // account-a is now cooling down (so the upstream never sees a second
     // account-a call at all).
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -319,7 +305,7 @@ async fn pool_rotates_to_next_account_on_402() {
 
     // A session that hashes to account-a still lands on account-b, because
     // account-a is now cooling down.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -465,7 +451,7 @@ async fn disabled_account_is_skipped_in_favor_of_the_enabled_one() {
     // A session id that would hash to account-a's slot in a fully-enabled
     // two-account pool still lands on account-b, since account-a never
     // enters the selectable order at all.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
     let response = post_messages(&gateway, Some(&session_id)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -680,6 +666,153 @@ async fn capped_kimi_pool_returns_the_gateway_cap_429() {
             .unwrap()
             .contains("max_utilization"),
         "{body}"
+    );
+    upstream.verify().await;
+}
+
+// Session bindings (ADR-0008) on the Kimi pool. The switch metric's counts
+// are asserted in `src/adapters/anthropic/binding_tests.rs`, whose
+// `#[cfg(test)]` hooks this binary cannot reach; these tests read the binding
+// back through the selection ticket instead.
+
+const BINDING_MODEL: &str = "pooled-model";
+
+/// Set both accounts' tokens and return them as `[a, b]`.
+fn binding_tokens(vars: &mut common::EnvVars, env_stem: &str) -> [String; 2] {
+    let tokens = [
+        ["fake-kimi-", env_stem, "-a"].concat(),
+        ["fake-kimi-", env_stem, "-b"].concat(),
+    ];
+    vars.set(&format!("{env_stem}_A"), &tokens[0]);
+    vars.set(&format!("{env_stem}_B"), &tokens[1]);
+    tokens
+}
+
+fn binding_config(upstream: &MockServer, env_stem: &str) -> Config {
+    test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", &format!("{env_stem}_A")),
+            account("account-b", &format!("{env_stem}_B")),
+        ],
+    )
+}
+
+async fn answer(upstream: &MockServer, token: &str, template: ResponseTemplate, times: u64) {
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token.to_string()))
+        .respond_with(template)
+        .up_to_n_times(times)
+        .expect(times)
+        .mount(upstream)
+        .await;
+}
+
+fn ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#)
+}
+
+fn served_by(response: &reqwest::Response) -> &str {
+    response
+        .headers()
+        .get("x-shunt-account")
+        .unwrap()
+        .to_str()
+        .unwrap()
+}
+
+/// AC-002 on Kimi: bound to A, A cools down, the session moves to B and
+/// stays on B after A recovers.
+#[tokio::test]
+async fn a_session_moved_off_a_cooled_kimi_account_stays_after_it_recovers() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_KIMI_BIND_COOLDOWN";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer(&upstream, &token_a, ok(), 1).await;
+    answer(&upstream, &token_b, ok(), 2).await;
+    let gateway = start_gateway_with(binding_config(&upstream, stem)).await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    assert_eq!(
+        served_by(&post_messages(&gateway, Some(&session)).await),
+        "account-a"
+    );
+    state.accounts.cooldown(
+        &provider,
+        &accounts[0],
+        std::time::Duration::from_secs(300),
+        "test",
+    );
+    assert_eq!(
+        common::binding_ticket(state, &provider, &accounts, &session, BINDING_MODEL)
+            .prior_ineligible(),
+        Some(shunt::accounts::SwitchReason::Cooldown)
+    );
+    assert_eq!(
+        served_by(&post_messages(&gateway, Some(&session)).await),
+        "account-b"
+    );
+    state.accounts.mark_healthy(&provider, &accounts[0], true);
+    assert_eq!(
+        served_by(&post_messages(&gateway, Some(&session)).await),
+        "account-b"
+    );
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(1)
+    );
+    upstream.verify().await;
+}
+
+/// The bound Kimi account answers a membership 402 and B serves: the attempt
+/// failed over, so the binding moves to B (reason `failover`), and the next
+/// request goes straight to B.
+#[tokio::test]
+async fn a_failed_over_kimi_bound_account_moves_the_binding() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_KIMI_BIND_FAILOVER";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer(&upstream, &token_a, ok(), 1).await;
+    answer(
+        &upstream,
+        &token_a,
+        ResponseTemplate::new(402).set_body_string(r#"{"error":"membership inactive"}"#),
+        1,
+    )
+    .await;
+    answer(&upstream, &token_b, ok(), 2).await;
+    let gateway = start_gateway_with(binding_config(&upstream, stem)).await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    assert_eq!(
+        served_by(&post_messages(&gateway, Some(&session)).await),
+        "account-a"
+    );
+    let response = post_messages(&gateway, Some(&session)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(served_by(&response), "account-b");
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(1)
+    );
+    // A recovers; the session stays on B.
+    state.accounts.mark_healthy(&provider, &accounts[0], true);
+    assert_eq!(
+        served_by(&post_messages(&gateway, Some(&session)).await),
+        "account-b"
     );
     upstream.verify().await;
 }

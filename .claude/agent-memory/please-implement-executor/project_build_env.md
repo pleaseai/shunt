@@ -14,3 +14,7 @@ green `--features bench` run as equivalent.
 **Why:** orchestrator brief for the chatgpt-plan track (2026-10-30); disk space is tight (~90% full).
 **How to apply:** always pass the same RUSTFLAGS — running cargo without them triggers a full
 rebuild into a second fingerprint set (slow, eats disk). Never `cargo clean` unless the disk is full.
+
+`perf_issues -- account_pool` medians drift ±3 % between runs on this box, so a "within 5 %" gate
+needs a fresh baseline taken in the same session (check out the HEAD versions of the touched files,
+bench, restore), not one from hours earlier.

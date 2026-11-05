@@ -208,15 +208,17 @@ name = "backup"     # each declared name must be provisioned above; an unprovisi
                     # account is skipped on failover (its credential fails to resolve)
 ```
 
-Selection is **session-sticky**: the Codex CLI's own `session-id` request header keys the account,
-so one conversation stays on one account for as long as it stays healthy, then fails over (429 →
-rotate, 401 → refresh + retry, 5xx → cool down + rotate). A successful pooled response on this endpoint carries an `x-shunt-account: <name>` header —
+Each conversation is **bound to one account**: the Codex CLI's own `session-id` request header is
+the session key, and the conversation stays on its account until that account cannot serve, or stays past its soft threshold for 60 seconds while a healthy alternative exists
+(429 → rotate, 401 → refresh + retry, 5xx → cool down + rotate). The binding then moves to the
+account that served, and it does not move back when the first account recovers. HTTP and WebSocket
+turns share the binding. See [session bindings](/guides/anthropic-multi-account/#session-bindings). A successful pooled response on this endpoint carries an `x-shunt-account: <name>` header —
 streaming included, since the inbound passthrough commits only after the winning upstream
 responds. (The outbound Responses pool's early-committed HTTP streaming attributes the account
 with an `event: account` frame instead; see the Codex multi-account guide.) On a shared gateway with [`[server.auth]`](/reference/configuration/)
-enabled, the sticky key is scoped per authenticated client, so different clients that happen to send
-the same `session-id` use distinct sticky keys — preventing cross-client sticky-key collisions. (The
-keys are distinct; two distinct keys can still hash to the same account.)
+enabled, the session key is scoped per authenticated client, so different clients that happen to send
+the same `session-id` get distinct bindings — preventing cross-client collisions. (The keys are
+distinct; two distinct sessions can still be bound to the same account.)
 
 With **no** `[[providers.codex.accounts]]` configured and an empty store, the endpoint falls back to
 the single default `~/.codex/auth.json` credential — no pool, no failover — so one Codex login works
@@ -251,7 +253,7 @@ an entitled slug, e.g. in `~/.codex/config.toml`:
 model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
 ```
 
-Current entitled slugs are `gpt-6-astra` / `-sol` / `-luna`, `gpt-5.6-sol` / `-terra` / `-luna`,
+Current entitled slugs are `gpt-6-astra` / `-sol` / `-luna`, `gpt-6.1-sol` / `-terra`, `gpt-5.6-sol` / `-terra` / `-luna`,
 and `gpt-5.5` / `gpt-5.4` — older accounts may only have the earlier ones. See
 [ChatGPT / Codex → Route a model](/guides/codex/#3-route-a-model-to-codex) for the authoritative
 list. A request naming a model your subscription lacks fails exactly as it would talking to
@@ -345,7 +347,7 @@ Every value in the example above exists because of one of these:
 ### Behavior to know
 
 - **Browser and loopback callback.** Native gateway OAuth opens a browser and listens on a loopback port; there is no device-code fallback. Over SSH, set `redirect_port` and forward it with `ssh -L <port>:127.0.0.1:<port>`.
-- **Slot order.** shunt tries the static token, then an `Authorization: Bearer` JWT, then `jwt_header`, then `jwt_cookie`, and the first that verifies wins. A ChatGPT bearer in `Authorization` therefore falls through to the cookie. Only the [inbound Codex endpoint](/guides/inbound-codex-endpoint/) reads the new slots; `/v1/messages`, `/v1/models`, `/usage`, and the Codex discovery paths stay bearer-only for JWTs.
+- **Slot order.** shunt tries the static token, then an `Authorization: Bearer` JWT, then `jwt_header`, then `jwt_cookie`, and the first that verifies wins. A ChatGPT bearer in `Authorization` therefore falls through to the cookie. Only the [inbound Codex endpoint](/guides/inbound-codex-endpoint/) reads the new slots, and that includes its Codex-shaped model discovery responses (`GET /models`, `GET /backend-api/codex/models`, and `GET /v1/models` with a `client_version` query field), so the catalog fetch succeeds when ChatGPT sign-in and gateway OAuth are both on. `/v1/messages`, `/usage`, and the Anthropic-shaped `/v1/models` stay bearer-only for JWTs.
 - **Origin rule.** The cookie is used only when the request has no `Origin` or one that matches its `Host`, so a website cannot drive a browser-held cookie into authenticated turns. The Codex CLI is not a browser and sends no `Origin`. For the same reason, never point `jwt_cookie` at a cookie a browser holds for the gateway's domain, such as an SSO proxy's `CF_Authorization`. The header slot has no such rule.
 - **Expiry on WebSocket.** The handshake credential is verified again on every turn. When the IdP token expires mid-connection, the next turn fails with a `401` error frame and Codex reconnects with a refreshed token.
 - **Never forwarded.** The configured header and every `cookie` header are stripped before any upstream request.

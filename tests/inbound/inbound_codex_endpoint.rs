@@ -21,7 +21,6 @@ use std::{
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest::StatusCode;
-use sha2::{Digest, Sha256};
 use shunt::{
     config::{AccountConfig, CodexEndpointConfig, Config, InboundAuthConfig, PoolConfig},
     server,
@@ -33,6 +32,7 @@ use wiremock::{
 };
 
 use crate::common;
+use crate::common::session_id_for_account;
 
 /// A raw OpenAI Responses request body, exactly as the Codex CLI would send it —
 /// note `input`/`instructions` (Responses shape), not `messages` (Anthropic). It
@@ -247,19 +247,6 @@ fn can_bind_loopback() -> bool {
         }
         Err(error) => panic!("unexpected loopback bind failure: {error}"),
     }
-}
-
-/// Brute-force a `session-id` that maps to `index` under production's bucket
-/// assignment (`accounts::stable_session_index`).
-fn session_id_for_account(index: usize, account_count: usize) -> String {
-    (0..1000)
-        .map(|candidate| format!("session-{candidate}"))
-        .find(|session_id| {
-            let digest = Sha256::digest(session_id.as_bytes());
-            let prefix = u64::from_be_bytes(digest[..8].try_into().unwrap());
-            (prefix % account_count as u64) as usize == index
-        })
-        .expect("a session id should map to the requested account")
 }
 
 /// POST a raw Responses request to one of the inbound codex paths.
@@ -766,7 +753,7 @@ async fn session_id_header_sticks_to_one_account() {
 
     // A session id that hashes to account-b (index 1); every request with it must
     // land on account-b.
-    let session_id = session_id_for_account(1, 2);
+    let session_id = session_id_for_account(1, &["acct-sticky-a", "acct-sticky-b"]);
     for _ in 0..3 {
         let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1167,7 +1154,8 @@ async fn restored_stale_quota_reprobes_once_then_uses_healthy_account() {
         state_path,
     ))
     .await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id =
+        session_id_for_account(0, &["acct-inbound-restored-a", "acct-inbound-restored-b"]);
     let logs = Arc::new(Mutex::new(Vec::new()));
     let subscriber = reprobe_log_subscriber(&logs);
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
@@ -1237,7 +1225,8 @@ async fn missing_stale_probe_token_cancels_before_healthy_fallback() {
         state_path,
     ))
     .await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id =
+        session_id_for_account(0, &["acct-inbound-missing-a", "acct-inbound-missing-b"]);
     let logs = Arc::new(Mutex::new(Vec::new()));
     let subscriber = reprobe_log_subscriber(&logs);
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
@@ -1304,7 +1293,7 @@ async fn token_env_401_cools_down_and_rotates_to_next_account() {
 
     // A session id that maps to account-a (index 0) so the 401 account is tried
     // first, then the turn rotates to account-b.
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-401-a", "acct-401-b"]);
     let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1367,7 +1356,7 @@ async fn pooled_ttfb_timeout_returns_504_without_replaying() {
     );
     config.server.timeouts.upstream_ttfb_ms = 25;
     let gateway = start_gateway_with(config).await;
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-timeout-a", "acct-timeout-b"]);
 
     let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
@@ -1575,7 +1564,7 @@ async fn refresh_failure_cools_down_and_rotates_to_next_account() {
         .await;
 
     // Pin the store account first so its refresh-failure rotation is exercised.
-    let session = session_id_for_account(0, 2);
+    let session = session_id_for_account(0, &["acct-refresh-fail-a", "acct-served-b"]);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -1650,7 +1639,7 @@ async fn refresh_retry_still_unauthorized_rotates_to_next_account() {
         .mount(&upstream)
         .await;
 
-    let session = session_id_for_account(0, 2);
+    let session = session_id_for_account(0, &["acct-still401-stale", "acct-still401-b"]);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -1827,7 +1816,7 @@ async fn refresh_retry_non_success_rotates_to_next_account() {
         .mount(&upstream)
         .await;
 
-    let session = session_id_for_account(0, 2);
+    let session = session_id_for_account(0, &["acct-retry5xx-stale", "acct-retry5xx-b"]);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -1890,7 +1879,7 @@ async fn model_refusal_rotates_to_next_account() {
     ))
     .await;
 
-    let session_id = session_id_for_account(0, 2);
+    let session_id = session_id_for_account(0, &["acct-refusal-a", "acct-refusal-b"]);
     let response = post_responses(&gateway, "/responses", Some(&session_id), None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -1951,7 +1940,7 @@ async fn model_refusal_after_refresh_rotates_to_next_account() {
         .mount(&upstream)
         .await;
 
-    let session = session_id_for_account(0, 2);
+    let session = session_id_for_account(0, &["acct-retryrefusal-stale", "acct-retryrefusal-b"]);
     let gateway = start_gateway_with(test_config(
         &upstream.uri(),
         vec![
@@ -2084,4 +2073,170 @@ async fn refresh_retry_counts_two_attempts_on_one_account() {
     assert!(snapshot.mean_latency_ms.is_some());
 
     fs::remove_dir_all(&dir).ok();
+}
+
+// Session bindings (ADR-0008) on the inbound passthrough. Without inbound
+// auth the selection key is the bare `session-id`, so the shared helpers
+// apply unchanged. Switch counts are asserted in-crate
+// (`src/adapters/responses/pool_binding_tests.rs`).
+
+const BINDING_MODEL: &str = "gpt-5.6-sol";
+
+/// Bound to A, A cools down, the session moves to B and stays after A
+/// recovers.
+#[tokio::test]
+async fn inbound_moves_a_cooled_session_once_and_keeps_it() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-bind-inbound-a");
+    let token_b = chatgpt_token(FAR_FUTURE_EXP, "acct-bind-inbound-b");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_INBOUND_BIND_A", &token_a);
+    vars.set("SHUNT_TEST_INBOUND_BIND_B", &token_b);
+    let upstream = MockServer::start().await;
+    for (token, times) in [(&token_a, 1), (&token_b, 2)] {
+        Mock::given(method("POST"))
+            .and(path("/codex/responses"))
+            .and(BearerToken(token.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+            .up_to_n_times(times)
+            .expect(times)
+            .mount(&upstream)
+            .await;
+    }
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_INBOUND_BIND_A"),
+            account("account-b", "SHUNT_TEST_INBOUND_BIND_B"),
+        ],
+    ))
+    .await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+    let served = |response: &reqwest::Response| {
+        response.headers()["x-shunt-account"]
+            .to_str()
+            .unwrap()
+            .to_string()
+    };
+
+    let response = post_responses(&gateway, "/responses", Some(&session), None).await;
+    assert_eq!(served(&response), "account-a");
+    state.accounts.cooldown(
+        &provider,
+        &accounts[0],
+        std::time::Duration::from_secs(300),
+        "test",
+    );
+    assert_eq!(
+        common::binding_ticket(state, &provider, &accounts, &session, BINDING_MODEL)
+            .prior_ineligible(),
+        Some(shunt::accounts::SwitchReason::Cooldown)
+    );
+    let response = post_responses(&gateway, "/responses", Some(&session), None).await;
+    assert_eq!(served(&response), "account-b");
+    state.accounts.mark_healthy(&provider, &accounts[0], true);
+    let response = post_responses(&gateway, "/responses", Some(&session), None).await;
+    assert_eq!(served(&response), "account-b");
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(1)
+    );
+    upstream.verify().await;
+}
+
+/// The passthrough's success after a credential refresh binds the session.
+#[tokio::test]
+async fn inbound_refreshed_retry_that_succeeds_binds_the_session() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let expires_at = future_exp();
+    let stale = chatgpt_token(expires_at, "acct-bind-inbound-refresh");
+    let fresh = chatgpt_token(expires_at + 1, "acct-bind-inbound-refresh");
+    let dir = unique_temp_dir("bind-refresh");
+    let store_path = dir.join("account-a.json");
+    write_store_file(&store_path, &stale, "refresh-token-a");
+    let auth = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"access_token":"{fresh}","refresh_token":"refresh-token-a-2"}}"#
+        )))
+        .expect(1)
+        .mount(&auth)
+        .await;
+    vars.set("SHUNT_CODEX_TOKEN_URL", format!("{}/token", auth.uri()));
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(stale.clone()))
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"expired token"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(fresh.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![store_account_at("account-a", &store_path)],
+    ))
+    .await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = "inbound-bind-refresh-session";
+
+    let response = post_responses(&gateway, "/responses", Some(session), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, session, BINDING_MODEL),
+        Some(0)
+    );
+    upstream.verify().await;
+    auth.verify().await;
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// A relayed client error passes through verbatim but binds nothing.
+#[tokio::test]
+async fn inbound_relayed_client_error_leaves_the_session_unbound() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = chatgpt_token(FAR_FUTURE_EXP, "acct-bind-inbound-400");
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_INBOUND_BIND_400_A", &token_a);
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"error":"bad"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![account("account-a", "SHUNT_TEST_INBOUND_BIND_400_A")],
+    ))
+    .await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = "inbound-bind-400-session";
+
+    let response = post_responses(&gateway, "/responses", Some(session), None).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, session, BINDING_MODEL),
+        None
+    );
+    upstream.verify().await;
 }
