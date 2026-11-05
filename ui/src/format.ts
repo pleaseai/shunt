@@ -18,6 +18,16 @@ export function titleCase(value: string | null | undefined): string {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : '';
 }
 
+export function planLabel(auth: string | null | undefined, value: string | null | undefined): string {
+  if (auth === 'chatgpt_oauth') {
+    switch (value?.toLowerCase()) {
+      case 'team': return 'Business Standard';
+      case 'self_serve_business_profile': return 'Business Premium';
+    }
+  }
+  return titleCase(value);
+}
+
 /** A coarse "time until" for a reset instant given in whole seconds. */
 export function untilShort(resetSecs: number): string {
   const target = resetSecs * 1000;
