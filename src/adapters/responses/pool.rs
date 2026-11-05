@@ -2692,6 +2692,154 @@ mod tests {
         server.abort();
     }
 
+    /// The same eviction for a BOUND conversation that changes accounts:
+    /// turn 1 binds the session to acc-b and pools its socket there; acc-b
+    /// then cools down, so the binding moves and acc-a serves the marked turn
+    /// 2, whose bump must still evict acc-b's pre-compaction socket.
+    #[tokio::test]
+    async fn pool_path_bump_evicts_a_bound_conversations_socket_after_it_moves() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::net::TcpListener;
+        use tungstenite::protocol::WebSocketConfig;
+        use tungstenite::Message;
+
+        use crate::adapters::responses::codex_ws::{
+            clear_pool_for_tests, pool_contains_for_tests, window_for, POOL_TEST_LOCK,
+        };
+        use futures_util::{SinkExt, StreamExt};
+
+        let _env = crate::config::test_env_lock();
+        let _pool_guard = POOL_TEST_LOCK.lock().await;
+        let _token_a =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_A", probe_token("acc-a"));
+        let _token_b =
+            crate::auth::shared::EnvVarGuard::set("SHUNT_POOL_PROBE_B", probe_token("acc-b"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let server_accepts = accepts.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                server_accepts.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async_with_config(
+                        socket,
+                        Some(WebSocketConfig::default()),
+                    )
+                    .await
+                    .unwrap();
+                    while let Some(message) = ws.next().await {
+                        match message.unwrap() {
+                            Message::Text(_) => {
+                                for event in [
+                                    r#"{"type":"response.created","response":{"id":"resp_1"}}"#,
+                                    r#"{"type":"response.output_text.delta","delta":"hi"}"#,
+                                    r#"{"type":"response.completed","response":{}}"#,
+                                ] {
+                                    ws.send(Message::Text(event.to_string().into()))
+                                        .await
+                                        .unwrap();
+                                }
+                            }
+                            Message::Ping(data) => ws.send(Message::Pong(data)).await.unwrap(),
+                            Message::Pong(_) => {}
+                            Message::Close(_) => break,
+                            other => panic!("unexpected frame: {other:?}"),
+                        }
+                    }
+                });
+            }
+        });
+
+        let mut config = Config::default();
+        config.providers.get_mut("codex").unwrap().base_url = format!("http://{addr}");
+        config.providers.get_mut("codex").unwrap().websocket = true;
+        let state = AppState::new(config, reqwest::Client::new()).unwrap();
+        let accounts = vec![
+            pool_account("acc-a", "SHUNT_POOL_PROBE_A"),
+            pool_account("acc-b", "SHUNT_POOL_PROBE_B"),
+        ];
+        let bound_to = |account: &AccountConfig| {
+            let (_, ticket) = state.accounts.select_order_with_ticket(
+                "codex",
+                &accounts,
+                Some("sess-1"),
+                None,
+                None,
+            );
+            ticket.unwrap().is_bound_to(account)
+        };
+
+        // Turn 1: only acc-b is offered, so it serves, binds the session and
+        // pools the conversation's socket under acc-b.
+        let (status, response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                ..pool_turn(vec![pool_account("acc-b", "SHUNT_POOL_PROBE_B")], false)
+            },
+        )
+        .await
+        .expect("turn 1 serves on acc-b");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            response.headers().get("x-shunt-account").unwrap(),
+            "acc-b",
+            "turn 1 is served by acc-b, the only offered account"
+        );
+        assert!(
+            pool_contains_for_tests("acc-b\u{1f}sess-1"),
+            "turn 1 pools the socket under acc-b"
+        );
+        assert!(bound_to(&accounts[1]), "turn 1 binds the session to acc-b");
+
+        // Turn 2: acc-b cools down, so the bound session moves to acc-a,
+        // which serves the compaction-marked turn. The bump must evict
+        // acc-b's pre-compaction socket along with acc-a's own.
+        state.accounts.cooldown(
+            "codex",
+            &accounts[1],
+            std::time::Duration::from_secs(300),
+            "test",
+        );
+        let (status, response) = forward_chatgpt_oauth(
+            state.clone(),
+            pool_route(),
+            PoolForward {
+                pool_key: Some("sess-1".to_string()),
+                session_id: Some("sess-1".to_string()),
+                compact: crate::request::CompactionMark::armed(true),
+                ..pool_turn(accounts.clone(), false)
+            },
+        )
+        .await
+        .expect("marked turn serves on acc-a");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            response.headers().get("x-shunt-account").unwrap(),
+            "acc-a",
+            "the cooling bound account yields to acc-a"
+        );
+        assert!(
+            !pool_contains_for_tests("acc-b\u{1f}sess-1"),
+            "the bump evicts the conversation's socket under the account it left"
+        );
+        assert_eq!(window_for("sess-1"), 1, "one compaction mark bumps once");
+        assert!(
+            pool_contains_for_tests("acc-a\u{1f}sess-1"),
+            "the post-bump socket pools under the serving account"
+        );
+        assert!(bound_to(&accounts[0]), "the binding moved to acc-a");
+
+        clear_pool_for_tests();
+        server.abort();
+    }
+
     fn pool_state(base_url: String) -> AppState {
         let mut config = Config::default();
         config.providers.get_mut("codex").unwrap().base_url = base_url;

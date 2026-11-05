@@ -49,7 +49,7 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool/anthropic/accounts/$ACCOUNT_REF" \
 
 `[server.pool] sort_by_reset`(默认 `false`)会改变 *available* 层的排序方式:不再按预计的燃烧速率余量最大排序(带会话 ID 的请求则不再按会话自己的排名排序),而是按已知的最早配额重置时间升序排序(最先恢复的账户被最先尝试;没有重置信号的账户排在最后)。这样做的思路是先耗尽最快恢复的账户,把重置更晚的账户留作缓冲。
 
-该设置不会迁移会话。会话的账户来自它的[绑定](/zh-cn/guides/anthropic-multi-account/#会话绑定),`sort_by_reset` 从不放置或迁移绑定;它只决定已绑定账户之后的故障转移顺序和无会话流量的顺序。若要把新会话放到周窗口最早重置的账户上,请改为设置 `[server.pool] assignment = "soonest_weekly_reset"`。
+该设置不会迁移会话。会话的账户来自它的[绑定](/zh-cn/guides/anthropic-multi-account/#会话绑定),`sort_by_reset` 从不放置或迁移绑定;它只决定已绑定账户之后的故障转移顺序和无会话流量的顺序。若要先按 `priority`、再按周窗口最早重置的账户来放置新会话,请改为设置 `[server.pool] assignment = "soonest_weekly_reset"`。
 
 `[server.pool]` —— 以及这个设置 —— 是进程级的,不是按 provider 划分的,因此切换它会同时影响池中的所有 provider。
 

@@ -1,6 +1,6 @@
 # Dashboard metrics — how the admin UI reads what shunt already measures
 
-shunt records 22 metric series and can show none of them in its own dashboard.
+shunt records 24 metric series and can show none of them in its own dashboard.
 This document records why, evaluates the ways out, and fixes three decisions —
 **shunt owns the aggregate**, **history is a bounded in-memory ring**, and
 **label cardinality is bounded before anything retains it** — so that a

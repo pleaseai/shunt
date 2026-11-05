@@ -49,7 +49,7 @@ curl -X PATCH "$SHUNT_URL/admin/api/pool/anthropic/accounts/$ACCOUNT_REF" \
 
 `[server.pool] sort_by_reset`(기본값 `false`)은 *available* 계층의 정렬 방식을 바꿉니다: 가장 큰 예상 번-레이트 헤드룸(세션 ID가 있는 요청은 세션 자신의 순위) 대신, 계정을 알려진 쿼터 리셋 시각이 가장 이른 순서(오름차순 — 가장 먼저 회복되는 계정을 먼저 시도하고, 리셋 신호가 없는 계정은 맨 뒤로 정렬)로 정렬합니다. 아이디어는 가장 먼저 보충될 계정을 먼저 소진시켜, 리셋이 늦은 계정은 예비로 남겨두는 것입니다.
 
-이 설정은 세션을 옮기지 않습니다. 세션의 계정은 [바인딩](/ko/guides/anthropic-multi-account/#세션-바인딩)에서 오며, `sort_by_reset`은 바인딩을 배치하거나 옮기지 않습니다. 이 설정은 바인딩된 계정 뒤쪽의 페일오버 순서와 세션 없는 트래픽의 순서만 정합니다. 새 세션을 주간 창이 가장 먼저 리셋되는 계정에 배치하려면 대신 `[server.pool] assignment = "soonest_weekly_reset"`을 설정하세요.
+이 설정은 세션을 옮기지 않습니다. 세션의 계정은 [바인딩](/ko/guides/anthropic-multi-account/#세션-바인딩)에서 오며, `sort_by_reset`은 바인딩을 배치하거나 옮기지 않습니다. 이 설정은 바인딩된 계정 뒤쪽의 페일오버 순서와 세션 없는 트래픽의 순서만 정합니다. 새 세션을 `priority` 순으로 먼저, 그다음 주간 창이 가장 먼저 리셋되는 계정에 배치하려면 대신 `[server.pool] assignment = "soonest_weekly_reset"`을 설정하세요.
 
 `[server.pool]`은 — 따라서 이 설정도 — 프로바이더별이 아니라 프로세스 전체에 적용되므로, 이를 토글하면 풀링된 모든 프로바이더에 동시에 영향을 줍니다.
 

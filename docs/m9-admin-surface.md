@@ -548,13 +548,14 @@ WebSocket attempt is counted.
 
 Each row also carries `bound_sessions`, the number of that provider's live
 session bindings (ADR-0008) on the row's physical identity. A binding idle for
-more than 24 hours is expired and is not counted. Bindings are keyed by account
-identity, so aliases that resolve to one identity share an `account_ref`, and
-each of their rows reports that identity's one count. The count is never split
+more than 24 hours is expired and is not counted. Bindings are keyed by provider
+and session hash, with the physical account identity as the value, so aliases
+that resolve to one identity share an `account_ref`, and each of their rows
+reports that identity's one count. The count is never split
 per alias and never summed. A consumer that totals bound sessions dedupes by
 `account_ref`, as it would for the request counters. The count is scoped to the
-provider table: a session bound under another provider table on the same
-physical account counts in that table's view. The handler reads the binding
+provider table: a session bound under another provider on the same physical
+account counts only in that provider's table, not here. The handler reads the binding
 table once per request, under the binding table's own lock, never while it
 holds `entries`. Only counts are returned, never a session hash or id. A
 runtime `PATCH /admin/api/pool` of `sort_by_reset` leaves every binding in

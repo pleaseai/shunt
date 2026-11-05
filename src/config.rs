@@ -309,7 +309,8 @@ pub enum PoolAssignment {
     /// Spread new sessions across accounts (the default).
     #[default]
     Spread,
-    /// Prefer the account whose weekly quota window resets soonest.
+    /// Take the lowest `priority` account first, then the account whose
+    /// governing weekly window resets soonest (an unknown reset sorts last).
     SoonestWeeklyReset,
 }
 

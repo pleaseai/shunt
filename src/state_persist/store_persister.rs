@@ -94,7 +94,9 @@ impl StoreSink {
 impl StoreSink {
     /// Write the quota export and the binding delta in one durable
     /// transaction. `written` becomes the new binding snapshot only once the
-    /// transaction commits; on a failure it keeps what the store still holds.
+    /// transaction commits; on a failure before the commit it keeps what the
+    /// store still holds, and on a failed commit it is cleared, since that
+    /// commit may have landed and the next flush must re-read the table.
     async fn write(
         &self,
         quotas: &[(AccountKey, QuotaState)],
@@ -119,11 +121,19 @@ impl StoreSink {
             Err(error) => Err(error),
         };
         match result {
-            Ok(()) => {
-                tx.commit().await?;
-                *written = Some(current);
-                Ok(())
-            }
+            Ok(()) => match tx.commit().await {
+                Ok(()) => {
+                    *written = Some(current);
+                    Ok(())
+                }
+                Err(error) => {
+                    // A COMMIT that errors (a timeout, a dropped connection)
+                    // may still have landed, so neither snapshot is known to
+                    // be what the store holds: the next flush re-reads it.
+                    *written = None;
+                    Err(error)
+                }
+            },
             Err(error) => {
                 let _ = tx.rollback().await;
                 Err(error)

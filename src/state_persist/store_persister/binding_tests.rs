@@ -201,3 +201,62 @@ store_contract_test!(
         writer.stop().await;
     }
 );
+
+// A COMMIT that errors may still land, so the flush after it re-reads the
+// table instead of diffing against the snapshot from before it: a binding the
+// uncertain commit inserted and that is gone by the next flush is deleted.
+store_contract_test!(a_failed_commit_drops_the_binding_baseline, |store| {
+    // Only PostgreSQL bounds a round trip: SQLite is a local file.
+    if !matches!(store.db(), crate::store::db::Db::Sqlite(_)) {
+        #[cfg(feature = "store-postgres")]
+        {
+            use crate::state_persist::store_persister::StoreSink;
+            use std::sync::atomic::AtomicBool;
+
+            let mut tx = store.db().begin().await.unwrap();
+            // A deferred trigger makes COMMIT itself take a second, the
+            // way a COMMIT whose reply is lost looks to the client.
+            for sql in [
+                "CREATE FUNCTION slow_binding_commit_fn() RETURNS trigger AS \
+                     $body$ BEGIN PERFORM pg_sleep(1); RETURN NULL; END $body$ LANGUAGE plpgsql",
+                "CREATE CONSTRAINT TRIGGER slow_binding_commit AFTER INSERT \
+                     ON pool_session_binding DEFERRABLE INITIALLY DEFERRED FOR EACH ROW \
+                     EXECUTE FUNCTION slow_binding_commit_fn()",
+            ] {
+                tx.execute(sql, &[]).await.unwrap();
+            }
+            tx.commit().await.unwrap();
+
+            let sink = StoreSink {
+                store: Arc::new(store.clone()),
+                gate: tokio::sync::Mutex::new(None),
+                halted: AtomicBool::new(false),
+            };
+            let row = BindingRow {
+                provider: PROVIDER.to_string(),
+                session_hash: "ab".repeat(32),
+                account: crate::accounts::account_key(PROVIDER, &account("a")),
+                last_used: 3_600,
+            };
+            let mut written = None;
+            let bound =
+                crate::store::db::set_round_trip_timeout("COMMIT", Duration::from_millis(300));
+            let error = sink
+                .write(&[], std::slice::from_ref(&row), &mut written)
+                .await
+                .unwrap_err();
+            drop(bound);
+            assert!(
+                matches!(error, crate::store::StoreError::CommitUncertain { .. }),
+                "{error:?}"
+            );
+            assert!(written.is_none(), "a failed COMMIT leaves no baseline");
+
+            // The uncertain COMMIT lands (the next durable write waits on
+            // the hold row it locked); the binding is then gone from the
+            // pool, and the next flush must delete its row.
+            sink.write(&[], &[], &mut written).await.unwrap();
+            assert_eq!(table_len(&store).await, 0);
+        }
+    }
+});

@@ -70,7 +70,7 @@ The generation is per binding and every move bumps it. A commit whose ticket car
 Every adapter's failover loop stays as it is, and the sessionless and test wrappers keep their signatures.
 
 **Placement:**
-- `spread`: highest rendezvous weight, where the weight is `splitmix64(session_hash[..8] ^ account_digest)` and `account_digest` is the first 8 bytes of SHA-256 over the account key (Decision Log 2026-11-02), taken over eligible distinct identities, with priority ignored.
+- `spread`: rendezvous rank using #857's `session_score` (SHA-256 session prefix XOR FNV-1a identity hash, SplitMix64, identity-kind tie-break), taken over eligible distinct identities, with priority ignored. This supersedes the pre-merge weight `splitmix64(session_hash[..8] ^ account_digest)`; see the 2026-11-04 (merge) Decision Log entry.
 - `soonest_weekly_reset`: priority, then governing weekly reset (unknown last), then configuration order.
 
 **On a move:** the same rule within the best available priority tier. The rest of the order, after the bound or placed account, keeps today's failover ordering, so `sort_by_reset` and headroom still apply (FR-16). An account that is ineligible for every candidate leaves today's order untouched and the binding unchanged.
@@ -90,7 +90,7 @@ Rejected:
   Validation: `assignment = "soonest_weekly_reset"` and `"spread"` parse, absent means `spread`, and any other value makes `shunt check` fail naming the key; `shunt.toml.example` and `shunt.yaml.example` show the key.
   Method: `cargo test --all-features config::` plus `cargo run -- check` on a config with an invalid value
 - [x] T002 Build the bounded session binding table (file: src/accounts/session_binding.rs) [FR-1, FR-9, AC-001, AC-014, AC-015, NFR-1]
-  Validation: keys are (provider, SHA-256 of the selection key), and a raw id never appears in the table or its export (AC-001); an entry idle 24 h is gone (AC-014); at 10,000 entries a new insert evicts the least recently used and bumps an eviction count, at amortized constant cost (AC-015); a commit carrying an older generation does not overwrite a newer binding (NFR-1).
+  Validation: keys are (provider, SHA-256 of the selection key), and a raw id never appears in the table or its export (AC-001); an entry idle 24 h is gone (AC-014); at 10,000 entries a new insert evicts least-recently-used bindings in one batch down to about 90 % of the cap and bumps the eviction count by the number removed, at amortized constant cost (AC-015); a commit carrying an older generation does not overwrite a newer binding (NFR-1).
   Method: `cargo test --all-features accounts::session_binding`
 - [x] T003 Select through bindings and assignment strategies (file: src/accounts.rs) (depends on T001, T002) [FR-2, FR-4, FR-5, FR-7, FR-8, FR-12, FR-15, FR-16, AC-006, AC-007, AC-008, AC-009, AC-010, AC-011, AC-012, AC-013, AC-018, NFR-2]
   Validation: AC-006 to AC-013 and AC-020 hold at the selection level; a binding whose account is absent from the `accounts` slice is placed again as if unbound, with the ticket carrying the removed account as ineligible (reason `failover`) so the commit moves the binding and records the switch (AC-018), and `forget_identity` drops its bindings; sessionless and empty-id requests still round-robin (FR-15); `account_pool_mixed_cycles` stays within 5 % of its `main` result.
@@ -207,6 +207,7 @@ Rejected:
 - 2026-11-04 (review): A store binding row that fails to decode (bad JSON, negative `last_used`) is dropped at restore and marks the pool dirty, so the next flush rewrites the table without it (5714816c, 2e612bf1).
 - 2026-11-04 (merge): Merged `origin/main` at ba00ed94 after #857 landed its rendezvous `session_score` (SHA-256 session prefix XOR FNV-1a identity hash, SplitMix64, identity-kind tie-break). `spread` placement now ranks with #857's score unchanged, and each health entry caches `IdentityHashes { identity, tie }` in place of this track's `key_digest`/`account_digest` weight (2026-11-02 entry above). The spread weight is the rank position, and a session's failover tail follows its ranking, not headroom. The user chose this over keeping this track's weight.
 - 2026-11-04 (merge): `sort_by_reset` never places or moves a binding (FR-16). Main's `sort_by_reset_runtime_override_wins_over_config_and_is_reversible` asserted a session's head under the override, so its session assertion now expects the binding strategy's placement (`order[0] == latest`, `order[1] == soonest`). The user approved this test change.
+- 2026-11-05: Cap eviction removes least-recently-used bindings in one batch down to about 90 % of the 10,000 cap (about 1,000 bindings), not one binding per insert. This is intentional: it amortizes eviction cost so a full table does not evict on every insert. AC-015 in spec.md is worded to match.
 - 2026-11-05: Deferred to #893: fB, a quota observation between selections does not reset the soft-near stamp, and fC, providers sharing one account share `soft_near_since`.
 
 ## Outcomes & Retrospective

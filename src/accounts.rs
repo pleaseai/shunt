@@ -27,6 +27,8 @@ pub(crate) use request_stats::CountAttempt;
 use request_stats::RequestStats;
 #[cfg(test)]
 pub(crate) use session_binding::persisted_last_used as persisted_last_used_for_tests;
+#[cfg(feature = "bench")]
+pub(crate) use session_binding::MAX_BINDINGS;
 use session_binding::{hash_session_key, CommitOutcome, SessionBindings};
 pub(crate) use session_binding::{thinking_bound, BindingRow};
 pub(crate) use upstream_skip::UpstreamSkips;
@@ -11671,16 +11673,16 @@ mod tests {
         for session in ["pinned", "session-7", "another"] {
             pool.select_order("anthropic", &accounts, Some(session), None, None);
             let entries = pool.entries.lock().unwrap();
-            for account in &accounts {
+            for (index, account) in accounts.iter().enumerate() {
                 let key = account_key("anthropic", account);
                 let hashes = entries[&key]
                     .identity_hashes
                     .expect("a session selection caches the hashes");
                 let (score, tie) = hashes.score(session_key(session));
                 let identity = account_identity(account);
-                assert_eq!(score, session_score(session, identity), "{}", account.name);
+                assert_eq!(score, session_score(session, identity), "account #{index}");
                 let tied = format!("{}\0{identity}", identity_kind(&key.identity));
-                assert_eq!(tie, session_score(session, &tied), "{}", account.name);
+                assert_eq!(tie, session_score(session, &tied), "account #{index}");
             }
         }
     }

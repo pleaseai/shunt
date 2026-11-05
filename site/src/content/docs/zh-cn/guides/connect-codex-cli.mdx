@@ -197,7 +197,7 @@ name = "backup"     # each declared name must be provisioned above; an unprovisi
 ```
 
 每段对话都会**绑定到一个账户**:Codex CLI 自己的 `session-id` 请求头部是会话 key,对话会一直留在该账户上,
-直到它无法处理请求(429 → 轮换,401 → 刷新并重试,5xx → 冷却并轮换)。此时绑定会迁移到处理了请求的账户,
+直到它无法处理请求,或在存在健康替代账户时超过软阈值达 60 秒(429 → 轮换,401 → 刷新并重试,5xx → 冷却并轮换)。此时绑定会迁移到处理了请求的账户,
 即使最初的账户恢复也不会迁回。HTTP 轮次和 WebSocket 轮次共享同一个绑定。参见[会话绑定](/zh-cn/guides/anthropic-multi-account/#会话绑定)。
 此端点上成功的池化响应会带 `x-shunt-account: <name>` 头部 —— 流式响应也不例外,因为入站透传只在获胜上游响应之后才提交(出站 Responses 池的早期提交 HTTP 流式响应则改用 `event: account` 帧标注账户,见 Codex 多账户指南)。在启用了 [`[server.auth]`](/zh-cn/reference/configuration/)
 的共享网关上,会话 key 按已认证的客户端隔离,因此恰好发送相同 `session-id` 的不同客户端会得到不同的

@@ -76,12 +76,26 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(15);
 ///
 /// Never add `deny_unknown_fields` here: the previous release reads a file
 /// with `bindings` only because it ignores fields it does not know (NFR-3).
-#[derive(Debug, Serialize, Deserialize)]
+/// Files are read through [`StoredPool`], which decodes each binding row on
+/// its own.
+#[derive(Debug, Serialize)]
 struct PersistedPool {
     version: u32,
     accounts: Vec<PersistedAccount>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     bindings: Vec<PersistedBinding>,
+}
+
+/// The read side of [`PersistedPool`]: the same envelope, with each binding
+/// row left undecoded so one structurally invalid row is dropped (FR-12)
+/// instead of failing the whole file and cold-starting every account's quota.
+/// Never add `deny_unknown_fields` here either (NFR-3).
+#[derive(Deserialize)]
+struct StoredPool {
+    version: u32,
+    accounts: Vec<PersistedAccount>,
+    #[serde(default)]
+    bindings: Vec<serde_json::Value>,
 }
 
 /// One session binding: the provider, lowercase hex of the session's SHA-256,
@@ -142,9 +156,9 @@ pub async fn restore(state: &AppState) {
         return;
     };
     let load_path = path.clone();
-    let result = tokio::task::spawn_blocking(move || load(&load_path)).await;
+    let result = tokio::task::spawn_blocking(move || load_counted(&load_path)).await;
     match result {
-        Ok(Ok(Some(persisted))) => {
+        Ok(Ok(Some((persisted, undecodable)))) => {
             let count = persisted.accounts.len();
             let legacy = persisted.version == LEGACY_STATE_VERSION;
             let corrected = if legacy {
@@ -162,7 +176,10 @@ pub async fn restore(state: &AppState) {
                         .map(|account| (account.key, account.quota)),
                 )
             };
-            if legacy || corrected {
+            // Undecodable binding rows were dropped while parsing; like
+            // the rows restore drops, the next flush rewrites the file
+            // without them.
+            if legacy || corrected || undecodable > 0 {
                 state.accounts.mark_dirty();
             }
             let bindings = restore_bindings(
@@ -331,18 +348,28 @@ async fn flush(state: &AppState) {
     }
 }
 
-/// Read and validate the state file. `Ok(None)` covers every recoverable case
-/// (absent file, invalid JSON, version mismatch) so the caller can cold-start;
-/// `Err` is reserved for unexpected I/O errors worth surfacing.
+/// [`load_counted`] without the count of dropped binding rows.
+#[cfg(test)]
 fn load(path: &Path) -> io::Result<Option<PersistedPool>> {
+    Ok(load_counted(path)?.map(|(persisted, _)| persisted))
+}
+
+/// Read and validate the state file, with how many binding rows were dropped
+/// as undecodable. `Ok(None)` covers every recoverable case (absent file,
+/// invalid JSON, version mismatch) so the caller can cold-start; `Err` is
+/// reserved for unexpected I/O errors worth surfacing.
+fn load_counted(path: &Path) -> io::Result<Option<(PersistedPool, usize)>> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
     crate::store::marker::warn_if_imported("pool", path, &bytes);
-    match parse(&bytes) {
-        Ok(persisted) => Ok(Some(persisted)),
+    match parse_counted(&bytes) {
+        Ok((persisted, undecodable)) => {
+            warn_undecodable(undecodable);
+            Ok(Some((persisted, undecodable)))
+        }
         Err(LoadIssue::NotJson(error)) => {
             tracing::warn!(
                 path = %path.display(),
@@ -364,18 +391,49 @@ fn load(path: &Path) -> io::Result<Option<PersistedPool>> {
 }
 
 /// Decode and version-check a state file's bytes. Shared by the lenient
-/// [`load`] (which turns an issue into a cold start) and the store import
-/// (which refuses to boot on one).
+/// [`load_counted`] (which turns an issue into a cold start) and the store
+/// import (which refuses to boot on one).
 fn parse(bytes: &[u8]) -> Result<PersistedPool, LoadIssue> {
-    let persisted: PersistedPool =
+    parse_counted(bytes).map(|(persisted, _)| persisted)
+}
+
+/// [`parse`], plus how many binding rows were dropped as undecodable. Only
+/// the envelope is strict; a binding row that does not decode is dropped.
+/// The caller that consumes the bindings reports the count once through
+/// [`warn_undecodable`].
+fn parse_counted(bytes: &[u8]) -> Result<(PersistedPool, usize), LoadIssue> {
+    let stored: StoredPool =
         serde_json::from_slice(bytes).map_err(|error| LoadIssue::NotJson(error.to_string()))?;
-    if persisted.version != STATE_VERSION && persisted.version != LEGACY_STATE_VERSION {
+    if stored.version != STATE_VERSION && stored.version != LEGACY_STATE_VERSION {
         return Err(LoadIssue::Version {
-            found: persisted.version,
+            found: stored.version,
             expected: format!("{STATE_VERSION} or {LEGACY_STATE_VERSION}"),
         });
     }
-    Ok(persisted)
+    let total = stored.bindings.len();
+    let bindings = stored
+        .bindings
+        .into_iter()
+        .filter_map(|row| serde_json::from_value::<PersistedBinding>(row).ok())
+        .collect::<Vec<_>>();
+    let undecodable = total - bindings.len();
+    let persisted = PersistedPool {
+        version: stored.version,
+        accounts: stored.accounts,
+        bindings,
+    };
+    Ok((persisted, undecodable))
+}
+
+/// Log dropped binding rows once per read, without the rows themselves
+/// (they can carry a session hash).
+fn warn_undecodable(undecodable: usize) {
+    if undecodable > 0 {
+        tracing::warn!(
+            undecodable,
+            "dropping undecodable session binding rows from the pool state file"
+        );
+    }
 }
 
 /// The quotas a snapshot would restore, normalized exactly as a store-less
@@ -399,12 +457,14 @@ pub(crate) fn normalized_quotas(bytes: &[u8]) -> Result<Vec<(AccountKey, QuotaSt
 }
 
 /// The bindings a snapshot carries, normalized as a boot would read them:
-/// malformed and expired rows dropped, a future `last_used` clamped, the cap
-/// applied, `last_used` rounded to the hour. Whether each account is still
-/// configured is decided at restore, not here. Strict on the envelope, like
+/// undecodable, malformed and expired rows dropped, a future `last_used`
+/// clamped, the cap applied, `last_used` rounded to the hour. Whether each
+/// account is still configured is decided at restore, not here. Strict on the
+/// envelope, like
 /// [`normalized_quotas`]; a v2 file has none.
 pub(crate) fn normalized_bindings(bytes: &[u8]) -> Result<Vec<BindingRow>, LoadIssue> {
-    let persisted = parse(bytes)?;
+    let (persisted, undecodable) = parse_counted(bytes)?;
+    warn_undecodable(undecodable);
     let scratch = AccountPool::new();
     scratch.import_bindings(persisted.bindings.into_iter().map(BindingRow::from), |_| {
         true

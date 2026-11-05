@@ -11,7 +11,7 @@ serve, every displaced session falls back along one shared order, so they all la
 on the same account and move together whenever the account at the head of that
 order changes. The measurements on #873 show this: 29 account switches across
 12 sessions in 11 hours, 18 of them while the prompt cache was still warm, and only
-3 of those 18 caused by a 429.
+3 of those 18 followed a 429 within 60 s.
 
 A move costs more than a cache miss. Thinking blocks are tied to the account that
 produced them, the prompt cache starts cold on the new account, and Codex
@@ -70,10 +70,10 @@ and how concentrated the pool is becomes visible.
 - [ ] AC-009 (FR-7): When an account is added to a pool of n accounts under `spread`, the system shall place new sessions so that about 1/(n+1) of them land on the added account.
 - [ ] AC-010 (FR-7): When an account is added to a pool under `spread`, the system shall leave every existing binding where it is.
 - [ ] AC-011 (FR-7): When several sessions are displaced from the same account under `spread`, the system shall move them to different accounts according to each session's own rendezvous order rather than to one shared head account.
-- [ ] AC-012 (FR-7, FR-11): Where neither `state_path` nor `[store]` is configured, the system shall place a returning session after restart on the same account it would have been placed on before, provided the pool and its health are unchanged.
+- [ ] AC-012 (FR-7, FR-11): Where neither `state_path` nor `[store]` is configured, the system shall place a returning session that has never moved after restart on the same account it would have been placed on before, provided the pool and its health are unchanged; a session that had moved returns to its rendezvous home, an accepted exception to FR-4.
 - [ ] AC-013 (FR-8): When the account with the soonest weekly reset recovers headroom under `soonest_weekly_reset`, the system shall consider it only when placing a new session or moving a displaced one, and shall leave every other binding in place.
 - [ ] AC-014 (FR-9): When a session returns after more than 24 hours without a request, the system shall assign it as a new session.
-- [ ] AC-015 (FR-9, FR-13): When the table holds 10,000 bindings and a new session arrives, the system shall evict the least recently used binding and increment the eviction count.
+- [ ] AC-015 (FR-9, FR-13): When the table holds 10,000 bindings and a new session arrives, the system shall evict the least recently used bindings in one batch down to about 90 % of the cap and increment the eviction count by the number removed.
 - [ ] AC-016 (FR-10): When a Codex conversation's HTTP and WebSocket turns use the same session identity and the same configured provider, the system shall serve both from the same bound account.
 - [ ] AC-017 (FR-11, FR-12): When the process restarts with `state_path` set, the system shall restore every unexpired binding whose account is still configured, and drop the rest.
 - [ ] AC-018 (FR-12): When a hot reload removes a bound account, the system shall assign that account's sessions again on their next request with switch reason `failover`.

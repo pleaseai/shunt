@@ -557,10 +557,8 @@ fn account_pool_mixed_cycles(bencher: divan::Bencher, workers: usize) {
     });
 }
 
-/// Session ids bound before a binding bench starts, and the table cap the
-/// eviction bench fills (`MAX_BINDINGS` in `src/accounts/session_binding.rs`).
+/// Session ids bound before a binding bench starts.
 const BOUND_SESSIONS: usize = 1_024;
-const BINDING_CAP: usize = 10_000;
 
 /// A pool whose `sessions` are each bound to the account selection placed
 /// them on.
@@ -656,13 +654,18 @@ fn account_pool_binding_miss(bencher: divan::Bencher, workers: usize) {
 }
 
 /// Eviction at cap: the table starts full, so new placements keep evicting
-/// the least recently used bindings in batches.
+/// the least recently used bindings in batches. The cap comes through
+/// `shunt::bench_support`, so this bench registers only with `--features
+/// bench` (as CodSpeed builds it).
+#[cfg(feature = "bench")]
 #[divan::bench(sample_count = 8, sample_size = 1)]
 fn account_pool_binding_eviction(bencher: divan::Bencher) {
+    use shunt::bench_support::MAX_BINDINGS;
+
     let accounts = accounts();
     bencher
         .with_inputs(|| {
-            pool_with_bindings(&accounts, (0..BINDING_CAP).map(|i| format!("full-{i}")))
+            pool_with_bindings(&accounts, (0..MAX_BINDINGS).map(|i| format!("full-{i}")))
         })
         .bench_values(|pool| {
             for sequence in 0..POOL_CYCLES {
@@ -707,9 +710,11 @@ fn account_pool_binding_concurrent_commit(bencher: divan::Bencher, workers: usiz
                                 None,
                                 None,
                             );
-                            // Every other commit reports the bound account as
-                            // failed over and serves the next one: a move.
-                            let failed_over = sequence % 2 == 0;
+                            // Every other round over the sessions reports the
+                            // bound account as failed over and serves the next
+                            // one (a move); the rounds between are touches, so
+                            // every session exercises both commit paths.
+                            let failed_over = (sequence / sessions.len()) % 2 == 0;
                             let served = &accounts[order[usize::from(failed_over)]];
                             divan::black_box(pool.commit_session_binding(
                                 &ticket.unwrap(),

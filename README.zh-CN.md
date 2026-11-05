@@ -210,7 +210,7 @@ OpenAI 的 Thibault Sottiaux 已公开欢迎通过其他编码 harness 运行 Co
 
 | 功能 | 启用方式 | 文档 |
 | :-- | :-- | :-- |
-| Anthropic 多账号池化 —— 会话与账号绑定，仅在所绑定账号无法处理请求时才迁移(分配方式由 `[server.pool] assignment` 选择，默认 `spread`，也可设为 `soonest_weekly_reset`)、配额感知轮换、预测性规避、按窗口设置的硬上限(`max_utilization*`,会剔除账号,并在池被上限耗尽时故障转移到下一个上游) | 拥有两个及以上账号的 `auth = "claude_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.sh/zh-cn/guides/anthropic-multi-account/) |
+| Anthropic 多账号池化 —— 会话与账号绑定，仅在所绑定账号无法处理请求或已接近配额达 60 秒时才迁移(分配方式由 `[server.pool] assignment` 选择，默认 `spread`，也可设为 `soonest_weekly_reset`)、配额感知轮换、预测性规避、按窗口设置的硬上限(`max_utilization*`,会剔除账号,并在池被上限耗尽时故障转移到下一个上游) | 拥有两个及以上账号的 `auth = "claude_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.sh/zh-cn/guides/anthropic-multi-account/) |
 | Codex 多账号池化 —— 同样的会话账号绑定、`x-codex-*` 窗口跟踪、慢启动爬坡、重新探测、按窗口设置的硬上限(`max_utilization*`,会剔除账号,并在池被上限耗尽时故障转移到下一个上游) | 拥有两个及以上账号的 `auth = "chatgpt_oauth"`；`[server.pool]` 只是可选调优 | [指南](https://shunt.sh/zh-cn/guides/codex-multi-account/) |
 | 学习型 prefill 路由 (`type = "prefill_router"`) | 编译期选择启用 —— `cargo build --release --features prefill-router`(**默认关闭**;发布二进制和 Homebrew formula 都以 `--features ui` 构建,因此不包含它),此外还需要一个带 `type = "prefill_router"` 的 `[models.router]` 表、磁盘上的路由检查点,以及装有 `torch` 和 `transformers` 的 Python 环境 | [参考](https://shunt.sh/zh-cn/reference/configuration/#type--prefill_router) |
 | 入站 Codex 端点 —— 把 **Codex CLI** 通过 HTTP/SSE 或 WebSocket 指向 shunt 并纳入同一个池,还可按模型选择性路由 | `[server.codex_endpoint]` | [指南](https://shunt.sh/zh-cn/guides/inbound-codex-endpoint/) |

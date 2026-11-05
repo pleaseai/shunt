@@ -5,7 +5,9 @@
 //! skipped)" even when the subsystem's tables are empty, and a snapshot that
 //! appears after a no-snapshot boot is ignored. A missing record triggers the
 //! import: read the snapshot, decode it strictly, and write its rows and the
-//! record in one transaction. Any failure rolls both back and the error names
+//! record in one transaction. The one exception is a pool session binding row
+//! that does not decode: it is dropped with a warning, exactly as a store-less
+//! boot drops it, since it could never be restored either way. Any failure rolls both back and the error names
 //! the subsystem and the path, so boot can refuse to start. The snapshot is
 //! only read; a sidecar next to it ([`super::marker`]) records the import.
 

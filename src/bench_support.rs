@@ -53,6 +53,10 @@ pub const MAX_TRACKED_SESSIONS: usize = STORE_CAP;
 /// (ADR-0005 §5).
 pub const MAX_TRACKED_CHILD_PINS: usize = CHILD_CAP;
 
+/// The session-binding table cap the pool evicts against, so the binding
+/// eviction bench in `benches/perf_issues.rs` fills to the real cap.
+pub const MAX_BINDINGS: usize = crate::accounts::MAX_BINDINGS;
+
 /// Parse a request body exactly as the proxy does.
 ///
 /// `src/proxy/failover.rs` does not call `serde_json::from_slice`: it calls

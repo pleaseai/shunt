@@ -196,7 +196,10 @@ pub(crate) fn place(
                 None => Placement {
                     head: Some(bound_slot),
                     start: bound_slot,
-                    fast: health.healthy(),
+                    // A binding that moved off its first choice still leads,
+                    // but the rest follows today's failover order, not the
+                    // ranking (a cooling first choice must not run second).
+                    fast: health.healthy() && home(strategy, len, &slot, &weight) == bound_slot,
                     prior_ineligible: None,
                 },
                 Some(reason) => match move_target(strategy, slots(), bound_slot) {
@@ -228,11 +231,7 @@ pub(crate) fn place(
             // The session's first choice with health ignored, the analogue of
             // today's sticky slot. When it is healthy it is also the
             // placement; otherwise it seeds the rotation if nothing is.
-            let home = match strategy {
-                PoolAssignment::Spread => best_weight((0..len).map(|index| (index, weight(index)))),
-                PoolAssignment::SoonestWeeklyReset => soonest_reset(slots()),
-            }
-            .unwrap_or(0);
+            let home = home(strategy, len, &slot, &weight);
             let home_healthy = slot(home).healthy();
             let target = if home_healthy {
                 Some(home)
@@ -249,6 +248,23 @@ pub(crate) fn place(
             }
         }
     }
+}
+
+/// The session's first choice with health ignored: `spread` reads only the
+/// weights, so it builds no [`SlotHealth`].
+fn home(
+    strategy: PoolAssignment,
+    len: usize,
+    slot: impl Fn(usize) -> SlotHealth,
+    weight: impl Fn(usize) -> u64,
+) -> usize {
+    match strategy {
+        PoolAssignment::Spread => best_weight((0..len).map(|index| (index, weight(index)))),
+        PoolAssignment::SoonestWeeklyReset => {
+            soonest_reset((0..len).map(|index| (index, slot(index))))
+        }
+    }
+    .unwrap_or(0)
 }
 
 /// First placement: `spread` takes the highest weight, priority ignored;

@@ -175,8 +175,8 @@ flip is not free, and on a long Claude Code session the cost is concrete:
   a full cache write on the new tier.
 - **Codex continuation** hashes the model into its signature, so a flip forces a
   full-input re-send and gives back the upload trimming shunt just earned.
-- **A cross-provider flip** also abandons the session's pooled connection and its
-  account binding on the other provider.
+- **A cross-provider flip** also abandons the session's pooled connection, stops using its
+  account binding on the provider it leaves, and starts a new one on the other.
 
 Scored independently every turn, a long session can cost *more* routed than
 unrouted. That is why the two directions are deliberately unequal, and why

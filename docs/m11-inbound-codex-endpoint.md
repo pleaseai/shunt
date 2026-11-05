@@ -309,7 +309,9 @@ Session-to-account bindings (ADR-0008), quota-aware selection (issue #195), reac
   one account in the binding table the outbound pool shares (see
   [M8 session bindings](m8-anthropic-multi-account.md#session-bindings)). The table is keyed by
   the key's SHA-256 hash, never the raw id. The binding stays on its account until that account
-  cannot serve and another account serves successfully, and it does not move back on recovery.
+  cannot serve and another account serves successfully, or until it has stayed soft-near for 60
+  seconds while a healthy alternative exists (see
+  [M8 session bindings](m8-anthropic-multi-account.md#session-bindings)). It does not move back on recovery.
   HTTP and WebSocket turns of one session share the binding. Only a `2xx` serve commits it, so a
   verbatim-relayed error leaves the binding unchanged. When `[server.auth]` is configured, the
   session key is namespaced with the authenticated client name (`{client}:{session-id}`,

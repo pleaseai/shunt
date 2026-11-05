@@ -106,12 +106,12 @@ fn commit_places_then_touches() {
 fn sessionless_and_empty_ids_round_robin_without_a_ticket() {
     let pool = AccountPool::new();
     let accounts = pool_accounts(3);
-    for session in [None, Some("")] {
+    for (label, session) in [("sessionless", None), ("empty id", Some(""))] {
         let starts = (0..3)
             .map(|_| {
                 let (order, ticket) =
                     pool.select_order_with_ticket(P, &accounts, session, None, None);
-                assert!(ticket.is_none(), "FR-15: no binding for {session:?}");
+                assert!(ticket.is_none(), "FR-15: no binding when {label}");
                 order[0]
             })
             .collect::<Vec<_>>();
@@ -120,7 +120,7 @@ fn sessionless_and_empty_ids_round_robin_without_a_ticket() {
         assert_eq!(
             sorted,
             vec![0, 1, 2],
-            "round robin over {session:?}: {starts:?}"
+            "round robin when {label}: {starts:?}"
         );
     }
     assert_eq!(bindings_len(&pool), 0);
@@ -250,6 +250,26 @@ fn immediate_ineligibility_moves_on_the_same_request() {
             "{label}"
         );
     }
+}
+
+#[test]
+fn a_moved_binding_leads_the_failover_order_not_the_ranking() {
+    // The session ranks A, B, C; A cools, the binding moves to B. The order
+    // leads with B and keeps the healthy C ahead of the cooling A.
+    let pool = AccountPool::new();
+    let accounts = pool_accounts(3);
+    let ranking = pool.select_order(P, &accounts, Some("s"), None, None);
+    let (a, b, c) = (ranking[0], ranking[1], ranking[2]);
+    let (first, _) = serve(&pool, &accounts, "s", None);
+    assert_eq!(first, a);
+    pool.cooldown(P, &accounts[a], Duration::from_secs(300), "test");
+    let (moved, commit) = serve(&pool, &accounts, "s", None);
+    assert_eq!(moved, b);
+    assert_eq!(commit, BindingCommit::Moved(SwitchReason::Cooldown));
+    assert_eq!(
+        pool.select_order(P, &accounts, Some("s"), None, None),
+        vec![b, c, a]
+    );
 }
 
 #[test]

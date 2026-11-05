@@ -209,7 +209,7 @@ name = "backup"     # each declared name must be provisioned above; an unprovisi
 ```
 
 Each conversation is **bound to one account**: the Codex CLI's own `session-id` request header is
-the session key, and the conversation stays on its account until that account cannot serve
+the session key, and the conversation stays on its account until that account cannot serve, or stays past its soft threshold for 60 seconds while a healthy alternative exists
 (429 → rotate, 401 → refresh + retry, 5xx → cool down + rotate). The binding then moves to the
 account that served, and it does not move back when the first account recovers. HTTP and WebSocket
 turns share the binding. See [session bindings](/guides/anthropic-multi-account/#session-bindings). A successful pooled response on this endpoint carries an `x-shunt-account: <name>` header —

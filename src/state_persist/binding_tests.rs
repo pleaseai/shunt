@@ -237,6 +237,73 @@ async fn the_previous_release_reads_a_file_with_bindings() {
     remove_test_dir(&path);
 }
 
+/// FR-12: a structurally invalid binding row is dropped on its own; the rest
+/// of the file (the quota and the decodable bindings) still loads, and the
+/// pool is marked dirty so the file is rewritten without the bad rows.
+#[tokio::test]
+async fn an_undecodable_binding_row_is_dropped_without_a_cold_start() {
+    let path = temp_file("undecodable-row");
+    let state = pool_state(&path, &["a", "b"]);
+    let accounts = accounts_of(&state).await;
+    let session = "decodable-session";
+    serve(&state, &accounts, session, 1);
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "anthropic-ratelimit-unified-5h-utilization",
+        reqwest::header::HeaderValue::from_static("0.25"),
+    );
+    state.accounts.note_quota(PROVIDER, &accounts[0], &headers);
+    flush(&state).await;
+
+    // The clean file restores without marking the pool dirty, so the dirty
+    // flag below comes from the dropped rows alone.
+    let clean = pool_state(&path, &["a", "b"]);
+    restore(&clean).await;
+    assert!(!clean.accounts.take_dirty(), "a clean file restores clean");
+
+    let mut file: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let rows = file["bindings"].as_array_mut().expect("bindings written");
+    assert_eq!(rows.len(), 1);
+    let good = rows[0].clone();
+    for (field, value) in [
+        ("last_used", serde_json::json!(-5)),
+        ("last_used", serde_json::json!("x")),
+        ("account", serde_json::json!("not an account key")),
+    ] {
+        let mut bad = good.clone();
+        bad[field] = value;
+        rows.push(bad);
+    }
+    let mut missing = good.clone();
+    missing.as_object_mut().unwrap().remove("provider");
+    rows.push(missing);
+    fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+    let after = pool_state(&path, &["a", "b"]);
+    restore(&after).await;
+    assert!(
+        after.accounts.take_dirty(),
+        "dropped rows mark the pool dirty so the file is rewritten"
+    );
+    assert_eq!(
+        after.accounts.export_quotas().len(),
+        1,
+        "the quota survives the bad rows"
+    );
+    assert_eq!(
+        after.accounts.export_quotas()[0].1.utilization_5h,
+        Some(0.25)
+    );
+    let remaining = accounts_of(&after).await;
+    assert_eq!(bound(&after, &remaining, session).as_deref(), Some("b"));
+    assert_eq!(
+        after.accounts.export_bindings().len(),
+        1,
+        "only the decodable row"
+    );
+    remove_test_dir(&path);
+}
+
 /// Persisted `last_used` advances at most hourly: it is written rounded down
 /// to the hour, and a serve that leaves the hour unchanged does not mark the
 /// pool dirty.

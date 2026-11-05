@@ -55,16 +55,19 @@ no binding.
 
 ### 2. A binding moves only when its account cannot serve
 
-A binding is created on a session's first request. It moves only when the bound
-account is ineligible for the current request **and** another account serves that
-request successfully; the binding then records the account that served. Ineligible
+A binding is created when an account first serves the session successfully (a 2xx),
+not on the first request. It moves only when the bound account is ineligible for the
+current request **and** another account serves that request successfully, or when the
+bound account was attempted on this request and failed over to another account that
+served it; the binding then records the account that served. Ineligible
 means: cooling down for this request's scope (global, Fable or model), hard-over,
 quota-rejected, capped, paused for the provider, disabled, or no longer configured.
 
 - An Anthropic 429 without a `rejected` quota status keeps classifying as
   `PauseSame`. It waits on the same account and does not move the binding.
 - If no other account can serve, the binding stays where it is.
-- A recovered account, or a change in priority, affects new assignments only.
+- A recovered account, or a change in priority, leaves an eligible binding in
+  place; a priority change affects only later placements and moves.
   Nothing moves back.
 - A request-scoped limit (Fable-only `7d_oi`, a per-model cooldown) moves the
   binding on the request it applies to, not on requests for other models.

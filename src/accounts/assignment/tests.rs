@@ -288,7 +288,35 @@ fn soonest_weekly_reset_never_moves_a_healthy_binding() {
         Bound::At(0),
     );
     assert_eq!(placement.head, Some(0), "AC-013");
-    assert!(placement.fast);
+    // The head stays the binding (AC-013), but a binding that is not the strategy's first choice takes the sorted failover order, not the fast path.
+    assert!(!placement.fast);
+}
+
+#[test]
+fn only_a_healthy_bound_first_choice_takes_the_fast_path() {
+    let slots = [healthy(10), healthy(30), healthy(20)];
+    // Bound to slot 2 after moving off the first choice (slot 1).
+    let moved = place(
+        PoolAssignment::Spread,
+        slots.len(),
+        |i| slots[i],
+        |i| slots[i].weight,
+        Bound::At(2),
+    );
+    assert_eq!(moved.head, Some(2));
+    assert_eq!(moved.start, 2);
+    assert!(!moved.fast, "a moved binding takes the failover order");
+    assert_eq!(moved.prior_ineligible, None);
+
+    let home = place(
+        PoolAssignment::Spread,
+        slots.len(),
+        |i| slots[i],
+        |i| slots[i].weight,
+        Bound::At(1),
+    );
+    assert_eq!(home.head, Some(1));
+    assert!(home.fast, "a healthy bound first choice is the fast path");
 }
 
 #[test]

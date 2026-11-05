@@ -99,7 +99,7 @@ is not a rounding error — it answers a different question than the one the CLI
 3. Within whichever set step 2 selected, take the accounts at the lowest `priority` value
    present (the most-preferred tier `select_order` tries first).
 4. Within that tier, report the maximum utilization (worst case) — the tier is exactly the
-   set of accounts round-robin or session-binding placement can hit for the *next* request.
+   set of accounts round-robin placement and new session assignments can hit for the *next* request; already-bound sessions may remain on accounts outside this tier.
 
 This lives as `routing_aware_window` in `src/oauth_usage.rs` — a deliberately coarser
 approximation of `select_order` (no session bindings, no burn-rate tie-break, no
