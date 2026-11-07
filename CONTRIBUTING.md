@@ -34,8 +34,11 @@ mise install                  # installs mbx next to the existing `stable` toolc
 mise exec -- cargo build      # or plain `cargo` in a shell with mise activation or shims
 ```
 
-There is no prebuilt mbx for Intel macOS, so `mise.toml` aliases the tool to `cargo:mbx`,
-which builds it from crates.io (Rust 1.91 or newer). Without mise, run
+There is no prebuilt mbx for Intel macOS, so `mise.macos-x64.toml` (loaded through
+`auto_env` in `.miserc.toml`) aliases the tool to `cargo:mbx`, which builds it from crates.io
+(Rust 1.91 or newer) at the version pinned in `mise.macos-x64.lock`; every other platform
+installs the release archive pinned in `mise.lock`.
+Without mise, run
 `cargo install mbx --locked` and use `mbx build` / `mbx test` directly.
 
 mbx wraps rustc itself, so it **defers to any `RUSTC_WRAPPER` already set** (for example
