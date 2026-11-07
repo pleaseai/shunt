@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.64.0](https://github.com/pleaseai/shunt/compare/v0.63.0...v0.64.0) (2026-11-05)
+
+
+### Features
+
+* **auth:** let Codex model discovery read jwt_header and jwt_cookie ([#883](https://github.com/pleaseai/shunt/issues/883)) ([f4181a1](https://github.com/pleaseai/shunt/commit/f4181a1c7a104d5d6127f00bd17319683f94cfa5))
+* **pool:** bind pooled sessions to accounts instead of hashing them ([#884](https://github.com/pleaseai/shunt/issues/884)) ([b559846](https://github.com/pleaseai/shunt/commit/b55984649a0f0ef16e55335d7cb6ed545d584850))
+* **pool:** keep a session on one account through failovers and pool changes ([#857](https://github.com/pleaseai/shunt/issues/857)) ([513fe99](https://github.com/pleaseai/shunt/commit/513fe99fe4c44208badc5932f9fb0ea33c555d57))
+
 ## [0.63.0](https://github.com/pleaseai/shunt/compare/v0.62.0...v0.63.0) (2026-11-03)
 
 
