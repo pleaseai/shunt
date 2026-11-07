@@ -24,9 +24,10 @@ files (`.worktreeinclude`) and warms the Cargo cache on worktree creation.
 
 ### Faster local builds (optional)
 
-CI compiles through [mbx (mr boxington)](https://mr-boxington.jdx.dev), a shared Cargo build
-cache, via `jdx/mr-boxington-action` (GitHub Actions cache backend). Locally, the committed
-`mise.toml` turns it on for [mise](https://mise.jdx.dev) users through the Rust tool's
+The CI `test` and `coverage` jobs compile through [mbx (mr boxington)](https://mr-boxington.jdx.dev),
+a shared Cargo build cache, via `jdx/mr-boxington-action` (GitHub Actions cache backend). Locally, the committed
+`mise.toml` turns it on for [mise](https://mise.jdx.dev) users (2026.11.1 or newer, which
+`min_version` enforces; run `mise self-update` first on an older mise) through the Rust tool's
 `mr_boxington` option, so a build in one worktree warms every other worktree:
 
 ```bash
@@ -39,7 +40,7 @@ There is no prebuilt mbx for Intel macOS, so `mise.macos-x64.toml` (loaded throu
 (Rust 1.91 or newer) at the version pinned in `mise.macos-x64.lock`; every other platform
 installs the release archive pinned in `mise.lock`.
 Without mise, run
-`cargo install mbx --locked` and use `mbx build` / `mbx test` directly.
+`cargo install mbx --version 1.29.2 --locked` (the version `mise.lock` pins) and use `mbx build` / `mbx test` directly.
 
 mbx wraps rustc itself, so it **defers to any `RUSTC_WRAPPER` already set** (for example
 `RUSTC_WRAPPER=sccache` in a shell profile, or `build.rustc-wrapper` in `.cargo/config.toml`)
