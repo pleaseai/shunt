@@ -26,8 +26,6 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
       CARGO_INCREMENTAL: 0
     strategy:
       matrix:
@@ -57,8 +55,14 @@ jobs:
         if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      # `local` keeps release builds off every shared cache: nothing is
+      # restored from or saved to the GitHub cache, so a cache entry written
+      # by another run can never reach a shipped binary.
+      - name: Set up mbx
+        uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1.7.3
+        with:
+          version: 1.29.2
+          backend: local
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -86,11 +90,7 @@ jobs:
         run: npm run build
 
       - name: Build
-        run: cargo build --release --locked --features ui,store-postgres --target ${{ matrix.target }}
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
+        run: mbx build --release --locked --features ui,store-postgres --target ${{ matrix.target }}
 
       - name: Stage asset
         run: cp target/${{ matrix.target }}/release/shunt ${{ matrix.asset }}
