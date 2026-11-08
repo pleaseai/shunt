@@ -55,9 +55,9 @@ jobs:
         if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      # `local` keeps release builds off every shared cache: nothing is
-      # restored from or saved to the GitHub cache, so a cache entry written
-      # by another run can never reach a shipped binary.
+      # `local` keeps compiler outputs off the GitHub cache: mbx restores and
+      # saves nothing there, so a compiled object written by another run can
+      # never reach a shipped binary. Only the Cargo registry below is cached.
       - name: Set up mbx
         uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1.7.3
         with:
