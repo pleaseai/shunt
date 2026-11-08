@@ -20,13 +20,9 @@ jobs:
   test:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
-    # sccache vars are scoped per-job (not top-level env): a future job that runs
-    # Cargo without installing sccache first would otherwise fail on a missing
-    # binary. rust-cache keeps cache-targets:false so the two split roles;
-    # sccache can't cache incremental builds, so disable it.
+    # mbx wraps rustc itself and defers to a preset wrapper (caching nothing),
+    # so no RUSTC_WRAPPER may be set here.
     env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
       CARGO_INCREMENTAL: 0
       SHUNT_TEST_POSTGRES_URL: postgres://shunt:shunt-ci@localhost:5432/shunt_test
       SHUNT_TEST_POSTGRES_REQUIRED: "1"
@@ -56,13 +52,12 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # After the toolchain step: the cache key hashes the `rustc` on PATH.
+      - name: Set up mbx cache
+        uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1.7.3
         with:
-          cache-targets: false
+          version: 1.29.2
+          cache-generation: test-v1
 
       # `--all-features` turns on `ui`, which embeds `ui/dist`; without the
       # bundle the cargo steps below fail to compile. Node is needed only for
@@ -117,10 +112,10 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: mbx clippy --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --all-features --workspace
+        run: mbx test --all-features --workspace
 
       # `--all-features` compiles the `#[cfg(not(feature = "ui"))]` arms out
       # entirely, so the default build's answers — `GET /admin` reporting that
@@ -138,19 +133,13 @@ jobs:
       # entry by naming the cargo feature, and `--all-features` compiles that
       # arm away.
       - name: Test default build (no ui feature)
-        run: cargo test --test router_surface --test prefill_router
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
+        run: mbx test --test router_surface --test prefill_router
 
   coverage:
     name: coverage · codecov · sonarqube
     runs-on: ubuntu-latest
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
       CARGO_INCREMENTAL: 0
       SHUNT_TEST_POSTGRES_URL: postgres://shunt:shunt-ci@localhost:5432/shunt_test
       SHUNT_TEST_POSTGRES_REQUIRED: "1"
@@ -183,13 +172,11 @@ jobs:
         with:
           components: llvm-tools-preview
 
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Set up mbx cache
+        uses: jdx/mr-boxington-action@88acf2bb50552c7c508cbac13e5f8c576b95b1de # v1.7.3
         with:
-          cache-targets: false
+          version: 1.29.2
+          cache-generation: coverage-v1
 
       # `--all-features` turns on `ui`, which embeds `ui/dist`; without the
       # bundle the cargo steps below fail to compile. Node is needed only for
@@ -217,11 +204,7 @@ jobs:
           tool: cargo-llvm-cov
 
       - name: Generate coverage (lcov)
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
+        run: mbx llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0

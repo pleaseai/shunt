@@ -24,36 +24,30 @@ files (`.worktreeinclude`) and warms the Cargo cache on worktree creation.
 
 ### Faster local builds (optional)
 
-CI compiles through [sccache](https://github.com/mozilla/sccache) (GitHub Actions cache
-backend). You can opt in locally — it's per-developer and nothing in the repo forces it, so a
-missing `sccache` binary never breaks the build:
+The CI `test` and `coverage` jobs compile through [mbx (mr boxington)](https://mr-boxington.jdx.dev),
+a shared Cargo build cache, via `jdx/mr-boxington-action` (GitHub Actions cache backend). Locally, the committed
+`mise.toml` turns it on for [mise](https://mise.jdx.dev) users (2026.11.1 or newer, which
+`min_version` enforces; run `mise self-update` first on an older mise) through the Rust tool's
+`mr_boxington` option, so a build in one worktree warms every other worktree:
 
 ```bash
-brew install sccache  # or: cargo install sccache
+mise install                  # installs mbx next to the existing `stable` toolchain
+mise exec -- cargo build      # or plain `cargo` in a shell with mise activation or shims
 ```
 
-Then turn it on either globally via your shell profile:
+There is no prebuilt mbx for Intel macOS, so `mise.macos-x64.toml` (loaded through
+`auto_env` in `.miserc.toml`) aliases the tool to `cargo:mbx`, which builds it from crates.io
+(Rust 1.91 or newer) at the version pinned in `mise.macos-x64.lock`; every other platform
+installs the release archive pinned in `mise.lock`.
+Without mise, run
+`cargo install mbx --version 1.29.2 --locked` (the version `mise.lock` pins) and use `mbx build` / `mbx test` directly.
 
-```bash
-export RUSTC_WRAPPER=sccache
-```
-
-…or scoped to just this repo with a gitignored `.cargo/config.toml` (keeps other Rust projects
-unaffected):
-
-```toml
-[build]
-rustc-wrapper = "sccache"
-```
-
-sccache stores artifacts on disk by default (10 GB cap; tune with `SCCACHE_DIR` /
-`SCCACHE_CACHE_SIZE`). The default cache location is `~/Library/Caches/Mozilla.sccache` on macOS,
-`~/.cache/sccache` on Linux, and `%LOCALAPPDATA%\Mozilla\sccache` on Windows. For the biggest win across `cargo clean` and
-branch switches, also disable incremental compilation, which sccache can't cache — either
-`export CARGO_INCREMENTAL=0`, or add `incremental = false` under `[build]` in the repo-local
-`.cargo/config.toml` to keep it scoped to this project instead of your global environment. It's
-optional: disabling incremental trades away fast small-edit rebuilds. Check hits with
-`sccache --show-stats`.
+mbx wraps rustc itself, so it **defers to any `RUSTC_WRAPPER` already set** (for example
+`RUSTC_WRAPPER=sccache` in a shell profile, or `build.rustc-wrapper` in `.cargo/config.toml`)
+and then caches nothing. Remove that wrapper before using mbx. Check that a build uses the
+cache with the `mbx[cache]` summary line it prints, `mbx doctor`, and `mbx explain --last`.
+To opt out in this repo, set `mr_boxington = false` on the `rust` entry in a gitignored
+`mise.local.toml`.
 
 ## Pull requests
 

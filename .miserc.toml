@@ -1,0 +1,2 @@
+# Load platform configs such as mise.macos-x64.toml (the default from mise 2027.6).
+auto_env = true
