@@ -103,6 +103,11 @@ const BLUEPRINTS: &[Blueprint] = &[
         &["cheaper-inference"],
         "Cheaper Inference gateway via CHEAPER_INFERENCE_API_KEY"
     ),
+    upstream_blueprint!(
+        "standardcompute",
+        &["standard-compute"],
+        "Standard Compute gateway via STANDARDCOMPUTE_API_KEY"
+    ),
 ];
 
 const GENERIC_UPSTREAM: &str = include_str!("../blueprints/upstream/_generic.md");
@@ -295,6 +300,7 @@ mod tests {
             "minimax-cn",
             "opencode",
             "cheaperinference",
+            "standardcompute",
         ] {
             assert!(error.contains(slug), "missing {slug:?} in {error:?}");
         }
