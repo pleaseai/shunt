@@ -129,6 +129,14 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         api_key_env: None,
         api_key_header: None,
     },
+    ProviderPreset {
+        name: "standardcompute",
+        kind: ProviderKind::Anthropic,
+        base_url: "https://api.stdcmpt.com",
+        auth: AuthMode::ApiKey,
+        api_key_env: Some("STANDARDCOMPUTE_API_KEY"),
+        api_key_header: None,
+    },
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static ProviderPreset> {
@@ -173,12 +181,13 @@ mod tests {
                 "minimax-cn",
                 "opencode",
                 "cheaperinference",
-                "chatgpt-plan"
+                "chatgpt-plan",
+                "standardcompute",
             ]
         );
         assert_eq!(
             available_names(),
-            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn, opencode, cheaperinference, chatgpt-plan"
+            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn, opencode, cheaperinference, chatgpt-plan, standardcompute"
         );
     }
 
@@ -269,5 +278,15 @@ mod tests {
             Some("CHEAPER_INFERENCE_API_KEY")
         );
         assert_eq!(cheaperinference.api_key_header, None);
+    }
+
+    #[test]
+    fn standardcompute_preset_uses_the_anthropic_surface_with_a_bearer_key() {
+        let preset = find("standardcompute").unwrap();
+        assert_eq!(preset.kind, ProviderKind::Anthropic);
+        assert_eq!(preset.base_url, "https://api.stdcmpt.com");
+        assert_eq!(preset.auth, AuthMode::ApiKey);
+        assert_eq!(preset.api_key_env, Some("STANDARDCOMPUTE_API_KEY"));
+        assert_eq!(preset.api_key_header, None);
     }
 }
