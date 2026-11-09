@@ -182,7 +182,7 @@ mod tests {
                 "opencode",
                 "cheaperinference",
                 "chatgpt-plan",
-                "standardcompute"
+                "standardcompute",
             ]
         );
         assert_eq!(

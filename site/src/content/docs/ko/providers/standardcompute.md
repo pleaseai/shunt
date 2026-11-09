@@ -64,7 +64,7 @@ Claude Code에서 `ANTHROPIC_MODEL`, `ANTHROPIC_CUSTOM_MODEL_OPTION`, 또는 서
 
 ```bash
 shunt check    # -> config ok
-shunt run
+shunt run &    # or run it in a second terminal
 curl -sSi http://127.0.0.1:3001/v1/messages \
   -H 'anthropic-version: 2023-06-01' \
   -H 'content-type: application/json' \
