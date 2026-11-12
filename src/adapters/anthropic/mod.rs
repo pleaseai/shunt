@@ -193,6 +193,27 @@ async fn relay_judged(
     Ok((status, response))
 }
 
+/// Name the pool account behind a client error the pool relays as final, so
+/// an operator can tell which account a `4xx` came from. Only the account's
+/// configured label is logged, never its email, uuid, or token. A success or
+/// a rotation logs elsewhere (or not at all), so this covers the one relayed
+/// answer that otherwise leaves no account in the log.
+fn warn_relayed_client_error(
+    route: &Route,
+    account: &crate::config::AccountConfig,
+    status: StatusCode,
+) {
+    if status.is_client_error() {
+        tracing::warn!(
+            provider = %route.provider,
+            model = %route.model,
+            account = %account.name,
+            status = status.as_u16(),
+            "Claude OAuth account answered with a client error; relaying it"
+        );
+    }
+}
+
 async fn forward_claude_oauth(
     state: AppState,
     route: Route,
@@ -384,6 +405,7 @@ async fn forward_claude_oauth(
                     status.is_success(),
                     is_fable,
                 );
+                warn_relayed_client_error(&route, account, status);
                 return relay_response(&state, &route, upstream, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
@@ -708,6 +730,7 @@ async fn forward_claude_oauth(
                             // alter routing.
                             state.accounts.clear_needs_relogin(&route.provider, account);
                         }
+                        warn_relayed_client_error(&route, account, retry_status);
                         return relay_response(&state, &route, retry, Some(&account.name), bounds)
                             .await
                             .map(|(status, response)| {

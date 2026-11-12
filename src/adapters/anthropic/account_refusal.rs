@@ -1,12 +1,16 @@
 //!
-//! Three upstream answers mean the whole account (not the request) is out of
-//! room: the organisation or workspace spend limit, an exhausted credit
-//! balance, and any `billing_error`. Retrying the same account is pointless
-//! until the cause clears, so the caller skips it for a window. The spend-limit
-//! message states when access returns; the other two carry no time.
+//! Four upstream answers mean the whole account (not the request) is out of
+//! room or out of bounds: the organisation or workspace spend limit, an
+//! exhausted credit balance, any `billing_error`, and a `403` saying the
+//! account's organisation does not allow OAuth (subscription) access. Retrying
+//! the same account is pointless until the cause clears, so the caller skips
+//! it for a window. The spend-limit message states when access returns; the
+//! other three carry no time.
 //!
-//! Matching is on the start of the documented message, never a substring: a
-//! validation 400 that merely mentions `usage limits` must stay terminal.
+//! The `400`/`402` refusals match on the start of the documented message,
+//! never a substring: a validation 400 that merely mentions `usage limits`
+//! must stay terminal. The organisation-OAuth refusal is matched only on a
+//! `403` and only in `error.message`, where no request content is echoed.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -33,12 +37,22 @@ const SPEND_LIMIT_PREFIXES: [&str; 2] = [
 ];
 const CREDIT_BALANCE_PREFIX: &str = "Your credit balance is too low to access the Anthropic API";
 const RESUME_MARKER: &str = "regain access on ";
+/// The API's message when an organisation's admin has turned off Claude
+/// subscription (OAuth) access, e.g. a Team or Enterprise seat with Claude
+/// Code disabled. Claude Code reports it as `oauth_org_not_allowed` ("Your
+/// organization has disabled Claude subscription access for Claude Code") and
+/// recognises it by this substring on a 401 or 403, so it is matched the same
+/// way here, on a 403 only (a 401 already rotates through the refresh path).
+const ORG_OAUTH_DISABLED_MARKER: &str =
+    "OAuth authentication is currently not allowed for this organization";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RefusalKind {
     SpendLimit,
     CreditBalance,
     Billing,
+    /// The account's organisation does not allow OAuth (subscription) access.
+    OrgOauthDisabled,
 }
 
 impl RefusalKind {
@@ -48,6 +62,7 @@ impl RefusalKind {
             Self::SpendLimit => "spend_limit",
             Self::CreditBalance => "credit_balance",
             Self::Billing => "billing",
+            Self::OrgOauthDisabled => "org_oauth_disabled",
         }
     }
 }
@@ -75,9 +90,9 @@ impl AccountRefusal {
 }
 
 /// Judge a relayed upstream response for an account-level refusal before it
-/// reaches the client. Only a 400 or 402 has its body read, under the shared
-/// error-body bounds; every other status returns untouched and unread. The
-/// returned response carries the upstream's body intact (a 400 or 402 in a
+/// reaches the client. Only a 400, 402 or 403 has its body read, under the
+/// shared error-body bounds; every other status returns untouched and unread.
+/// The returned response carries the upstream's body intact (one of those in a
 /// supported content coding comes back decoded). A body that exceeds the
 /// smaller of the caller's cap (`bounds.max_bytes`) and the envelope
 /// ceiling, or is not the Anthropic envelope, is not classified as a refusal.
@@ -98,9 +113,9 @@ pub(super) async fn judge(
     Ok((upstream, refused.map(|(refusal, _)| refusal)))
 }
 
-/// Only a 400 or 402 body can be an account-level refusal.
+/// Only a 400, 402 or 403 body can be an account-level refusal.
 fn can_refuse(status: u16) -> bool {
-    status == 400 || status == 402
+    matches!(status, 400 | 402 | 403)
 }
 
 /// The status guard, bounded read, and classification [`judge`] and [`peek`]
@@ -224,15 +239,15 @@ pub(super) fn skip_refused_pool(state: &AppState, route: &Route, accounts: &[Acc
     );
 }
 
-/// How long the committed streaming chain (`chain_attempt`) reads a 400 or 402
-/// body before it decides without it. That chain decides at header arrival,
+/// How long the committed streaming chain (`chain_attempt`) reads a 400, 402
+/// or 403 body before it decides without it. That chain decides at header arrival,
 /// so the peek must stay short: a body that stalls past it falls back to the
 /// status-only terminal answer, and must do so well inside the one-second
 /// bound the stalled-400 test holds `chain_attempt` to. An Anthropic refusal
 /// is a small JSON body sent with its headers, so it arrives within the peek.
 pub(super) const CHAIN_PEEK_BUDGET: Duration = Duration::from_millis(250);
 
-/// The committed streaming chain's form of [`judge`]: read a 400 or 402 body
+/// The committed streaming chain's form of [`judge`]: read a 400, 402 or 403 body
 /// under [`CHAIN_PEEK_BUDGET`] and no idle clock (that path has none). The
 /// response comes back rebuilt with the upstream's body intact, read or not
 /// (decoded as [`judge`] decodes it),
@@ -257,6 +272,17 @@ pub(crate) fn classify(status: u16, body: &[u8]) -> Option<AccountRefusal> {
     let message = error.get("message").and_then(Value::as_str).unwrap_or("");
     let error_type = error.get("type").and_then(Value::as_str);
 
+    if status == 403 {
+        // Only the organisation-OAuth refusal: any other 403 (a content or
+        // policy refusal) is about the request, and resending it to every
+        // pool account could get all of them flagged.
+        return message
+            .contains(ORG_OAUTH_DISABLED_MARKER)
+            .then_some(AccountRefusal {
+                kind: RefusalKind::OrgOauthDisabled,
+                resume_at_epoch_secs: None,
+            });
+    }
     if status == 402 && error_type == Some("billing_error") {
         return Some(AccountRefusal {
             kind: RefusalKind::Billing,
@@ -426,6 +452,53 @@ mod tests {
                 assert_eq!(classify(status, outer.to_string().as_bytes()), None);
             }
         }
+    }
+
+    const ORG_OAUTH_DISABLED_MESSAGE: &str =
+        "OAuth authentication is currently not allowed for this organization.";
+
+    #[test]
+    fn org_oauth_disabled_403_is_an_account_refusal() {
+        let body = envelope("permission_error", ORG_OAUTH_DISABLED_MESSAGE);
+        let refusal = classify(403, &body).expect("org OAuth refusal");
+        assert_eq!(refusal.kind, RefusalKind::OrgOauthDisabled);
+        assert_eq!(refusal.kind.label(), "org_oauth_disabled");
+        assert_eq!(
+            refusal.skip_window(UNIX_EPOCH + Duration::from_secs(RESUME)),
+            REFUSAL_DEFAULT_SKIP
+        );
+    }
+
+    #[test]
+    fn org_oauth_disabled_message_needs_status_403() {
+        let body = envelope("permission_error", ORG_OAUTH_DISABLED_MESSAGE);
+        assert_eq!(kind(403, &body), Some(RefusalKind::OrgOauthDisabled));
+        for status in [400, 401, 402, 404, 429, 500] {
+            assert_eq!(kind(status, &body), None, "{status}");
+        }
+    }
+
+    /// Every other 403 is about the request and stays terminal, including
+    /// the other refusal messages arriving on a 403.
+    #[test]
+    fn other_403s_are_not_refusals() {
+        for (error_type, message) in [
+            (
+                "permission_error",
+                "Your request was blocked by our usage policies.",
+            ),
+            (
+                "permission_error",
+                "Your API key does not have permission to use the specified resource.",
+            ),
+            ("invalid_request_error", CREDIT_BALANCE_PREFIX),
+            ("billing_error", "Payment required."),
+        ] {
+            assert_eq!(kind(403, &envelope(error_type, message)), None, "{message}");
+        }
+        assert_eq!(classify(403, b"<html>Forbidden</html>"), None);
+        let bare = serde_json::json!({"error": {"type": "permission_error", "message": ORG_OAUTH_DISABLED_MESSAGE}});
+        assert_eq!(classify(403, bare.to_string().as_bytes()), None);
     }
 
     #[test]
