@@ -3125,6 +3125,237 @@ async fn a_validation_400_is_relayed_without_rotating_or_cooling() {
     upstream.verify().await;
 }
 
+/// The API's answer when an organisation's admin has turned off Claude
+/// subscription (OAuth) access; Claude Code shows it as "Your organization has
+/// disabled Claude subscription access for Claude Code".
+const ORG_OAUTH_DISABLED_MESSAGE: &str =
+    "OAuth authentication is currently not allowed for this organization.";
+
+/// Captures the gateway's log lines for assertions on what an operator sees.
+#[derive(Clone, Default)]
+struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if let Ok(mut output) = self.0.lock() {
+            output.extend_from_slice(bytes);
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl CapturedLogs {
+    fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync {
+        let logs = self.clone();
+        tracing_subscriber::fmt()
+            .with_writer(move || logs.clone())
+            .with_ansi(false)
+            .without_time()
+            .finish()
+    }
+
+    fn text(&self) -> String {
+        let bytes = self
+            .0
+            .lock()
+            .map(|output| output.clone())
+            .unwrap_or_default();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+/// Mount a pool account's answer: the organisation-OAuth `403` or a `200`.
+async fn mount_org_refusal(upstream: &MockServer, token: &str, calls: u64) {
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token.to_string()))
+        .respond_with(ResponseTemplate::new(403).set_body_raw(
+            error_envelope("permission_error", ORG_OAUTH_DISABLED_MESSAGE),
+            "application/json",
+        ))
+        .expect(calls)
+        .mount(upstream)
+        .await;
+}
+
+/// A three-account pool whose tokens come from `{env_stem}_A/_B/_C`.
+async fn start_three_account_gateway(
+    upstream: &MockServer,
+    env_stem: &str,
+) -> (TestGateway, shunt::server::AppState, Vec<AccountConfig>) {
+    let accounts: Vec<AccountConfig> = ["a", "b", "c"]
+        .iter()
+        .map(|suffix| {
+            account(
+                &format!("account-{suffix}"),
+                &format!("{env_stem}_{}", suffix.to_ascii_uppercase()),
+                &format!("uuid-{suffix}"),
+            )
+        })
+        .collect();
+    let (gateway, state) =
+        start_gateway_with_state(test_config_accounts(&upstream.uri(), accounts.clone())).await;
+    (gateway, state, accounts)
+}
+
+/// An organisation that disabled Claude subscription access answers every
+/// request from that account with a 403. That is the account's problem, not
+/// the request's: the pool keeps rotating past every refusing account until
+/// one serves, cools each refuser, and the log names each refusing account.
+#[tokio::test]
+async fn an_org_oauth_disabled_403_rotates_through_the_whole_pool() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let tokens: Vec<String> = ["a", "b", "c"]
+        .iter()
+        .map(|suffix| ["fake-oauth-", "orgoff-", suffix].concat())
+        .collect();
+    for (suffix, token) in ["A", "B", "C"].iter().zip(&tokens) {
+        vars.set(&format!("SHUNT_TEST_MULTI_ORGOFF_{suffix}"), token);
+    }
+
+    let upstream = MockServer::start().await;
+    mount_org_refusal(&upstream, &tokens[0], 1).await;
+    mount_org_refusal(&upstream, &tokens[1], 1).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(tokens[2].clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"c"}"#))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state, accounts) =
+        start_three_account_gateway(&upstream, "SHUNT_TEST_MULTI_ORGOFF").await;
+    let logs = CapturedLogs::default();
+    let subscriber_guard = tracing::subscriber::set_default(logs.subscriber());
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_served_by(&response, "account-c");
+    assert_cooled_for_the_default_refusal_window(&state, &accounts[0]);
+    assert_cooled_for_the_default_refusal_window(&state, &accounts[1]);
+
+    // The refusers stay cooled: the next request goes straight to C.
+    let response = post_messages(&gateway, None).await;
+    assert_served_by(&response, "account-c");
+
+    drop(subscriber_guard);
+    let logs = logs.text();
+    for refuser in ["account-a", "account-b"] {
+        assert!(
+            logs.lines()
+                .any(|line| line.contains(&format!("account={refuser}"))
+                    && line.contains("status=403")
+                    && line.contains("refusal=\"org_oauth_disabled\"")),
+            "the refusal log must name {refuser}: {logs}"
+        );
+    }
+    assert!(
+        !logs.contains("fake-oauth-"),
+        "no credential may reach the log: {logs}"
+    );
+    upstream.verify().await;
+}
+
+/// When every account's organisation refuses OAuth access, the pool relays
+/// the last account's own 403 rather than a gateway-made error.
+#[tokio::test]
+async fn a_pool_where_every_org_refuses_oauth_relays_the_final_403() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let tokens: Vec<String> = ["a", "b", "c"]
+        .iter()
+        .map(|suffix| ["fake-oauth-", "orgoffall-", suffix].concat())
+        .collect();
+    for (suffix, token) in ["A", "B", "C"].iter().zip(&tokens) {
+        vars.set(&format!("SHUNT_TEST_MULTI_ORGOFFALL_{suffix}"), token);
+    }
+
+    let upstream = MockServer::start().await;
+    for token in &tokens {
+        mount_org_refusal(&upstream, token, 1).await;
+    }
+
+    let (gateway, _state, _accounts) =
+        start_three_account_gateway(&upstream, "SHUNT_TEST_MULTI_ORGOFFALL").await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response.text().await.unwrap(),
+        error_envelope("permission_error", ORG_OAUTH_DISABLED_MESSAGE)
+    );
+    upstream.verify().await;
+}
+
+/// The positive twin: any other 403 (a policy refusal of this request) is
+/// relayed from the first account without trying the rest or cooling it, and
+/// the log names the account that answered it.
+#[tokio::test]
+async fn a_request_level_403_is_relayed_with_its_account_logged() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token_a = ["fake-oauth-", "policy403-a"].concat();
+    let token_b = ["fake-oauth-", "policy403-b"].concat();
+    vars.set("SHUNT_TEST_MULTI_POLICY403_A", &token_a);
+    vars.set("SHUNT_TEST_MULTI_POLICY403_B", &token_b);
+
+    let body = error_envelope(
+        "permission_error",
+        "Your request was blocked by our usage policies.",
+    );
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(403).set_body_raw(body.clone(), "application/json"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+
+    let (gateway, state, account_a) =
+        start_two_account_gateway(&upstream, "SHUNT_TEST_MULTI_POLICY403").await;
+    let logs = CapturedLogs::default();
+    let subscriber_guard = tracing::subscriber::set_default(logs.subscriber());
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_served_by(&response, "account-a");
+    assert_eq!(response.text().await.unwrap(), body);
+    let snapshot = &state
+        .accounts
+        .snapshot("anthropic", &[account_a], None, None)[0];
+    assert_eq!(snapshot.cooldown_secs_remaining, None);
+
+    drop(subscriber_guard);
+    let logs = logs.text();
+    assert!(
+        logs.lines().any(|line| line.contains("account=account-a")
+            && line.contains("status=403")
+            && line.contains("answered with a client error")),
+        "the relayed 403 must name its account: {logs}"
+    );
+    upstream.verify().await;
+}
+
 // Session bindings (ADR-0008): a session is bound to the account that first
 // served it and moves only when that account cannot serve and another one
 // does. The switch metric's counts are asserted in the crate's own adapter

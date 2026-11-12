@@ -147,13 +147,18 @@ Wraps adapter dispatch in `forward()`. Per attempt, in chain order:
    serves, except a `kimi_oauth` pool, which relays these refusals unchanged)
    also advances on an **account-level refusal**: the upstream refused
    the account, not the request, so the next element may serve the same
-   request. The adapter reads the body of a `400` or `402` and judges the start
-   of `error.message` (never a substring):
+   request. The adapter reads the body of a `400`, `402` or `403` and judges
+   `error.message` (its start, never a substring, for `400`/`402`):
    - `400` whose message starts with `You have reached your specified API usage
      limits` or `You have reached your specified workspace API usage limits`;
    - `400` or `402` whose message starts with `Your credit balance is too low
      to access the Anthropic API`;
-   - any `402` whose `error.type` is `billing_error`.
+   - any `402` whose `error.type` is `billing_error`;
+   - a `403` whose message contains `OAuth authentication is currently not
+     allowed for this organization` (an organisation admin turned off Claude
+     subscription access; Claude Code shows it as `oauth_org_not_allowed`).
+     Every other `403` is about the request (a policy refusal) and is not
+     re-sent to the rest of a pool.
 
    The body read is bounded (5 s and 256 KiB; the committed streaming chain in
    §6 peeks for 250 ms instead). A body that stalls, exceeds the cap, or is not
@@ -256,15 +261,15 @@ The pool survives as the **intra-upstream** mechanism; the chain is the
   first account without rotating. The rule applies to the HTTP responses of the
   translating pool (`/v1/messages`) and the `[server.codex_endpoint]`
   passthrough, first attempt and post-refresh retry alike.
-- **Anthropic account-level refusal** (the three refusals in §3 step 2): the
+- **Anthropic account-level refusal** (the four refusals in §3 step 2): the
   chain advances past the refusing upstream, and later requests skip it for a
   window, in memory only (a restart clears it; nothing is written to
   `state_path`).
   - *Skip window.* A non-pooled upstream that refused is dropped from new
     chains until the time stated in `You will regain access on YYYY-MM-DD at
     HH:MM UTC` when the message carries one that is still ahead, otherwise for
-    1 hour. Only the spend-limit message states a time; the credit-balance and
-    `billing_error` refusals always use 1 hour. A later, shorter refusal does
+    1 hour. Only the spend-limit message states a time; the credit-balance,
+    `billing_error`, and organisation-OAuth refusals always use 1 hour. A later, shorter refusal does
     not shorten a window already running.
   - *Passthrough is never skipped.* A passthrough upstream lends the caller's
     own credential, so a refusal advances that request but starts no window.
@@ -288,12 +293,14 @@ The pool survives as the **intra-upstream** mechanism; the chain is the
     ranks below a `5xx`, and between two refusals the first one stays.
   - *Observability.* Off the pool, each refusal logs one `warn` with
     `provider`, `model`, `status`, `refusal` (`spend_limit`, `credit_balance`,
-    or `billing`), and `skip_until_epoch_secs` (absent for passthrough). On the
+    `billing`, or `org_oauth_disabled`), and `skip_until_epoch_secs` (absent for passthrough). On the
     Claude OAuth pool, each account refusal logs one `warn` with `provider`,
     `account`, `status`, `refusal`, and `cooldown_until_epoch_secs`. When the pool
     is skipped, a separate `warn` logs `provider`, `model`, and
     `skip_until_epoch_secs`. The pool rotation metric records the reason
-    `account_refusal`.
+    `account_refusal`. Any other client error (`4xx`) a Claude OAuth pool
+    account answers and the pool relays logs one `warn` with `provider`,
+    `model`, `account` (the configured label only), and `status`.
 - **Physical-account state sharing**: per-account state (quota windows,
   health, cooldowns, in-flight admission counts, refresh locks) is re-keyed
   from provider name to *(store family, stable account identity)*. Identity
