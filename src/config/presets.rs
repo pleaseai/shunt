@@ -122,6 +122,14 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         api_key_header: None,
     },
     ProviderPreset {
+        name: "uberllm",
+        kind: ProviderKind::Anthropic,
+        base_url: "https://api.uberllm.dev",
+        auth: AuthMode::ApiKey,
+        api_key_env: Some("UBERLLM_API_KEY"),
+        api_key_header: None,
+    },
+    ProviderPreset {
         name: "chatgpt-plan",
         kind: ProviderKind::Responses,
         base_url: "https://api.openai.com/v1",
@@ -173,12 +181,13 @@ mod tests {
                 "minimax-cn",
                 "opencode",
                 "cheaperinference",
+                "uberllm",
                 "chatgpt-plan"
             ]
         );
         assert_eq!(
             available_names(),
-            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn, opencode, cheaperinference, chatgpt-plan"
+            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn, opencode, cheaperinference, uberllm, chatgpt-plan"
         );
     }
 
@@ -269,5 +278,15 @@ mod tests {
             Some("CHEAPER_INFERENCE_API_KEY")
         );
         assert_eq!(cheaperinference.api_key_header, None);
+    }
+
+    #[test]
+    fn uberllm_preset_uses_the_anthropic_surface_with_a_bearer_key() {
+        let uberllm = find("uberllm").unwrap();
+        assert_eq!(uberllm.kind, ProviderKind::Anthropic);
+        assert_eq!(uberllm.base_url, "https://api.uberllm.dev");
+        assert_eq!(uberllm.auth, AuthMode::ApiKey);
+        assert_eq!(uberllm.api_key_env, Some("UBERLLM_API_KEY"));
+        assert_eq!(uberllm.api_key_header, None);
     }
 }
