@@ -1243,7 +1243,8 @@ fn normalize_chatgpt_plan(value: &str) -> String {
     match value.to_ascii_lowercase().as_str() {
         "prolite" | "pro" => "Pro".to_string(),
         "plus" => "Plus".to_string(),
-        "team" => "Team".to_string(),
+        "team" => "Business Standard".to_string(),
+        "self_serve_business_profile" => "Business Premium".to_string(),
         "enterprise" => "Enterprise".to_string(),
         other => title_case(other),
     }
@@ -1337,6 +1338,23 @@ mod tests {
         let observed = parse_grok_cli(&value, UNIX_EPOCH + Duration::from_secs(1_000)).unwrap();
 
         assert_eq!(observed.account_id.as_deref(), Some("xai-user-1"));
+    }
+
+    #[test]
+    fn codex_business_plan_labels_preserve_raw_values() {
+        for (raw, label) in [
+            ("team", "Business Standard"),
+            ("self_serve_business_profile", "Business Premium"),
+            ("TeAm", "Business Standard"),
+        ] {
+            let access = jwt(json!({"exp": 2_000, "https://api.openai.com/auth": {
+                "chatgpt_plan_type": raw
+            }}));
+            let value = json!({"auth_mode": "ChatGPT", "tokens": {"access_token": access}});
+            assert_eq!(codex_plan_from_credentials(&value).as_deref(), Some(raw));
+            let observed = parse_codex(&value, UNIX_EPOCH + Duration::from_secs(1_000)).unwrap();
+            assert_eq!(observed.identity, format!("ChatGPT · {label}"));
+        }
     }
 
     #[test]
