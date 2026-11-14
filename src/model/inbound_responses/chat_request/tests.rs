@@ -232,6 +232,26 @@ fn function_tools_nest_and_built_ins_drop() {
 }
 
 #[test]
+fn function_tools_strip_only_unsupported_patterns() {
+    let parameters = json!({
+        "type": "object", "properties": {
+            "label": {"type": "string", "pattern": r"^[^\p{Cc}]+$", "description": "A label"},
+            "code": {"type": "string", "pattern": "^[a-z]+$"}
+        }, "required": ["label"], "additionalProperties": false
+    });
+    let request = json!({
+        "input": "hi",
+        "tools": [{"type": "function", "name": "lookup", "parameters": parameters}]
+    });
+    let original = request.clone();
+    let out = translate_request(&request, "m").unwrap();
+    let mut expected = parameters;
+    expected["properties"]["label"] = json!({"type": "string", "description": "A label"});
+    assert_eq!(out["tools"][0]["function"]["parameters"], expected);
+    assert_eq!(request, original);
+}
+
+#[test]
 fn tool_choice_forms_map_and_need_tools() {
     let with_tools = |tool_choice: Value| {
         json!({
