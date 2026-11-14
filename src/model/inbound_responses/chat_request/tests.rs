@@ -243,12 +243,10 @@ fn function_tools_strip_only_unsupported_patterns() {
         "input": "hi",
         "tools": [{"type": "function", "name": "lookup", "parameters": parameters}]
     });
-    let original = request.clone();
     let out = translate_request(&request, "m").unwrap();
     let mut expected = parameters;
     expected["properties"]["label"] = json!({"type": "string", "description": "A label"});
     assert_eq!(out["tools"][0]["function"]["parameters"], expected);
-    assert_eq!(request, original);
 }
 
 #[test]
