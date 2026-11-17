@@ -2752,6 +2752,17 @@ fn validate_conditional_router(
                     name: rule.name.clone(),
                 });
             }
+            // A name `HeaderName::from_bytes` rejects can never appear in a
+            // `HeaderMap` (`"x tier"` has a space, `x\ttier` a tab), so the
+            // rule would compile, load, and silently never fire. Reject it at
+            // load like the blank/padded spellings above.
+            if axum::http::HeaderName::from_bytes(header.name.as_bytes()).is_err() {
+                return Err(ConfigError::InvalidHeaderName {
+                    model: model_id.to_string(),
+                    index,
+                    name: rule.name.clone(),
+                });
+            }
         }
         if let Some(prefix) = &when.model_starts_with {
             if prefix.is_empty() {
@@ -2793,6 +2804,18 @@ fn validate_conditional_router(
                     index,
                     name: rule.name.clone(),
                     field: "end",
+                });
+            }
+            // `contains` takes the same-day branch when `start == end`, and
+            // that branch's `now < end` bound makes an equal window match
+            // nothing — not "all day", which the crossing form's wording once
+            // suggested. Reject it rather than let an operator wonder why the
+            // rule never fires.
+            if window.start == window.end {
+                return Err(ConfigError::ZeroLengthTimeBetween {
+                    model: model_id.to_string(),
+                    index,
+                    name: rule.name.clone(),
                 });
             }
         }
@@ -3236,12 +3259,24 @@ pub enum ConfigError {
     RandomWeightTotal { model: String },
     #[error("models entry {model} conditional router must declare at least one rule")]
     EmptyConditionalRules { model: String },
-    #[error("models entry {model} conditional router rule {index} ({name:?}) has an empty time_between.{field}")]
+    #[error("models entry {model} conditional router rule {index} ({name:?}) has an out-of-range time_between.{field}: expected HH:MM with hour 00-23 and minute 00-59")]
     InvalidTimeBetween {
         model: String,
         index: usize,
         name: String,
         field: &'static str,
+    },
+    #[error("models entry {model} conditional router rule {index} ({name:?}) has a zero-length time_between (start == end): such a window never matches, so widen it or drop the condition")]
+    ZeroLengthTimeBetween {
+        model: String,
+        index: usize,
+        name: String,
+    },
+    #[error("models entry {model} conditional router rule {index} ({name:?}) has a header condition whose name is not a valid HTTP field name, so a HeaderMap lookup would never find it")]
+    InvalidHeaderName {
+        model: String,
+        index: usize,
+        name: String,
     },
     #[error("models entry {model} conditional router rule {index} ({name:?}) has a header condition whose name is blank or padded with whitespace, or whose value is blank; the name is matched against inbound header names exactly, so neither can match")]
     BlankHeaderCondition {

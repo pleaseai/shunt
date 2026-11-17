@@ -1090,25 +1090,34 @@ id = "claude-cost-optimized"
 
 [models.router]
 type = "conditional"
-utc_offset_hours = 8          # Asia/Shanghai
+utc_offset_hours = 0          # 창은 각 제공자가 공표한 UTC 시계로 적는다
 default_target = "deepseek-chat"
 
+# DeepSeek 은 01:00-04:00 및 06:00-10:00 UTC(월-금)에 할증을 적용합니다.
+# 그 시간대는 가격이 오르지 않는 제공자로 보냅니다.
 [[models.router.rules]]
-name = "offpeak-cheap"
+name = "avoid-deepseek-morning"
 priority = 1
-target = "deepseek-chat"
+target = "glm-4-flash"
 
 [models.router.rules.when]
-time_between = { start = "22:00", end = "08:00" }   # 자정을 넘김
+time_between = { start = "01:00", end = "04:00" }
+days = ["mon", "tue", "wed", "thu", "fri"]
 
 [[models.router.rules]]
-name = "peak-budget"
+name = "avoid-deepseek-late-morning"
 priority = 2
 target = "glm-4-flash"
 
 [models.router.rules.when]
-time_between = { start = "08:00", end = "22:00" }
+time_between = { start = "06:00", end = "10:00" }
+days = ["mon", "tue", "wed", "thu", "fri"]
 ```
+
+공표된 일정은 이동하고 플랜마다 다릅니다. 복사하기 전에 제공자의 요금 페이지에서
+다시 확인하세요. 예를 들어 GLM Coding Plan은 UTC+8 기준 `14:00`-`18:00`(UTC 로는
+`06:00`-`10:00`), 월-금에 할증을 적용합니다 — DeepSeek 의 늦은 오전 창과 같은 시계라서
+한쪽을 겨냥한 규칙이 양쪽을 모두 커버할 수 있습니다.
 
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
@@ -1125,7 +1134,7 @@ time_between = { start = "08:00", end = "22:00" }
 
 | `when` 키 | 일치 조건 | 비고 |
 | :-- | :-- | :-- |
-| `time_between` | 시계가 `{ start = "HH:MM", end = "HH:MM" }` 안에 있음 | 시작 포함, 끝 제외. 끝이 시작 이하인 창은 자정을 넘습니다(`22:00`–`08:00`). `utc_offset_hours` 로 평가 |
+| `time_between` | 시계가 `{ start = "HH:MM", end = "HH:MM" }` 안에 있음 | 시작 포함, 끝 제외. 끝이 시작보다 앞선 창은 자정을 넘습니다(`22:00`–`08:00`). 끝이 시작과 같은 창은 아무것도 일치시키지 않으며 로드 시 거부됩니다. `utc_offset_hours` 로 평가 |
 | `header` | 요청 헤더가 일치 | `{ name, value, mode }`; `mode` 는 `equals`(기본), `contains`, `starts_with`. 모든 비교는 ASCII 대소문자를 구분하지 않으며, 헤더 이름은 RFC 9110 에 따라 대소문자를 구분하지 않음 |
 | `model_starts_with` | 요청의 모델 id 가 접두사로 시작 | 클라이언트의 `[1m]` 컨텍스트 창 힌트를 제거한 뒤 비교 |
 | `days` | 오늘이 `["mon", "tue", "wed", "thu", "fri", "sat", "sun"]` 중 하나 | 생략 시 매일; 빈 목록은 거부 |
@@ -1137,11 +1146,19 @@ time_between = { start = "08:00", end = "22:00" }
 시각을 조건으로 하는 규칙은 시계가 항상 사용 가능하므로 요청 본문이 없는 표면을 포함한
 모든 표면에서 평가됩니다.
 
+계획할 때 유의할 점이 둘 있습니다. `utc_offset_hours` 는 DST 를 다루지 않는 **고정**
+오프셋입니다. DST 가 있는 지역의 벽시계 시각으로 창을 쓰면 계절마다 한 시간씩 밀리므로,
+현지 벽시계 대신 고정 오프셋 시계 — UTC 또는 제공자가 공표한 일정 — 로 쓰세요. 그리고
+`header` 조건은 **클라이언트가 보낸** 헤더를 읽습니다. 클라이언트의 협조로 트래픽을
+보내는 것이지 권한을 부여하는 것이 아닙니다. `x-shunt-tier: vip` 에 일치하는 규칙은
+라우팅 신호일 뿐, 인증의 대체가 결코 아닙니다.
+
 규칙 대상은 일반 공개 모델 id 이므로, 선택된 대상은 다른 라우터의 대상과 마찬가지로
 페일오버 체인, 계정 풀, 어댑터, `effort`, `service_tier` 를 유지합니다. 규칙 순서는
 **설정 시점의 결정**입니다. 규칙 집합은 부팅 시 검증되므로(`utc_offset_hours` 범위, 비어
-있지 않은 헤더 이름과 값, 비어 있지 않은 모델 접두사, 비어 있지 않은 `days`, 비어 있지 않은
-규칙 목록, 캐치올 금지) 오타는 한 턴이 아니라 `shunt check` 에서 실패합니다.
+있지 않고 올바른 HTTP 필드 이름인 헤더 이름과 값, 비어 있지 않은 모델 접두사, 비어 있지 않은
+`days`, 비어 있지 않은 규칙 목록, 캐치올 금지, 길이 0 창 금지) 오타는 한 턴이 아니라
+`shunt check` 에서 실패합니다.
 
 #### `type = "noop"`
 

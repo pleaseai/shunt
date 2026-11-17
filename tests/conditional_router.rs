@@ -336,6 +336,40 @@ fn blank_header_name_is_rejected() {
     assert!(err.to_string().contains("blank"), "got: {err}");
 }
 
+/// A header name that is not a valid HTTP field name (a space, a control
+/// character) is rejected: `HeaderMap::get` can never return it, so the rule
+/// would silently never fire.
+#[test]
+fn invalid_header_name_is_rejected() {
+    let cfg = config_with_router(
+        conditional(
+            vec![ConditionalRule {
+                name: "r".into(),
+                priority: 1,
+                target: "fallback".into(),
+                when: WhenCondition {
+                    header: Some(HeaderMatch {
+                        name: "x tier".into(),
+                        value: "vip".into(),
+                        mode: HeaderMatchMode::Equals,
+                    }),
+                    ..Default::default()
+                },
+            }],
+            "fallback",
+            Some(8.0),
+        ),
+        "fallback",
+    );
+    let err = cfg
+        .validate()
+        .expect_err("non-field-name header must be rejected");
+    assert!(
+        err.to_string().contains("not a valid HTTP field name"),
+        "got: {err}"
+    );
+}
+
 // ── End-to-end resolution ────────────────────────────────────────────────────
 
 /// Resolution through a real conditional entry lands on the rule's target and
@@ -450,6 +484,34 @@ fn out_of_range_window_is_rejected() {
     );
     let err = cfg.validate().expect_err("25:00 must be rejected");
     assert!(err.to_string().contains("time_between"), "got: {err}");
+}
+
+/// A zero-length window (`start == end`) is rejected: `contains` takes the
+/// same-day branch, whose exclusive end makes an equal window match nothing —
+/// not "all day", which an equal pair might be read as.
+#[test]
+fn equal_start_end_window_is_rejected() {
+    let cfg = config_with_router(
+        conditional(
+            vec![ConditionalRule {
+                name: "r".into(),
+                priority: 1,
+                target: "fallback".into(),
+                when: WhenCondition {
+                    time_between: Some(TimeBetween {
+                        start: (8, 0),
+                        end: (8, 0),
+                    }),
+                    ..Default::default()
+                },
+            }],
+            "fallback",
+            Some(8.0),
+        ),
+        "fallback",
+    );
+    let err = cfg.validate().expect_err("08:00-08:00 must be rejected");
+    assert!(err.to_string().contains("zero-length"), "got: {err}");
 }
 
 /// An empty `days` list is rejected.

@@ -1271,25 +1271,34 @@ id = "claude-cost-optimized"
 
 [models.router]
 type = "conditional"
-utc_offset_hours = 8          # Asia/Shanghai
+utc_offset_hours = 0          # windows written in the provider's published UTC clock
 default_target = "deepseek-chat"
 
+# DeepSeek applies surcharges 01:00-04:00 and 06:00-10:00 UTC, Mon-Fri.
+# Route those windows to a provider whose price does not move.
 [[models.router.rules]]
-name = "offpeak-cheap"
+name = "avoid-deepseek-morning"
 priority = 1
-target = "deepseek-chat"
+target = "glm-4-flash"
 
 [models.router.rules.when]
-time_between = { start = "22:00", end = "08:00" }   # crosses midnight
+time_between = { start = "01:00", end = "04:00" }
+days = ["mon", "tue", "wed", "thu", "fri"]
 
 [[models.router.rules]]
-name = "peak-budget"
+name = "avoid-deepseek-late-morning"
 priority = 2
 target = "glm-4-flash"
 
 [models.router.rules.when]
-time_between = { start = "08:00", end = "22:00" }
+time_between = { start = "06:00", end = "10:00" }
+days = ["mon", "tue", "wed", "thu", "fri"]
 ```
+
+Published schedules move and differ per plan, so re-check the provider's
+pricing page before copying this. GLM's Coding Plan, for example, surcharges
+`14:00`-`18:00` at UTC+8 (`06:00`-`10:00` UTC), Monday-Friday — the same clock
+as DeepSeek's late-morning window, so a rule aimed at one can cover both.
 
 | Key | Default | Meaning |
 | :-- | :-- | :-- |
@@ -1309,7 +1318,7 @@ table reads as "this target when (A and B), or that target when (C and D), …".
 
 | `when` key | Matches | Notes |
 | :-- | :-- | :-- |
-| `time_between` | The clock is inside `{ start = "HH:MM", end = "HH:MM" }` | Start inclusive, end exclusive. A window whose end is at or before its start crosses midnight (`22:00`–`08:00`). Evaluated at `utc_offset_hours` |
+| `time_between` | The clock is inside `{ start = "HH:MM", end = "HH:MM" }` | Start inclusive, end exclusive. An end earlier than its start crosses midnight (`22:00`–`08:00`); a window whose end equals its start never matches and is rejected at load. Evaluated at `utc_offset_hours` |
 | `header` | A request header matches | `{ name, value, mode }`; `mode` is `equals` (default), `contains`, or `starts_with`. All comparisons are ASCII case-insensitive, and the header name is matched case-insensitively per RFC 9110 |
 | `model_starts_with` | The request's model id starts with the prefix | Compared after the client's `[1m]` context-window hint is stripped |
 | `days` | Today is one of `["mon", "tue", "wed", "thu", "fri", "sat", "sun"]` | Absent means every day; an empty list is rejected |
@@ -1322,12 +1331,21 @@ the turn it measures would. A time-gated rule is evaluated on every surface,
 including the body-less ones, because the clock is always available; the target
 a body-less surface reports is therefore the one the current time selects.
 
+Two caveats to plan around. `utc_offset_hours` is a **fixed** offset with no
+DST handling: a window written in a DST zone's wall time drifts by an hour
+seasonally, so write windows in a fixed-offset clock — UTC, or the provider's
+published schedule — rather than local wall time. And a `header` condition reads
+a **client-supplied** header: it routes by client cooperation but grants no
+entitlement, so a rule matching `x-shunt-tier: vip` is a routing signal, never a
+substitute for authentication.
+
 Because a rule target is an ordinary public model id, the chosen target keeps
 its failover chain, account pool, adapter, `effort`, and `service_tier`, exactly
 as every other router's target does. Rule order is a **configuration-time
-decision**: the set is validated at boot (`utc_offset_hours` range, a non-blank
-header name and value, a non-blank model prefix, a non-empty `days`, a non-empty
-rule list, and no catch-all) so a typo fails `shunt check` rather than a turn.
+decision**: the set is validated at boot (`utc_offset_hours` range, a non-blank header name and value that is also a
+valid HTTP field name, a non-blank model prefix, a non-empty `days`, a non-empty
+rule list, no catch-all, and no zero-length window) so a typo fails
+`shunt check` rather than a turn.
 
 #### `type = "noop"`
 

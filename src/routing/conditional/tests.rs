@@ -354,3 +354,62 @@ fn empty_rules_use_default() {
     assert_eq!(target, "deepseek-chat");
     assert_eq!(source, RouteSource::ConditionalDefault);
 }
+
+/// The matched rule's name reaches the `debug` log (issue #697): with two
+/// rules sharing a target, or a rule winning unexpectedly, the decision line
+/// is the only place that says *which* rule fired.
+#[test]
+fn matched_rule_name_is_logged() {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    struct BufferWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+    impl Write for BufferWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.buffer.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let writer_output = Arc::clone(&output);
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || BufferWriter {
+            buffer: Arc::clone(&writer_output),
+        })
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .without_time()
+        .finish();
+
+    let cfg = config(
+        vec![rule(
+            "offpeak-cheap",
+            1,
+            "deepseek-chat",
+            WhenCondition {
+                time_between: Some(time_between("00:00", "23:59")),
+                ..Default::default()
+            },
+        )],
+        "glm-4-flash",
+        Some(0.0),
+    );
+
+    let ((target, source), logs) = tracing::subscriber::with_default(subscriber, || {
+        let decision = select_at(&cfg, "claude-sonnet", None, noon_utc());
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        (decision, logs)
+    });
+    assert_eq!(target, "deepseek-chat");
+    assert_eq!(source, RouteSource::Conditional);
+    assert!(
+        logs.contains("offpeak-cheap") && logs.contains("conditional router rule matched"),
+        "matched rule name must reach the debug log, got: {logs}"
+    );
+}

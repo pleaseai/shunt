@@ -150,10 +150,18 @@ fn select_at<'a>(
     // walk needs no per-request sort.
     for rule in &config.rules {
         if rule_matches(rule, &ctx) {
+            // The rule name is config-defined (bounded cardinality) and is the
+            // only way to tell *which* rule fired when two share a target, so
+            // the decision line carries it (issue #697).
+            tracing::debug!(rule = %rule.name, target = %rule.target, "conditional router rule matched");
             return (rule.target.as_str(), RouteSource::Conditional);
         }
     }
 
+    tracing::debug!(
+        target = %config.default_target,
+        "conditional router fell through to default_target"
+    );
     (
         config.default_target.as_str(),
         RouteSource::ConditionalDefault,

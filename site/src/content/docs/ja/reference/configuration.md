@@ -1082,25 +1082,35 @@ id = "claude-cost-optimized"
 
 [models.router]
 type = "conditional"
-utc_offset_hours = 8          # Asia/Shanghai
+utc_offset_hours = 0          # ウィンドウは各プロバイダが公表している UTC の時刻で書く
 default_target = "deepseek-chat"
 
+# DeepSeek は 01:00-04:00 と 06:00-10:00 UTC(月-金)に割増を課します。
+# その時間帯は、価格が動かないプロバイダへ振り分けます。
 [[models.router.rules]]
-name = "offpeak-cheap"
+name = "avoid-deepseek-morning"
 priority = 1
-target = "deepseek-chat"
+target = "glm-4-flash"
 
 [models.router.rules.when]
-time_between = { start = "22:00", end = "08:00" }   # 深夜をまたぐ
+time_between = { start = "01:00", end = "04:00" }
+days = ["mon", "tue", "wed", "thu", "fri"]
 
 [[models.router.rules]]
-name = "peak-budget"
+name = "avoid-deepseek-late-morning"
 priority = 2
 target = "glm-4-flash"
 
 [models.router.rules.when]
-time_between = { start = "08:00", end = "22:00" }
+time_between = { start = "06:00", end = "10:00" }
+days = ["mon", "tue", "wed", "thu", "fri"]
 ```
+
+公表されているスケジュールは移動し、プランごとに異なります。コピーする前に
+プロバイダの料金ページで再確認してください。たとえば GLM の Coding Plan は
+UTC+8 の `14:00`-`18:00`(UTC の `06:00`-`10:00`)、月-金に割増を課します —
+DeepSeek の午前遅くのウィンドウと同じ時計なので、片方に向けたルールが両方を
+カバーできます。
 
 | キー | 既定値 | 意味 |
 | :-- | :-- | :-- |
@@ -1117,7 +1127,7 @@ time_between = { start = "08:00", end = "22:00" }
 
 | `when` のキー | 一致条件 | 備考 |
 | :-- | :-- | :-- |
-| `time_between` | 時計が `{ start = "HH:MM", end = "HH:MM" }` の内側 | 開始は含む、終了は含まない。終了が開始以前のウィンドウは深夜をまたぎます(`22:00`–`08:00`)。`utc_offset_hours` で評価 |
+| `time_between` | 時計が `{ start = "HH:MM", end = "HH:MM" }` の内側 | 開始は含む、終了は含まない。終了が開始より前のウィンドウは深夜をまたぎます(`22:00`–`08:00`)。終了が開始と等しいウィンドウは何にも一致せず、ロード時に拒否されます。`utc_offset_hours` で評価 |
 | `header` | リクエストヘッダーが一致 | `{ name, value, mode }`。`mode` は `equals`(既定)、`contains`、`starts_with`。比較はすべて ASCII 大文字小文字を区別せず、ヘッダー名は RFC 9110 に従い大文字小文字を区別しません |
 | `model_starts_with` | リクエストのモデル id が接頭辞で始まる | クライアントの `[1m]` コンテキストウィンドウヒントを除去した後に比較 |
 | `days` | 今日が `["mon", "tue", "wed", "thu", "fri", "sat", "sun"]` のいずれか | 省略時は毎日。空のリストは拒否 |
@@ -1130,11 +1140,20 @@ time_between = { start = "08:00", end = "22:00" }
 ルールはこれらのサーフェスでも評価されます。時計は常に利用できるため、リクエスト本文を
 持たないサーフェスが報告するターゲットは、現在時刻が選ぶものになります。
 
+計画の際に注意すべき点が 2 つあります。`utc_offset_hours` は DST を扱わない
+**固定**オフセットです。DST のある地域の現地時刻でウィンドウを書くと、季節によって
+1 時間ずれるので、現地の壁時計ではなく固定オフセットの時計 — UTC、またはプロバイダが
+公表しているスケジュール — で書いてください。また、`header` 条件は**クライアントが
+送る**ヘッダーを読みます。クライアントの協力でトラフィックを振り分けるものであり、
+権限を与えるものではありません。`x-shunt-tier: vip` に一致するルールはルーティングの
+合図であって、認証の代わりには決してなりません。
+
 ルールのターゲットは通常の公開モデル id なので、選ばれたターゲットは他のルーターの
 ターゲットと同様に、フェイルオーバーチェーン、アカウントプール、アダプター、`effort`、
 `service_tier` を保持します。ルールの順序は**設定時の決定**です。ルール集合は起動時に
-検証されるため(`utc_offset_hours` の範囲、空でないヘッダー名と値、空でないモデル接頭辞、
-空でない `days`、空でないルール一覧、キャッチオールの禁止)、タイポは 1 ターンではなく
+検証されるため(`utc_offset_hours` の範囲、空でなく、かつ妥当な HTTP フィールド名である
+ヘッダー名と値、空でないモデル接頭辞、空でない `days`、空でないルール一覧、
+キャッチオールの禁止、長さ 0 のウィンドウの禁止)、タイポは 1 ターンではなく
 `shunt check` で失敗します。
 
 #### `type = "noop"`

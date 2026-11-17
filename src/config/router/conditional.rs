@@ -36,7 +36,9 @@ pub struct ConditionalRouterConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConditionalRule {
-    /// A human-readable label, surfaced as the rule's metric/log label.
+    /// A human-readable label. Surfaced on the `debug` log line of every
+    /// turn the rule wins, so an operator can tell *which* rule fired when two
+    /// rules share a target.
     pub name: String,
     /// Evaluation order: lower numbers are checked first. Rules with equal
     /// priority keep their declared order.

@@ -298,11 +298,19 @@ through to `default_target` there; a live `count_tokens` probe does carry header
 and can match one. A time-gated rule is evaluated on every surface, since the
 clock is always available.
 
+The rule the walk picks is surfaced on a `debug` log line — `rule` (the
+config-defined name) and `target` beside the decision — so two rules sharing a
+target are distinguishable after the fact, and so is a fall-through to
+`default_target` (issue #697).
+
 Validation at load rejects a catch-all rule (an empty `when`, which would shadow
 every later rule), an out-of-range `utc_offset_hours`, a blank header name or
-value, a blank model prefix, an empty `days` list, and an empty rule list. The
-route source is `conditional` for a matched rule and `conditional_default`
-otherwise.
+value, a header name that is not a valid HTTP field name (a `HeaderMap` lookup
+could never return it, so the rule would silently never fire), a blank model
+prefix, an empty `days` list, a zero-length `time_between` window (`start ==
+end` takes the same-day branch, whose exclusive end makes it match nothing), and
+an empty rule list. The route source is `conditional` for a matched rule and
+`conditional_default` otherwise.
 
 ### `noop`: a well-formed empty turn
 
