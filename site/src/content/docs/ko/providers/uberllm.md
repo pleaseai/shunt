@@ -68,7 +68,8 @@ export UBERLLM_API_KEY='...'
 
 ```bash
 shunt check    # -> config ok
-shunt run
+shunt run      # 포그라운드에서 계속 실행됩니다. 아래 요청은 다른 터미널에서 실행하세요
+
 curl -sSi http://127.0.0.1:3001/v1/messages \
   -H 'anthropic-version: 2023-06-01' \
   -H 'content-type: application/json' \

@@ -11,7 +11,7 @@ description: UBERLLM_API_KEY でマッピングしたモデルを UberLLM の Me
 
 ## クイックスタート
 
-コーディングエージェントに任せる —— `shunt add` は組み込みのセットアップブループリントを表示します(オフライン・読み取り専用。設定を編集するのはエージェントで、コマンドは何も変更しません):
+コーディングエージェントに任せる —— `shunt add` は組み込みのセットアップブループリントを表示します(オフライン・読み取り専用。設定を編集するのはエージェントであり、コマンド自体は何も変更しません):
 
 ```bash
 shunt add upstream uberllm --print | claude
@@ -70,7 +70,8 @@ frontmatter でルーティングされた ID を選択します。代わりに 
 
 ```bash
 shunt check    # -> config ok
-shunt run
+shunt run      # フォアグラウンドで動き続けます。下のリクエストは別のターミナルから実行してください
+
 curl -sSi http://127.0.0.1:3001/v1/messages \
   -H 'anthropic-version: 2023-06-01' \
   -H 'content-type: application/json' \

@@ -69,7 +69,8 @@ surface an entry in the `/model` picker instead, advertise a `claude`-prefixed a
 
 ```bash
 shunt check    # -> config ok
-shunt run
+shunt run      # stays in the foreground; run the request below from a second terminal
+
 curl -sSi http://127.0.0.1:3001/v1/messages \
   -H 'anthropic-version: 2023-06-01' \
   -H 'content-type: application/json' \

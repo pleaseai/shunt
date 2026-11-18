@@ -67,7 +67,8 @@ export UBERLLM_API_KEY='...'
 
 ```bash
 shunt check    # -> config ok
-shunt run
+shunt run      # 在前台持续运行;请在另一个终端里执行下面的请求
+
 curl -sSi http://127.0.0.1:3001/v1/messages \
   -H 'anthropic-version: 2023-06-01' \
   -H 'content-type: application/json' \
