@@ -90,8 +90,8 @@ and is configured to route the model ids above to the Codex provider:
 > `gpt-5.5` / `gpt-5.4`. In `models.json`, `gpt-6-sol` and `gpt-6-luna` require a
 > Codex client of at least 0.155.0, while `gpt-6-astra`, `gpt-6.1-sol` and
 > `gpt-6.1-terra` require at least 0.153.0 (though `gpt-6.1-sol` was rejected
-> with a 0.156.0 identity anyway); shunt's pinned client identity
-> (`codex_cli_rs/0.159.3`) satisfies all five. This plugin ships no agent for
+> with a 0.156.0 identity, and with a 0.159.3 identity on 2026-11-10);
+> shunt's pinned client identity is `codex_cli_rs/0.170.0`. This plugin ships no agent for
 > `gpt-6-astra`, `gpt-6.1-sol` or `gpt-6.1-terra`, and a route alone does not
 > make one invokable.
 > To use one, add a `[[routes]]` block like those above, then pick one way to
