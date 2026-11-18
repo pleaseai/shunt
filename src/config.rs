@@ -2465,7 +2465,13 @@ fn model_supports_tool_search(model: &str) -> bool {
     // exactly: the catalog lists no gpt-6 family, only these slugs.
     matches!(
         model,
-        "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna" | "gpt-6.1-sol" | "gpt-6.1-terra"
+        "gpt-6-astra"
+            | "gpt-6-sol"
+            | "gpt-6-luna"
+            | "gpt-6.1-sol"
+            | "gpt-6.1-terra"
+            | "gpt-6.2-sol"
+            | "gpt-6.2-astra"
     )
 }
 
@@ -12895,6 +12901,12 @@ target = "judge-alias"
         // Codex catalog slug `gpt-6.1-terra` (openai/codex#57293, same flag).
         assert!(config.native_tool_search("codex", "gpt-6.1-terra"));
         assert!(config.native_tool_search("openai", "gpt-6.1-terra"));
+        // Codex catalog slugs `gpt-6.2-sol` and `gpt-6.2-astra`
+        // (openai/codex#62106, same flag).
+        assert!(config.native_tool_search("codex", "gpt-6.2-sol"));
+        assert!(config.native_tool_search("openai", "gpt-6.2-sol"));
+        assert!(config.native_tool_search("codex", "gpt-6.2-astra"));
+        assert!(config.native_tool_search("openai", "gpt-6.2-astra"));
         for model in [
             "openai/gpt-6-astra",
             "gpt-6-astra-preview",
@@ -12906,6 +12918,10 @@ target = "judge-alias"
             "gpt-6.1-sol[1m]",
             "gpt-6.1-terra-preview",
             "gpt-6.1-terra[1m]",
+            "gpt-6.2-sol-preview",
+            "gpt-6.2-sol[1m]",
+            "gpt-6.2-astra-preview",
+            "gpt-6.2-astra[1m]",
         ] {
             assert!(!config.native_tool_search("codex", model), "{model}");
         }
@@ -12923,6 +12939,7 @@ target = "judge-alias"
         // Other gpt-6 slugs and close names must not borrow the listed flags.
         assert!(!config.native_tool_search("codex", "gpt-6-pro"));
         assert!(!config.native_tool_search("codex", "gpt-6-terra"));
+        assert!(!config.native_tool_search("codex", "gpt-6.2-terra"));
         assert!(!config.native_tool_search("codex", "gpt-6"));
         assert!(!config.native_tool_search("codex", "gpt-6-astral"));
         // Unsupported flavor keeps the shim (xAI), even though `tool_search`
