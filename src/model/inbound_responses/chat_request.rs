@@ -345,12 +345,11 @@ fn function_tool(tool: &Value) -> Option<Value> {
     }
     // A function tool without `parameters` still needs a schema here: several
     // backends reject a function whose `parameters` key is missing.
-    function.insert(
-        "parameters".to_string(),
-        present(tool.get("parameters"))
-            .cloned()
-            .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
-    );
+    let mut parameters = present(tool.get("parameters"))
+        .cloned()
+        .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+    crate::model::responses_schema::strip_unsupported_patterns(&mut parameters);
+    function.insert("parameters".to_string(), parameters);
     if let Some(strict) = present(tool.get("strict")) {
         function.insert("strict".to_string(), strict.clone());
     }
