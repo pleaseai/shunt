@@ -13,6 +13,7 @@ pub mod cursor;
 mod error_body;
 pub mod gemini;
 pub mod noop;
+pub mod openai_chat;
 pub mod responses;
 pub(crate) mod session_commit;
 
