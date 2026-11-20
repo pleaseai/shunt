@@ -198,10 +198,13 @@ jobs:
         working-directory: ui
         run: npm run build
 
+      # cargo-llvm-cov >= 0.9.0 is required on Rust >= 1.100, whose default
+      # build-dir layout made 0.8.x load build-script binaries as coverage
+      # objects ("not recognized as a valid object file").
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@c7eb1735f09259a5035e8e5d44b1406b1cddc0fb # v2.83.0
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov@0.9.1
 
       - name: Generate coverage (lcov)
         run: mbx llvm-cov --all-features --workspace --lcov --output-path lcov.info
