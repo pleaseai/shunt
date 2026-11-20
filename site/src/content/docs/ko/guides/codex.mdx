@@ -119,9 +119,9 @@ ChatGPT 계정 백엔드는 `gpt-*-codex` 슬러그(예: `gpt-5.2-codex`)를 `40
 
 <Aside type="note" title="`Model not found <slug>`는 자격이 아니라 클라이언트 버전 게이팅입니다">
 
-일부 슬러그는 `minimal_client_version`을 요구합니다(예: `gpt-6-astra`는 ≥ 0.153.0, `gpt-6-sol`과 `gpt-6-luna`는 ≥ 0.155.0 필요). 요청의 클라이언트 신원이 없거나 너무 오래되면 백엔드는 `Model not found <slug>`를 반환합니다. shunt는 고정된 Codex CLI 신원 헤더(`originator: codex_cli_rs`, `user-agent`, `version`)를 **openai/codex rust-v0.159.3**에 고정하여 보내므로 이를 피합니다. [openai/codex#31967](https://github.com/openai/codex/issues/31967)을 참고하세요.
+일부 슬러그는 `minimal_client_version`을 요구합니다(예: `gpt-6-astra`는 ≥ 0.153.0, `gpt-6-sol`과 `gpt-6-luna`는 ≥ 0.155.0 필요). 요청의 클라이언트 신원이 없거나 너무 오래되면 백엔드는 `Model not found <slug>`를 반환합니다. shunt는 고정된 Codex CLI 신원 헤더(`originator: codex_cli_rs`, `user-agent`, `version`)를 **openai/codex rust-v0.170.0**에 고정하여 보내므로 이를 피합니다. [openai/codex#31967](https://github.com/openai/codex/issues/31967)을 참고하세요.
 
-사용 권한이 있는 계정에서 `gpt-6.1-sol`은 카탈로그 `minimal_client_version`이 0.153.0인데도 `0.156.0` 신원으로는 거부되고 `0.159.2` 신원으로는 성공했습니다. `0.159.3`은 그다음 upstream 패치 릴리스입니다. 클라이언트 신원이 오래되면 계정에 사용 권한이 있어도 모델 미지원 오류가 발생할 수 있습니다. 이 고정값은 필요한 최소 버전을 지정하지 않습니다.
+사용 권한이 있는 계정에서 `gpt-6.1-sol`은 카탈로그 `minimal_client_version`이 0.153.0인데도 `0.156.0` 신원으로는 거부되고 `0.159.2` 신원으로는 성공했습니다. 2026-11-10에는 `0.159.3` 신원으로도 `gpt-6.1-sol`이 거부되었고(HTTP 400, "The 'gpt-6.1-sol' model requires a newer version of Codex"), `0.167.1` 신원으로는 성공했습니다. `0.170.0`은 2026-11-18 기준 최신 upstream 안정 릴리스였습니다. 클라이언트 신원이 오래되면 계정에 사용 권한이 있어도 모델 미지원 오류가 발생할 수 있습니다. 이 고정값은 필요한 최소 버전을 지정하지 않습니다.
 
 </Aside>
 
