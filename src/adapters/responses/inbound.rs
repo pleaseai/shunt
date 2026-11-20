@@ -18,7 +18,7 @@ use axum::{
 
 use crate::{
     accounts::CountAttempt,
-    adapters::AdapterError,
+    adapters::{session_commit::SessionCommit, AdapterError},
     auth::{self, resolve_credential, slots::ShuntCredentials, Credential},
     config::AccountConfig,
     routing::Route,
@@ -30,8 +30,8 @@ use super::{
     error::own_error,
     pool::{
         admit_and_resolve, cancel_reprobe_for_account, classify_first, classify_retry,
-        commit_reprobe_for_account, force_refresh_or_cooldown, with_account_header, FirstOutcome,
-        RetryOutcome,
+        commit_reprobe_for_account, commit_unless_reprobe, force_refresh_or_cooldown,
+        provider_auth, with_account_header, FirstOutcome, RetryOutcome,
     },
     request::{alpha_search_url, responses_url},
 };
@@ -203,13 +203,17 @@ async fn forward_codex_passthrough(
         CodexOperation::Responses => Some(route.upstream_model.as_str()),
         CodexOperation::AlphaSearch => None,
     };
-    let (order, mut reprobe_reservation, cap) = state.accounts.select_order_deferred_with_cap(
-        &route.provider,
-        &accounts_config,
-        pool_key.as_deref(),
-        selection_model,
-        state.config.server.pool.as_ref(),
-    );
+    // Inbound HTTP and WebSocket turns of one conversation both arrive here
+    // with the same client-namespaced `pool_key`, so they share one binding.
+    let (order, mut reprobe_reservation, cap, ticket) =
+        state.accounts.select_order_deferred_with_cap_and_ticket(
+            &route.provider,
+            &accounts_config,
+            pool_key.as_deref(),
+            selection_model,
+            state.config.server.pool.as_ref(),
+        );
+    let session_commit = SessionCommit::for_route(ticket, &route, provider_auth(&state, &route));
     let ramp_initial = state.config.storm_ramp_initial();
     let candidates = order.len();
     let mut last_response: Option<reqwest::Response> = None;
@@ -222,8 +226,16 @@ async fn forward_codex_passthrough(
         // saturated identity or failed auth rotates to the next candidate; on
         // a relayed success the guard moves into the response body
         // (`with_admission`) so the slot stays held until the stream finishes.
-        let Some((admission, credential)) =
-            admit_and_resolve(&state, &route, account, ramp_initial, position, candidates).await
+        let Some((admission, credential)) = admit_and_resolve(
+            &state,
+            &route,
+            account,
+            ramp_initial,
+            position,
+            candidates,
+            &session_commit,
+        )
+        .await
         else {
             cancel_reprobe_for_account(&mut reprobe_reservation, index);
             continue;
@@ -275,6 +287,15 @@ async fn forward_codex_passthrough(
                 state
                     .accounts
                     .mark_healthy(&route.provider, account, status.is_success());
+                commit_unless_reprobe(
+                    &session_commit,
+                    &reprobe_reservation,
+                    index,
+                    &state,
+                    &route,
+                    account,
+                    status,
+                );
                 return Ok((
                     status,
                     crate::adapters::with_admission(
@@ -338,6 +359,15 @@ async fn forward_codex_passthrough(
                             &route.provider,
                             account,
                             retry_status.is_success(),
+                        );
+                        commit_unless_reprobe(
+                            &session_commit,
+                            &reprobe_reservation,
+                            index,
+                            &state,
+                            &route,
+                            account,
+                            retry_status,
                         );
                         return Ok((
                             retry_status,
@@ -469,6 +499,7 @@ pub(crate) fn passthrough_request_headers(
         }
         out.append(name.clone(), value.clone());
     }
+    crate::headers::strip_browser_context(&mut out);
     credentials.strip_reserved_slots(&mut out);
     out
 }
@@ -522,6 +553,7 @@ pub(super) fn apply_credential(
             .header("chatgpt-account-id", account_id),
         Credential::ApiKey { value, .. } => request.bearer_auth(value),
         Credential::XaiOauth { access_token }
+        | Credential::ChatgptPlanOauth { access_token }
         | Credential::ClaudeOauth { access_token, .. }
         | Credential::GoogleOauth { access_token, .. } => request.bearer_auth(access_token),
         // Send nothing rather than bearer an off-origin subscription token:

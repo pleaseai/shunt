@@ -47,7 +47,7 @@ pub(crate) fn generate_pkce() -> PkceChallenge {
     }
 }
 
-fn random_urlsafe(bytes: usize) -> String {
+pub(crate) fn random_urlsafe(bytes: usize) -> String {
     let mut random = vec![0_u8; bytes];
     rand::rng().fill_bytes(&mut random);
     URL_SAFE_NO_PAD.encode(random)
@@ -206,7 +206,15 @@ pub(crate) fn token_refresh_client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            reqwest::Client::builder()
+            let builder = reqwest::Client::builder();
+            // Each unit test runs on its own tokio runtime, and a pooled
+            // connection is driven by the runtime that opened it. wiremock
+            // recycles server ports, so a later test could check out a
+            // connection whose runtime is gone and hang until its refresh
+            // timeout. Production has one runtime and keeps pooling.
+            #[cfg(test)]
+            let builder = builder.pool_max_idle_per_host(0);
+            builder
                 .redirect(reqwest::redirect::Policy::custom(|attempt| {
                     let origin = attempt.previous().first().and_then(|url| url.host_str());
                     let same_host = origin.is_some() && origin == attempt.url().host_str();
@@ -656,7 +664,11 @@ fn resolve_inline_identity(store_family: StoreFamily, account: &AccountConfig) -
             path,
         } => crate::auth::codex::store::credential_account_id(Path::new(path)),
         InlineIdentityKey::Credentials {
-            family: StoreFamily::Kimi | StoreFamily::Antigravity | StoreFamily::Xai,
+            family:
+                StoreFamily::Kimi
+                | StoreFamily::Antigravity
+                | StoreFamily::Xai
+                | StoreFamily::ChatgptPlan,
             ..
         } => {
             // Unreachable by construction: `inline_identity_key` only builds a

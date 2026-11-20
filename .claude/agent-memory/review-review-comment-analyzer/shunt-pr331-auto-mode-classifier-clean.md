@@ -15,9 +15,9 @@ honest-provenance rewording rather than removal:
   from here" (was unfalsifiable — see [[unfalsifiable-doc-claims]]).
 - `tests/passthrough.rs` comment → now correctly scoped to the single-credential `forward` path
   (default `AuthMode::Passthrough` never reaches `forward_claude_oauth`), pointing to
-  `tests/multi_account.rs` for the pool path.
+  `tests/multi_account/multi_account.rs` for the pool path.
 
-Verification method that worked for the new `tests/multi_account.rs` pool-path tests
+Verification method that worked for the new `tests/multi_account/multi_account.rs` pool-path tests
 (`BodyLacksIdentity`, `post_classifier_request`, and the `token_env` invariant block comment):
 cross-read `src/auth/mod.rs::resolve_claude_account` (confirms `token_env` branch returns
 `Credential::ClaudeOauth` unconditionally, without checking the token shape) against

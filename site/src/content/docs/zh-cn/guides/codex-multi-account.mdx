@@ -1,9 +1,9 @@
 ---
 title: Codex 多账户
-description: 将 ChatGPT/Codex 订阅 OAuth 账户组成池,以会话粘性、感知配额的主动选择和被动故障转移运行。
+description: 将 ChatGPT/Codex 订阅 OAuth 账户组成池,以会话账户绑定、感知配额的主动选择和被动故障转移运行。
 ---
 
-shunt 可以在一个 `chatgpt_oauth` 提供方背后把多个 ChatGPT 订阅 OAuth 凭据组成池 —— 既可以是内置的 `codex` 提供方,也可以是任何使用该认证模式的 `responses` 提供方。当 Claude Code 提供 `x-claude-code-session-id` 时请求具有会话粘性;不带该头部的请求使用按提供方的轮询。与 [Anthropic 账户池](/zh-cn/guides/anthropic-multi-account/)一样,选择是**感知配额**的:shunt 记录后端的 `x-codex-*` 5 小时/7 天用量窗口,并在粘性账户接近其配额时主动轮换掉它,而基于冷却的被动故障转移仍是安全兜底。
+shunt 可以在一个 `chatgpt_oauth` 提供方背后把多个 ChatGPT 订阅 OAuth 凭据组成池 —— 既可以是内置的 `codex` 提供方,也可以是任何使用该认证模式的 `responses` 提供方。当 Claude Code 提供 `x-claude-code-session-id` 时每个会话都会绑定到一个账户;不带该头部的请求使用按提供方的轮询。与 [Anthropic 账户池](/zh-cn/guides/anthropic-multi-account/)一样,选择是**感知配额**的:shunt 记录后端的 `x-codex-*` 5 小时/7 天用量窗口,并在账户接近其配额时主动把会话从它上面迁走,而基于冷却的被动故障转移仍是安全兜底。
 
 面向客户端的 [`GET /usage`](/zh-cn/reference/endpoints/) 聚合仅在没有任何未禁用账户报告某个窗口时才将该窗口报告为 `null`。Codex 响应中的 `x-codex-*` 头部和可选的 `wham/usage` 轮询会填充 5 小时和共享每周窗口;Codex 本身没有 Fable 范围(`7d_oi`)的信号,但混合提供方池中的其他提供方可以提供聚合 Fable 值。轮询默认关闭。
 
@@ -99,7 +99,7 @@ Codex 没有可配置的显式 `uuid` 字段。作为替代,shunt 对每个账�
 
 <Aside type="note" title="同一个真实账户的重复名称">
 
-如果两个存储文件或配置条目具有相同的 `account_id`,shunt 会把它们算作**同一个账户**。它们共享冷却、健康状态和刷新锁,故障转移会跳过重复的别名,而不是对同一个 ChatGPT 账户重试。粘性哈希和轮询基于不同的身份运作。代表账户是 `priority` 最低的已启用别名,其次是第一个条目;只有它的 token 会被尝试,并且 shunt 会记录一条重复身份警告(配置条目在每次成功加载配置时记录一次,包括重新加载;存储发现的碰撞按每个不同的碰撞集合记录一次,而不是每次请求都记录)。因此,失效的代表账户不会被一个有效的非代表别名救回。
+如果两个存储文件或配置条目具有相同的 `account_id`,shunt 会把它们算作**同一个账户**。它们共享冷却、健康状态和刷新锁,故障转移会跳过重复的别名,而不是对同一个 ChatGPT 账户重试。会话放置和轮询基于不同的身份运作,且绑定记录的是身份。代表账户是 `priority` 最低的已启用别名,其次是第一个条目;只有它的 token 会被尝试,并且 shunt 会记录一条重复身份警告(配置条目在每次成功加载配置时记录一次,包括重新加载;存储发现的碰撞按每个不同的碰撞集合记录一次,而不是每次请求都记录)。因此,失效的代表账户不会被一个有效的非代表别名救回。
 
 通过管理 Web 界面删除存储管理的账户时,只有在确认没有其他存储别名仍解析为同一身份后,才会清除该身份共享的进程内健康状态;扫描失败时会保留健康状态,而不是贸然猜测。这是 admin 存储删除的语义 —— 从 TOML 配置中移除别名,或直接删除其凭据文件,都不会经过此清理流程。
 
@@ -109,13 +109,13 @@ Codex 没有可配置的显式 `uuid` 字段。作为替代,shunt 对每个账�
 
 ## 选择与冷却
 
-- 带 `x-claude-code-session-id` 时:一个稳定的哈希选出粘性账户,机制与 Anthropic 账户池相同。
+- 带 `x-claude-code-session-id` 时:会话通过与 Anthropic 账户池相同的[会话绑定](/zh-cn/guides/anthropic-multi-account/#会话绑定)绑定到一个账户。只有成功响应才会创建或迁移绑定。
 - 不带该头部时:每个提供方有自己的轮询计数器。
 - 成功的响应会记录 `x-codex-primary-*` 与 `x-codex-secondary-*` 头部中的用量。shunt 按 `window-minutes` 映射每一组:约 300 分钟归入 5h,约 10080 分钟归入 7d,其他窗口被忽略。即使某组的 `x-codex-*-reset-at` 头部为空,shunt 仍会记录该位置对应的窗口组及其用量;没有重置时,用量会从自身观测时间起在一个窗口长度后过期。Codex 没有 `7d_oi` 的对应项。
-- 记录的用量会参与选择,与 [Anthropic 账户池](/zh-cn/guides/anthropic-multi-account/)完全一致:达到或超过其阈值(内置的 `0.98`,或 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选)/按账户的软阈值)的粘性账户会主动让位给余量最大的账户,`burn_rate_avoidance` 以及优先级/余量排序同样适用。`x-codex-rate-limit-reached-type` 的值仅被记录用于展示。
+- 记录的用量会参与选择,与 [Anthropic 账户池](/zh-cn/guides/anthropic-multi-account/)完全一致:达到或超过硬阈值(内置的 `0.98`)的已绑定账户会在另一个账户处理请求时立即让位;只达到或超过 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选)/按账户软阈值的账户,在该状态持续 60 秒且存在健康替代账户时,会主动让位给余量最大的账户(带会话 ID 的请求按自己的会话排名代替余量排序),`burn_rate_avoidance` 以及优先级/余量排序同样适用。`x-codex-rate-limit-reached-type` 的值仅被记录用于展示。
 - 硬上限(账户上的 `max_utilization*`,`[server.pool]` 中的 `default_max_utilization*`)在 5 小时或周使用率达到或超过上限期间,会把账户移出选择,而不是像软阈值那样只重新排序。Codex 没有 `7d_oi` 窗口,因此 Fable 上限的键在这里不起作用。当上限使得没有可选账户时,shunt 返回网关自身生成的 `429`(在入站 Codex 端点上为 OpenAI 错误形态),它会推进 `[[upstreams]]` 故障转移链。对于已提交(已发送 HTTP `200`)的流式请求,若后面的上游都无法处理,客户端收到的是流内的终止 SSE `error` 事件,而不是 HTTP `429`,也没有 `retry-after`。参见[硬上限](/zh-cn/guides/anthropic-multi-account/#硬上限max_utilization)。
 - 设置了 `[server.pool] ramp_initial_concurrency` 时,一个 slow-start 准入门控会保护刚刚选中的账户,使其在故障转移之后不被瞬间冲垮;参见 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选)。
-- 设置 `[server.pool]` 后,一个没有其他观测信号的陈旧近配额账户会每隔 `reprobe_seconds`(默认 900 秒,`0` 则禁用)被机会性地提升并预留在选择顺序最前面,让实际请求刷新其配额;参见 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选)。admission 或凭据解析失败会取消预留,首次 HTTP 发送开始时才提交重新探测时间并增加 `shunt.pool.reprobes`。这条路径在非 WebSocket outbound 选择和可选的 inbound Codex HTTP 端点中,充当下文用量轮询器关闭或两次轮询之间的后备手段。启用 WebSocket 的提供方不会在 outbound Responses 池创建预留,并会抑制这种重新探测,因为流内 rate-limit 事件无法安全轮换;可选的 inbound 端点仍会探测,因此该提供方的计数器只统计 inbound 探测。已配置的轮询器只为 imported 且可刷新的账户提供提前恢复;没有轮询器或账户不符合资格时,被排除的 outbound 标记会一直保留到基于观测时间的窗口寿命上限到期。新鲜度使用 5h、共享 7d、Fable 7d_oi 与 aggregate status 四个观测时间戳。
+- 设置 `[server.pool]` 后,一个没有其他观测信号的陈旧近配额账户会每隔 `reprobe_seconds`(默认 900 秒,`0` 则禁用)被机会性地提升并预留在选择顺序最前面,让实际请求刷新其配额;参见 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选)。admission 或凭据解析失败会取消预留,首次 HTTP 发送开始时才提交重新探测时间并增加 `shunt.pool.reprobes`。被提升的账户给出的响应不会提交会话绑定。这条路径在非 WebSocket outbound 选择和可选的 inbound Codex HTTP 端点中,充当下文用量轮询器关闭或两次轮询之间的后备手段。启用 WebSocket 的提供方不会在 outbound Responses 池创建预留,并会抑制这种重新探测,因为流内 rate-limit 事件无法安全轮换;可选的 inbound 端点仍会探测,因此该提供方的计数器只统计 inbound 探测。已配置的轮询器只为 imported 且可刷新的账户提供提前恢复;没有轮询器或账户不符合资格时,被排除的 outbound 标记会一直保留到基于观测时间的窗口寿命上限到期。新鲜度使用 5h、共享 7d、Fable 7d_oi 与 aggregate status 四个观测时间戳。
 - 成功的响应会清除该账户的冷却。
 
 | 触发条件 | 冷却 |
@@ -172,7 +172,7 @@ x-shunt-account: backup
 
 ### WebSocket 传输
 
-如果提供方还设置了 `websocket = true`(参见 [ChatGPT / Codex](/zh-cn/guides/codex/)),连接缓存的 key 会按账户加前缀,这样两个账户绝不会共用一个 socket 或它的 `previous_response_id` 续接状态。在任何 token 流出**之前**发生的 WebSocket 失败会在**同一个**账户上回退到 HTTP(而不是池轮换);只有 HTTP 路径的失败才会触发上面的故障转移。一次全新的 WebSocket 升级会记录其握手中的限流头部;被复用/预热的连接不会再次握手,因此没有头部信号 —— 但后端也会以流内的 `codex.rate_limits` 事件报告同样的窗口,shunt 每一轮都会观测它,因此它们的仪表板用量每一轮都会刷新。
+如果提供方还设置了 `websocket = true`(参见 [ChatGPT / Codex](/zh-cn/guides/codex/)),连接缓存的 key 会按账户加前缀,这样两个账户绝不会共用一个 socket 或它的 `previous_response_id` 续接状态。socket 的账户来自会话的绑定,因此同一对话的 WebSocket 轮次和 HTTP 轮次会停留在同一个账户上。在任何 token 流出**之前**发生的 WebSocket 失败会在**同一个**账户上回退到 HTTP(而不是池轮换);只有 HTTP 路径的失败才会触发上面的故障转移。一次全新的 WebSocket 升级会记录其握手中的限流头部;被复用/预热的连接不会再次握手,因此没有头部信号 —— 但后端也会以流内的 `codex.rate_limits` 事件报告同样的窗口,shunt 每一轮都会观测它,因此它们的仪表板用量每一轮都会刷新。
 
 ## 安全约束
 

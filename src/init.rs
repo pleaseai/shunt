@@ -184,6 +184,9 @@ fn credential_source(preset: ProviderPresetView) -> String {
         },
         AuthMode::ChatgptOauth => "`shunt login codex`.".to_string(),
         AuthMode::XaiOauth => "`shunt login xai`.".to_string(),
+        AuthMode::ChatgptPlanOauth => {
+            "`shunt login chatgpt-plan --name <account-name>`.".to_string()
+        }
         AuthMode::CursorOauth => "`shunt login cursor`.".to_string(),
         AuthMode::KimiOauth => "`shunt login kimi --name <account-name>`.".to_string(),
         AuthMode::Passthrough => {

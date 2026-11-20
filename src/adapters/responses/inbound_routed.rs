@@ -37,9 +37,9 @@ use axum::{
 };
 
 use crate::{
-    adapters::AdapterError,
+    adapters::{session_commit::SessionCommit, AdapterError},
     auth::{resolve_credential, slots::ShuntCredentials, Credential},
-    config::AuthMode,
+    config::{AccountConfig, AuthMode},
     routing::Route,
     server::AppState,
 };
@@ -69,9 +69,17 @@ pub(crate) async fn forward_codex_routed(
     pool_key: Option<String>,
     session_id: Option<String>,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
-    let credential = match routed_xai_pool_credential(&state, &route, pool_key.as_deref()).await? {
-        Some(credential) => credential,
-        None => resolve_credential(&state.config, &route, &state.http_client).await?,
+    let pooled = routed_xai_pool_selection(&state, &route, pool_key.as_deref()).await?;
+    let (credential, served) = match pooled {
+        Some(RoutedXaiServe {
+            credential,
+            account,
+            session,
+        }) => (credential, Some((account, session))),
+        None => (
+            resolve_credential(&state.config, &route, &state.http_client).await?,
+            None,
+        ),
     };
     let request = routed_request(
         &state,
@@ -88,7 +96,31 @@ pub(crate) async fn forward_codex_routed(
     .map_err(send_error)?;
 
     let status = upstream.status();
+    // The single send is the serve point: only a success commits the binding.
+    if let Some((account, session)) = served {
+        session.served(&state.accounts, &route.provider, &account, status);
+    }
     Ok((status, relay_passthrough(upstream)))
+}
+
+/// The pooled xAI account a routed request is sent from, with the session
+/// binding bookkeeping the caller commits after its single send.
+struct RoutedXaiServe {
+    credential: Credential,
+    account: AccountConfig,
+    session: SessionCommit,
+}
+
+/// [`routed_xai_pool_selection`]'s credential alone.
+#[cfg(test)]
+async fn routed_xai_pool_credential(
+    state: &AppState,
+    route: &Route,
+    pool_key: Option<&str>,
+) -> Result<Option<Credential>, AdapterError> {
+    Ok(routed_xai_pool_selection(state, route, pool_key)
+        .await?
+        .map(|serve| serve.credential))
 }
 
 /// The credential for a route to an `xai_oauth` provider whose account pool is
@@ -103,11 +135,11 @@ pub(crate) async fn forward_codex_routed(
 /// fails upstream is not retried on another account. When `max_utilization`
 /// caps exclude every account, the pool's cap-exhaustion 429 is returned, as on
 /// the ChatGPT inbound path.
-async fn routed_xai_pool_credential(
+async fn routed_xai_pool_selection(
     state: &AppState,
     route: &Route,
     pool_key: Option<&str>,
-) -> Result<Option<Credential>, AdapterError> {
+) -> Result<Option<RoutedXaiServe>, AdapterError> {
     let Some(provider) = state.config.provider(&route.provider) else {
         return Ok(None);
     };
@@ -118,13 +150,14 @@ async fn routed_xai_pool_credential(
     if accounts.is_empty() {
         return Ok(None);
     }
-    let (order, cap) = state.accounts.select_order_with_cap(
+    let (order, cap, ticket) = state.accounts.select_order_with_cap_and_ticket(
         &route.provider,
         &accounts,
         pool_key,
         Some(route.upstream_model.as_str()),
         state.config.server.pool.as_ref(),
     );
+    let session = SessionCommit::for_route(ticket, route, provider.auth);
     if order.is_empty() {
         if let Some(error) = crate::adapters::cap_exhausted(route, cap) {
             return Err(error);
@@ -138,8 +171,18 @@ async fn routed_xai_pool_credential(
         accounts.len()
     ));
     for index in order {
-        match super::pool::resolve_xai_or_cooldown(state, route, &accounts[index]).await {
-            Ok(credential) => return Ok(Some(credential)),
+        let account = &accounts[index];
+        // A credential that fails to load is an attempt on this account that
+        // fails over to the next one.
+        session.attempting(account);
+        match super::pool::resolve_xai_or_cooldown(state, route, account).await {
+            Ok(credential) => {
+                return Ok(Some(RoutedXaiServe {
+                    credential,
+                    account: account.clone(),
+                    session,
+                }))
+            }
             Err(error) => last_error = error,
         }
     }
@@ -828,5 +871,85 @@ mod tests {
         let state = AppState::new(config, reqwest::Client::new()).unwrap();
         let headers = routed_request_headers(&state, &route("openai"), &HeaderMap::new());
         assert!(headers.get("openai-beta").is_none());
+    }
+
+    /// Routed xAI commits at its single send (ADR-0008, FR-10): a success
+    /// binds the session to the account that sent it, a non-2xx commits
+    /// nothing, and an account whose credential then fails to load moves the
+    /// binding to the next one with reason `failover`.
+    #[tokio::test]
+    async fn an_xai_route_commits_the_binding_at_its_serve_point() {
+        let _guard = crate::config::test_env_lock();
+        let dir = fresh_accounts_dir("binding");
+        let _env = crate::auth::shared::EnvVarGuard::set("SHUNT_XAI_ACCOUNTS_DIR", &dir);
+        crate::auth::xai::store::store_oauth_tokens("a", &xai_token("a"), "refresh", None).unwrap();
+        crate::auth::xai::store::store_oauth_tokens("b", &xai_token("b"), "refresh", None).unwrap();
+
+        let state = AppState::new(xai_config(), reqwest::Client::new()).unwrap();
+        let route = route("openai");
+        let accounts = state
+            .config
+            .provider("openai")
+            .unwrap()
+            .resolve_pool_accounts()
+            .await
+            .unwrap();
+        let fresh = crate::accounts::AccountPool::new();
+        let key = (0..10_000)
+            .map(|index| format!("client-x:routed-bind-{index}"))
+            .find(|key| {
+                let order = fresh.select_order("openai", &accounts, Some(key), None, None);
+                accounts[order[0]].name == "a"
+            })
+            .expect("a key placed on account a");
+        let bound = || {
+            let (_, ticket) = state.accounts.select_order_with_ticket(
+                "openai",
+                &accounts,
+                Some(&key),
+                Some(route.upstream_model.as_str()),
+                None,
+            );
+            let ticket = ticket.unwrap();
+            accounts
+                .iter()
+                .find(|account| ticket.is_bound_to(account))
+                .map(|account| account.name.clone())
+        };
+        let failovers =
+            || crate::metrics::session_account_switch_count_for_tests("openai", "failover", false);
+        let before = failovers();
+
+        let serve = routed_xai_pool_selection(&state, &route, Some(&key))
+            .await
+            .unwrap()
+            .expect("a pooled account");
+        assert_eq!(serve.account.name, "a");
+        serve.session.served(
+            &state.accounts,
+            "openai",
+            &serve.account,
+            StatusCode::TOO_MANY_REQUESTS,
+        );
+        assert_eq!(bound(), None, "a relayed 429 binds nothing");
+        serve
+            .session
+            .served(&state.accounts, "openai", &serve.account, StatusCode::OK);
+        assert_eq!(bound().as_deref(), Some("a"));
+
+        // `a` still scans as an account, but its file no longer loads.
+        std::fs::write(dir.join("a.json"), "not json").unwrap();
+        let serve = routed_xai_pool_selection(&state, &route, Some(&key))
+            .await
+            .unwrap()
+            .expect("the next pooled account");
+        assert_eq!(serve.account.name, "b");
+        serve
+            .session
+            .served(&state.accounts, "openai", &serve.account, StatusCode::OK);
+        assert_eq!(bound().as_deref(), Some("b"));
+        assert_eq!(failovers(), before + 1);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

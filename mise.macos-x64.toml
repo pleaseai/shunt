@@ -1,0 +1,6 @@
+# mr-boxington ships no darwin/x86_64 release archive, so build mbx from crates.io.
+[tools]
+mr-boxington = "latest"
+
+[tool_alias]
+mr-boxington = "cargo:mbx"

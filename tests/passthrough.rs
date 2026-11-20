@@ -377,7 +377,7 @@ async fn classifier_request_on_an_api_key_credential_is_forwarded_byte_for_byte(
     // faces no client-shape gate upstream, so the gateway must not rewrite it.
     // This covers the single-credential `forward` path — the default provider
     // is `AuthMode::Passthrough`, so it never reaches `forward_claude_oauth`.
-    // The pool path's own gate is covered in `tests/multi_account.rs`.
+    // The pool path's own gate is covered in `tests/multi_account/multi_account.rs`.
     let body = classifier_body();
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))

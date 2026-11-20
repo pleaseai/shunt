@@ -219,6 +219,40 @@ fn store_config(toml_body: &str) -> StoreConfig {
         .store
 }
 
+/// The latest version and the count of the migrations embedded for `engine`
+/// (`sqlite` or `postgres`), read from `migrations/<engine>/*.sql`, so the
+/// expectations follow the schema instead of pinning one version.
+fn embedded_migrations(engine: &str) -> (u64, usize) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations")
+        .join(engine);
+    let versions: Vec<u64> = std::fs::read_dir(&dir)
+        .expect("read migrations directory")
+        .map(|entry| entry.expect("migration entry").file_name())
+        .filter_map(|name| {
+            let name = name.to_string_lossy().into_owned();
+            let stem = name.strip_suffix(".sql")?;
+            let (version, _) = stem.split_once('_')?;
+            Some(version.parse().expect("numeric migration version"))
+        })
+        .collect();
+    let latest = versions
+        .iter()
+        .copied()
+        .max()
+        .expect("at least one migration");
+    (latest, versions.len())
+}
+
+/// The `check` suffix for `count` pending migrations, in its K=1 / K>1 wording.
+fn pending_phrase(count: usize) -> String {
+    if count == 1 {
+        "1 pending migration applies at boot".to_string()
+    } else {
+        format!("{count} pending migrations apply at boot")
+    }
+}
+
 /// A SQLite file migrated to this binary's current schema, via the library.
 async fn migrated_sqlite(db: &Path) {
     let config = store_config(&format!(
@@ -254,8 +288,9 @@ async fn check_reports_a_current_sqlite_store_without_touching_it() {
     let output = run_check(&config);
 
     assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let (latest, _) = embedded_migrations("sqlite");
     let expected = format!(
-        "store ok: sqlite sqlite:{}, schema v1 (binary supports v1)\n",
+        "store ok: sqlite sqlite:{}, schema v{latest} (binary supports v{latest})\n",
         db.display()
     );
     assert!(stdout(&output).contains(&expected), "{}", stdout(&output));
@@ -275,10 +310,11 @@ async fn check_reports_pending_migrations_on_an_unmigrated_sqlite_file() {
     let output = run_check(&config);
 
     assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let (latest, count) = embedded_migrations("sqlite");
     let expected = format!(
-        "store ok: sqlite sqlite:{}, schema v0 (binary supports v1); \
-         1 pending migration applies at boot\n",
-        db.display()
+        "store ok: sqlite sqlite:{}, schema v0 (binary supports v{latest}); {}\n",
+        db.display(),
+        pending_phrase(count)
     );
     assert!(stdout(&output).contains(&expected), "{}", stdout(&output));
     assert_eq!(snapshot(&db), before, "check must not migrate or write");
@@ -338,7 +374,9 @@ async fn check_refuses_a_sqlite_store_from_a_newer_binary() {
 
     assert!(!output.status.success(), "stdout: {}", stdout(&output));
     let message = stderr(&output);
-    for expected in ["schema version 999", "newer than the 1", "upgrade shunt"] {
+    let (latest, _) = embedded_migrations("sqlite");
+    let newer_than = format!("newer than the {latest}");
+    for expected in ["schema version 999", newer_than.as_str(), "upgrade shunt"] {
         assert!(message.contains(expected), "{expected:?} in: {message}");
     }
     assert!(!stdout(&output).contains("store ok"), "{}", stdout(&output));
@@ -439,10 +477,12 @@ mod postgres {
             .lines()
             .find(|line| line.starts_with("store ok: postgres postgres://"))
             .unwrap_or_else(|| panic!("no store line in: {}", stdout(&output)));
-        assert!(
-            line.ends_with(", schema v0 (binary supports v1); 1 pending migration applies at boot"),
-            "{line}"
+        let (latest, count) = embedded_migrations("postgres");
+        let suffix = format!(
+            ", schema v0 (binary supports v{latest}); {}",
+            pending_phrase(count)
         );
+        assert!(line.ends_with(&suffix), "{line}");
         assert_eq!(created, 0, "check must not create any table");
         let Some(password) = password else {
             eprintln!("SHUNT_TEST_POSTGRES_URL carries no inline password; redaction not checked");

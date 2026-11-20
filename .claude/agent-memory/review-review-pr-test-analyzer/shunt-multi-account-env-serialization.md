@@ -1,12 +1,12 @@
 ---
 name: shunt-multi-account-env-serialization
-description: 'PR #532 tests/multi_account.rs ENV_LOCK-everywhere fix for a process-global env-var flake — how to check whether a mutex-around-env-var fix is complete or merely narrowed; verdict there was complete for the suite as it stands, contingent on future tests awaiting every request they spawn'
+description: 'PR #532 tests/multi_account/multi_account.rs ENV_LOCK-everywhere fix for a process-global env-var flake — how to check whether a mutex-around-env-var fix is complete or merely narrowed; verdict there was complete for the suite as it stands, contingent on future tests awaiting every request they spawn'
 metadata:
   type: project
 ---
 
 PR #532 widened `REFRESH_ENV_LOCK` (3 refresh tests) to `ENV_LOCK` held by all 29 tests in
-`tests/multi_account.rs`, because `setenv` can reallocate the process's global `environ` array —
+`tests/multi_account/multi_account.rs`, because `setenv` can reallocate the process's global `environ` array —
 any unsynchronized `set_var` in a sibling test can make a concurrent `getenv` in another test
 observe a var as transiently missing (issue #507). This is the second recurrence after #406,
 the same "process env is shared" family of bug.

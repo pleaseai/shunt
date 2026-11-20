@@ -142,7 +142,7 @@ Adding accounts does not relax it.
 
 Selection uses the shared `AccountPool`, the same machinery as the Claude, Codex, and Kimi pools:
 
-- **Sticky.** A request with an `x-claude-code-session-id` is pinned to one account for the session.
+- **Session bindings.** A request with an `x-claude-code-session-id` is bound to one account in the binding table the other pools share, keyed by the session id's SHA-256 hash. The binding moves only when that account cannot serve and another account serves successfully, or after the account has stayed soft-near for 60 seconds while a healthy alternative exists. See [M8 session bindings](m8-anthropic-multi-account.md#session-bindings).
 - **Round-robin.** Other requests rotate across the eligible accounts.
 - **`priority`** and **`disabled`** apply as in §4.
 - **Admin pause** removes an account from selection until it is unpaused (§11). The pause is

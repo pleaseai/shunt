@@ -94,12 +94,12 @@ search off behind a non-first-party base URL, so this stays latent.
 ⁶ raine/ccp subscription backends: Codex (ChatGPT Plus/Pro), Kimi (kimi.com), Grok
 (grok.com), Cursor Agent — all via subscription OAuth.
 ⁷ shunt pools explicit accounts for both Anthropic `claude_oauth` and ChatGPT/Codex
-`chatgpt_oauth`. The Anthropic pool is proactive **and** reactive: session-sticky
-selection, per-provider round-robin, model-aware proactive rotation from per-account
+`chatgpt_oauth`. The Anthropic pool is proactive **and** reactive: session-to-account
+bindings (ADR-0008), per-provider round-robin for sessionless traffic, model-aware proactive rotation from per-account
 5h/7d quota headers, cooldowns, forced refresh after 401, and reactive failover on
 quota-rejected 429s and 5xx responses (`docs/m8-anthropic-multi-account.md`). The
 Codex/ChatGPT pool (`docs/m10-codex-multi-account.md`) mirrors both halves since
-issue #195 — session-sticky/round-robin selection, cooldowns, forced refresh after
+issue #195 — session bindings/round-robin selection, cooldowns, forced refresh after
 401, rotation on 429/5xx/credential-resolution failure, plus proactive near-quota
 rotation and burn-rate-aware ordering fed by the backend's `x-codex-*` 5h/7d
 windows. This is quota-aware scheduling and quota visibility, not per-request
@@ -183,12 +183,12 @@ positions general gateways (LiteLLM/Portkey/bifrost) as *adjacent infrastructure
 possible backends*, not the same product.
 
 - **Multi-account pooling is deliberately narrow.** shunt has a proactive and reactive
-  account pool for `auth = "claude_oauth"`: `x-claude-code-session-id` stickiness,
+  account pool for `auth = "claude_oauth"`: `x-claude-code-session-id` session-to-account bindings,
   per-provider round-robin, model-aware rotation before the 5h or governing weekly
   bucket reaches the wall, account cooldowns, credentials-file force-refresh after
   401, and failover after quota-rejected 429s or 5xx responses
   (`docs/m8-anthropic-multi-account.md`). ChatGPT/Codex (`auth = "chatgpt_oauth"`) now
-  has a mirrored pool with **both halves**: session-sticky/round-robin selection,
+  has a mirrored pool with **both halves**: session bindings/round-robin selection,
   cooldowns, and failover on 401/429/5xx/credential-resolution failure, plus
   quota-aware proactive rotation fed by the backend's `x-codex-*` rate-limit
   headers (`docs/m10-codex-multi-account.md`, issue #195). Both pools can also ramp
@@ -277,7 +277,7 @@ toward being a fleet gateway and warrant a conscious decision first.
   genuinely mid-stream — restarting would duplicate output — so it is surfaced as a
   clean Anthropic `error` SSE event rather than replayed; mid-turn resume via
   `previous_response_id` is a deliberate non-goal (partial output is already
-  committed to the client). Covered by `tests/codex_websocket_fallback.rs`.
+  committed to the client). Covered by `tests/codex/codex_websocket_fallback.rs`.
 
 - **D. Codex WS: speculative prewarm (`generate:false`) (already tracked: [#47]).** Explicitly out of scope
   today (`docs/m7-codex-websocket.md:53-58`), but it is a real Codex latency
@@ -299,7 +299,7 @@ toward being a fleet gateway and warrant a conscious decision first.
 
 - **G. Minimal multi-account for ChatGPT/Codex — implemented, proactive + reactive.**
   M10 pools a handful of `~/.codex/auth.json`-style logins behind `chatgpt_oauth`
-  with session-sticky selection and cooldown-based failover on 401/429/5xx/
+  with session-to-account bindings and cooldown-based failover on 401/429/5xx/
   credential-resolution failure (`docs/m10-codex-multi-account.md`). Since issue
   #195 the pool also schedules proactively from the backend's `x-codex-*`
   per-account rate-limit headers — near-quota rotation, burn-rate ordering, and

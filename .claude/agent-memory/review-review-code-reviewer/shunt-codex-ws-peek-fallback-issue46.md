@@ -8,7 +8,7 @@ metadata:
 Issue #46 extended the Codex WS→HTTP fallback safety net to cover the
 "send→first-event" window, not just pre-handshake failures. Reviewed the
 diff (`git diff origin/main...HEAD` touching `src/adapters/responses/mod.rs`,
-`tests/codex_websocket_fallback.rs`, plus docs) on 2026-07-14; see
+`tests/codex/codex_websocket_fallback.rs`, plus docs) on 2026-07-14; see
 [[shunt-codex-websocket-v2]] for the broader transport architecture this builds
 on.
 
@@ -31,7 +31,7 @@ reviewer would worry about here:
    non-streaming behavior at the WS boundary does change: `open_ws_turn` now
    always peeks and can return `Err` (HTTP fallback) before
    `json_events_response` ever runs on a pre-first-event drop. Covered by a new
-   JSON-path test in `tests/codex_websocket_fallback.rs` expecting a gateway
+   JSON-path test in `tests/codex/codex_websocket_fallback.rs` expecting a gateway
    error in that case.
 4. No infinite hang: the peek's `events.recv().await` is bounded by
    `codex_ws.rs`'s `IDLE_TIMEOUT` (300s) in the pathological case, but the

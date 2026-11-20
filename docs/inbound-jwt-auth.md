@@ -85,6 +85,68 @@ Validation, all at startup:
 8. Neither `require` nor `identity_claim` may name `exp`, `iat`, or `nbf`. Those registered
    claims are always numbers, so entries naming them are rejected at startup.
 
+### Codex gateway OAuth: `jwt_header` and `jwt_cookie`
+
+The Codex CLI's native `gateway_oauth` (`[model_providers.<id>.gateway_oauth]`) reserves
+`Authorization` and delivers the IdP access token in a cookie or a custom header
+(`delivery = { kind = "cookie", name = ... }` or `{ kind = "header", name = ..., scheme = "Bearer" }`).
+Two optional `[server.auth]` keys name that slot; the token is verified by the same
+`[[server.auth.jwt]]` entries as a bearer JWT (issue #860).
+
+```toml
+[server.auth]
+jwt_cookie = "auth-openid"
+# jwt_header = "X-Gateway-Token"
+
+[[server.auth.jwt]]
+issuer = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+audience = ["api://<shunt-app-id>"]
+authorized_parties = ["<codex public client id>"]
+require = { tid = "<tenant-id>" }
+identity_claim = "preferred_username"
+max_token_age_seconds = 5400
+```
+
+Startup rejects either key without a `[[server.auth.jwt]]` entry, an empty value, a header
+name that is invalid or is `authorization`, `x-api-key`, `cookie`, `x-shunt-token`,
+`x-shunt-admin-token`, `x-shunt-inbound-client`, a header shunt reads or rewrites on the Codex
+endpoint (`session-id`, `x-claude-code-session-id`, `content-type`, `content-length`,
+`content-encoding`, `transfer-encoding`, `host`, `origin`, `upgrade`, `connection`,
+`openai-beta`, or any `sec-websocket-*`), a header the Codex CLI sends or shunt synthesizes
+there (`originator`, `x-codex-routing-hint`, `thread-id`, `x-client-request-id`,
+`x-codex-window-id`), the `[server.auth]` `header`, or the `[server.admin]` `header`, and a
+cookie name that is not an RFC 6265 token or is the admin dashboard's `shunt_admin_session`.
+Both keys hot-reload.
+
+Microsoft Entra ID, the usual case, has several traps; each value above answers one:
+
+- **The access token must be a JWT.** shunt verifies locally and does no introspection, so
+  `scopes` must request an API scope registered for shunt (`api://<app-id>/.default`).
+  Opaque access tokens (Google OAuth) cannot work.
+- **Use v2 tokens.** Set the API registration's `accessTokenAcceptedVersion` to `2` (issuer
+  `https://login.microsoftonline.com/<tenant-id>/v2.0`). v1 tokens use
+  `https://sts.windows.net/<tenant-id>/` and `appid` instead of `azp`.
+- **`audience` must match the token's `aud`** (`api://<app-id>` or the app-id GUID).
+- **`authorized_parties` must list the Codex public client.** v2 tokens carry `azp` = the
+  requesting client, and `authorized_parties` defaults to `audience`.
+- **No `email_domains`.** Entra access tokens carry no `email_verified`. Authorize with
+  `require = { tid = ... }` and take the identity from `preferred_username` or the immutable
+  `oid`.
+- **Raise `max_token_age_seconds`.** The default access-token lifetime is randomized between
+  60 and 90 minutes, above the default `3600`; set about `5400`. See Microsoft's
+  [access tokens](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens) and
+  [token lifetimes](https://learn.microsoft.com/en-us/entra/identity-platform/configurable-token-lifetimes).
+- **Register the fixed redirect URI** `http://127.0.0.1:<redirect_port>/callback` on a public
+  client. Native gateway OAuth has no device-code fallback; over SSH, forward the port with
+  `ssh -L <port>:127.0.0.1:<port>`.
+
+Operational notes: an Entra access token is large, so it counts toward
+`[server.limits] max_request_header_bytes` when that is set, and reverse proxies commonly cap a
+cookie near 4 KB, in which case prefer header delivery. The Codex side keeps
+`requires_openai_auth = false`; OAuth alone does not enable remote model catalog discovery,
+so use `model_catalog_json` for custom metadata. The user-facing walkthrough is the site's
+Codex connection guide.
+
 Rule 2 is enforced rather than documented because for some issuers `audience` is not an
 authorization decision at all: a GitHub Actions workflow chooses its own `aud`, so any
 repository on GitHub can mint a token carrying a given audience. `require` and
@@ -111,12 +173,12 @@ and names `repository` as the identity. Security notes:
 - **Prefer immutable ids** (`repository_owner_id`, `repository_id`) in `require`: org and
   repository names can be renamed and re-registered by someone else.
 - **Pick a bounded `identity_claim`** such as `repository`, not `sub`. The branch segment of
-  `sub` is caller-controlled, and the identity namespaces the Codex endpoint's sticky key and
-  appears in logs.
+  `sub` is caller-controlled, and the identity namespaces the Codex endpoint's session-binding key
+  and appears in logs.
 - **Identities share one namespace.** The identity is not prefixed with its issuer, so it is
   compared as a bare string with static `name:token` client names and with every other
   entry's identities. Equal strings become one caller for usage attribution, spend
-  accounting, and the Codex endpoint's sticky key. This is not an authorization bypass, but
+  accounting, and the Codex endpoint's session-binding key. This is not an authorization bypass, but
   choose an identity claim whose values cannot equal a static client name or another
   issuer's identities. `repository` (`org/repo`) cannot equal an email address, but a static
   client name may contain `/`, so do not give static clients `org/repo`-style names; a bare
@@ -154,10 +216,10 @@ become an identity or satisfy a rule. An entry with none of these does not read 
 **Identity.** The value of `identity_claim` (default `email`) becomes the caller identity, in
 place of the `name` from a `name:token` pair. It must be present as a non-empty JSON string.
 A value over 256 bytes is rejected (`401`), never truncated: the identity namespaces the
-account pool's sticky key on the inbound Codex endpoint, so an unbounded caller-controlled
+account pool's session-binding key on the inbound Codex endpoint, so an unbounded caller-controlled
 string there would be the failure mode issue #296 records for the Codex `model` label, and
 truncation would fold two values that share a prefix into one identity — and so into one
-sticky key.
+session-binding key.
 
 ### Key sets
 
@@ -215,10 +277,49 @@ route accepts three credentials. On the `Authorization: Bearer` slot: static tok
 constant-time compare, no network), then the gateway JWT on the routes that accept it, then
 JWT entries by `iss`. First success wins.
 
-A JWT is accepted **only** in `Authorization: Bearer` — not in the configured
-`[server.auth]` header and not in `x-api-key`. That is the slot Claude Code sends
-`ANTHROPIC_AUTH_TOKEN` in, which is the point: the client needs no shunt-specific
-configuration.
+`Authorization: Bearer` is the one JWT slot every gated route shares — a JWT is never read
+from the configured `[server.auth]` `header` or from `x-api-key`. That is the slot Claude Code
+sends `ANTHROPIC_AUTH_TOKEN` in, which is the point: the client needs no shunt-specific
+configuration. The Codex-only `jwt_header` / `jwt_cookie` slots below are additional, and are
+stripped by name before forwarding.
+
+**The inbound Codex endpoint additionally reads two optional slots** (§1, "Codex gateway
+OAuth"), because Codex reserves `Authorization` for `gateway_oauth`. Its routes are the
+Responses routes (HTTP and WebSocket on `/v1/responses`, `/backend-api/codex/responses`,
+`/responses`), `/alpha/search`, and the analytics sink. The Codex-shaped model discovery
+responses read them too: `GET /models`, `GET /backend-api/codex/models`, and `GET /v1/models`
+when `[server.codex_endpoint]` is enabled and the request carries the `client_version` query
+field. With ChatGPT sign-in and gateway OAuth both on, Codex fetches its catalog with the
+ChatGPT token in `Authorization` and the IdP token in the cookie or header, so discovery needs
+the slots to answer `200`; before this it answered `401`. The order is: static token, then
+`Authorization: Bearer` JWT, then `jwt_header` (the raw JWT or `Bearer <jwt>`, scheme in any
+case), then `jwt_cookie`; the first slot that verifies wins and the same
+`[[server.auth.jwt]]` rules apply to every slot. A ChatGPT token in `Authorization` fails
+issuer selection and the scan moves on. The discovery variants keep every credential they
+accepted before: static tokens in the configured header, `x-api-key`, or `Authorization:
+Bearer`, a Bearer JWT, and a `[server.gateway]` login token. The answer is still the empty
+Codex catalog `{"models":[]}`. `/v1/messages`, `/usage`, and the Anthropic-shaped
+`/v1/models` (no `client_version`, or the Codex endpoint off) stay `Authorization:
+Bearer`-only for JWTs.
+
+- **A slot is examined only when the scan reaches it.** A configured header or cookie name
+  that appears more than once rejects the request, unless an earlier slot already
+  authenticated it; if an earlier slot was unavailable the result is `503`, otherwise `401`.
+- **Origin rule for the cookie.** A browser attaches a cookie it holds for the gateway's
+  domain to cross-site requests, so the cookie slot is consulted only when the request has no
+  `Origin` header or exactly one that matches the request's scheme, `Host`, and effective port.
+  The scheme is the first `X-Forwarded-Proto` value (`http` or `https`), else `http`, since
+  shunt itself listens on plain HTTP; behind a TLS-terminating proxy, have it send
+  `X-Forwarded-Proto` or same-origin browser requests lose the cookie slot. A cross-origin
+  (including cross-scheme), `null`, unparseable, or repeated `Origin`, or an `Origin` on a
+  request with no `Host` or an unrecognised `X-Forwarded-Proto`, disables it. The header slot
+  is unaffected. Do not point `jwt_cookie` at a cookie a browser holds for the gateway's
+  domain, such as an SSO proxy's (Cloudflare Access `CF_Authorization`).
+- **Forwarding.** The configured header and every `cookie` header are stripped before any
+  upstream request, for the pool and for routed providers.
+- **WebSocket.** The handshake credential is verified again on every turn: an expired IdP
+  token fails the next turn with a `401` error frame, and Codex reconnects with a refreshed
+  token. Errors here use the OpenAI error shape.
 
 **A JWT from a configured issuer is never forwarded upstream.** `m4-inbound-auth.md` §2
 states the boundary for static tokens and resolves the mixed passthrough/mapped case by
@@ -235,7 +336,8 @@ issuer is left alone, since it may be the caller's own upstream credential.
 
 The gate covers the routes `[server.auth]` already guards — injected-credential
 `/v1/messages` and `/v1/messages/count_tokens`, `GET /v1/models`, `GET /usage`,
-`GET /api/oauth/usage` (off loopback only), and the inbound Codex Responses and analytics routes. Passthrough
+`GET /api/oauth/usage` (off loopback only), the Codex-shaped discovery paths (`GET /models`,
+`GET /backend-api/codex/models`), and the inbound Codex Responses and analytics routes. Passthrough
 inference is never checked, because the caller pays with their own credential; "per-user identity" therefore
 covers the gated routes, not the whole surface.
 

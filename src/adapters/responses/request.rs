@@ -365,6 +365,19 @@ pub(super) fn request_builder(
         Credential::XaiOauth { access_token } => {
             request = grok_identity_headers(request.bearer_auth(access_token));
         }
+        // ChatGPT-plan bearer on the public OpenAI host: the same four
+        // session-affinity headers the api-key arm sends there (prompt-cache
+        // affinity), and none of the codex identity headers
+        // (`chatgpt-account-id`, `originator`, user-agent, version).
+        Credential::ChatgptPlanOauth { access_token } => {
+            request = session_affinity_headers(
+                request.bearer_auth(access_token),
+                session_id,
+                None,
+                window,
+                None,
+            );
+        }
         Credential::ClaudeOauth { access_token, .. }
         | Credential::GoogleOauth { access_token, .. } => {
             request = request.bearer_auth(access_token);

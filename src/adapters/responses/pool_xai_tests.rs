@@ -13,7 +13,7 @@
 //! is asserted elsewhere: `provider_auth` on the built-in `grok` provider and
 //! `exhausted_error` with `AuthMode::XaiOauth` (below), `mapped_upstream_error`
 //! with `XaiOauth` in `error.rs`'s tests, and the gateway path in
-//! `tests/xai_multi_account.rs`.
+//! `tests/multi_account/xai_multi_account.rs`.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
