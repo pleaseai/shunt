@@ -153,10 +153,10 @@ Some slugs carry a `minimal_client_version` (e.g. `gpt-6-astra` needs ≥ 0.153.
 `gpt-6-sol` and `gpt-6-luna` need ≥ 0.155.0). When the
 request's client identity is missing or too old the backend answers `Model not found <slug>`.
 shunt pins the Codex CLI identity headers (`originator: codex_cli_rs`, `user-agent`, `version`)
-to **openai/codex rust-v0.159.3** to pass this gate. See
+to **openai/codex rust-v0.170.0** to pass this gate. See
 [openai/codex#31967](https://github.com/openai/codex/issues/31967).
 
-On an entitled account, `gpt-6.1-sol` was rejected with the `0.156.0` identity and completed with `0.159.2`, even though its catalog `minimal_client_version` is 0.153.0. `0.159.3` is the next upstream patch release.
+On an entitled account, `gpt-6.1-sol` was rejected with the `0.156.0` identity and completed with `0.159.2`, even though its catalog `minimal_client_version` is 0.153.0. On 2026-11-10 the backend also rejected `gpt-6.1-sol` with the `0.159.3` identity (HTTP 400, "The 'gpt-6.1-sol' model requires a newer version of Codex"), and a `0.167.1` identity completed it. `0.170.0` was the latest stable upstream release on 2026-11-18.
 A stale identity can produce a model-not-supported error even when the account has access.
 This pin does not specify the minimum required version.
 

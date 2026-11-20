@@ -481,13 +481,17 @@ mod tests {
         // A positive lifetime lands that many seconds ahead.
         assert!(oauth_expires_at_ms(Some(7200)) >= before + 7200 * 1000 - 2000);
         // An explicit zero or negative lifetime is immediately expired (not the
-        // 1-hour default), so it never lands meaningfully in the future.
+        // 1-hour default), so it never lands meaningfully in the future. Capture
+        // `after` once both calls have read the clock, so a millisecond boundary
+        // crossed between the two reads cannot put the result past it.
+        let zero = oauth_expires_at_ms(Some(0));
+        let negative = oauth_expires_at_ms(Some(-10));
         let after = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
-        assert!(oauth_expires_at_ms(Some(0)) <= after);
-        assert!(oauth_expires_at_ms(Some(-10)) <= after);
+        assert!(zero <= after);
+        assert!(negative <= after);
         // A pathologically large lifetime saturates instead of overflowing.
         assert_eq!(oauth_expires_at_ms(Some(i64::MAX)), i64::MAX);
     }
