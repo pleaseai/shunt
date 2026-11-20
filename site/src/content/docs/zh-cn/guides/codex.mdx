@@ -147,10 +147,10 @@ ChatGPT 账户后端**拒绝** `gpt-*-codex` slug(例如 `gpt-5.2-codex`),返回
 一些 slug 带有 `minimal_client_version`(例如 `gpt-6-astra` 需要 ≥ 0.153.0,`gpt-6-sol` 和 `gpt-6-luna` 需要 ≥ 0.155.0)。当
 请求的客户端身份缺失或过旧时,后端会应答 `Model not found <slug>`。
 shunt 通过发送固定的 Codex CLI 身份头(`originator: codex_cli_rs`、
-`user-agent`、`version`)来避免这一点,固定到 **openai/codex rust-v0.159.3**。见
+`user-agent`、`version`)来避免这一点,固定到 **openai/codex rust-v0.170.0**。见
 [openai/codex#31967](https://github.com/openai/codex/issues/31967)。
 
-在有使用权限的账户上,尽管 `gpt-6.1-sol` 在目录中的 `minimal_client_version` 为 0.153.0,使用 `0.156.0` 身份的请求被拒绝,使用 `0.159.2` 身份的请求成功. `0.159.3` 是之后的 upstream 补丁版本. 即使账户有使用权限,过旧的身份也可能导致模型不受支持的错误. 此固定值不指定所需的最低版本.
+在有使用权限的账户上,尽管 `gpt-6.1-sol` 在目录中的 `minimal_client_version` 为 0.153.0,使用 `0.156.0` 身份的请求被拒绝,使用 `0.159.2` 身份的请求成功. 2026-11-10,使用 `0.159.3` 身份的 `gpt-6.1-sol` 请求同样被拒绝(HTTP 400,"The 'gpt-6.1-sol' model requires a newer version of Codex"),使用 `0.167.1` 身份的请求成功. `0.170.0` 是 2026-11-18 时最新的 upstream 稳定版本. 即使账户有使用权限,过旧的身份也可能导致模型不受支持的错误. 此固定值不指定所需的最低版本.
 
 </Aside>
 

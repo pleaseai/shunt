@@ -246,7 +246,7 @@ the Codex CLI speaks the same wire protocol to shunt that it would speak directl
 Because the inbound client **is** a real Codex CLI (unlike the `/v1/messages` path, where shunt
 *impersonates* one), the passthrough forwards the client's **own request headers verbatim** rather
 than synthesizing them. shunt's translating path builds a fresh request with a hardcoded Codex
-identity (`originator=codex_cli_rs`, `user-agent=codex_cli_rs/0.159.3`, `version=0.159.3`,
+identity (`originator=codex_cli_rs`, `user-agent=codex_cli_rs/0.170.0`, `version=0.170.0`,
 `OpenAI-Beta: responses=experimental`) and session/window headers derived from the resolved
 conversation id — a routed request that arrives with the CLI's own `thread-id`,
 `x-client-request-id`, or `x-codex-window-id` keeps those values verbatim, and only the absent
@@ -412,7 +412,7 @@ here applies.
 - **Fail-closed.** With `fail_closed_on_error`, a capped principal whose spend state is unavailable
   is refused with the same `usage_limit_reached` type and the message `spend limit unavailable`, with
   no `resets_at` and no `retry-after`.
-- **What the Codex CLI shows.** At the pinned version `rust-v0.159.3`, a `429` with
+- **What the Codex CLI shows.** At `rust-v0.159.3`, a `429` with
   `usage_limit_reached` becomes the CLI's usage-limit error, which it does not retry. The CLI
   renders its own "You've hit your usage limit … Try again at <resets_at>" text, with the promo
   message when the header is present, and ignores the server message.

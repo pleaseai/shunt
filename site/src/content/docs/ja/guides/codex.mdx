@@ -123,9 +123,9 @@ ChatGPT アカウントのバックエンドは `gpt-*-codex` スラッグ（例
 
 <Aside type="note" title="`Model not found <slug>` は entitlement ではなくクライアントバージョンのゲーティング">
 
-一部のスラッグは `minimal_client_version` を持ちます（例 `gpt-6-astra` は ≥ 0.153.0、`gpt-6-sol` と `gpt-6-luna` は ≥ 0.155.0 が必要）。リクエストのクライアント identity が欠落しているか古すぎる場合、バックエンドは `Model not found <slug>` と応答します。shunt は固定された Codex CLI の identity ヘッダー（`originator: codex_cli_rs`、`user-agent`、`version`）を **openai/codex rust-v0.159.3** に固定して送ることで、これを回避します。[openai/codex#31967](https://github.com/openai/codex/issues/31967) を参照してください。
+一部のスラッグは `minimal_client_version` を持ちます（例 `gpt-6-astra` は ≥ 0.153.0、`gpt-6-sol` と `gpt-6-luna` は ≥ 0.155.0 が必要）。リクエストのクライアント identity が欠落しているか古すぎる場合、バックエンドは `Model not found <slug>` と応答します。shunt は固定された Codex CLI の identity ヘッダー（`originator: codex_cli_rs`、`user-agent`、`version`）を **openai/codex rust-v0.170.0** に固定して送ることで、これを回避します。[openai/codex#31967](https://github.com/openai/codex/issues/31967) を参照してください。
 
-利用権限があるアカウントでは, `gpt-6.1-sol` のカタログ上の `minimal_client_version` は 0.153.0 ですが, `0.156.0` の identity では拒否され, `0.159.2` の identity では成功しました. `0.159.3` はその次の upstream パッチリリースです. 古い identity を使うと, アカウントに利用権限があってもモデル未対応のエラーが発生する場合があります. この固定値は必要な最低バージョンを指定しません.
+利用権限があるアカウントでは, `gpt-6.1-sol` のカタログ上の `minimal_client_version` は 0.153.0 ですが, `0.156.0` の identity では拒否され, `0.159.2` の identity では成功しました. 2026-11-10 には `0.159.3` の identity でも `gpt-6.1-sol` は拒否され（HTTP 400、"The 'gpt-6.1-sol' model requires a newer version of Codex"）, `0.167.1` の identity では成功しました. `0.170.0` は 2026-11-18 時点で最新の upstream 安定版リリースでした. 古い identity を使うと, アカウントに利用権限があってもモデル未対応のエラーが発生する場合があります. この固定値は必要な最低バージョンを指定しません.
 
 </Aside>
 
