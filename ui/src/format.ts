@@ -25,11 +25,13 @@ export function titleCase(value: string | null | undefined): string {
  */
 export function planLabel(auth: string | null | undefined, value: string | null | undefined): string {
   if (auth === 'chatgpt_oauth') {
-    switch (value?.toLowerCase()) {
+    const plan = value?.toLowerCase();
+    switch (plan) {
       case 'prolite': return 'Pro';
       case 'team': return 'Business Standard';
       case 'self_serve_business_profile': return 'Business Premium';
     }
+    return titleCase(plan);
   }
   return titleCase(value);
 }

@@ -52,6 +52,9 @@ describe('folding managed accounts and local observations into one row', () => {
     ['self_serve_business_profile', 'Business Premium'],
     ['TeAm', 'Business Standard'],
     ['prolite', 'Pro'],
+    ['PRO', 'Pro'],
+    ['PLUS', 'Plus'],
+    ['ENTERPRISE', 'Enterprise'],
   ])('shows the ChatGPT plan %s in both tables', async (plan, label) => {
     await renderDashboard({ pool: poolWith('chatgpt_oauth', 'custom-provider', { plan }) });
     expect(observed().getByText(`${label} plan`)).toBeInTheDocument();
