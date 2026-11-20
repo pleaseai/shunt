@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.64.1](https://github.com/pleaseai/shunt/compare/v0.64.0...v0.64.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **codex:** bump client identity to 0.170.0 ([#904](https://github.com/pleaseai/shunt/issues/904)) ([0eedfae](https://github.com/pleaseai/shunt/commit/0eedfae2ef1254ee7a9a03fda46eb2d8b107cc31))
+
 ## [0.64.0](https://github.com/pleaseai/shunt/compare/v0.63.0...v0.64.0) (2026-11-05)
 
 
