@@ -94,6 +94,44 @@
       ]
     },
     {
+      "id": "REQ-016",
+      "kind": "functional",
+      "statement": "classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 403 whose error message contains `OAuth authentication is currently not allowed for this organization`, so the account is skipped or cooled for 1 hour like the other refusals",
+      "source_tracks": [],
+      "scenarios": [
+        {
+          "name": "When a Claude OAuth pool account answers 403 with the organisation-OAuth message, the system shall cool that account for 1 hour and send the request to the next pool account.",
+          "given": [],
+          "when": [
+            "a Claude OAuth pool account answers 403 with the organisation-OAuth message"
+          ],
+          "then": [
+            "cool that account for 1 hour and send the request to the next pool account"
+          ]
+        },
+        {
+          "name": "When every account of a Claude OAuth pool answers 403 with the organisation-OAuth message, the system shall relay the last account's own 403 to the client unchanged.",
+          "given": [],
+          "when": [
+            "every account of a Claude OAuth pool answers 403 with the organisation-OAuth message"
+          ],
+          "then": [
+            "relay the last account's own 403 to the client unchanged"
+          ]
+        },
+        {
+          "name": "If a Claude OAuth pool account answers any other 403, then the system shall relay it without sending the request to another pool account or cooling the account.",
+          "given": [],
+          "when": [
+            "a Claude OAuth pool account answers any other 403"
+          ],
+          "then": [
+            "relay it without sending the request to another pool account or cooling the account"
+          ]
+        }
+      ]
+    },
+    {
       "id": "REQ-004",
       "kind": "functional",
       "statement": "advance the failover chain to the next element on an account-level refusal, the same way it advances on a 429, both before response headers are committed to the client and inside an already committed streaming response",
@@ -146,7 +184,7 @@
     {
       "id": "REQ-005",
       "kind": "functional",
-      "statement": "keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream",
+      "statement": "keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream; a 403 other than the organisation-OAuth refusal is not an account-level refusal and is never re-sent to the rest of a Claude OAuth pool",
       "source_tracks": [
         "anthropic-account-refusal-20261022"
       ],
@@ -306,7 +344,7 @@
     {
       "id": "REQ-011",
       "kind": "functional",
-      "statement": "update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the three refusals, the skip durations, and that all other 400s stay terminal",
+      "statement": "update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the four refusals, the skip durations, and that all other 400s stay terminal",
       "source_tracks": [
         "anthropic-account-refusal-20261022"
       ]

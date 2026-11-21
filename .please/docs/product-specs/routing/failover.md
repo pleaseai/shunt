@@ -59,6 +59,26 @@ The system MUST classify as an account-level refusal a response from an upstream
 - WHEN an upstream answers 402 `billing_error` with any other message
 - THEN advance to the next chain element
 
+### Requirement: classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 403 whose error message contains `OAuth authentication is currently not allowed for this organization`, so the account is skipped or cooled for 1 hour like the other refusals
+<!-- req: REQ-016 tracks= -->
+
+The system MUST classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 403 whose error message contains `OAuth authentication is currently not allowed for this organization`, so the account is skipped or cooled for 1 hour like the other refusals.
+
+#### Scenario: When a Claude OAuth pool account answers 403 with the organisation-OAuth message, the system shall cool that account for 1 hour and send the request to the next pool account.
+
+- WHEN a Claude OAuth pool account answers 403 with the organisation-OAuth message
+- THEN cool that account for 1 hour and send the request to the next pool account
+
+#### Scenario: When every account of a Claude OAuth pool answers 403 with the organisation-OAuth message, the system shall relay the last account's own 403 to the client unchanged.
+
+- WHEN every account of a Claude OAuth pool answers 403 with the organisation-OAuth message
+- THEN relay the last account's own 403 to the client unchanged
+
+#### Scenario: If a Claude OAuth pool account answers any other 403, then the system shall relay it without sending the request to another pool account or cooling the account.
+
+- WHEN a Claude OAuth pool account answers any other 403
+- THEN relay it without sending the request to another pool account or cooling the account
+
 ### Requirement: advance the failover chain to the next element on an account-level refusal, the same way it advances on a 429, both before response headers are committed to the client and inside an already committed streaming response
 <!-- req: REQ-004 tracks=anthropic-account-refusal-20261022 -->
 
@@ -84,10 +104,10 @@ The system MUST advance the failover chain to the next element on an account-lev
 - WHEN a committed streaming response's current chain element answers with an account-level refusal
 - THEN continue the stream from the next chain element instead of emitting a terminal error event
 
-### Requirement: keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream
+### Requirement: keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream; a 403 other than the organisation-OAuth refusal is not an account-level refusal and is never re-sent to the rest of a Claude OAuth pool
 <!-- req: REQ-005 tracks=anthropic-account-refusal-20261022 -->
 
-The system MUST keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream.
+The system MUST keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream; a 403 other than the organisation-OAuth refusal is not an account-level refusal and is never re-sent to the rest of a Claude OAuth pool.
 
 #### Scenario: If an upstream answers 400 `invalid_request_error` with a request-validation message such as `messages: Field required`, then the system shall return that 400 to the client without contacting any later chain element.
 
@@ -164,10 +184,10 @@ The system MUST when the chain is exhausted with no successful response and an a
 - WHEN the only chain element returns a spend-limit refusal
 - THEN return HTTP 400 with the upstream's original message
 
-### Requirement: update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the three refusals, the skip durations, and that all other 400s stay terminal
+### Requirement: update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the four refusals, the skip durations, and that all other 400s stay terminal
 <!-- req: REQ-011 tracks=anthropic-account-refusal-20261022 -->
 
-The system MUST update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the three refusals, the skip durations, and that all other 400s stay terminal.
+The system MUST update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the four refusals, the skip durations, and that all other 400s stay terminal.
 
 ### Requirement: try a chain whose every element is in the skip window as configured instead of refusing locally, so a credential that was topped up or raised is noticed before its window ends
 <!-- req: REQ-012 tracks=anthropic-account-refusal-20261022 -->

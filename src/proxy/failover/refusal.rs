@@ -12,9 +12,11 @@
 //! The response itself keeps the upstream's status and body intact, so a
 //! chain that exhausts on refusals relays the upstream's own answer.
 //!
-//! A `403` already advances on its status. The adapter marks the one `403`
-//! that refuses the account (an organisation that disabled OAuth access) all
-//! the same, so it starts the skip window below like the other refusals.
+//! A `403` already advances on its status. The adapter still marks the one
+//! `403` that refuses the account (an organisation that disabled OAuth
+//! access), so it is handled like the other refusals: an upstream starts the
+//! skip window below, and a Claude OAuth pool cools the refusing account and
+//! rotates instead of recording an upstream skip.
 //!
 //! A refusal also starts a skip window for the refusing `api_key` upstream
 //! (`crate::accounts::UpstreamSkips`), so later requests go past it without a
