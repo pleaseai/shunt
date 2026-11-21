@@ -24,6 +24,7 @@ fn snapshot(
         has_state: true,
         available,
         near_quota: false,
+        exhausted: false,
         capped: false,
         capped_fable: false,
         cap_clears_at: None,
@@ -281,6 +282,7 @@ fn state_with_claude_and_codex_accounts(
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: env.clone(),
+        ..Default::default()
     });
     config.server.oauth_usage = Some(OauthUsageConfig::default());
     let anthropic = config.providers.get_mut("anthropic").unwrap();

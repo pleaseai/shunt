@@ -282,6 +282,84 @@
           "statement": "log each account-level refusal at warning level with the upstream name and the refusal kind, log the skip expiry only for a credential that is actually skipped (not for passthrough), log the account cooldown for a Claude pool refusal, and count the advance in the existing failover metric"
         }
       ]
+    },
+    {
+      "id": "SPEC-003",
+      "domain": "auth",
+      "feature": "inbound-jwt",
+      "created_at": "2026-10-30T03:04:00.075Z",
+      "updated_at": "2026-10-30T03:04:00.075Z",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "traces": [],
+      "requirements": [
+        {
+          "id": "REQ-001",
+          "kind": "functional",
+          "statement": "accept an optional [server.auth] jwt_header key naming a request header from which an inbound JWT is read, stripping a leading Bearer scheme when present"
+        },
+        {
+          "id": "REQ-002",
+          "kind": "functional",
+          "statement": "accept an optional [server.auth] jwt_cookie key naming a cookie from which an inbound JWT is read"
+        },
+        {
+          "id": "REQ-003",
+          "kind": "functional",
+          "statement": "verify a token found in a configured header or cookie against the configured [[server.auth.jwt]] entries with exactly the rules applied to a bearer JWT (issuer, audience, authorized party, token age, claim rules, identity claim)"
+        },
+        {
+          "id": "REQ-004",
+          "kind": "functional",
+          "statement": "read the configured header and cookie on the inbound Codex endpoint's routes only — Responses over HTTP and WebSocket on all three base paths, web search, and the client analytics sink — and nowhere else"
+        },
+        {
+          "id": "REQ-005",
+          "kind": "functional",
+          "statement": "try the credential slots in a fixed order — static token, then Authorization: Bearer JWT, then the configured header, then the configured cookie — and authenticate the caller with the first slot that succeeds"
+        },
+        {
+          "id": "REQ-006",
+          "kind": "functional",
+          "statement": "use the verified identity from a header or cookie token as the caller principal for usage attribution, spend limits, and account-pool session stickiness, exactly as a bearer JWT identity is used"
+        },
+        {
+          "id": "REQ-007",
+          "kind": "functional",
+          "statement": "remove the configured header and every cookie header from the request before it is forwarded to any upstream, on both HTTP and WebSocket"
+        },
+        {
+          "id": "REQ-008",
+          "kind": "functional",
+          "statement": "reject at startup a configuration that sets jwt_header or jwt_cookie without any [[server.auth.jwt]] entry, a jwt_header that is not a valid header name, equals (case-insensitively) authorization, x-api-key, cookie, a shunt-reserved header name, a header shunt itself reads or rewrites on the Codex endpoint (session-id, x-claude-code-session-id, content-type, content-length, content-encoding, transfer-encoding, host, origin, upgrade, connection, openai-beta, sec-websocket-*), or the [server.auth] or [server.admin] header name, and a jwt_cookie that is empty or not a valid cookie name"
+        },
+        {
+          "id": "REQ-009",
+          "kind": "functional",
+          "statement": "keep gateway-owned authentication failures on the Codex endpoint in the OpenAI Responses error shape and status codes — one undifferentiated 401 for a missing or rejected credential, 503 when no slot authenticates and at least one presented token names a configured issuer whose key set cannot be fetched"
+        },
+        {
+          "id": "REQ-010",
+          "kind": "functional",
+          "statement": "apply configuration reloads to jwt_header and jwt_cookie the same way reloads already apply to [server.auth]"
+        },
+        {
+          "id": "REQ-011",
+          "kind": "functional",
+          "statement": "consult the configured cookie only when the request carries no Origin header or one whose origin matches the request's Host"
+        },
+        {
+          "id": "REQ-012",
+          "kind": "non-functional",
+          "statement": "leave behavior unchanged for every deployment that sets neither jwt_header nor jwt_cookie — same accepted credentials, same headers forwarded, same responses"
+        },
+        {
+          "id": "REQ-013",
+          "kind": "non-functional",
+          "statement": "avoid disclosing which credential slot or which check failed in an authentication error or in logs at default verbosity, and never log a token value"
+        }
+      ]
     }
   ]
 }

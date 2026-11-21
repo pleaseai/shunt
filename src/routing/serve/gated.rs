@@ -91,6 +91,7 @@ pub(crate) struct RetainedTurn {
     /// `x-gateway-model`, `x-gateway-upstream-model`); the router pair is
     /// stamped when the verdict is known.
     pub headers: HeaderMap,
+    pub coding: Option<crate::response_coding::UpstreamCoding>,
     /// The rendered bytes the caller would have received live.
     pub body: Bytes,
     pub streaming: bool,
@@ -533,6 +534,10 @@ async fn retain_stream(
     GatedCapture::Retained(RetainedTurn {
         status: success.status,
         headers: parts.headers,
+        coding: parts
+            .extensions
+            .get::<crate::response_coding::UpstreamCoding>()
+            .copied(),
         body: Bytes::from(retained),
         streaming: true,
         provider,
@@ -571,6 +576,10 @@ async fn retain_message(
     GatedCapture::Retained(RetainedTurn {
         status: success.status,
         headers: parts.headers,
+        coding: parts
+            .extensions
+            .get::<crate::response_coding::UpstreamCoding>()
+            .copied(),
         body: Bytes::from(retained),
         streaming: false,
         provider: success.target.provider,

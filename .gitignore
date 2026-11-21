@@ -31,7 +31,10 @@ ui/dist/
 # Per-developer config override (overlays .please/config.yml)
 .please/config.local.yml
 
-# Local sccache opt-in (per-developer rustc-wrapper); never shared upstream
+# Local Cargo config (e.g. a per-developer rustc-wrapper); never shared upstream
 # Cargo reads both config.toml and the legacy extensionless config, so ignore both.
 /.cargo/config.toml
 /.cargo/config
+
+# Per-developer mise overrides (e.g. mr_boxington = false)
+mise.local.toml

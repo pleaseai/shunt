@@ -4,6 +4,8 @@
 
 - Run all tests from repository root: `cargo test --all-features --workspace`
 - Run integration tests from repository root: `cargo test --test passthrough` and `cargo test --test responses_translate`
+- Run one grouped binary: `cargo test --test spend`. Run one file inside it by
+  its module path: `cargo test --test spend spend_headers::`.
 - Run quality gates from repository root: `cargo fmt --all --check` and `cargo clippy --all-targets --all-features -- -D warnings`
 
 ## Testing
@@ -34,6 +36,30 @@
 
 ## Project Structure
 
+- Every test binary statically links the whole dependency graph, so related
+  files are grouped into one binary each, using cargo's `tests/<dir>/main.rs`
+  layout. Each file is a module of its group's `main.rs`, under its own name:
+  - `tests/spend/` — `spend_enforcement`, `spend_headers`, `spend_metering`,
+    `spend_metering_routing`, `spend_persistence`.
+  - `tests/codex/` — `codex_spend_enforcement`, `codex_spend_metering`,
+    `codex_spend_websocket`, `codex_websocket_fallback`, `codex_websocket_gated`.
+  - `tests/inbound/` — `inbound_auth` and the `inbound_codex_*` files.
+  - `tests/multi_account/` — `multi_account` and every `<provider>_multi_account`.
+- Every other `tests/*.rs` file is a standalone binary. The other directories
+  under `tests/` (`common/`, `judge_harness/`, `store_boot/`, `buffer_replay/`,
+  `driven_lane/`, `response_coding_support/`) have no `main.rs`: they are
+  support modules, not binaries.
+- A new test file joins the matching group: put it in the group's directory and
+  add `mod <name>;` to its `main.rs`. Make it a standalone `tests/*.rs` file
+  only when it needs process-global state of its own (`antigravity_process.rs`
+  sets env values that outlive every test; `count_tokens_warmup.rs` asserts a
+  process-wide `OnceLock` is still cold), or when CI names it with `--test` (`router_surface`,
+  `prefill_router`).
+- A grouped binary declares a shared support module exactly once, in its
+  `main.rs` (`#[path = "../common/mod.rs"] mod common;`, likewise
+  `judge_harness`); its modules write `use crate::common;`. A second `mod
+  common;` would compile a second env lock into the same process, and
+  `tests/env_lock_coverage.rs` fails on it.
 - Add protocol integration tests in `tests/` when behavior crosses module boundaries.
 - Keep module-local unit tests inside the relevant `src/**` file for focused helper behavior.
 

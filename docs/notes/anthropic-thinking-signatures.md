@@ -136,8 +136,9 @@ that is itself another shunt's envelope survives the hop. Everywhere else the en
 dropped. The field names are disjoint from the Responses form's, so neither
 decoder accepts the other's value.
 A request to such a provider also carries `Accept-Encoding: identity` in place
-of the client's value: shunt's HTTP client decodes no content coding, so a
-compressed reply could not be parsed to wrap and would pass through raw.
+of the client's value: `response_coding` decodes only gzip, deflate and zstd
+replies, so a reply in another coding could not be parsed to wrap and would
+pass through raw.
 
 On a stream, a block's signature bytes are withheld until its
 `content_block_stop` and then emitted as one wrapped `signature_delta`. The

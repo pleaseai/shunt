@@ -897,6 +897,46 @@ mod tests {
     }
 
     #[test]
+    fn reload_applies_jwt_header_to_the_next_snapshot() {
+        let _env_lock = crate::config::test_env_lock();
+        let dir = temp_dir("jwt-header");
+        let _guard = TempDirGuard(dir.clone());
+        let path = dir.join("shunt.toml");
+        let env = format!("SHUNT_RELOAD_TEST_JWT_TOKENS_{}", std::process::id());
+        std::env::remove_var(&env);
+        let base = format!(
+            "[server]\ndefault_provider = \"anthropic\"\n\n[server.auth]\ntokens_env = \"{env}\"\n\n\
+             [[server.auth.jwt]]\nissuer = \"https://issuer.example\"\naudience = \"shunt\"\n\
+             email_domains = [\"example.com\"]\n"
+        );
+        std::fs::write(&path, &base).unwrap();
+        let shared = shared_from(Config::load(Some(&path)).unwrap());
+        assert!(shared
+            .load()
+            .inbound_auth
+            .as_ref()
+            .unwrap()
+            .jwt_header()
+            .is_none());
+
+        std::fs::write(
+            &path,
+            base.replace(
+                "[[server.auth.jwt]]",
+                "jwt_header = \"x-iap-jwt\"\n\n[[server.auth.jwt]]",
+            ),
+        )
+        .unwrap();
+        reload(&shared, Some(&path)).expect("reload adding jwt_header succeeds");
+        let snapshot = shared.load();
+        let auth = snapshot.inbound_auth.as_ref().unwrap();
+        assert_eq!(
+            auth.jwt_header().map(|name| name.as_str()),
+            Some("x-iap-jwt")
+        );
+    }
+
+    #[test]
     fn reload_reresolves_gateway_auth() {
         let _env_lock = crate::config::test_env_lock();
         let dir = temp_dir("gateway-auth");

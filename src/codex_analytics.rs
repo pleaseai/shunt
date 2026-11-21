@@ -61,9 +61,10 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Body)
     let state = state.refreshed();
 
     // Match the inbound Responses endpoint's auth posture: open without
-    // `[server.auth]`, otherwise accept the configured header or Bearer token.
+    // `[server.auth]`, otherwise accept the configured header or Bearer token,
+    // or a JWT from the bearer, `jwt_header`, or `jwt_cookie` slot.
     if let Some(auth) = &state.inbound_auth {
-        match gate::authenticate(auth, &state.inbound_jwks, &headers, gate::Slots::Bearer).await {
+        match gate::authenticate(auth, &state.inbound_jwks, &headers, gate::Slots::Codex).await {
             gate::Outcome::Authenticated { .. } => {}
             gate::Outcome::Unavailable => {
                 tracing::warn!(

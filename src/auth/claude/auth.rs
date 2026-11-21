@@ -77,20 +77,28 @@ pub fn default_credentials_path() -> PathBuf {
 }
 
 /// Resolve the Claude OAuth refresh endpoint from a raw `SHUNT_CLAUDE_TOKEN_URL`
-/// value. Parity with the Codex store (#118): a non-loopback plaintext override
-/// would egress the long-lived `refresh_token` in the clear, so it is rejected in
-/// favor of the production endpoint. Shares
+/// value. Parity with the Codex store (#118): an override that is neither
+/// loopback nor HTTPS to the production host would egress the long-lived
+/// `refresh_token`, so it is rejected in favor of the production endpoint. Shares
 /// [`crate::auth::shared::sanitize_token_url`] with the Codex store so the egress
 /// guard cannot drift between them.
 fn sanitize_token_url(raw: Option<String>) -> String {
     crate::auth::shared::sanitize_token_url(raw, TOKEN_URL)
 }
 
+/// Upper bound on one refresh round trip, response body included. A refresh
+/// runs under the process-wide `REFRESH_LOCK`, so without it a token
+/// endpoint that accepts the connection and never answers would stall refresh
+/// for every pooled Claude account, and every request waiting on one.
+/// Same bound as the Antigravity store's `CREDENTIAL_REQUEST_TIMEOUT`.
+const CREDENTIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Clone)]
 pub struct ClaudeAuthStore {
     path: PathBuf,
     client: reqwest::Client,
     token_url: String,
+    request_timeout: Duration,
 }
 
 /// In-process single-flight for Claude OAuth refreshes. Stores are constructed
@@ -104,14 +112,16 @@ impl ClaudeAuthStore {
         // `SHUNT_CLAUDE_TOKEN_URL` overrides the OAuth refresh endpoint. It exists
         // so the refresh path can be pointed at a local mock in tests; production
         // deployments leave it unset and use the real platform.claude.com URL.
-        // `sanitize_token_url` rejects a non-loopback plaintext override so a
-        // misconfigured env var can never egress the long-lived `refresh_token`
-        // off-origin or in the clear (parity with the Codex store, #118).
+        // `sanitize_token_url` accepts only a loopback override or HTTPS to
+        // platform.claude.com itself, so a misconfigured env var can never
+        // egress the long-lived `refresh_token` to another host, in the clear or
+        // not (parity with the Codex store, #118).
         let token_url = sanitize_token_url(env::var("SHUNT_CLAUDE_TOKEN_URL").ok());
         Self {
             path,
             client,
             token_url,
+            request_timeout: CREDENTIAL_REQUEST_TIMEOUT,
         }
     }
 
@@ -121,7 +131,14 @@ impl ClaudeAuthStore {
             path,
             client,
             token_url,
+            request_timeout: CREDENTIAL_REQUEST_TIMEOUT,
         }
+    }
+
+    #[cfg(test)]
+    fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
     }
 
     pub async fn get_valid_access_token(&self) -> anyhow::Result<String> {
@@ -182,9 +199,10 @@ impl ClaudeAuthStore {
         let client = self.client.clone();
         let token_url = self.token_url.clone();
         let path = self.path.clone();
+        let request_timeout = self.request_timeout;
         tokio::spawn(async move {
             let _refreshing = refreshing;
-            let refreshed = refresh(&client, &token_url, &refresh_token).await?;
+            let refreshed = refresh(&client, &token_url, &refresh_token, request_timeout).await?;
             let access_token = refreshed.access_token.clone();
             // Only a *rotated* refresh token makes a lost writeback terminal. When
             // the provider omits `refresh_token`, `parse_refresh` reuses the one on
@@ -379,6 +397,7 @@ async fn refresh(
     _client: &reqwest::Client,
     token_url: &str,
     refresh_token: &str,
+    request_timeout: Duration,
 ) -> anyhow::Result<Refreshed> {
     let body = json!({
         "grant_type": "refresh_token",
@@ -386,15 +405,26 @@ async fn refresh(
         "client_id": CLIENT_ID,
         "scope": SCOPE,
     });
-    let response = crate::auth::shared::token_refresh_client()
+    let request = crate::auth::shared::token_refresh_client()
         .post(token_url)
         .header("content-type", "application/json")
         .header("user-agent", CLAUDE_CLI_USER_AGENT)
-        .body(serde_json::to_string(&body)?)
-        .send()
-        .await?;
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
+        .body(serde_json::to_string(&body)?);
+    // Bound the send and the body read together: a stall in either holds
+    // `REFRESH_LOCK`. A timeout is an ordinary, non-terminal refresh failure.
+    let (status, text) = tokio::time::timeout(request_timeout, async {
+        let response = request.send().await?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Ok::<_, reqwest::Error>((status, text))
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "token refresh timed out after {}s",
+            request_timeout.as_secs_f32()
+        )
+    })??;
     if !status.is_success() {
         // Body before status: Anthropic answers a dead refresh token with a
         // 4xx that, on its own, says nothing about whether the failure is

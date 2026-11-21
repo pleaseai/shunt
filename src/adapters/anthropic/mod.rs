@@ -9,7 +9,7 @@ use futures_util::StreamExt;
 
 use crate::{
     accounts::{self, CountAttempt, FailoverAction},
-    adapters::{Adapter, AdapterError, AdapterFuture},
+    adapters::{session_commit::SessionCommit, Adapter, AdapterError, AdapterFuture},
     auth::{
         self, claude::auth::ClaudeAuthStore, resolve_claude_account_classified, resolve_credential,
         resolve_kimi_account, Credential,
@@ -242,13 +242,15 @@ async fn forward_claude_oauth(
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok());
     let is_fable = accounts::is_fable_model(Some(route.upstream_model.as_str()));
-    let (order, cap) = state.accounts.select_order_with_cap(
+    let (order, cap, ticket) = state.accounts.select_order_with_cap_and_ticket(
         &route.provider,
         &accounts,
         session_id,
         Some(route.upstream_model.as_str()),
         state.config.server.pool.as_ref(),
     );
+    // Committed once, at the account that finally serves a success (ADR-0008).
+    let session_commit = SessionCommit::for_route(ticket, &route, provider.auth);
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
@@ -277,6 +279,7 @@ async fn forward_claude_oauth(
             Some(admission) => admission,
             None => continue,
         };
+        session_commit.attempting(account);
         // The per-account refresh_lock serializes only credential refreshes for
         // one account: resolve_claude_account can refresh-on-read and write the
         // token back, and the explicit force_refresh in the RefreshRetry branch
@@ -384,6 +387,7 @@ async fn forward_claude_oauth(
                 return relay_response(&state, &route, upstream, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
+                        session_commit.served(&state.accounts, &route.provider, account, status);
                         (
                             status,
                             hold_admission_on_success(status, response, admission),
@@ -498,6 +502,7 @@ async fn forward_claude_oauth(
                 return relay_response(&state, &route, retry, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
+                        session_commit.served(&state.accounts, &route.provider, account, status);
                         (
                             status,
                             hold_admission_on_success(status, response, admission),
@@ -706,6 +711,12 @@ async fn forward_claude_oauth(
                         return relay_response(&state, &route, retry, Some(&account.name), bounds)
                             .await
                             .map(|(status, response)| {
+                                session_commit.served(
+                                    &state.accounts,
+                                    &route.provider,
+                                    account,
+                                    status,
+                                );
                                 (
                                     status,
                                     hold_admission_on_success(status, response, admission),
@@ -875,13 +886,15 @@ async fn forward_kimi_oauth(
     let session_id = headers
         .get("x-claude-code-session-id")
         .and_then(|value| value.to_str().ok());
-    let (order, cap) = state.accounts.select_order_with_cap(
+    let (order, cap, ticket) = state.accounts.select_order_with_cap_and_ticket(
         &route.provider,
         &accounts,
         session_id,
         Some(route.upstream_model.as_str()),
         state.config.server.pool.as_ref(),
     );
+    // Committed once, at the account that finally serves a success (ADR-0008).
+    let session_commit = SessionCommit::for_route(ticket, &route, provider.auth);
     let url = upstream_url(&state, &route, uri);
     normalize_upstream_model_request(&mut body, &route.upstream_model);
     deferral::strip_unsupported_deferral(&mut body, &route.upstream_model);
@@ -909,6 +922,7 @@ async fn forward_kimi_oauth(
             Some(admission) => admission,
             None => continue,
         };
+        session_commit.attempting(account);
         // Per-account refresh_lock, held only around the credential resolve
         // (which may refresh-on-read and write the token back) — never across
         // the upstream POST — so concurrent same-account requests are not
@@ -980,6 +994,7 @@ async fn forward_kimi_oauth(
                 return relay_response(&state, &route, upstream, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
+                        session_commit.served(&state.accounts, &route.provider, account, status);
                         (
                             status,
                             hold_admission_on_success(status, response, admission),
@@ -1188,6 +1203,11 @@ async fn relay_response(
     account_name: Option<&str>,
     bounds: crate::adapters::ResponseBounds,
 ) -> Result<(StatusCode, axum::response::Response), AdapterError> {
+    let upstream = crate::response_coding::normalize(upstream);
+    let coding = upstream
+        .extensions()
+        .get::<crate::response_coding::UpstreamCoding>()
+        .copied();
     let status = upstream.status();
     let response_headers = headers::filtered(upstream.headers());
     // The media type alone, lowercased: it is case-insensitive on the wire.
@@ -1212,13 +1232,11 @@ async fn relay_response(
     // outbound, and the upstream — possibly several hops away — reports its own
     // model id back in `message_start` / the JSON body. Without this the raw id
     // leaks to Claude Code and breaks `--resume` model restoration (issue #172).
-    // When alias == upstream_model there is nothing to restore: `None` keeps the
-    // body byte-for-byte, preserving passthrough for api.anthropic.com routes.
     let alias = (route.model != route.upstream_model).then(|| route.model.clone());
     // Wrap a third-party upstream's thinking signatures so a later turn routed
     // to Anthropic drops them instead of failing on them (issue #783). `None`
-    // for first-party and `claude_oauth` providers, whose bodies stay
-    // byte-for-byte passthrough. Only a successful JSON (or untyped) body is
+    // for first-party and `claude_oauth` providers, whose bodies are not
+    // wrapped. Only a successful JSON (or untyped) body is
     // read whole to be rewritten: an error body, or one declared as any other
     // type, carries no thinking block, so it keeps streaming through.
     let signing_key = state
@@ -1228,6 +1246,9 @@ async fn relay_response(
     let wrap_buffered = signing_key.is_some() && status.is_success() && is_json;
 
     let mut builder = Response::builder().status(status);
+    if let Some(coding) = coding {
+        builder = builder.extension(coding);
+    }
     for (name, value) in response_headers {
         if let Some(name) = name {
             builder = builder.header(name, value);
@@ -1450,6 +1471,8 @@ fn rewrite_account_uuid(body: Vec<u8>, account_uuid: Option<&str>) -> Vec<u8> {
 /// stripped and replaced with the provider's key in its configured header.
 fn outbound_headers(headers: &HeaderMap, credential: &Credential) -> HeaderMap {
     let mut out = headers::filtered(headers);
+    headers::strip_browser_context(&mut out);
+    crate::response_coding::filter_accept_encoding(&mut out);
     match credential {
         Credential::ApiKey { value, header } => {
             out.remove("authorization");
@@ -1475,19 +1498,38 @@ fn outbound_headers(headers: &HeaderMap, credential: &Credential) -> HeaderMap {
             }
 
             const OAUTH_BETA: &str = "oauth-2025-04-20";
-            let beta = out
-                .get("anthropic-beta")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default();
-            let has_oauth_beta = beta.split(',').any(|token| token.trim() == OAUTH_BETA);
+            // Read every `anthropic-beta` field line: `headers::filtered` keeps
+            // repeated lines, and a client may spread its betas across several.
+            // Compare bytes rather than `to_str`, which rejects opaque values.
+            let has_oauth_beta = out
+                .get_all("anthropic-beta")
+                .iter()
+                .flat_map(|value| value.as_bytes().split(|&byte| byte == b','))
+                .any(|token| token.trim_ascii() == OAUTH_BETA.as_bytes());
             if !has_oauth_beta {
-                let value = if beta.is_empty() {
-                    OAUTH_BETA.to_string()
-                } else {
-                    format!("{beta},{OAUTH_BETA}")
-                };
-                if let Ok(value) = HeaderValue::from_str(&value) {
+                // `insert` replaces every existing line, so fold the readable
+                // lines into the one value it writes rather than only the first.
+                // An opaque line goes back as its own field line: merged in, it
+                // would hide the whole value from the `to_str`-based
+                // `safeguards::strip_safeguard_betas` that runs next.
+                let mut merged = String::new();
+                let mut opaque = Vec::new();
+                for value in out.get_all("anthropic-beta") {
+                    match value.to_str() {
+                        Ok(line) if !line.trim().is_empty() => {
+                            merged.push_str(line);
+                            merged.push(',');
+                        }
+                        Ok(_) => {}
+                        Err(_) => opaque.push(value.clone()),
+                    }
+                }
+                merged.push_str(OAUTH_BETA);
+                if let Ok(value) = HeaderValue::from_str(&merged) {
                     out.insert("anthropic-beta", value);
+                    for line in opaque {
+                        out.append("anthropic-beta", line);
+                    }
                 }
             }
         }
@@ -1759,6 +1801,8 @@ pub(crate) async fn chain_attempt(
                 };
             }
         };
+        // After the peek, which needs the declared length `normalize` drops.
+        let upstream = crate::response_coding::normalize(upstream);
         let envelope = crate::proxy::chain_stream::LazyEnvelope::Deferred(Box::pin(
             mapped_error_envelope(status, upstream),
         ));
@@ -1771,6 +1815,7 @@ pub(crate) async fn chain_attempt(
             refused: false,
         };
     }
+    let upstream = crate::response_coding::normalize(upstream);
     let is_sse = upstream
         .headers()
         .get("content-type")
@@ -1878,10 +1923,14 @@ fn error_envelope_from_body(status: StatusCode, body: Option<&[u8]>) -> serde_js
 
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
+mod binding_tests;
+
+#[cfg(test)]
+#[allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 mod tests {
     use axum::{
         body::Body,
-        http::{HeaderMap, StatusCode},
+        http::{HeaderMap, HeaderValue, StatusCode},
     };
 
     use crate::{accounts::CooldownScope, config::ApiKeyHeader};
@@ -2385,6 +2434,118 @@ mod tests {
             unchanged.get("anthropic-beta").unwrap(),
             "feature-a, oauth-2025-04-20"
         );
+    }
+
+    fn beta_lines(headers: &HeaderMap) -> Vec<&str> {
+        headers
+            .get_all("anthropic-beta")
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn claude_oauth_keeps_every_beta_line_when_adding_the_oauth_beta() {
+        let credential = Credential::ClaudeOauth {
+            access_token: "oauth-token".to_string(),
+            account_uuid: None,
+        };
+        let mut headers = client_headers();
+        headers.append("anthropic-beta", "feature-a".parse().unwrap());
+        headers.append("anthropic-beta", "feature-b,feature-c".parse().unwrap());
+        let out = outbound_headers(&headers, &credential);
+        assert_eq!(
+            beta_lines(&out),
+            ["feature-a,feature-b,feature-c,oauth-2025-04-20"]
+        );
+    }
+
+    #[test]
+    fn claude_oauth_leaves_beta_lines_alone_when_a_later_line_has_the_oauth_beta() {
+        let credential = Credential::ClaudeOauth {
+            access_token: "oauth-token".to_string(),
+            account_uuid: None,
+        };
+        let mut headers = client_headers();
+        headers.append("anthropic-beta", "feature-a".parse().unwrap());
+        headers.append(
+            "anthropic-beta",
+            "oauth-2025-04-20,feature-b".parse().unwrap(),
+        );
+        let out = outbound_headers(&headers, &credential);
+        assert_eq!(
+            beta_lines(&out),
+            ["feature-a", "oauth-2025-04-20,feature-b"]
+        );
+    }
+
+    #[test]
+    fn claude_oauth_reads_opaque_beta_lines_as_bytes() {
+        let credential = Credential::ClaudeOauth {
+            access_token: "oauth-token".to_string(),
+            account_uuid: None,
+        };
+        // A non-ASCII line that already carries the OAuth beta: left alone.
+        let mut headers = client_headers();
+        headers.append("anthropic-beta", "feature-a".parse().unwrap());
+        headers.append(
+            "anthropic-beta",
+            HeaderValue::from_bytes(b"\xff,oauth-2025-04-20").unwrap(),
+        );
+        let out = outbound_headers(&headers, &credential);
+        assert_eq!(
+            beta_bytes(&out),
+            [&b"feature-a"[..], &b"\xff,oauth-2025-04-20"[..]]
+        );
+
+        // A non-ASCII line without it: kept byte for byte, as its own line
+        // after the merged readable ones.
+        let mut headers = client_headers();
+        headers.append("anthropic-beta", "feature-a".parse().unwrap());
+        headers.append("anthropic-beta", HeaderValue::from_bytes(b"\xff").unwrap());
+        let out = outbound_headers(&headers, &credential);
+        assert_eq!(
+            beta_bytes(&out),
+            [&b"feature-a,oauth-2025-04-20"[..], &b"\xff"[..]]
+        );
+    }
+
+    fn beta_bytes(headers: &HeaderMap) -> Vec<&[u8]> {
+        headers
+            .get_all("anthropic-beta")
+            .iter()
+            .map(HeaderValue::as_bytes)
+            .collect()
+    }
+
+    /// The merge must leave the readable betas readable for the safeguard
+    /// strip that runs right after it on a non-first-party host: an opaque line
+    /// beside a `dangerous-tool-use-*` beta must not shield that beta.
+    #[test]
+    fn claude_oauth_merge_keeps_safeguard_betas_strippable_next_to_an_opaque_line() {
+        let credential = Credential::ClaudeOauth {
+            access_token: "oauth-token".to_string(),
+            account_uuid: None,
+        };
+        let mut headers = client_headers();
+        headers.append(
+            "anthropic-beta",
+            "dangerous-tool-use-2026-09-03,feature-a".parse().unwrap(),
+        );
+        headers.append("anthropic-beta", HeaderValue::from_bytes(b"\xff").unwrap());
+        let mut out = outbound_headers(&headers, &credential);
+        super::safeguards::strip_safeguard_betas(&mut out, "http://127.0.0.1:9");
+        let readable = out
+            .get_all("anthropic-beta")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(
+            !readable.contains("dangerous-tool-use-"),
+            "the safeguard beta must be stripped, got {readable:?}"
+        );
+        assert!(readable.contains("feature-a") && readable.contains("oauth-2025-04-20"));
     }
 
     #[test]

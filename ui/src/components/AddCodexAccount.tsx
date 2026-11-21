@@ -46,7 +46,7 @@ export const AddCodexAccount = forwardRef<AddAccountHandle, { onStored: () => vo
             ChatGPT OAuth creates a refreshable login that shunt manages.
           </p>
           <label htmlFor="codex-name">
-            Account name <span className="muted">(lowercase letters, digits, hyphens)</span>
+            Account name <span className="muted">(lowercase letters, digits, and . _ @ + -; no dot at either end)</span>
           </label>
           <input
             id="codex-name"

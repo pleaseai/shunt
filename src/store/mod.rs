@@ -11,6 +11,7 @@ pub(crate) mod marker;
 pub mod migrate;
 pub mod open;
 pub(crate) mod pool_repo;
+pub(crate) mod pool_session_repo;
 pub(crate) mod sessions_repo;
 pub(crate) mod spend_repo;
 

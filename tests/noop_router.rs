@@ -207,6 +207,7 @@ async fn a_noop_route_still_requires_the_inbound_credential() {
         jwt: Vec::new(),
         header: "x-shunt-token".to_string(),
         tokens_env: "SHUNT_TEST_NOOP_TOKENS".to_string(),
+        ..Default::default()
     });
     let config = config.validate().expect("inbound auth is well formed");
     let gateway = start_gateway(config).await;

@@ -45,7 +45,7 @@ account of the *other* kind.
 
 General note: this codebase's test style (per `tests/AGENTS.md`) is strict
 behavior-first HTTP integration tests via a real axum server + wiremock, matching
-`tests/multi_account.rs`'s style from PR #70. `tests/admin_surface.rs` follows
+`tests/multi_account/multi_account.rs`'s style from PR #70. `tests/admin_surface.rs` follows
 this well for the happy path but, unlike `multi_account.rs`'s thorough negative-
 case coverage of the failover matrix, under-covers `complete_account`'s several
 `bad_request`/`bad_gateway` branches and the session/CSRF success path.

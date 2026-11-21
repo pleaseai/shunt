@@ -556,3 +556,174 @@ fn account_pool_mixed_cycles(bencher: divan::Bencher, workers: usize) {
         });
     });
 }
+
+/// Session ids bound before a binding bench starts.
+const BOUND_SESSIONS: usize = 1_024;
+
+/// A pool whose `sessions` are each bound to the account selection placed
+/// them on.
+fn pool_with_bindings(
+    accounts: &[AccountConfig],
+    sessions: impl Iterator<Item = String>,
+) -> AccountPool {
+    let pool = AccountPool::new();
+    for session in sessions {
+        let (order, ticket) =
+            pool.select_order_with_ticket("codex", accounts, Some(&session), None, None);
+        pool.commit_session_binding(&ticket.unwrap(), &accounts[order[0]], false);
+    }
+    pool
+}
+
+/// Binding hit: every selection finds its session bound and the commit
+/// touches it.
+#[divan::bench(args = [1, 8, 32, 128], sample_count = 8, sample_size = 1)]
+fn account_pool_binding_hit(bencher: divan::Bencher, workers: usize) {
+    let accounts = Arc::new(accounts());
+    let sessions = Arc::new(
+        (0..BOUND_SESSIONS)
+            .map(|i| format!("bound-{i}"))
+            .collect::<Vec<_>>(),
+    );
+    bencher
+        .with_inputs(|| Arc::new(pool_with_bindings(&accounts, sessions.iter().cloned())))
+        .bench_values(|pool| {
+            std::thread::scope(|scope| {
+                for worker in 0..workers {
+                    let (pool, accounts, sessions) = (
+                        Arc::clone(&pool),
+                        Arc::clone(&accounts),
+                        Arc::clone(&sessions),
+                    );
+                    let begin = POOL_CYCLES * worker / workers;
+                    let end = POOL_CYCLES * (worker + 1) / workers;
+                    scope.spawn(move || {
+                        for sequence in begin..end {
+                            let session = &sessions[sequence % sessions.len()];
+                            let (order, ticket) = pool.select_order_with_ticket(
+                                "codex",
+                                &accounts,
+                                Some(session),
+                                Some("gpt-5.6-sol"),
+                                None,
+                            );
+                            divan::black_box(pool.commit_session_binding(
+                                &ticket.unwrap(),
+                                &accounts[order[0]],
+                                false,
+                            ));
+                        }
+                    });
+                }
+            });
+        });
+}
+
+/// Binding miss: every session is new, so selection places it and the commit
+/// inserts a binding.
+#[divan::bench(args = [1, 8, 32, 128], sample_count = 8, sample_size = 1)]
+fn account_pool_binding_miss(bencher: divan::Bencher, workers: usize) {
+    let accounts = Arc::new(accounts());
+    bencher.bench(|| {
+        let pool = Arc::new(AccountPool::new());
+        std::thread::scope(|scope| {
+            for worker in 0..workers {
+                let (pool, accounts) = (Arc::clone(&pool), Arc::clone(&accounts));
+                let begin = POOL_CYCLES * worker / workers;
+                let end = POOL_CYCLES * (worker + 1) / workers;
+                scope.spawn(move || {
+                    for sequence in begin..end {
+                        let session = format!("miss-{sequence}");
+                        let (order, ticket) = pool.select_order_with_ticket(
+                            "codex",
+                            &accounts,
+                            Some(&session),
+                            Some("gpt-5.6-sol"),
+                            None,
+                        );
+                        divan::black_box(pool.commit_session_binding(
+                            &ticket.unwrap(),
+                            &accounts[order[0]],
+                            false,
+                        ));
+                    }
+                });
+            }
+        });
+    });
+}
+
+/// Eviction at cap: the table starts full, so new placements keep evicting
+/// the least recently used bindings in batches. The cap comes through
+/// `shunt::bench_support`, so this bench registers only with `--features
+/// bench` (as CodSpeed builds it).
+#[cfg(feature = "bench")]
+#[divan::bench(sample_count = 8, sample_size = 1)]
+fn account_pool_binding_eviction(bencher: divan::Bencher) {
+    use shunt::bench_support::MAX_BINDINGS;
+
+    let accounts = accounts();
+    bencher
+        .with_inputs(|| {
+            pool_with_bindings(&accounts, (0..MAX_BINDINGS).map(|i| format!("full-{i}")))
+        })
+        .bench_values(|pool| {
+            for sequence in 0..POOL_CYCLES {
+                let session = format!("evict-{sequence}");
+                let (order, ticket) =
+                    pool.select_order_with_ticket("codex", &accounts, Some(&session), None, None);
+                divan::black_box(pool.commit_session_binding(
+                    &ticket.unwrap(),
+                    &accounts[order[0]],
+                    false,
+                ));
+            }
+        });
+}
+
+/// Concurrent commit: workers race moves and touches on a few shared sessions,
+/// so most commits contend on the binding lock and many lose to a newer
+/// generation.
+#[divan::bench(args = [1, 8, 32, 128], sample_count = 8, sample_size = 1)]
+fn account_pool_binding_concurrent_commit(bencher: divan::Bencher, workers: usize) {
+    let accounts = Arc::new(accounts());
+    let sessions = Arc::new((0..8).map(|i| format!("shared-{i}")).collect::<Vec<_>>());
+    bencher
+        .with_inputs(|| Arc::new(pool_with_bindings(&accounts, sessions.iter().cloned())))
+        .bench_values(|pool| {
+            std::thread::scope(|scope| {
+                for worker in 0..workers {
+                    let (pool, accounts, sessions) = (
+                        Arc::clone(&pool),
+                        Arc::clone(&accounts),
+                        Arc::clone(&sessions),
+                    );
+                    let begin = POOL_CYCLES * worker / workers;
+                    let end = POOL_CYCLES * (worker + 1) / workers;
+                    scope.spawn(move || {
+                        for sequence in begin..end {
+                            let session = &sessions[sequence % sessions.len()];
+                            let (order, ticket) = pool.select_order_with_ticket(
+                                "codex",
+                                &accounts,
+                                Some(session),
+                                None,
+                                None,
+                            );
+                            // Every other round over the sessions reports the
+                            // bound account as failed over and serves the next
+                            // one (a move); the rounds between are touches, so
+                            // every session exercises both commit paths.
+                            let failed_over = (sequence / sessions.len()) % 2 == 0;
+                            let served = &accounts[order[usize::from(failed_over)]];
+                            divan::black_box(pool.commit_session_binding(
+                                &ticket.unwrap(),
+                                served,
+                                failed_over,
+                            ));
+                        }
+                    });
+                }
+            });
+        });
+}

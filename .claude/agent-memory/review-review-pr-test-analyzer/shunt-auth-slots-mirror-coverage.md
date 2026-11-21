@@ -25,7 +25,7 @@ result was unusually clean; only minor/informational findings, no important/crit
 - `src/discovery/upstream/tests.rs` diff (the only one of the 3 named pre-existing test files
   this PR touched) is a pure mechanical rename `InboundCredentialContext` → `ShuntCredentials`
   (verified via `git diff origin/main...HEAD`) — no assertion weakened. `src/proxy/failover/tests.rs`
-  and `tests/inbound_codex_endpoint.rs` are untouched by this diff entirely.
+  and `tests/inbound/inbound_codex_endpoint.rs` are untouched by this diff entirely.
 - Candidate "missing credential kind" leads all resolved as non-issues on inspection:
   `GatewayAuth::authenticate_token` (bare value) is only ever used inside `consumed_by` (the
   strip predicate) and `authenticate_bearer` — no accept site ever calls it against a raw

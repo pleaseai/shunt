@@ -1,0 +1,6 @@
+# mise.lock is lockfile_version 4 (mise 2026.11.1+); mr_boxington needs 2026.9.2+.
+min_version = "2026.11.1"
+
+[tools]
+rust = { version = "stable", mr_boxington = true }
+mr-boxington = "latest"

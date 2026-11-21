@@ -1,0 +1,343 @@
+{
+  "id": "SPEC-003",
+  "level": "V_M",
+  "domain": "auth",
+  "feature": "inbound-jwt",
+  "purpose": "Requirements for accepting inbound JWTs from a configured header or cookie on the Codex endpoint.",
+  "depends": [],
+  "conflicts": [],
+  "traces": [],
+  "created_at": "2026-10-30T03:04:00.075Z",
+  "updated_at": "2026-10-30T03:04:00.075Z",
+  "source_tracks": [
+    "inbound-jwt-header-cookie-20261030"
+  ],
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "kind": "functional",
+      "statement": "accept an optional [server.auth] jwt_header key naming a request header from which an inbound JWT is read, stripping a leading Bearer scheme when present",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "scenarios": [
+        {
+          "name": "When a Codex request to /v1/responses carries a valid identity-provider JWT in the header named by jwt_header and no Authorization header, the system shall authenticate the caller and serve the turn.",
+          "given": [
+            "jwt_header names a header"
+          ],
+          "when": [
+            "a Codex request to /v1/responses carries a valid identity-provider JWT in that header and no Authorization header"
+          ],
+          "then": [
+            "the system authenticates the caller and serves the turn"
+          ]
+        },
+        {
+          "name": "When the configured header's value is Bearer <jwt>, the system shall verify <jwt> without the scheme prefix.",
+          "given": [],
+          "when": [
+            "the configured header's value is Bearer <jwt>"
+          ],
+          "then": [
+            "the system verifies <jwt> without the scheme prefix"
+          ]
+        },
+        {
+          "name": "If a request carries the configured header more than once and no earlier slot authenticates the caller, then the system shall reject the request with 401.",
+          "given": [
+            "no earlier slot authenticates the caller"
+          ],
+          "when": [
+            "a request carries the configured header more than once"
+          ],
+          "then": [
+            "the system rejects the request with 401"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "kind": "functional",
+      "statement": "accept an optional [server.auth] jwt_cookie key naming a cookie from which an inbound JWT is read",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "scenarios": [
+        {
+          "name": "When a Codex WebSocket upgrade on /backend-api/codex/responses carries a valid JWT in the cookie named by jwt_cookie among other cookies, the system shall authenticate the upgrade before switching protocols.",
+          "given": [
+            "jwt_cookie names a cookie"
+          ],
+          "when": [
+            "a Codex WebSocket upgrade on /backend-api/codex/responses carries a valid JWT in that cookie among other cookies"
+          ],
+          "then": [
+            "the system authenticates the upgrade before switching protocols"
+          ]
+        },
+        {
+          "name": "If a request carries the configured cookie name more than once, counted across every cookie header field, and no earlier slot authenticates the caller, then the system shall reject the request with 401.",
+          "given": [
+            "no earlier slot authenticates the caller"
+          ],
+          "when": [
+            "a request carries the configured cookie name more than once across its cookie header fields"
+          ],
+          "then": [
+            "the system rejects the request with 401"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "kind": "functional",
+      "statement": "verify a token found in a configured header or cookie against the configured [[server.auth.jwt]] entries with exactly the rules applied to a bearer JWT (issuer, audience, authorized party, token age, claim rules, identity claim)",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "scenarios": [
+        {
+          "name": "If the token in the configured header was issued for a different audience, then the system shall reject the request with 401.",
+          "given": [],
+          "when": [
+            "the token in the configured header was issued for a different audience"
+          ],
+          "then": [
+            "the system rejects the request with 401"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "kind": "functional",
+      "statement": "read the configured header and cookie on the inbound Codex endpoint's routes only — Responses over HTTP and WebSocket on all three base paths, web search, and the client analytics sink — and nowhere else",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "scenarios": [
+        {
+          "name": "When a Codex request to /v1/responses carries a valid identity-provider JWT in the header named by jwt_header and no Authorization header, the system shall authenticate the caller and serve the turn.",
+          "given": [
+            "jwt_header names a header"
+          ],
+          "when": [
+            "a Codex request to /v1/responses carries a valid identity-provider JWT in that header and no Authorization header"
+          ],
+          "then": [
+            "the system authenticates the caller and serves the turn"
+          ]
+        },
+        {
+          "name": "When a Codex WebSocket upgrade on /backend-api/codex/responses carries a valid JWT in the cookie named by jwt_cookie among other cookies, the system shall authenticate the upgrade before switching protocols.",
+          "given": [
+            "jwt_cookie names a cookie"
+          ],
+          "when": [
+            "a Codex WebSocket upgrade on /backend-api/codex/responses carries a valid JWT in that cookie among other cookies"
+          ],
+          "then": [
+            "the system authenticates the upgrade before switching protocols"
+          ]
+        },
+        {
+          "name": "When a request to /v1/messages carries a valid JWT only in the configured header or cookie, the system shall reject it as unauthenticated.",
+          "given": [],
+          "when": [
+            "a request to /v1/messages carries a valid JWT only in the configured header or cookie"
+          ],
+          "then": [
+            "the system rejects it as unauthenticated"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "kind": "functional",
+      "statement": "try the credential slots in a fixed order — static token, then Authorization: Bearer JWT, then the configured header, then the configured cookie — and authenticate the caller with the first slot that succeeds",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "scenarios": [
+        {
+          "name": "When Authorization carries a ChatGPT sign-in token from an issuer no [[server.auth.jwt]] entry names and the configured cookie carries a valid JWT, the system shall authenticate the caller from the cookie.",
+          "given": [],
+          "when": [
+            "Authorization carries a ChatGPT sign-in token from an unconfigured issuer and the configured cookie carries a valid JWT"
+          ],
+          "then": [
+            "the system authenticates the caller from the cookie"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "kind": "functional",
+      "statement": "use the verified identity from a header or cookie token as the caller principal for usage attribution, spend limits, and account-pool session stickiness, exactly as a bearer JWT identity is used",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "scenarios": [
+        {
+          "name": "When a caller authenticated from the configured cookie is over its spend cap, the system shall refuse the turn with usage_limit_reached under that caller's identity.",
+          "given": [
+            "the caller authenticated from the configured cookie is over its spend cap"
+          ],
+          "when": [
+            "the caller requests a turn"
+          ],
+          "then": [
+            "the system refuses the turn with usage_limit_reached under that caller's identity"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "kind": "functional",
+      "statement": "remove the configured header and every cookie header from the request before it is forwarded to any upstream, on both HTTP and WebSocket",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "scenarios": [
+        {
+          "name": "When a request authenticated from the configured header is forwarded to the ChatGPT/Codex account pool, the upstream request shall contain neither the configured header nor any cookie header.",
+          "given": [],
+          "when": [
+            "a request authenticated from the configured header is forwarded to the ChatGPT/Codex account pool"
+          ],
+          "then": [
+            "the upstream request contains neither the configured header nor any cookie header"
+          ]
+        },
+        {
+          "name": "When a Codex request is served by a [[server.codex_endpoint.routes]] route to a non-ChatGPT upstream, the upstream request shall contain neither the configured header nor any cookie header.",
+          "given": [],
+          "when": [
+            "a Codex request is served by a [[server.codex_endpoint.routes]] route to a non-ChatGPT upstream"
+          ],
+          "then": [
+            "the upstream request contains neither the configured header nor any cookie header"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "kind": "functional",
+      "statement": "reject at startup a configuration that sets jwt_header or jwt_cookie without any [[server.auth.jwt]] entry, a jwt_header that is not a valid header name, equals (case-insensitively) authorization, x-api-key, cookie, a shunt-reserved header name, a header shunt itself reads or rewrites on the Codex endpoint (session-id, x-claude-code-session-id, content-type, content-length, content-encoding, transfer-encoding, host, origin, upgrade, connection, openai-beta, sec-websocket-*) or that the Codex CLI sends or shunt synthesizes there (originator, x-codex-routing-hint, thread-id, x-client-request-id, x-codex-window-id), or the [server.auth] or [server.admin] header name, and a jwt_cookie that is empty, not a valid cookie name, or equal (case-insensitively) to the admin dashboard's shunt_admin_session cookie",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "scenarios": [
+        {
+          "name": "If jwt_cookie is set and no [[server.auth.jwt]] entry exists, then the system shall refuse to start and name the offending key.",
+          "given": [
+            "no [[server.auth.jwt]] entry exists"
+          ],
+          "when": [
+            "jwt_cookie is set"
+          ],
+          "then": [
+            "the system refuses to start and names the offending key"
+          ]
+        },
+        {
+          "name": "If jwt_header equals the [server.admin] header name, then the system shall refuse to start.",
+          "given": [],
+          "when": [
+            "jwt_header equals the [server.admin] header name"
+          ],
+          "then": [
+            "the system refuses to start"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "kind": "functional",
+      "statement": "keep gateway-owned authentication failures on the Codex endpoint in the OpenAI Responses error shape and status codes — one undifferentiated 401 for a missing or rejected credential, 503 when no slot authenticates and at least one presented token names a configured issuer whose key set cannot be fetched",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "scenarios": [
+        {
+          "name": "If the configured header carries a token from a configured issuer whose key set cannot be fetched and no other slot authenticates, then the system shall respond 503 in the OpenAI Responses error shape.",
+          "given": [
+            "no other slot authenticates"
+          ],
+          "when": [
+            "the configured header carries a token from a configured issuer whose key set cannot be fetched"
+          ],
+          "then": [
+            "the system responds 503 in the OpenAI Responses error shape"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "kind": "functional",
+      "statement": "apply configuration reloads to jwt_header and jwt_cookie the same way reloads already apply to [server.auth]",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "scenarios": [
+        {
+          "name": "When a reload adds jwt_header to a running configuration, the system shall accept a JWT from that header on the next Codex request without a restart.",
+          "given": [
+            "shunt is running"
+          ],
+          "when": [
+            "a reload adds jwt_header"
+          ],
+          "then": [
+            "the system accepts a JWT from that header on the next Codex request without a restart"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-011",
+      "kind": "functional",
+      "statement": "consult the configured cookie only when the request carries no Origin header or one whose origin matches the request's scheme (X-Forwarded-Proto, else http), Host, and effective port",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ],
+      "scenarios": [
+        {
+          "name": "If a WebSocket upgrade carries a valid JWT only in the configured cookie and an Origin whose host differs from the request's Host, then the system shall reject the upgrade with 401.",
+          "given": [],
+          "when": [
+            "a WebSocket upgrade carries a valid JWT only in the configured cookie and an Origin whose host differs from the request's Host"
+          ],
+          "then": [
+            "the system rejects the upgrade with 401"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "REQ-012",
+      "kind": "non-functional",
+      "statement": "leave behavior unchanged for every deployment that sets neither jwt_header nor jwt_cookie — same accepted credentials, same headers forwarded, same responses",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ]
+    },
+    {
+      "id": "REQ-013",
+      "kind": "non-functional",
+      "statement": "avoid disclosing which credential slot or which check failed in an authentication error or in logs at default verbosity, and never log a token value",
+      "source_tracks": [
+        "inbound-jwt-header-cookie-20261030"
+      ]
+    }
+  ]
+}

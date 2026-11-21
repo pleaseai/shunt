@@ -127,7 +127,7 @@ message rather than an echo of the upstream body.
 | `max_output_tokens` | `max_completion_tokens` | |
 | `reasoning.effort` | `reasoning_effort` | String passthrough. `text.verbosity` → `verbosity`. |
 | `temperature`, `top_p`, `parallel_tool_calls`, `metadata` | same | `user` / `safety_identifier` → `user`. |
-| `tools[]` `function` | `{type: function, function: {name, description, parameters, strict}}` | Absent keys and explicit `null`s omitted; `parameters` absent → empty object schema. Built-ins dropped; `tools` omitted when empty. |
+| `tools[]` `function` | `{type: function, function: {name, description, parameters, strict}}` | Absent keys and explicit `null`s omitted; `parameters` absent → empty object schema. The existing `strip_unsupported_patterns` compatibility filter sanitizes `parameters`, as in M1 `normalize`; its partial recognizer also removes Python named-character escapes whose JavaScript meaning differs. Built-ins dropped; `tools` omitted when empty. |
 | `tool_choice` | `tool_choice` | `auto` / `none` / `required` passthrough; `{function,name}` → `{type: function, function: {name}}`; `allowed_tools` by `mode`, with `tools` filtered to the listed function names (an empty, missing, or non-list `tools` admits none). Omitted without tools. |
 | `text.format` | `response_format` | `json_schema` (needs `name` and `schema`) → `{json_schema: {name, schema, strict?, description?}}`; `json_object` → `{type: json_object}`; `text` → nothing. |
 | everything else | — | Dropped: `store`, `include`, `prompt_cache_key`, `previous_response_id`, `truncation`, `service_tier`, `reasoning.summary`, `background`. |

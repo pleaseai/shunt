@@ -1,11 +1,11 @@
 ---
 name: shunt-multi-account-failover-coverage
-description: shunt PR #70 (Anthropic multi-account/claude_oauth) tests/multi_account.rs + accounts.rs + claude_store.rs — behavioral gaps found in the failover matrix
+description: shunt PR #70 (Anthropic multi-account/claude_oauth) tests/multi_account/multi_account.rs + accounts.rs + claude_store.rs — behavioral gaps found in the failover matrix
 metadata:
   type: project
 ---
 
-Reviewed `tests/multi_account.rs` (10 wiremock integration tests) against
+Reviewed `tests/multi_account/multi_account.rs` (10 wiremock integration tests) against
 `forward_claude_oauth()` in `src/adapters/anthropic.rs`. The 9-case failover matrix
 (quota-429 Rotate, plain-429 PauseSame, 401 static, 401 refresh→success, 401 refresh→still-401,
 5xx Rotate, resolve-failure, all-fail 502, exhausted-pool relay) is all covered — solid,

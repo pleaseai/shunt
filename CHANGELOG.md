@@ -1,5 +1,88 @@
 # Changelog
 
+## [0.65.0](https://github.com/pleaseai/shunt/compare/v0.64.1...v0.65.0) (2026-11-21)
+
+
+### Features
+
+* **codex:** native tool search for gpt-6.2-sol and gpt-6.2-astra ([#905](https://github.com/pleaseai/shunt/issues/905)) ([f87cfa8](https://github.com/pleaseai/shunt/commit/f87cfa80bab6cf51eb356850e37f1ba517be748b))
+
+
+### Bug Fixes
+
+* **codex:** sanitize regex patterns in inbound Chat Completions tool schemas ([#902](https://github.com/pleaseai/shunt/issues/902)) ([050722e](https://github.com/pleaseai/shunt/commit/050722e4ed4e6eadde0d2de0c63b84702432fdef))
+
+## [0.64.1](https://github.com/pleaseai/shunt/compare/v0.64.0...v0.64.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **codex:** bump client identity to 0.170.0 ([#904](https://github.com/pleaseai/shunt/issues/904)) ([0eedfae](https://github.com/pleaseai/shunt/commit/0eedfae2ef1254ee7a9a03fda46eb2d8b107cc31))
+
+## [0.64.0](https://github.com/pleaseai/shunt/compare/v0.63.0...v0.64.0) (2026-11-05)
+
+
+### Features
+
+* **auth:** let Codex model discovery read jwt_header and jwt_cookie ([#883](https://github.com/pleaseai/shunt/issues/883)) ([f4181a1](https://github.com/pleaseai/shunt/commit/f4181a1c7a104d5d6127f00bd17319683f94cfa5))
+* **pool:** bind pooled sessions to accounts instead of hashing them ([#884](https://github.com/pleaseai/shunt/issues/884)) ([b559846](https://github.com/pleaseai/shunt/commit/b55984649a0f0ef16e55335d7cb6ed545d584850))
+* **pool:** keep a session on one account through failovers and pool changes ([#857](https://github.com/pleaseai/shunt/issues/857)) ([513fe99](https://github.com/pleaseai/shunt/commit/513fe99fe4c44208badc5932f9fb0ea33c555d57))
+
+## [0.63.0](https://github.com/pleaseai/shunt/compare/v0.62.0...v0.63.0) (2026-11-03)
+
+
+### Features
+
+* **metrics:** export pool quota headroom as shunt.pool.quota_headroom_seconds ([#889](https://github.com/pleaseai/shunt/issues/889)) ([7835f0b](https://github.com/pleaseai/shunt/commit/7835f0be74d72104f63f6f0589273e3f7fd70e06))
+
+## [0.62.0](https://github.com/pleaseai/shunt/compare/v0.61.0...v0.62.0) (2026-11-03)
+
+
+### Features
+
+* add chatgpt-plan provider via Sign in with ChatGPT ([#871](https://github.com/pleaseai/shunt/issues/871)) ([48b24ec](https://github.com/pleaseai/shunt/commit/48b24ec5ba466c829ee6fcb5ecf0b61a0259eaf5))
+* **admin:** give the dashboard a favicon ([#842](https://github.com/pleaseai/shunt/issues/842)) ([6f6f7b1](https://github.com/pleaseai/shunt/commit/6f6f7b1ff049011e38b641d7cca0b3c5ea1477ed))
+* **admin:** keep the usage table current and show the next quota check ([#846](https://github.com/pleaseai/shunt/issues/846)) ([a33fc90](https://github.com/pleaseai/shunt/commit/a33fc9095e54ad70b455426761dbb85c574977e9))
+* **admin:** show a used-up account as Exhausted, not Near quota ([#844](https://github.com/pleaseai/shunt/issues/844)) ([b67d051](https://github.com/pleaseai/shunt/commit/b67d051cb71a0f655e388d75b129a614f31cb2e0))
+* **codex:** native tool search for gpt-6.1-terra ([#882](https://github.com/pleaseai/shunt/issues/882)) ([e54808d](https://github.com/pleaseai/shunt/commit/e54808d356fe7759a9b959659eb381bda590d05a))
+* **config:** add the Cheaper Inference preset ([#845](https://github.com/pleaseai/shunt/issues/845)) ([86fce6b](https://github.com/pleaseai/shunt/commit/86fce6b4d9871b0799a84dcbd53f581a6b09065d))
+
+
+### Bug Fixes
+
+* **proxy:** refuse cross-origin browser requests without inbound auth ([#840](https://github.com/pleaseai/shunt/issues/840)) ([1bb4360](https://github.com/pleaseai/shunt/commit/1bb4360e7433a1befa828c031779cda16e48743c))
+
+## [0.61.0](https://github.com/pleaseai/shunt/compare/v0.60.0...v0.61.0) (2026-10-30)
+
+
+### Features
+
+* **auth:** accept inbound JWTs from a configured header or cookie for Codex gateway OAuth ([#862](https://github.com/pleaseai/shunt/issues/862)) ([56b9fc0](https://github.com/pleaseai/shunt/commit/56b9fc0ad03f99060feb0ed36a5a65ab8fd330ce))
+
+## [0.60.0](https://github.com/pleaseai/shunt/compare/v0.59.1...v0.60.0) (2026-10-27)
+
+
+### Features
+
+* **accounts:** allow . _ @ + in account names, so a name can be the login's email ([#847](https://github.com/pleaseai/shunt/issues/847)) ([66c2c0b](https://github.com/pleaseai/shunt/commit/66c2c0bfd712003b4e7ae6179c4f493518b08e8d))
+* **auth:** inbound JWT phase 2 workload identity (require, subject_prefix, identity_claim) ([#854](https://github.com/pleaseai/shunt/issues/854)) ([83ef44b](https://github.com/pleaseai/shunt/commit/83ef44b4ae1c1cc6267fe6e7fa32d493fb500cf5))
+
+
+### Bug Fixes
+
+* **admin:** redeem the OIDC callback state before spending the login budget ([#838](https://github.com/pleaseai/shunt/issues/838)) ([b3fe834](https://github.com/pleaseai/shunt/commit/b3fe834d3808b5d5068c0ccfcc7fbee204a271b2))
+* **auth:** keep refresh tokens and auth codes on their own host ([#839](https://github.com/pleaseai/shunt/issues/839)) ([a66b87c](https://github.com/pleaseai/shunt/commit/a66b87c9462594e99b42d1b76fd21dc1e23b5e5e))
+* **deps:** bump crates past published RustSec advisories ([#835](https://github.com/pleaseai/shunt/issues/835)) ([3dfdf1f](https://github.com/pleaseai/shunt/commit/3dfdf1f634a1f17f80a1ecc76cb8d9eed826df04))
+
+## [0.59.1](https://github.com/pleaseai/shunt/compare/v0.59.0...v0.59.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **anthropic:** decode compressed upstream responses before relaying ([#832](https://github.com/pleaseai/shunt/issues/832)) ([83e312f](https://github.com/pleaseai/shunt/commit/83e312f2b1b58bf35c60f246688d6398e8c94743))
+* **anthropic:** keep every anthropic-beta line when adding the OAuth beta ([#834](https://github.com/pleaseai/shunt/issues/834)) ([b36a8f0](https://github.com/pleaseai/shunt/commit/b36a8f0b6ecd224439c20d767cad0bc592087c00))
+* **auth:** bound the Claude token refresh with a request timeout ([#833](https://github.com/pleaseai/shunt/issues/833)) ([a658fef](https://github.com/pleaseai/shunt/commit/a658fef8621337dfd51174421f1c7f5c438f1f70))
+
 ## [0.59.0](https://github.com/pleaseai/shunt/compare/v0.58.0...v0.59.0) (2026-10-23)
 
 

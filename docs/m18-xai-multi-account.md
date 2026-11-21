@@ -51,7 +51,7 @@ shapes cannot drift.
   under two names are always two pool members. The JWT `sub` is not used to merge accounts, because
   an unverified claim could fold two paid logins into one member.
 - **Login.** `shunt login xai --name <name>` runs the same device-code flow as `shunt login xai`
-  and writes `~/.shunt/accounts/xai/<name>.json`. The name must match `[a-z0-9-]+`.
+  and writes `~/.shunt/accounts/xai/<name>.json`. The name may contain only lowercase ASCII letters, digits, and `.`, `_`, `@`, `+` or `-`, and must not start or end with a dot.
   `--mode` and `--long-lived` are rejected with xAI-specific
   messages, because xAI tokens are always refreshable.
 - **Reuse.** Running `--name` with a name that already exists replaces that file. Use a new name
@@ -142,7 +142,7 @@ Adding accounts does not relax it.
 
 Selection uses the shared `AccountPool`, the same machinery as the Claude, Codex, and Kimi pools:
 
-- **Sticky.** A request with an `x-claude-code-session-id` is pinned to one account for the session.
+- **Session bindings.** A request with an `x-claude-code-session-id` is bound to one account in the binding table the other pools share, keyed by the session id's SHA-256 hash. The binding moves only when that account cannot serve and another account serves successfully, or after the account has stayed soft-near for 60 seconds while a healthy alternative exists. See [M8 session bindings](m8-anthropic-multi-account.md#session-bindings).
 - **Round-robin.** Other requests rotate across the eligible accounts.
 - **`priority`** and **`disabled`** apply as in §4.
 - **Admin pause** removes an account from selection until it is unpaused (§11). The pause is

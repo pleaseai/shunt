@@ -23,7 +23,7 @@ shunt run
 
 启动校验会拒绝未知的 `provider`,或者不使用 `auth = "chatgpt_oauth"` 的提供方 —— 该端点注入的是运营者的 Codex bearer,因此只有 `chatgpt_oauth` 提供方符合条件。每个键与默认值见[配置参考](/zh-cn/reference/configuration/),已注册的路由见 [HTTP 端点](/zh-cn/reference/endpoints/)。
 
-该可选功能也使 Codex CLI 的模型发现可被正确解析。`GET /models` 和 `GET /backend-api/codex/models` 返回有效的回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 路径上,`client_version` 查询字段优先于类 Anthropic 的头部并选择 Codex 形状;没有该字段时,现有 Anthropic 发现响应保持不变。这些请求先通过常规模型发现认证门,且 shunt 不会伪造不完整的 Codex 模型行。
+该可选功能也使 Codex CLI 的模型发现可被正确解析。`GET /models` 和 `GET /backend-api/codex/models` 返回有效的回退形状 `{"models":[]}`。在共用的 `GET /v1/models` 路径上,`client_version` 查询字段优先于类 Anthropic 的头部并选择 Codex 形状;没有该字段时,现有 Anthropic 发现响应保持不变。这些请求先通过常规模型发现认证门,且 shunt 不会伪造不完整的 Codex 模型行。Codex 形状的响应也会读取 `[server.auth]` 的 `jwt_header` 和 `jwt_cookie` 槽位(见下文),因此同时启用 ChatGPT 登录和 gateway OAuth 的用户会得到 `200` 而不是 `401`;Anthropic 形状的 `/v1/models` 对 JWT 仍只接受 `Authorization: Bearer`。
 
 ## 网页搜索
 
@@ -33,7 +33,7 @@ Codex CLI 的内置网页搜索工具(`web.run`)会向 `{base_url}/alpha/search`
 - `POST /alpha/search`
 - `POST /v1/alpha/search`
 
-搜索与 Responses 轮次使用相同的 `[server.auth]` 策略和相同的 ChatGPT/Codex 账户池(会话粘性选择、故障转移、刷新),并把请求体和响应逐字中继到后端的 `/codex/alpha/search`。搜索不是模型轮次,因此 `[[server.codex_endpoint.routes]]` 不适用,它总是发往 `[server.codex_endpoint].provider`。这些路由只接受 `POST` —— 该工具没有 WebSocket 形式。
+搜索与 Responses 轮次使用相同的 `[server.auth]` 策略和相同的 ChatGPT/Codex 账户池(会话绑定、故障转移、刷新),并把请求体和响应逐字中继到后端的 `/codex/alpha/search`。搜索不是模型轮次,因此 `[[server.codex_endpoint.routes]]` 不适用,它总是发往 `[server.codex_endpoint].provider`。这些路由只接受 `POST` —— 该工具没有 WebSocket 形式。
 
 ## 客户端分析数据接收端
 
@@ -93,6 +93,8 @@ http_headers = { "x-shunt-token" = "<token>" }
 ```
 
 没有 `[server.auth]` 时,该端点对任何能触达它的人开放 —— 对回环或个人使用可以接受,对共享网关则不行。客户端提供的凭据**仅**用于向 shunt 认证:它(以及 CLI 碰巧发送的任何 `Authorization`)都会被剥除,绝不转发到上游。`[server.admin]` 的凭据头部 —— 默认 `x-shunt-admin-token`,或 `[server.admin] header` 指定的名字 —— 同样会被剥除,因为管理面正是在该槽位上认证,而管理凭据可以开通上游账户。整个 `cookie` 头部也会被剥除:管理面同样在该槽位接受会话 cookie,而 shunt 不保留 cookie jar,上游不会依赖它。`x-api-key` 也会被无条件剥除 —— 即使未配置 `[server.auth]` 也是如此,因为目标提供方在启动时就被校验为仅 `chatgpt_oauth`,所以入站的 `x-api-key` 值永远不可能是该上游的有效凭据;像 Claude Code 的 `apiKeyHelper` 那样在 `Authorization` 和 `x-api-key` 中填入同一个密钥的客户端,也不会因为第二个槽位而泄露该密钥。由于入站客户端是真正的 Codex CLI,该透传会逐字转发它的请求头部(`version`、`originator`、`OpenAI-Beta`、`x-codex-*` 等),并**只**换入所选池账户的 `Authorization` bearer 与 `chatgpt-account-id`。完整的认证演练见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#3-提供-shunt-客户端-token当配置了-serverauth-时)。
+
+要让开发者通过组织的身份提供商,用 Codex CLI 的 `gateway_oauth` 逐人登录,请设置 `[server.auth]` 的 `jwt_header` 或 `jwt_cookie`:此时端点(包括 Codex 形状的模型发现响应)也会从该头部或 cookie 读取 IdP JWT,并像其他客户端凭据一样将其移除。参见[连接 Codex CLI](/zh-cn/guides/connect-codex-cli/#7-通过身份提供商登录gateway-oauth)。
 
 ## WebSocket 传输
 
@@ -178,9 +180,9 @@ shunt 对 Codex CLI 的发现请求返回有效的空回退 `{"models":[]}`，�
 
 配置 [`[server.spend]`](/zh-cn/reference/configuration/#serverspend可选)后,该端点会按与 `/v1/messages` 相同的主体上限进行检查和计量;未配置时下列内容均不适用。完整行为见 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(英文)。
 
-- **检查时机。** 每个回合在调用任何上游之前检查,覆盖三条 Responses 路径的 HTTP `POST` 和 Responses WebSocket。主体是静态 `[server.auth]` 令牌名、已验证的 JWT 邮箱,或 `[server.auth]` 关闭时的匿名主体。该端点不接受 gateway 登录会话。
+- **检查时机。** 每个回合在调用任何上游之前检查,覆盖三条 Responses 路径的 HTTP `POST` 和 Responses WebSocket。主体是静态 `[server.auth]` 令牌名、已验证的 JWT 身份(`identity_claim`,默认为邮箱),或 `[server.auth]` 关闭时的匿名主体。该端点不接受 gateway 登录会话。
 - **拒绝响应。** 超限的回合收到 `429` 和 `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<纪元秒>}}`,并带有 `retry-after`、`x-should-retry: false` 和 `x-codex-promo-message: <blocked_message>` 头部。仅当 `blocked_message` 为纯 ASCII 时才发送 promo 头部,文本始终也在 message 中。被点名的上限是已达上限中最晚重置的一个。启用 `fail_closed_on_error` 时,支出状态不可用的有上限主体会以相同的 type 被拒绝,且没有 `resets_at` 和 `retry-after`。
-- **Codex CLI 的显示。** 在固定版本 `rust-v0.159.3` 上,Codex CLI 不会重试该错误。它根据 `resets_at` 显示自己的文案("You've hit your usage limit … Try again at"),头部存在时一并显示 promo 消息,并忽略服务器消息。这是 Codex CLI 的行为,其他版本可能不同。
+- **Codex CLI 的显示。** 在 `rust-v0.159.3` 上,Codex CLI 不会重试该错误。它根据 `resets_at` 显示自己的文案("You've hit your usage limit … Try again at"),头部存在时一并显示 promo 消息,并忽略服务器消息。这是 Codex CLI 的行为,其他版本可能不同。
 - **WebSocket。** 被拒绝的 `response.create` 会收到一个 `{"type":"error","status":429,"error":{…},"headers":{…}}` 帧,其中包含相同的错误以及 `retry-after` 和 `x-codex-promo-message`。套接字保持打开,之后每个回合都会重新检查,`generate: false` 的预热不检查。
 - **网页搜索。** `/alpha/search` 及其别名在超限时被拒绝,且从不计量。
 - **计量。** 已完成的回合按 Responses 的 `usage` 计费,计入 `/v1/messages` 所写的同一组计数器,因此一个上限同时约束两个界面。缓存 token 按缓存读取费率计费,其余输入按输入费率计费;推理计入输出,没有缓存写入。未报告用量就结束的回合(客户端关闭、被替换的回合、中断的流)按"由请求体估算的输入加上已送达的输出"这一下限计费。非流式的 2xx JSON 响应体同样按其 `usage` 计费;未报告输入的响应体则改按估算的输入计费。

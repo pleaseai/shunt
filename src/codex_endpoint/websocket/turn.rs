@@ -31,6 +31,9 @@ pub(super) struct TurnContext {
     pub(super) session_id: Option<String>,
     pub(super) headers: HeaderMap,
     pub(super) auth_header: Option<HeaderName>,
+    /// The `[server.auth] jwt_header` name captured at upgrade, stripped per
+    /// turn even after a reload renames or removes it.
+    pub(super) jwt_header: Option<HeaderName>,
     pub(super) admin_header: Option<HeaderName>,
     pub(super) body: Bytes,
     /// What the spend estimate counts when `body` is a continuation holding
@@ -77,6 +80,7 @@ pub(super) async fn run_turn(context: TurnContext) {
         session_id,
         headers,
         auth_header,
+        jwt_header,
         admin_header,
         body,
         estimate_body,
@@ -114,25 +118,7 @@ pub(super) async fn run_turn(context: TurnContext) {
     {
         Ok(client) => client,
         Err(err) => {
-            // A JWT issuer key set that became unreachable mid-connection is a
-            // `503`, like the upgrade gate answers, not a credential failure.
-            let err_frame = if err.status() == axum::http::StatusCode::SERVICE_UNAVAILABLE {
-                build_ws_error_frame(
-                    503,
-                    "api_error",
-                    "api_error",
-                    "cannot verify the presented credential: a configured JWT issuer's key set is unreachable",
-                    None,
-                )
-            } else {
-                build_ws_error_frame(
-                    401,
-                    "authentication_error",
-                    "authentication_error",
-                    "missing or invalid client token",
-                    None,
-                )
-            };
+            let err_frame = auth_error_frame(err.status());
             let _ = out_tx
                 .send((turn_gen, Message::Text(err_frame.into())))
                 .await;
@@ -155,7 +141,7 @@ pub(super) async fn run_turn(context: TurnContext) {
         return;
     }
     // Classified before the credential headers are stripped below: a
-    // `[server.auth]` or `[server.admin]` header may share a name with a client
+    // `[server.auth]` (`header` or `jwt_header`) or `[server.admin]` header may share a name with a client
     // marker (`originator`, `x-app`), and removing it first would erase that
     // marker. A WebSocket turn has no request span, so this records nothing
     // there; it still tags the turn's metric samples
@@ -167,6 +153,16 @@ pub(super) async fn run_turn(context: TurnContext) {
     }
     if let Some(auth) = state.inbound_auth.as_ref() {
         headers.remove(auth.header());
+    }
+    if let Some(header) = jwt_header {
+        headers.remove(header);
+    }
+    if let Some(header) = state
+        .inbound_auth
+        .as_ref()
+        .and_then(|auth| auth.jwt_header())
+    {
+        headers.remove(header);
     }
     if let Some(admin_header) = admin_header {
         headers.remove(admin_header);
@@ -431,6 +427,39 @@ pub(super) async fn run_turn(context: TurnContext) {
         let _ = out_tx
             .send((turn_gen, Message::Text(err_frame.into())))
             .await;
+    }
+}
+
+/// The error frame for a turn whose re-authentication failed, by the status
+/// [`crate::codex_endpoint::authenticate_inbound`] refused it with.
+fn auth_error_frame(status: axum::http::StatusCode) -> String {
+    match status {
+        // A JWT issuer key set that became unreachable mid-connection is a
+        // `503`, like the upgrade gate answers, not a credential failure.
+        axum::http::StatusCode::SERVICE_UNAVAILABLE => build_ws_error_frame(
+            503,
+            "api_error",
+            "api_error",
+            "cannot verify the presented credential: a configured JWT issuer's key set is unreachable",
+            None,
+        ),
+        // A reload removed `[server.auth]` under a connection whose page is on
+        // another origin: the upgrade passed with a token, this turn has none
+        // to check and refuses the origin instead.
+        axum::http::StatusCode::FORBIDDEN => build_ws_error_frame(
+            403,
+            "forbidden",
+            "forbidden",
+            crate::codex_endpoint::CROSS_ORIGIN_REFUSAL,
+            None,
+        ),
+        _ => build_ws_error_frame(
+            401,
+            "authentication_error",
+            "authentication_error",
+            "missing or invalid client token",
+            None,
+        ),
     }
 }
 

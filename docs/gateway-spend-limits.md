@@ -110,7 +110,7 @@ When `blocked_message` is set it follows after an em dash (`... UTC) — Request
 
 When `[server.codex_endpoint]` is enabled, every Codex turn is checked against the same caps and counters before any upstream call. That covers the HTTP `POST` on `/backend-api/codex/responses`, `/responses` and `/v1/responses`, and the Responses WebSocket on the same paths. `[server.spend]` absent means no check and no metering, as before.
 
-**Principal.** It is the principal `/v1/messages` uses: the static `[server.auth]` token name, the verified JWT email, or `shunt:anonymous` when the endpoint runs without `[server.auth]`. The endpoint does not accept gateway-login sessions, so the gateway-login email never appears here. Every route on the endpoint injects a gateway-held credential, so no route is exempt as a passthrough.
+**Principal.** It is the principal `/v1/messages` uses: the static `[server.auth]` token name, the verified JWT identity (`identity_claim`, the email by default), or `shunt:anonymous` when the endpoint runs without `[server.auth]`. The endpoint does not accept gateway-login sessions, so the gateway-login email never appears here. Every route on the endpoint injects a gateway-held credential, so no route is exempt as a passthrough.
 
 **Refusal (HTTP).** A principal at or over any cap gets `429` in the OpenAI Responses error shape, because the Codex CLI recognises that shape and not the Anthropic one:
 
@@ -125,7 +125,7 @@ When `[server.codex_endpoint]` is enabled, every Codex turn is checked against t
 
 **`fail_closed_on_error`.** It applies as on `/v1/messages`: with `true`, a principal that has a cap and whose spend state is unavailable is refused with the same `usage_limit_reached` type and the message `spend limit unavailable` (plus the `blocked_message` suffix). That refusal has no `resets_at` and no `retry-after`, so a client has no reset time to wait for. With `false`, or for a principal with no cap, the turn is forwarded and a warning is logged.
 
-**What the Codex CLI shows.** At the pinned version `rust-v0.159.3`, the Codex CLI maps a `429` whose `error.type` is `usage_limit_reached` to its own usage-limit error and does not retry it. It renders its own text ("You've hit your usage limit … Try again at" the `resets_at` time) and appends the `x-codex-promo-message` header when it is present. It ignores the error's `message`, so a `blocked_message` reaches a Codex user only through that header. This is Codex CLI behaviour, not shunt's, and a different CLI version can differ.
+**What the Codex CLI shows.** At `rust-v0.159.3`, the Codex CLI maps a `429` whose `error.type` is `usage_limit_reached` to its own usage-limit error and does not retry it. It renders its own text ("You've hit your usage limit … Try again at" the `resets_at` time) and appends the `x-codex-promo-message` header when it is present. It ignores the error's `message`, so a `blocked_message` reaches a Codex user only through that header. This is Codex CLI behaviour, not shunt's, and a different CLI version can differ.
 
 **WebSocket.** A refused `response.create` gets one terminal error frame, and the socket stays open:
 

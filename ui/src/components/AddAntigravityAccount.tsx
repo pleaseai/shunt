@@ -48,7 +48,7 @@ export const AddAntigravityAccount = forwardRef<AddAccountHandle, { onStored: ()
             Antigravity OAuth creates a refreshable login that shunt manages.
           </p>
           <label htmlFor="antigravity-name">
-            Account name <span className="muted">(lowercase letters, digits, hyphens)</span>
+            Account name <span className="muted">(lowercase letters, digits, and . _ @ + -; no dot at either end)</span>
           </label>
           <input
             id="antigravity-name"

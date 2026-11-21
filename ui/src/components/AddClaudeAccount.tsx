@@ -72,7 +72,7 @@ export const AddClaudeAccount = forwardRef<
           {modeHelp(mode)}
         </p>
         <label htmlFor="name">
-          Account name <span className="muted">(lowercase letters, digits, hyphens)</span>
+          Account name <span className="muted">(lowercase letters, digits, and . _ @ + -; no dot at either end)</span>
         </label>
         <input
           id="name"

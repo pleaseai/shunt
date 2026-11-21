@@ -23,7 +23,7 @@ shunt run
 
 시작 검증은 알 수 없는 `provider`나 `auth = "chatgpt_oauth"`를 쓰지 않는 프로바이더를 거부합니다 — 이 엔드포인트는 운영자의 Codex bearer를 주입하므로 `chatgpt_oauth` 프로바이더만 자격이 있습니다. 모든 키와 기본값은 [구성 레퍼런스](/ko/reference/configuration/#servercodex_endpoint-선택)를, 등록된 라우트는 [HTTP 엔드포인트](/ko/reference/endpoints/)를 참고하세요.
 
-이 옵트인은 Codex CLI 모델 탐색도 파싱 가능하게 만듭니다. `GET /models`와 `GET /backend-api/codex/models`는 유효한 폴백 `{"models":[]}`를 반환합니다. 공유 `GET /v1/models` 경로에서는 `client_version` 쿼리 필드가 Anthropic 형태의 헤더보다 우선하여 Codex 형태를 선택하고, 그 필드가 없으면 기존 Anthropic 탐색 응답은 변경되지 않습니다. 이 요청들은 기존 모델 탐색 인증 게이트를 거치며, shunt는 불완전한 Codex 모델 행을 만들지 않습니다.
+이 옵트인은 Codex CLI 모델 탐색도 파싱 가능하게 만듭니다. `GET /models`와 `GET /backend-api/codex/models`는 유효한 폴백 `{"models":[]}`를 반환합니다. 공유 `GET /v1/models` 경로에서는 `client_version` 쿼리 필드가 Anthropic 형태의 헤더보다 우선하여 Codex 형태를 선택하고, 그 필드가 없으면 기존 Anthropic 탐색 응답은 변경되지 않습니다. 이 요청들은 기존 모델 탐색 인증 게이트를 거치며, shunt는 불완전한 Codex 모델 행을 만들지 않습니다. Codex 형태 응답은 `[server.auth]`의 `jwt_header`와 `jwt_cookie` 슬롯도 읽으므로(아래 참고), ChatGPT와 gateway OAuth로 함께 로그인한 사용자도 `401` 대신 `200`을 받습니다. Anthropic 형태의 `/v1/models`는 JWT를 `Authorization: Bearer`로만 받습니다.
 
 ## 웹 검색
 
@@ -33,7 +33,7 @@ Codex CLI의 내장 웹 검색 도구(`web.run`)는 `/responses`를 붙이는 �
 - `POST /alpha/search`
 - `POST /v1/alpha/search`
 
-검색은 Responses 턴과 같은 `[server.auth]` 정책과 같은 ChatGPT/Codex 계정 풀(세션 고정 선택, 장애 조치, 갱신)을 사용하며, 요청 본문과 응답을 백엔드의 `/codex/alpha/search`로 그대로 중계합니다. 검색은 모델 턴이 아니므로 `[[server.codex_endpoint.routes]]`가 적용되지 않고 항상 `[server.codex_endpoint].provider`로 전달됩니다. 이 라우트는 `POST`만 받습니다 — 이 도구에는 WebSocket 형식이 없습니다.
+검색은 Responses 턴과 같은 `[server.auth]` 정책과 같은 ChatGPT/Codex 계정 풀(세션 바인딩, 장애 조치, 갱신)을 사용하며, 요청 본문과 응답을 백엔드의 `/codex/alpha/search`로 그대로 중계합니다. 검색은 모델 턴이 아니므로 `[[server.codex_endpoint.routes]]`가 적용되지 않고 항상 `[server.codex_endpoint].provider`로 전달됩니다. 이 라우트는 `POST`만 받습니다 — 이 도구에는 WebSocket 형식이 없습니다.
 
 ## 클라이언트 analytics sink
 
@@ -93,6 +93,8 @@ http_headers = { "x-shunt-token" = "<token>" }
 ```
 
 `[server.auth]`가 없으면 엔드포인트는 도달할 수 있는 누구에게나 열려 있습니다 — 루프백이나 개인 용도에는 받아들일 만하지만 공유 게이트웨이에는 적절하지 않습니다. 클라이언트가 제시한 자격 증명은 shunt에 인증하는 데에**만** 사용됩니다: 이 값은(그리고 CLI가 보내는 어떤 `Authorization`이든) 제거되며 업스트림으로 전달되지 않습니다. `[server.admin]` 자격 증명 헤더(기본값 `x-shunt-admin-token`, 또는 `[server.admin] header`가 지정한 이름)도 제거됩니다 — 관리 화면이 바로 그 슬롯에서 인증하며, 관리 자격 증명은 업스트림 계정을 프로비저닝할 수 있기 때문입니다. `cookie` 헤더도 통째로 제거됩니다: 관리 화면은 세션 쿠키 역시 그 슬롯에서 수락하고, shunt는 쿠키 저장소를 두지 않으므로 업스트림이 이에 의존할 일이 없습니다. `x-api-key`도 `[server.auth]`가 설정되지 않은 경우를 포함해 무조건 제거됩니다 — 대상 프로바이더는 부팅 시점에 `chatgpt_oauth` 전용으로 검증되므로, 인바운드 `x-api-key` 값은 이 업스트림에 대해 결코 유효한 자격 증명이 될 수 없습니다. Claude Code의 `apiKeyHelper`처럼 `Authorization`과 `x-api-key`에 같은 키를 넣는 클라이언트라도 두 번째 슬롯을 통해 그 키가 새어 나가지 않습니다. 인바운드 클라이언트가 실제 Codex CLI이므로, 패스스루는 그 요청 헤더를 그대로 전달하고(`version`, `originator`, `OpenAI-Beta`, `x-codex-*`, …) 선택된 풀 계정의 `Authorization` bearer와 `chatgpt-account-id`**만** 바꿔 넣습니다. 전체 인증 안내는 [Codex CLI 연결](/ko/guides/connect-codex-cli/#3-shunt-클라이언트-토큰-제시-serverauth가-설정된-경우)을 참고하세요.
+
+Codex CLI의 `gateway_oauth`로 조직의 ID 공급자를 통해 개발자별로 로그인시키려면 `[server.auth]`의 `jwt_header` 또는 `jwt_cookie`를 설정합니다. 그러면 이 엔드포인트가(Codex 형태 모델 탐색 응답 포함) 해당 헤더나 쿠키에서도 IdP JWT를 읽으며, 이 값은 다른 클라이언트 자격 증명처럼 제거됩니다. [Codex CLI 연결](/ko/guides/connect-codex-cli/#7-id-공급자로-로그인하기-gateway-oauth)을 참고하세요.
 
 ## WebSocket 전송
 
@@ -178,9 +180,9 @@ shunt는 Codex CLI 디스커버리 요청에 유효한 폴백인 `{"models":[]}`
 
 [`[server.spend]`](/ko/reference/configuration/#serverspend-선택)를 구성하면 이 엔드포인트도 `/v1/messages`와 같은 주체별 상한을 검사하고 계측합니다. 구성하지 않으면 아래 내용은 적용되지 않습니다. 전체 동작은 [Gateway spend limits](https://github.com/pleaseai/shunt/blob/main/docs/gateway-spend-limits.md)(영문)를 참고하세요.
 
-- **검사 시점.** 모든 턴은 업스트림을 호출하기 전에 검사합니다. 세 Responses 경로의 HTTP `POST`와 Responses WebSocket이 모두 대상입니다. 주체는 정적 `[server.auth]` 토큰 이름, 검증된 JWT 이메일, 또는 `[server.auth]`가 꺼져 있을 때의 익명 주체입니다. 이 엔드포인트는 gateway 로그인 세션을 받지 않습니다.
+- **검사 시점.** 모든 턴은 업스트림을 호출하기 전에 검사합니다. 세 Responses 경로의 HTTP `POST`와 Responses WebSocket이 모두 대상입니다. 주체는 정적 `[server.auth]` 토큰 이름, 검증된 JWT 신원(`identity_claim`, 기본값은 이메일), 또는 `[server.auth]`가 꺼져 있을 때의 익명 주체입니다. 이 엔드포인트는 gateway 로그인 세션을 받지 않습니다.
 - **거부 응답.** 상한을 넘은 턴은 `429`와 `{"error":{"message":…,"type":"usage_limit_reached","code":"usage_limit_reached","resets_at":<에포크 초>}}`를 받고, `retry-after`, `x-should-retry: false`, `x-codex-promo-message: <blocked_message>` 헤더가 붙습니다. promo 헤더는 `blocked_message`가 순수 ASCII일 때만 보내며, 텍스트는 항상 메시지에도 들어갑니다. 이름이 붙는 상한은 도달한 상한 중 가장 늦게 리셋되는 것입니다. `fail_closed_on_error`가 켜져 있으면, 지출 상태를 확인할 수 없는 상한 보유 주체를 같은 type으로 거부하며 `resets_at`과 `retry-after`는 없습니다.
-- **Codex CLI가 보여 주는 것.** 고정된 버전 `rust-v0.159.3`에서 Codex CLI는 이 오류를 재시도하지 않습니다. `resets_at`으로 만든 자체 문구("You've hit your usage limit … Try again at")를 표시하고, 헤더가 있으면 promo 메시지를 함께 보여 주며, 서버 메시지는 무시합니다. 이는 Codex CLI의 동작이므로 다른 버전에서는 다를 수 있습니다.
+- **Codex CLI가 보여 주는 것.** `rust-v0.159.3`에서 Codex CLI는 이 오류를 재시도하지 않습니다. `resets_at`으로 만든 자체 문구("You've hit your usage limit … Try again at")를 표시하고, 헤더가 있으면 promo 메시지를 함께 보여 주며, 서버 메시지는 무시합니다. 이는 Codex CLI의 동작이므로 다른 버전에서는 다를 수 있습니다.
 - **WebSocket.** 거부된 `response.create`에는 같은 오류와 `retry-after`, `x-codex-promo-message`를 담은 `{"type":"error","status":429,"error":{…},"headers":{…}}` 프레임 하나가 갑니다. 소켓은 열린 채로 유지되고, 이후 각 턴을 새로 검사하며, `generate: false` 워밍업은 검사하지 않습니다.
 - **웹 검색.** `/alpha/search`와 그 별칭은 상한을 넘으면 거부되며 계측하지 않습니다.
 - **계측.** 완료된 턴은 Responses `usage`로 청구되어 `/v1/messages`가 쓰는 것과 같은 카운터에 합산되므로, 하나의 상한이 두 표면을 함께 제한합니다. 캐시된 토큰은 캐시 읽기 요율, 나머지 입력은 입력 요율로 청구하며, 추론 토큰은 출력에 포함되고 캐시 쓰기는 없습니다. 사용량 보고 없이 끝난 턴(클라이언트 종료, 교체된 턴, 끊어진 스트림)은 요청 본문으로 추정한 입력에 이미 전달된 출력을 더한 하한으로 청구합니다. 스트리밍이 아닌 2xx JSON 본문도 같은 방식으로 `usage`에서 청구하며, 입력을 보고하지 않은 본문은 대신 추정한 입력으로 청구합니다.

@@ -1,0 +1,818 @@
+//! Multi-account pool and failover tests for `auth = "kimi_oauth"`, mirroring
+//! `tests/multi_account/multi_account.rs`'s Claude coverage but scoped to the Kimi path:
+//! no account-UUID rewrite, no `anthropic-beta` header, and every non-`Relay`
+//! classification (401, quota 429, 5xx, membership 402) collapses to
+//! cooldown-and-rotate rather than Claude's fuller Rotate/PauseSame/
+//! RefreshRetry split (see `forward_kimi_oauth`'s doc comment for why).
+
+use std::{io::ErrorKind, net::SocketAddr};
+
+use reqwest::StatusCode;
+use shunt::{
+    config::{AccountConfig, AuthMode, Config, RouteConfig},
+    server,
+};
+use tokio::task::JoinHandle;
+use wiremock::{
+    matchers::{method, path},
+    Match, Mock, MockServer, Request, ResponseTemplate,
+};
+
+use crate::common;
+use crate::common::session_id_for_account;
+
+struct BearerToken(String);
+
+impl Match for BearerToken {
+    fn matches(&self, request: &Request) -> bool {
+        request
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            == Some(format!("Bearer {}", self.0).as_str())
+    }
+}
+
+struct TestGateway {
+    base_url: String,
+    state: shunt::server::AppState,
+    task: JoinHandle<()>,
+}
+
+impl Drop for TestGateway {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn account(name: &str, token_env: &str) -> AccountConfig {
+    AccountConfig {
+        name: name.to_string(),
+        token_env: Some(token_env.to_string()),
+        // Kimi has no verified upstream account identifier (see
+        // `kimi::store::scan_accounts`), so pool identity always falls back
+        // to `name` here — no `uuid` is set.
+        ..Default::default()
+    }
+}
+
+fn disabled_account(name: &str, token_env: &str) -> AccountConfig {
+    AccountConfig {
+        disabled: true,
+        ..account(name, token_env)
+    }
+}
+
+fn test_config(upstream_base_url: &str, accounts: Vec<AccountConfig>) -> Config {
+    let mut config = Config::default();
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.base_url = upstream_base_url.to_string();
+    provider.auth = AuthMode::KimiOauth;
+    provider.accounts = accounts;
+    config.routes.push(RouteConfig {
+        model: "pooled-model".to_string(),
+        provider: "anthropic".to_string(),
+        upstream_model: None,
+        effort: None,
+        service_tier: None,
+    });
+    config
+}
+
+async fn start_gateway_with(mut config: Config) -> TestGateway {
+    config.server.bind = "127.0.0.1:0".to_string();
+    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
+        .await
+        .unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let (app, _shared, state) = server::build_router(config).unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    TestGateway {
+        base_url: format!("http://{addr}"),
+        state,
+        task,
+    }
+}
+
+fn can_bind_loopback() -> bool {
+    match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => {
+            drop(listener);
+            true
+        }
+        Err(error) if error.kind() == ErrorKind::PermissionDenied => {
+            eprintln!("skipping network integration test: loopback bind is not permitted");
+            false
+        }
+        Err(error) => panic!("unexpected loopback bind failure: {error}"),
+    }
+}
+
+async fn post_messages(gateway: &TestGateway, session_id: Option<&str>) -> reqwest::Response {
+    let mut request = reqwest::Client::new()
+        .post(format!("{}/v1/messages", gateway.base_url))
+        .header("content-type", "application/json")
+        .body(
+            r#"{"model":"pooled-model","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#,
+        );
+    if let Some(session_id) = session_id {
+        request = request.header("x-claude-code-session-id", session_id);
+    }
+    request.send().await.unwrap()
+}
+
+/// Pool selection across two enabled accounts: two sequential requests with
+/// no session id advance the provider's round-robin counter, so the first
+/// request lands on account-a and the second on account-b — each carrying
+/// only its own account's bearer token — proving `select_order` actually
+/// spreads load across the Kimi pool rather than always picking the first
+/// entry.
+#[tokio::test]
+async fn pool_selects_across_two_accounts() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-kimi-", "select-a"].concat();
+    let token_b = ["fake-kimi-", "select-b"].concat();
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_SELECT_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_SELECT_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"a"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_KIMI_SELECT_A"),
+            account("account-b", "SHUNT_TEST_KIMI_SELECT_B"),
+        ],
+    ))
+    .await;
+
+    // No session id: each request advances the provider's round-robin
+    // counter, so the first lands on account-a and the second on account-b.
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-a"
+    );
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    upstream.verify().await;
+}
+
+/// A 401 from the first account rotates to the next candidate rather than
+/// relaying the 401 to the client: `KimiAuthStore` has no forced-refresh
+/// entry point, so `forward_kimi_oauth` treats `RefreshRetry` the same as
+/// `Rotate` (see its doc comment) — cool the account down and try the next.
+#[tokio::test]
+async fn pool_rotates_to_next_account_on_401() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-kimi-", "unauth-a"].concat();
+    let token_b = ["fake-kimi-", "unauth-b"].concat();
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_UNAUTH_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_UNAUTH_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_string(r#"{"error":"account a token revoked"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_KIMI_UNAUTH_A"),
+            account("account-b", "SHUNT_TEST_KIMI_UNAUTH_B"),
+        ],
+    ))
+    .await;
+
+    // First request rotates off the 401'd account to the healthy one.
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    // A session that hashes to account-a still lands on account-b, because
+    // account-a is now cooling down (so the upstream never sees a second
+    // account-a call at all).
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    upstream.verify().await;
+}
+
+/// A 402 from the first account rotates to the next candidate rather than
+/// relaying it to the client: a Kimi account with an inactive subscription
+/// membership returns 402 on every request (measured against a live account
+/// on 2026-08-18), so `classify_kimi` routes it through `Rotate` instead of
+/// `classify`'s generic `Relay` fallthrough. The follow-up sticky-session
+/// request proves the cooldown actually took — it hashes to account-a's
+/// slot but still lands on account-b, so the upstream never sees a second
+/// account-a call at all.
+#[tokio::test]
+async fn pool_rotates_to_next_account_on_402() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-kimi-", "membership-a"].concat();
+    let token_b = ["fake-kimi-", "membership-b"].concat();
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_MEMBERSHIP_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_MEMBERSHIP_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(402).set_body_string(
+            r#"{"error":{"message":"We're unable to verify your membership benefits at this time. Please ensure your membership is active.","type":"invalid_request_error"}}"#,
+        ))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_KIMI_MEMBERSHIP_A"),
+            account("account-b", "SHUNT_TEST_KIMI_MEMBERSHIP_B"),
+        ],
+    ))
+    .await;
+
+    // First request rotates off the 402'd account to the healthy one.
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    // A session that hashes to account-a still lands on account-b, because
+    // account-a is now cooling down.
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    upstream.verify().await;
+}
+
+/// When every account in the pool returns 402, `forward_kimi_oauth` must
+/// still relay the last upstream 402 verbatim (status and body) rather than
+/// substituting the generic "all Kimi OAuth accounts failed" error: an
+/// operator debugging a dead membership needs to see Kimi's real error, and
+/// this is what makes rotating on 402 safe for a single-account pool in the
+/// first place.
+#[tokio::test]
+async fn all_402_pool_relays_upstream_error_verbatim() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token = ["fake-kimi-", "membership-only"].concat();
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_MEMBERSHIP_ONLY", &token);
+
+    let upstream = MockServer::start().await;
+    let body = r#"{"error":{"message":"We're unable to verify your membership benefits at this time. Please ensure your membership is active.","type":"invalid_request_error"}}"#;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token.clone()))
+        .respond_with(ResponseTemplate::new(402).set_body_string(body))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![account("account-a", "SHUNT_TEST_KIMI_MEMBERSHIP_ONLY")],
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+    // No `x-shunt-account` header: that header is only set on the immediate
+    // `Relay` return path (`classify`'s generic 402 fallthrough), not on the
+    // exhaustion path taken after `classify_kimi` routes 402 through
+    // `Rotate`. Its absence proves the account was actually cooled down and
+    // rotated off before this response was relayed, not just relayed as-is
+    // on the first try.
+    assert!(response.headers().get("x-shunt-account").is_none());
+    let response_body = response.text().await.unwrap();
+    assert_eq!(response_body, body);
+
+    upstream.verify().await;
+}
+
+/// Every configured account `disabled = true` must error clearly rather than
+/// falling through to the generic "all accounts failed" upstream-exhaustion
+/// message, which would misdirect an operator who disabled every account by
+/// mistake — the upstream mock expects zero calls, proving the error is
+/// raised before any account is even selected.
+#[tokio::test]
+async fn all_disabled_pool_errors_clearly() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-kimi-", "alldis-a"].concat();
+    let token_b = ["fake-kimi-", "alldis-b"].concat();
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_ALLDIS_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_ALLDIS_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"unexpected"}"#))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            disabled_account("account-a", "SHUNT_TEST_KIMI_ALLDIS_A"),
+            disabled_account("account-b", "SHUNT_TEST_KIMI_ALLDIS_B"),
+        ],
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response.text().await.unwrap();
+    assert!(
+        body.contains("disabled"),
+        "expected the error to explain every account is disabled, got: {body}"
+    );
+
+    upstream.verify().await;
+}
+
+/// A `disabled = true` account is skipped by `select_order`: every request,
+/// including one whose session id hashes to the disabled account's slot,
+/// lands on the one enabled account, and the upstream mock for the disabled
+/// account's token expects zero calls.
+#[tokio::test]
+async fn disabled_account_is_skipped_in_favor_of_the_enabled_one() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-kimi-", "skip-a"].concat();
+    let token_b = ["fake-kimi-", "skip-b"].concat();
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_SKIP_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_SKIP_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"account":"a-should-not-be-called"}"#),
+        )
+        .expect(0)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            disabled_account("account-a", "SHUNT_TEST_KIMI_SKIP_A"),
+            account("account-b", "SHUNT_TEST_KIMI_SKIP_B"),
+        ],
+    ))
+    .await;
+
+    // A session id that would hash to account-a's slot in a fully-enabled
+    // two-account pool still lands on account-b, since account-a never
+    // enters the selectable order at all.
+    let session_id = session_id_for_account(0, &["account-a", "account-b"]);
+    let response = post_messages(&gateway, Some(&session_id)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    upstream.verify().await;
+}
+
+/// An account whose `token_env` is unset cannot be resolved by
+/// `resolve_kimi_account`: `forward_kimi_oauth`'s `Err` arm at the
+/// credential-resolve step must arm a cooldown and `continue` to the next
+/// candidate rather than failing the request, mirroring
+/// `unresolvable_account_cools_down_and_rotates` in `tests/multi_account/multi_account.rs`.
+#[tokio::test]
+async fn unresolvable_account_cools_down_and_rotates() {
+    if !can_bind_loopback() {
+        return;
+    }
+    // account-a points at an env var that is never set; account-b is healthy.
+    let token_b = ["fake-kimi-", "resolve-b"].concat();
+    let mut vars = common::env_lock().await;
+    // Unset is this test's precondition, not cleanup: the account is
+    // unresolvable *because* the name is absent. It has to hold under the
+    // guard, which also restores it afterwards.
+    vars.unset("SHUNT_TEST_KIMI_MISSING_A");
+    vars.set("SHUNT_TEST_KIMI_RESOLVE_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_KIMI_MISSING_A"),
+            account("account-b", "SHUNT_TEST_KIMI_RESOLVE_B"),
+        ],
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+    upstream.verify().await;
+}
+
+/// When every account fails to resolve, the pool never reaches an upstream:
+/// `last_response` stays `None` and `forward_kimi_oauth` surfaces a 502
+/// without ever calling the mock, exercising the currently-unreached
+/// `last_response == None` arm. Mirrors
+/// `all_accounts_unresolvable_returns_bad_gateway` in `tests/multi_account/multi_account.rs`.
+#[tokio::test]
+async fn all_accounts_unresolvable_returns_bad_gateway() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    vars.unset("SHUNT_TEST_KIMI_MISSING_ALL_A");
+    vars.unset("SHUNT_TEST_KIMI_MISSING_ALL_B");
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"unexpected":true}"#))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+
+    let gateway = start_gateway_with(test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", "SHUNT_TEST_KIMI_MISSING_ALL_A"),
+            account("account-b", "SHUNT_TEST_KIMI_MISSING_ALL_B"),
+        ],
+    ))
+    .await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    upstream.verify().await;
+}
+
+/// Each upstream dispatch is one attempt on the admin pool counters: the
+/// account rotated off on a 5xx records a failure, and the account that
+/// served records a success.
+#[tokio::test]
+async fn rotation_counts_one_attempt_against_each_account() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let token_a = ["fake-kimi-", "counted-a"].concat();
+    let token_b = ["fake-kimi-", "counted-b"].concat();
+    let mut vars = common::env_lock().await;
+    vars.set("SHUNT_TEST_KIMI_COUNTED_A", &token_a);
+    vars.set("SHUNT_TEST_KIMI_COUNTED_B", &token_b);
+
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_a.clone()))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token_b.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"account":"b"}"#))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let accounts = vec![
+        account("account-a", "SHUNT_TEST_KIMI_COUNTED_A"),
+        account("account-b", "SHUNT_TEST_KIMI_COUNTED_B"),
+    ];
+    let gateway = start_gateway_with(test_config(&upstream.uri(), accounts.clone())).await;
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-shunt-account").unwrap(),
+        "account-b"
+    );
+
+    // Keyed as `resolve_pool_accounts` keys them: it stamps the Kimi family,
+    // which this provider's name alone would not infer.
+    let resolved = accounts
+        .into_iter()
+        .map(|account| AccountConfig {
+            store_family: Some(shunt::accounts::StoreFamily::Kimi),
+            ..account
+        })
+        .collect::<Vec<_>>();
+    let snapshots = gateway
+        .state
+        .accounts
+        .snapshot("anthropic", &resolved, None, None);
+    let totals = |index: usize| {
+        (
+            snapshots[index].requests_attempted,
+            snapshots[index].requests_succeeded,
+            snapshots[index].requests_failed,
+        )
+    };
+    assert_eq!(totals(0), (1, 0, 1));
+    assert_eq!(totals(1), (1, 1, 0));
+    upstream.verify().await;
+}
+
+/// Caps apply to Kimi whenever its upstream reports utilization: once the
+/// account is observed past its 5h cap, an emptied pool returns the gateway
+/// cap 429 (with `retry-after`) rather than the generic exhaustion error.
+#[tokio::test]
+async fn capped_kimi_pool_returns_the_gateway_cap_429() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let token = ["fake-kimi-", "capped-a"].concat();
+    vars.set("SHUNT_TEST_KIMI_CAPPED_A", &token);
+    let upstream = MockServer::start().await;
+    let reset = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3_600;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("anthropic-ratelimit-unified-5h-utilization", "0.9")
+                .insert_header("anthropic-ratelimit-unified-5h-reset", reset.to_string())
+                .set_body_string(r#"{"type":"message"}"#),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    let mut capped = account("account-a", "SHUNT_TEST_KIMI_CAPPED_A");
+    capped.max_utilization_5h = Some(0.5);
+    let gateway = start_gateway_with(test_config(&upstream.uri(), vec![capped])).await;
+
+    // First request is served and teaches the pool the account is at 0.9.
+    assert_eq!(post_messages(&gateway, None).await.status(), StatusCode::OK);
+
+    let response = post_messages(&gateway, None).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().contains_key("retry-after"));
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "rate_limit_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("max_utilization"),
+        "{body}"
+    );
+    upstream.verify().await;
+}
+
+// Session bindings (ADR-0008) on the Kimi pool. The switch metric's counts
+// are asserted in `src/adapters/anthropic/binding_tests.rs`, whose
+// `#[cfg(test)]` hooks this binary cannot reach; these tests read the binding
+// back through the selection ticket instead.
+
+const BINDING_MODEL: &str = "pooled-model";
+
+/// Set both accounts' tokens and return them as `[a, b]`.
+fn binding_tokens(vars: &mut common::EnvVars, env_stem: &str) -> [String; 2] {
+    let tokens = [
+        ["fake-kimi-", env_stem, "-a"].concat(),
+        ["fake-kimi-", env_stem, "-b"].concat(),
+    ];
+    vars.set(&format!("{env_stem}_A"), &tokens[0]);
+    vars.set(&format!("{env_stem}_B"), &tokens[1]);
+    tokens
+}
+
+fn binding_config(upstream: &MockServer, env_stem: &str) -> Config {
+    test_config(
+        &upstream.uri(),
+        vec![
+            account("account-a", &format!("{env_stem}_A")),
+            account("account-b", &format!("{env_stem}_B")),
+        ],
+    )
+}
+
+async fn answer(upstream: &MockServer, token: &str, template: ResponseTemplate, times: u64) {
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(BearerToken(token.to_string()))
+        .respond_with(template)
+        .up_to_n_times(times)
+        .expect(times)
+        .mount(upstream)
+        .await;
+}
+
+fn ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#)
+}
+
+fn served_by(response: &reqwest::Response) -> &str {
+    response
+        .headers()
+        .get("x-shunt-account")
+        .unwrap()
+        .to_str()
+        .unwrap()
+}
+
+/// AC-002 on Kimi: bound to A, A cools down, the session moves to B and
+/// stays on B after A recovers.
+#[tokio::test]
+async fn a_session_moved_off_a_cooled_kimi_account_stays_after_it_recovers() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_KIMI_BIND_COOLDOWN";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer(&upstream, &token_a, ok(), 1).await;
+    answer(&upstream, &token_b, ok(), 2).await;
+    let gateway = start_gateway_with(binding_config(&upstream, stem)).await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    assert_eq!(
+        served_by(&post_messages(&gateway, Some(&session)).await),
+        "account-a"
+    );
+    state.accounts.cooldown(
+        &provider,
+        &accounts[0],
+        std::time::Duration::from_secs(300),
+        "test",
+    );
+    assert_eq!(
+        common::binding_ticket(state, &provider, &accounts, &session, BINDING_MODEL)
+            .prior_ineligible(),
+        Some(shunt::accounts::SwitchReason::Cooldown)
+    );
+    assert_eq!(
+        served_by(&post_messages(&gateway, Some(&session)).await),
+        "account-b"
+    );
+    state.accounts.mark_healthy(&provider, &accounts[0], true);
+    assert_eq!(
+        served_by(&post_messages(&gateway, Some(&session)).await),
+        "account-b"
+    );
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(1)
+    );
+    upstream.verify().await;
+}
+
+/// The bound Kimi account answers a membership 402 and B serves: the attempt
+/// failed over, so the binding moves to B (reason `failover`), and the next
+/// request goes straight to B.
+#[tokio::test]
+async fn a_failed_over_kimi_bound_account_moves_the_binding() {
+    if !can_bind_loopback() {
+        return;
+    }
+    let mut vars = common::env_lock().await;
+    let stem = "SHUNT_TEST_KIMI_BIND_FAILOVER";
+    let [token_a, token_b] = binding_tokens(&mut vars, stem);
+    let upstream = MockServer::start().await;
+    answer(&upstream, &token_a, ok(), 1).await;
+    answer(
+        &upstream,
+        &token_a,
+        ResponseTemplate::new(402).set_body_string(r#"{"error":"membership inactive"}"#),
+        1,
+    )
+    .await;
+    answer(&upstream, &token_b, ok(), 2).await;
+    let gateway = start_gateway_with(binding_config(&upstream, stem)).await;
+    let (provider, accounts) = common::resolved_pool_accounts(&gateway.state).await;
+    let state = &gateway.state;
+    let session = common::session_id_placed_on(state, 0).await;
+
+    assert_eq!(
+        served_by(&post_messages(&gateway, Some(&session)).await),
+        "account-a"
+    );
+    let response = post_messages(&gateway, Some(&session)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(served_by(&response), "account-b");
+    assert_eq!(
+        common::bound_account(state, &provider, &accounts, &session, BINDING_MODEL),
+        Some(1)
+    );
+    // A recovers; the session stays on B.
+    state.accounts.mark_healthy(&provider, &accounts[0], true);
+    assert_eq!(
+        served_by(&post_messages(&gateway, Some(&session)).await),
+        "account-b"
+    );
+    upstream.verify().await;
+}

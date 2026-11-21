@@ -138,10 +138,38 @@ async fn authentication_error(
     headers: &HeaderMap,
     codex_shape: bool,
 ) -> Option<Response> {
-    let inbound = match &state.inbound_auth {
-        Some(auth) => {
-            gate::authenticate(auth, &state.inbound_jwks, headers, gate::Slots::Client).await
+    // The Codex-shaped responses read the `jwt_header` / `jwt_cookie` slots like
+    // the other Codex routes; the Anthropic-shaped one does not.
+    let slots = if codex_shape {
+        gate::Slots::CodexDiscovery
+    } else {
+        gate::Slots::Client
+    };
+    // A gateway login token needs no issuer, so it is checked first: a request
+    // it authenticates must neither wait on a JWKS fetch for a token in another
+    // slot nor turn into a 503 when that issuer is unreachable.
+    let gateway_identity = state
+        .gateway_auth
+        .as_ref()
+        .and_then(|auth| auth.authenticate_bearer(headers));
+    if let Some(identity) = gateway_identity {
+        match state
+            .inbound_auth
+            .as_ref()
+            .and_then(|auth| auth.authenticate_client(headers))
+        {
+            Some(client) => {
+                tracing::info!(client = %client, "inbound client authenticated for GET /v1/models")
+            }
+            None => tracing::info!(
+                client = %identity.email,
+                "gateway user authenticated for GET /v1/models"
+            ),
         }
+        return None;
+    }
+    let inbound = match &state.inbound_auth {
+        Some(auth) => gate::authenticate(auth, &state.inbound_jwks, headers, slots).await,
         None => gate::Outcome::Rejected,
     };
     if inbound == gate::Outcome::Unavailable {
@@ -157,14 +185,7 @@ async fn authentication_error(
         gate::Outcome::Authenticated { client, .. } => Some(client.as_str()),
         _ => None,
     };
-    let gateway_identity = state
-        .gateway_auth
-        .as_ref()
-        .and_then(|auth| auth.authenticate_bearer(headers));
-    if (state.inbound_auth.is_some() || state.gateway_auth.is_some())
-        && inbound_client.is_none()
-        && gateway_identity.is_none()
-    {
+    if (state.inbound_auth.is_some() || state.gateway_auth.is_some()) && inbound_client.is_none() {
         tracing::warn!(
             "inbound auth failed for GET /v1/models: missing or invalid client credential"
         );
@@ -193,8 +214,6 @@ async fn authentication_error(
     }
     if let Some(client) = inbound_client {
         tracing::info!(client = %client, "inbound client authenticated for GET /v1/models");
-    } else if let Some(identity) = gateway_identity.as_ref() {
-        tracing::info!(client = %identity.email, "gateway user authenticated for GET /v1/models");
     }
     None
 }
@@ -744,6 +763,7 @@ mod tests {
             jwt: Vec::new(),
             header: "x-shunt-token".to_string(),
             tokens_env: env.clone(),
+            ..Default::default()
         });
         let (router, _, _) = server::build_router(config).unwrap();
 

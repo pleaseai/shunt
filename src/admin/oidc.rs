@@ -102,13 +102,16 @@ pub async fn callback(
     let Some(auth) = state.admin_auth.clone() else {
         return not_found();
     };
-    if !state.admin_stores.login_rate.check() {
-        return error_page(
-            &auth,
-            StatusCode::TOO_MANY_REQUESTS,
-            "Too many attempts. Wait a minute and try again.",
-        );
+    // Without `[server.admin.oidc]` no sign-in can have started, so there is no
+    // state to redeem: answer like an admin surface without the route.
+    if auth.oidc().is_none() {
+        return not_found();
     }
+    // Redeem `state` before spending the shared login budget. Only `start` mints
+    // a state, and it spends that budget behind a same-origin check to do so, so
+    // a callback carrying no live state is refused here for free. Checked the
+    // other way round, a cross-site page firing forged callbacks (an `<img>` tag
+    // is enough, since this is a `GET`) drains the budget `/admin/login` uses.
     let Some(pending) = state.admin_stores.oidc_states.take(&query.state) else {
         return error_page(
             &auth,
@@ -116,6 +119,13 @@ pub async fn callback(
             "This sign-in link is invalid or has expired. Start again from the login page.",
         );
     };
+    if !state.admin_stores.login_rate.check() {
+        return error_page(
+            &auth,
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many attempts. Wait a minute and try again.",
+        );
+    }
     if let Some(provider_error) = query.error.as_deref() {
         let provider_error = sanitized_provider_error(provider_error);
         tracing::warn!(

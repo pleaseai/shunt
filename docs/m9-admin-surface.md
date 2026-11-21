@@ -241,6 +241,12 @@ process-lifetime state:
   downgrading that dashboard to read-only until the operator signed in again.
   Scripted logins are unaffected: the check passes when neither `Sec-Fetch-Site`
   nor `Origin` is present.
+- **The OIDC callback redeems `state` before it spends that budget.** The
+  callback is a `GET`, so another site can fire it with an `<img>` tag, and a
+  same-origin check cannot apply to the identity provider's own redirect. A
+  callback carrying no live `state` is therefore refused before the rate limit
+  is consulted; only `POST /admin/api/oidc/start`, which is same-origin checked,
+  mints one. Without `[server.admin.oidc]` the callback answers `404`.
 - **Pending-login store** is in-memory only, single-use, and TTL-bound; each
   completion attempt is counted and the entry is discarded after a small cap. The
   256-bit OAuth `state` already makes guessing infeasible.
@@ -379,10 +385,11 @@ redirect URL from the browser address bar or `<code>#<state>`. Completion checks
 the pending state in constant time, requires a refresh token, derives the account
 ID from the access-token JWT, and writes the verbatim `auth.json` shape at `0600`.
 `SHUNT_CODEX_TOKEN_URL` overrides the exchange endpoint for local tests; an
-invalid or non-HTTPS/non-loopback override is ignored with a warning (mirroring the
-Claude completion flow) instead of silently, and the exchange POST uses the
-redirect-hardened client so a permitted endpoint cannot 3xx the single-use code to
-an unsafe plaintext host. No access, refresh, or ID token is returned or logged.
+invalid override, or one that is neither loopback nor HTTPS to the built-in
+endpoint's host, is ignored with a warning (mirroring the Claude completion flow)
+instead of silently, and the exchange POST uses the redirect-hardened client, which
+follows a 3xx only within the host it started on, so a permitted endpoint cannot
+hand the single-use code to another host. No access, refresh, or ID token is returned or logged.
 
 Like Claude, an empty-account `chatgpt_oauth` provider scans the Codex store and
 makes the new account live on its next request. Explicit-account providers need a
@@ -418,6 +425,24 @@ named-model usage. Codex remains `response-derived`: both translated Messages
 traffic and raw inbound Responses attach the default CLI account id to
 `x-codex-*` quota capture without importing the credential into the managed
 store. Before such traffic its row explicitly says it is waiting for traffic.
+
+The **Accounts and usage** heading carries a refresh bar: when the table last
+finished loading, the countdown to the next usage-poller pass (from the pool
+response's `usage_poll`; hidden while the poller is off), and a **Reload** button.
+While the tab is visible the page re-reads shunt's own state every 30 seconds:
+`GET /admin/api/pool` and the account stores, with the usage table rebuilt from
+the observations it already has. It never calls `GET /admin/api/observed` on that
+timer, because that endpoint asks each provider's usage API about every login on
+the host, uncached. On those timed reloads, a row that is both a pool account and
+a host login keeps the numbers the last full load drew, except where the pool's
+own window has changed since that load: the pool has then learned something the
+observation predates. A cached `waiting-for-traffic` is dropped the same way once
+the pool has seen the account's traffic. One timed reload runs at a time, so a
+backend slower than the interval still lands its answers. A hidden tab skips the timer and catches up once when it is
+shown again. When the last observation failed the timer leaves the error showing
+instead of repainting the table without the logins. **Reload** repeats the full
+page load, observations included. It is not the per-account **Refresh**, which
+exercises that account's refresh grant, and neither starts a usage-poller pass early.
 
 The usage table groups by provider: the provider is named once and its accounts
 nest beneath it, folding managed pool accounts in alongside the read-only
@@ -461,9 +486,18 @@ managed state (`available`/`unseen`), which is the "Needs login" case this
 matching was built for.
 
 Within the managed states both tables run one ladder — `disabled`,
-`needs_relogin`, `!has_state`, account-wide cooldown, `near_quota`, Fable-only
-cooldown — so the same account cannot read `near quota` in the managed-pool
-table while the Accounts table calls it `Cooling` (issue #512). The cooldown is
+`needs_relogin`, `!has_state`, hard cap, used-up window, account-wide cooldown,
+`near_quota`, Fable cap, Fable-only cooldown — so the same account cannot read
+`near quota` in the managed-pool table while the Accounts table calls it
+`Cooling` (issue #512). A used-up window gets its own `exhausted` state
+("Exhausted", noted `Quota used up · clears when the window resets`), read from
+the pool snapshot's `exhausted` flag: the 5-hour or weekly window was rejected or
+reached 100% utilization. The rejection test is selection's own, so a stale
+aggregate `status` counts only when no per-window status has been recorded, and
+a Fable-only (`7d_oi`) rejection does not count. `near_quota` cannot carry that
+on its own, since the pool also sets it at the switch threshold (98% by default)
+while the account can still serve. Like a hard cap, it lasts until its window resets, so it
+sits above the short cooldown. The cooldown is
 tested before `near_quota` because it is the fact that *all* of the account's
 traffic is gated right now, while `near_quota` warns about what is coming. When
 both cooldowns are running the row's state is the account-wide one, and its note
@@ -511,6 +545,21 @@ that timed out before any headers leaves no other trace. Attempts over the Codex
 WebSocket transport, served or failed, are not counted, since a WebSocket turn
 has no per-turn response headers to classify; an HTTP fallback after a failed
 WebSocket attempt is counted.
+
+Each row also carries `bound_sessions`, the number of that provider's live
+session bindings (ADR-0008) on the row's physical identity. A binding idle for
+more than 24 hours is expired and is not counted. Bindings are keyed by provider
+and session hash, with the physical account identity as the value, so aliases
+that resolve to one identity share an `account_ref`, and each of their rows
+reports that identity's one count. The count is never split
+per alias and never summed. A consumer that totals bound sessions dedupes by
+`account_ref`, as it would for the request counters. The count is scoped to the
+provider table: a session bound under another provider on the same physical
+account counts only in that provider's table, not here. The handler reads the binding
+table once per request, under the binding table's own lock, never while it
+holds `entries`. Only counts are returned, never a session hash or id. A
+runtime `PATCH /admin/api/pool` of `sort_by_reset` leaves every binding in
+place, because that override only reorders failover and sessionless traffic.
 
 ### `needs_relogin` — a dead credential, not a pause
 
@@ -666,9 +715,10 @@ carried them. It clears a `RefreshGrant`-caused mark, but deliberately not a
 serve, so its success is no evidence against a bearer the provider already
 rejected. The response's `needs_relogin` is read back from the pool *after* that
 clear, so a probe that succeeded against a still-dead account says so rather
-than reporting a recovery `/admin/pool` would contradict. `AccountPool` tracks no sticky flag or last-selected
-timestamp, so the dashboard reports what is actually stored rather than inventing
-it. `GET /admin/pool` enumerates each `claude_oauth` and `chatgpt_oauth`
+than reporting a recovery `/admin/pool` would contradict. The dashboard reports only what the pool actually stores. A session's account
+lives in the binding table (ADR-0008), which the pool view reports as a
+per-identity `bound_sessions` count. The pool keeps no last-selected timestamp,
+so none is shown. `GET /admin/pool` enumerates each `claude_oauth` and `chatgpt_oauth`
 provider's accounts (its configured list, or the corresponding Claude/Codex store
 scan for an empty list — the same resolution the adapters use). Codex successful
 responses now populate the 5h/7d fields from `x-codex-*` rate-limit headers;

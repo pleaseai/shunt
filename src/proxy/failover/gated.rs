@@ -170,6 +170,9 @@ pub(super) async fn finish(
             let mut response = axum::response::Response::new(axum::body::Body::from(turn.body));
             *response.status_mut() = turn.status;
             *response.headers_mut() = turn.headers;
+            if let Some(coding) = turn.coding {
+                response.extensions_mut().insert(coding);
+            }
             // The retained bytes are served whole, so the length is the
             // body's own; an upstream length describing a different encoding
             // of the same turn would contradict them.

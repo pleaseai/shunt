@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn validates_account_names() {
         assert!(validate_account_name("primary-2").is_ok());
-        for invalid in ["", "Primary", "has space", "../escape", "under_score"] {
+        for invalid in ["", "Primary", "has space", "../escape", ".hidden"] {
             assert!(
                 validate_account_name(invalid).is_err(),
                 "accepted {invalid:?}"

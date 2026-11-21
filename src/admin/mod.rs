@@ -65,7 +65,7 @@ pub use ui::embedded_file_count;
 
 use session::{PendingAttempt, PendingKind, COMPLETION_EXCHANGE_TIMEOUT};
 
-const SESSION_COOKIE: &str = "shunt_admin_session";
+pub(crate) const SESSION_COOKIE: &str = "shunt_admin_session";
 
 /// Resolved admin credentials plus session/pending lifetimes. Held in
 /// `RuntimeState` (hot-reloaded so credential edits apply); the session and
@@ -1182,6 +1182,11 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let deadline = tokio::time::Instant::now()
         .checked_add(budgets.total)
         .unwrap_or_else(tokio::time::Instant::now);
+    // Live session bindings (FR-14), read under one bindings lock for the
+    // whole request and released before any await below. Keyed by provider,
+    // then by account key: aliases that resolve to one physical identity
+    // share a key, so each of their rows reports the identity's one count.
+    let bound_sessions = state.accounts.bound_session_counts();
     let mut providers = Vec::new();
     for (name, provider) in &state.config.providers {
         if !matches!(
@@ -1191,6 +1196,7 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 | AuthMode::KimiOauth
                 | AuthMode::AntigravityOauth
                 | AuthMode::XaiOauth
+                | AuthMode::ChatgptPlanOauth
         ) {
             continue;
         }
@@ -1241,7 +1247,9 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
             }
             // xAI resolves through the shared per-family helper rather than another
             // copy of the call above.
-            AuthMode::XaiOauth => provider.resolve_pool_accounts().await,
+            AuthMode::XaiOauth | AuthMode::ChatgptPlanOauth => {
+                provider.resolve_pool_accounts().await
+            }
             _ => unreachable!("provider auth filtered above"),
         };
         let resolved = match resolved {
@@ -1299,6 +1307,15 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
                     if let Some(plan) = plan {
                         map.insert("plan".to_string(), Value::String(plan));
                     }
+                    // This provider's live sessions bound to the row's identity:
+                    // rows sharing an `account_ref` share one count, never a
+                    // per-alias split or a sum.
+                    let bound = bound_sessions
+                        .get(name.as_str())
+                        .and_then(|counts| counts.get(&crate::accounts::account_key(name, account)))
+                        .copied()
+                        .unwrap_or(0);
+                    map.insert("bound_sessions".to_string(), Value::from(bound));
                 }
                 value
             })
@@ -1320,6 +1337,13 @@ async fn pool(State(state): State<AppState>, headers: HeaderMap) -> Response {
         "sort_by_reset": state
             .accounts
             .effective_sort_by_reset(state.config.server.pool.as_ref()),
+        // The usage poller's cadence, for the dashboard's next-check
+        // countdown: `null` until its first pass, and whenever it is off.
+        "usage_poll": state.accounts.usage_poll_schedule().map(|schedule| json!({
+            "interval_seconds": schedule.interval_seconds,
+            "last_started_at": schedule.last_started_at,
+            "next_at": schedule.next_at(),
+        })),
     }))
 }
 
@@ -1451,7 +1475,9 @@ async fn patch_pool_account(
             )
             .await
         }
-        AuthMode::XaiOauth => provider_cfg.resolve_pool_accounts().await,
+        AuthMode::XaiOauth | AuthMode::ChatgptPlanOauth => {
+            provider_cfg.resolve_pool_accounts().await
+        }
         _ => return bad_request("provider does not use a managed pool"),
     };
     let accounts = match resolved {
@@ -1590,7 +1616,7 @@ async fn add_account(
         return bad_request("invalid JSON body");
     };
     if claude_store::validate_account_name(&body.name).is_err() {
-        return bad_request("account name must match [a-z0-9-]+");
+        return invalid_account_name();
     }
     let pending_kind = body.mode.pending_kind();
     let pkce = claude_login::generate_pkce();
@@ -1645,7 +1671,7 @@ async fn complete_account(
         return bad_request("invalid JSON body");
     };
     if claude_store::validate_account_name(&name).is_err() {
-        return bad_request("account name must match [a-z0-9-]+");
+        return invalid_account_name();
     }
     // Held for the rest of the handler: the entry survives the exchange below,
     // so without this a second completion started in that window stores a second
@@ -1899,7 +1925,7 @@ async fn refresh_account(
         return too_many_requests("too many refresh attempts; slow down");
     }
     if claude_store::validate_account_name(&name).is_err() {
-        return bad_request("account name must match [a-z0-9-]+");
+        return invalid_account_name();
     }
     let meta_name = name.clone();
     let meta = match tokio::task::spawn_blocking(move || claude_store::account_meta(&meta_name))
@@ -2041,7 +2067,7 @@ async fn remove_account_handler(
         return response;
     }
     if claude_store::validate_account_name(&name).is_err() {
-        return bad_request("account name must match [a-z0-9-]+");
+        return invalid_account_name();
     }
     let target = name.clone();
     let removed = match tokio::task::spawn_blocking(move || {
@@ -2202,6 +2228,15 @@ fn forbidden(message: &str) -> Response {
     ShuntError::new(StatusCode::FORBIDDEN, "permission_error", message).into_response()
 }
 
+/// The `400` for a provisioning or account route whose `{name}` fails
+/// [`crate::auth::shared::validate_account_name`].
+pub(super) fn invalid_account_name() -> Response {
+    bad_request(&format!(
+        "account name must contain {}",
+        crate::auth::shared::ACCOUNT_NAME_RULE
+    ))
+}
+
 pub(super) fn bad_request(message: &str) -> Response {
     ShuntError::new(StatusCode::BAD_REQUEST, "invalid_request_error", message).into_response()
 }
@@ -2221,6 +2256,9 @@ pub(super) fn too_many_requests(message: &str) -> Response {
 pub(super) fn not_found() -> Response {
     ShuntError::new(StatusCode::NOT_FOUND, "not_found_error", "not found").into_response()
 }
+
+#[cfg(test)]
+mod pool_binding_tests;
 
 #[cfg(test)]
 mod tests {

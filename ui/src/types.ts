@@ -63,6 +63,15 @@ export interface PoolAccount {
   needs_relogin?: boolean;
   has_state?: boolean;
   near_quota?: boolean;
+  /**
+   * A shared window (5h or 7d) is used up: the provider rejected it (or, with no
+   * per-window status recorded, the aggregate `status` is `rejected`), or its
+   * utilization reached 100%. `near_quota` is also set at the switch threshold;
+   * this is set only once a shared window is spent, though selection still
+   * keeps the account as a last resort. A Fable-only (`7d_oi`) rejection does
+   * not set it.
+   */
+  exhausted?: boolean;
   /** A 5h or 7d `max_utilization` hard cap excludes the account from every request. */
   capped?: boolean;
   /** The Fable (7d_oi) cap excludes the account from Fable requests only. */
@@ -80,6 +89,8 @@ export interface PoolAccount {
   utilization_7d_oi?: number | null;
   reset_7d_oi?: number | null;
   quota_buckets?: QuotaBucket[];
+  /** Live sessions bound to this row's identity; rows sharing an `account_ref` share one count. */
+  bound_sessions?: number;
 }
 
 export interface PoolProvider {
@@ -96,6 +107,17 @@ export interface PoolProvider {
 export interface PoolData {
   providers: PoolProvider[];
   sortByReset: boolean;
+  /** The usage poller's cadence; `null` before its first pass or when it is off. */
+  usagePoll: UsagePoll | null;
+}
+
+/** When shunt last asked the providers' usage APIs for every account, and when it next will. */
+export interface UsagePoll {
+  intervalSeconds: number;
+  /** Unix seconds. */
+  lastStartedAt: number;
+  /** Unix seconds. */
+  nextAt: number;
 }
 
 export interface ClaudeStoreAccount {

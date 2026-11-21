@@ -19,7 +19,7 @@ verbatim rather than rotating.` — but the actual call is `mapped_upstream_erro
 auth).await`, which re-shapes the upstream body into a translated Anthropic-style error envelope
 (`build_upstream_error` extracts a `message` field and wraps it in `{"type":"error","error":
 {"type":...,"message":...}}`). This directly contradicts the module doc-comment of
-`tests/codex_multi_account.rs` in the same PR, which correctly states "the Responses adapter always
+`tests/multi_account/codex_multi_account.rs` in the same PR, which correctly states "the Responses adapter always
 re-shapes an upstream failure into an Anthropic-style error envelope... unlike the Anthropic
 adapter's byte-verbatim relay." Reported at ~65 confidence / minor severity (not "Critical" — the
 actual behavior is correct and intentional, only the word choice is inconsistent with the rest of

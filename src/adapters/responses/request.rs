@@ -5,7 +5,7 @@ use axum::http::{HeaderMap, HeaderValue};
 
 use crate::{auth::Credential, routing::Route, server::AppState};
 
-/// These headers mirror the client identity from openai/codex rust-v0.159.3.
+/// These headers mirror the client identity from openai/codex rust-v0.170.0.
 ///
 /// The ChatGPT backend routes newer model slugs (e.g. gpt-6-sol and gpt-6-luna,
 /// which have `minimal_client_version: 0.155.0`) by client identity and
@@ -20,8 +20,8 @@ use crate::{auth::Credential, routing::Route, server::AppState};
 /// `pub(crate)`: also reused by `crate::auth::codex::usage` (the wham/usage
 /// poller) so its CLI identity headers cannot drift from the Responses
 /// adapter's own.
-pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.159.3";
-pub(crate) const CODEX_CLIENT_VERSION: &str = "0.159.3";
+pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.170.0";
+pub(crate) const CODEX_CLIENT_VERSION: &str = "0.170.0";
 
 /// Grok CLI identity, mirrored from the official Grok CLI (via
 /// raine/claude-code-proxy `src/providers/grok/client.rs`). The subscription
@@ -271,6 +271,11 @@ pub(super) fn session_affinity_headers(
 /// chatgpt-oauth origin passes config validation (the https and host checks
 /// skip loopback) and stays unguarded; it already holds the plaintext bearer
 /// by design, so the guard adds nothing there.
+///
+/// Anthropic origins get the same guard for the same reason. A Messages turn
+/// carries `x-api-key` on the api-key arm, which reqwest does not count as a
+/// credential and so keeps across a host change, and on any arm a 307 or 308
+/// replays the prompt body to the new host.
 pub(crate) fn codex_identity_redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
         let origin = attempt.previous().first().and_then(|url| url.host_str());
@@ -281,6 +286,9 @@ pub(crate) fn codex_identity_redirect_policy() -> reqwest::redirect::Policy {
             }
             Some(origin) if crate::config::host_is_chatgpt(origin) => {
                 !crate::config::host_is_chatgpt(target)
+            }
+            Some(origin) if crate::config::host_is_anthropic(origin) => {
+                !crate::config::host_is_anthropic(target)
             }
             _ => false,
         };
@@ -356,6 +364,19 @@ pub(super) fn request_builder(
         // account-id/originator headers).
         Credential::XaiOauth { access_token } => {
             request = grok_identity_headers(request.bearer_auth(access_token));
+        }
+        // ChatGPT-plan bearer on the public OpenAI host: the same four
+        // session-affinity headers the api-key arm sends there (prompt-cache
+        // affinity), and none of the codex identity headers
+        // (`chatgpt-account-id`, `originator`, user-agent, version).
+        Credential::ChatgptPlanOauth { access_token } => {
+            request = session_affinity_headers(
+                request.bearer_auth(access_token),
+                session_id,
+                None,
+                window,
+                None,
+            );
         }
         Credential::ClaudeOauth { access_token, .. }
         | Credential::GoogleOauth { access_token, .. } => {
@@ -827,6 +848,78 @@ mod tests {
         backend.verify().await;
     }
 
+    /// Same guard, Anthropic origin: a cross-host 3xx from api.anthropic.com
+    /// stops at the hop, so neither the `x-api-key` header (which reqwest keeps
+    /// across a host change) nor the replayed prompt body reaches the redirect
+    /// target, while a hop within anthropic.com still follows.
+    #[tokio::test]
+    async fn a_cross_host_redirect_from_anthropic_never_carries_the_key_or_body() {
+        use wiremock::{
+            matchers::{header, method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+
+        let anthropic = MockServer::start().await;
+        let relay = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("x-api-key", "sk-ant-redir"))
+            .respond_with(
+                ResponseTemplate::new(reqwest::StatusCode::TEMPORARY_REDIRECT)
+                    .insert_header("location", format!("{}/v1/messages", relay.uri())),
+            )
+            .expect(1)
+            .mount(&anthropic)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/follow"))
+            .respond_with(
+                ResponseTemplate::new(reqwest::StatusCode::TEMPORARY_REDIRECT)
+                    .insert_header("location", "http://api.anthropic.com/v1/landed"),
+            )
+            .expect(1)
+            .mount(&anthropic)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/landed"))
+            .respond_with(ResponseTemplate::new(reqwest::StatusCode::OK))
+            .expect(1)
+            .mount(&anthropic)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .redirect(crate::adapters::responses::request::codex_identity_redirect_policy())
+            .resolve("api.anthropic.com", *anthropic.address())
+            .build()
+            .unwrap();
+
+        let response = client
+            .post("http://api.anthropic.com/v1/messages")
+            .header("x-api-key", "sk-ant-redir")
+            .body(r#"{"messages":[]}"#)
+            .send()
+            .await
+            .expect("the redirect stops at the hop and returns the 307");
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT,
+            "a refused cross-host hop returns the upstream redirect"
+        );
+        let followed = client
+            .post("http://api.anthropic.com/v1/follow")
+            .header("x-api-key", "sk-ant-follow")
+            .body("{}")
+            .send()
+            .await
+            .expect("the same-host hop follows to the landing path");
+        assert_eq!(followed.status(), reqwest::StatusCode::OK);
+        assert!(
+            relay.received_requests().await.unwrap().is_empty(),
+            "the api key and prompt body must not follow a cross-host redirect"
+        );
+        anthropic.verify().await;
+    }
+
     #[test]
     fn builds_codex_url_and_headers_without_sending() {
         let state = AppState::new(Config::default(), reqwest::Client::new()).unwrap();
@@ -983,9 +1076,9 @@ mod tests {
         assert_eq!(request.headers().get("originator").unwrap(), "codex_cli_rs");
         assert_eq!(
             request.headers().get("user-agent").unwrap(),
-            "codex_cli_rs/0.159.3"
+            "codex_cli_rs/0.170.0"
         );
-        assert_eq!(request.headers().get("version").unwrap(), "0.159.3");
+        assert_eq!(request.headers().get("version").unwrap(), "0.170.0");
         assert_eq!(
             request.headers().get("x-codex-routing-hint").unwrap(),
             "model=gpt-6.1-sol"

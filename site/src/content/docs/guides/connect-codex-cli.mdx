@@ -208,15 +208,17 @@ name = "backup"     # each declared name must be provisioned above; an unprovisi
                     # account is skipped on failover (its credential fails to resolve)
 ```
 
-Selection is **session-sticky**: the Codex CLI's own `session-id` request header keys the account,
-so one conversation stays on one account for as long as it stays healthy, then fails over (429 →
-rotate, 401 → refresh + retry, 5xx → cool down + rotate). A successful pooled response on this endpoint carries an `x-shunt-account: <name>` header —
+Each conversation is **bound to one account**: the Codex CLI's own `session-id` request header is
+the session key, and the conversation stays on its account until that account cannot serve, or stays past its soft threshold for 60 seconds while a healthy alternative exists
+(429 → rotate, 401 → refresh + retry, 5xx → cool down + rotate). The binding then moves to the
+account that served, and it does not move back when the first account recovers. HTTP and WebSocket
+turns share the binding. See [session bindings](/guides/anthropic-multi-account/#session-bindings). A successful pooled response on this endpoint carries an `x-shunt-account: <name>` header —
 streaming included, since the inbound passthrough commits only after the winning upstream
 responds. (The outbound Responses pool's early-committed HTTP streaming attributes the account
 with an `event: account` frame instead; see the Codex multi-account guide.) On a shared gateway with [`[server.auth]`](/reference/configuration/)
-enabled, the sticky key is scoped per authenticated client, so different clients that happen to send
-the same `session-id` use distinct sticky keys — preventing cross-client sticky-key collisions. (The
-keys are distinct; two distinct keys can still hash to the same account.)
+enabled, the session key is scoped per authenticated client, so different clients that happen to send
+the same `session-id` get distinct bindings — preventing cross-client collisions. (The keys are
+distinct; two distinct sessions can still be bound to the same account.)
 
 With **no** `[[providers.codex.accounts]]` configured and an empty store, the endpoint falls back to
 the single default `~/.codex/auth.json` credential — no pool, no failover — so one Codex login works
@@ -251,7 +253,7 @@ an entitled slug, e.g. in `~/.codex/config.toml`:
 model = "gpt-5.6-sol"   # entitled slug, not a *-codex one
 ```
 
-Current entitled slugs are `gpt-6-astra` / `-sol` / `-luna`, `gpt-5.6-sol` / `-terra` / `-luna`,
+Current entitled slugs are `gpt-6-astra` / `-sol` / `-luna`, `gpt-6.1-sol` / `-terra`, `gpt-6.2-sol` / `-astra`, `gpt-5.6-sol` / `-terra` / `-luna`,
 and `gpt-5.5` / `gpt-5.4` — older accounts may only have the earlier ones. See
 [ChatGPT / Codex → Route a model](/guides/codex/#3-route-a-model-to-codex) for the authoritative
 list. A request naming a model your subscription lacks fails exactly as it would talking to
@@ -283,6 +285,74 @@ Then run the real Codex CLI a turn — it round-trips through the pool with no c
 side beyond the base URL. See [Inbound Codex Endpoint](/guides/inbound-codex-endpoint/) for how this
 differs from the `/v1/messages` path and [HTTP Endpoints](/reference/endpoints/) for the registered
 routes.
+
+## 7. Sign in through your identity provider (gateway OAuth)
+
+Step 3's shared token gives every developer the same identity. When your organization runs an identity provider (IdP), the Codex CLI's native `gateway_oauth` signs each developer in through it, and shunt only **verifies** the access token that comes back: it issues nothing and keeps no session. Codex reserves `Authorization`, so it delivers the token in a cookie or a custom header, and two optional `[server.auth]` keys tell shunt which one to read. OpenAI's [Connect to a gateway](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway?gateway-auth=oauth) guide describes the Codex side.
+
+On the Codex side, add `gateway_oauth` to the shunt provider and keep `requires_openai_auth = false`:
+
+```toml
+# ~/.codex/config.toml
+model_provider = "shunt"
+
+[model_providers.shunt]
+name = "shunt"
+base_url = "https://shunt.example.com/v1"
+wire_api = "responses"
+requires_openai_auth = false
+
+[model_providers.shunt.gateway_oauth]
+authorization_url = "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize"
+token_url = "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token"
+client_id = "<codex public client id>"
+scopes = ["api://<shunt-app-id>/.default"]
+# resource = "..."                                  # optional, if your IdP needs it
+delivery = { kind = "cookie", name = "auth-openid" }
+# or: delivery = { kind = "header", name = "X-Gateway-Token", scheme = "Bearer" }
+redirect_port = 8765                                # fixed loopback port, see below
+```
+
+On the shunt side, name the same cookie or header and describe the issuer:
+
+```toml
+# shunt config.toml
+[server.auth]
+jwt_cookie = "auth-openid"          # must equal delivery.name for kind = "cookie"
+# jwt_header = "X-Gateway-Token"    # must equal delivery.name for kind = "header"
+
+[[server.auth.jwt]]
+issuer = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+audience = ["api://<shunt-app-id>"]
+authorized_parties = ["<codex public client id>"]
+require = { tid = "<tenant-id>" }
+identity_claim = "preferred_username"     # or "oid", which is immutable
+max_token_age_seconds = 5400
+```
+
+Set one of the two keys to match the `delivery` kind. Both are optional and hot-reload. The verified `identity_claim` becomes the caller identity for logs, usage, spend limits, and the sticky key, exactly as for a bearer JWT. The [configuration reference](/reference/configuration/) lists every validation rule.
+
+### Microsoft Entra ID pitfalls
+
+Every value in the example above exists because of one of these:
+
+- **The access token must be a JWT.** shunt verifies locally and does no introspection. Request an API scope you register for shunt (`api://<shunt-app-id>/.default` in `scopes`), which makes Entra issue a JWT. Opaque access tokens, such as Google OAuth's, cannot work.
+- **Issue v2 tokens.** Set the API app registration's `accessTokenAcceptedVersion` to `2`. A v2 token has the issuer `https://login.microsoftonline.com/<tenant-id>/v2.0`. A v1 token uses `https://sts.windows.net/<tenant-id>/` as the issuer and `appid` instead of `azp`, and would fail the entry above.
+- **Match the token's `aud`.** Use `api://<shunt-app-id>` or the app-id GUID in `audience`, whichever the token carries.
+- **List the Codex client in `authorized_parties`.** A v2 token carries `azp` set to the client that requested it, here the Codex public client, and `authorized_parties` defaults to `audience`. Without the explicit client ID every token is rejected.
+- **Do not use `email_domains`.** Entra access tokens carry no `email_verified` and often no `email`, so an email rule rejects every token. Authorize on the tenant with `require = { tid = "<tenant-id>" }` and take the identity from `preferred_username` or `oid`.
+- **Raise `max_token_age_seconds`.** The default access-token lifetime is randomized between 60 and 90 minutes, which exceeds the default `3600`. Set about `5400`. See Microsoft's documentation on [access tokens](https://learn.microsoft.com/en-us/entra/identity-platform/access-tokens) and [token lifetimes](https://learn.microsoft.com/en-us/entra/identity-platform/configurable-token-lifetimes).
+- **Register the fixed redirect URI.** Register `http://127.0.0.1:<redirect_port>/callback` on a **public client** and set the same `redirect_port` in the Codex config.
+
+### Behavior to know
+
+- **Browser and loopback callback.** Native gateway OAuth opens a browser and listens on a loopback port; there is no device-code fallback. Over SSH, set `redirect_port` and forward it with `ssh -L <port>:127.0.0.1:<port>`.
+- **Slot order.** shunt tries the static token, then an `Authorization: Bearer` JWT, then `jwt_header`, then `jwt_cookie`, and the first that verifies wins. A ChatGPT bearer in `Authorization` therefore falls through to the cookie. Only the [inbound Codex endpoint](/guides/inbound-codex-endpoint/) reads the new slots, and that includes its Codex-shaped model discovery responses (`GET /models`, `GET /backend-api/codex/models`, and `GET /v1/models` with a `client_version` query field), so the catalog fetch succeeds when ChatGPT sign-in and gateway OAuth are both on. `/v1/messages`, `/usage`, and the Anthropic-shaped `/v1/models` stay bearer-only for JWTs.
+- **Origin rule.** The cookie is used only when the request has no `Origin` or one that matches its `Host`, so a website cannot drive a browser-held cookie into authenticated turns. The Codex CLI is not a browser and sends no `Origin`. For the same reason, never point `jwt_cookie` at a cookie a browser holds for the gateway's domain, such as an SSO proxy's `CF_Authorization`. The header slot has no such rule.
+- **Expiry on WebSocket.** The handshake credential is verified again on every turn. When the IdP token expires mid-connection, the next turn fails with a `401` error frame and Codex reconnects with a refreshed token.
+- **Never forwarded.** The configured header and every `cookie` header are stripped before any upstream request.
+- **Size limits.** An Entra access token can be several kilobytes. It counts toward `[server.limits] max_request_header_bytes` when that is set, and reverse proxies commonly cap a cookie near 4 KB. If either bites, use `delivery = { kind = "header", ... }` instead of a cookie.
+- **Model metadata.** OAuth alone does not enable remote model catalog discovery. Use `model_catalog_json` for custom model metadata.
 
 ## HTTP/SSE and WebSocket
 

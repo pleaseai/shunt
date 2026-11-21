@@ -269,7 +269,15 @@ pub(crate) struct TokenAccount {
 }
 
 pub(crate) async fn exchange_code(
-    client: &reqwest::Client,
+    // The injected client is not hardened for the token host: the CLI passes
+    // `reqwest::Client::new()`, and the admin flow passes the shared proxy
+    // client, whose redirect policy guards only OpenAI, ChatGPT and
+    // `*.anthropic.com` origins, not platform.claude.com. The code-exchange POST
+    // carries the one-time authorization code and PKCE verifier, so it goes
+    // through the redirect-hardened `token_refresh_client()` instead, as the
+    // Codex exchange does — a token endpoint must not be able to 3xx the code to
+    // another host.
+    _client: &reqwest::Client,
     code: &str,
     state: &str,
     verifier: &str,
@@ -292,7 +300,7 @@ pub(crate) async fn exchange_code(
         body.insert("expires_in".to_string(), serde_json::json!(expires_in));
     }
     let body = serde_json::Value::Object(body);
-    let response = client
+    let response = crate::auth::shared::token_refresh_client()
         .post(token_url)
         .header("content-type", "application/json")
         .header("user-agent", auth::CLAUDE_CLI_USER_AGENT)
@@ -473,13 +481,17 @@ mod tests {
         // A positive lifetime lands that many seconds ahead.
         assert!(oauth_expires_at_ms(Some(7200)) >= before + 7200 * 1000 - 2000);
         // An explicit zero or negative lifetime is immediately expired (not the
-        // 1-hour default), so it never lands meaningfully in the future.
+        // 1-hour default), so it never lands meaningfully in the future. Capture
+        // `after` once both calls have read the clock, so a millisecond boundary
+        // crossed between the two reads cannot put the result past it.
+        let zero = oauth_expires_at_ms(Some(0));
+        let negative = oauth_expires_at_ms(Some(-10));
         let after = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
-        assert!(oauth_expires_at_ms(Some(0)) <= after);
-        assert!(oauth_expires_at_ms(Some(-10)) <= after);
+        assert!(zero <= after);
+        assert!(negative <= after);
         // A pathologically large lifetime saturates instead of overflowing.
         assert_eq!(oauth_expires_at_ms(Some(i64::MAX)), i64::MAX);
     }
@@ -682,6 +694,44 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(response.refresh_token.as_deref(), Some("oauth-refresh"));
+    }
+
+    /// A 307 replays the exchange body, authorization code and PKCE verifier
+    /// included, so the exchange must not follow one to another host even when
+    /// the caller hands it a client that would (`reqwest::Client::new()`, as the
+    /// CLI does). `localhost` and the mock's `127.0.0.1` are different hosts as
+    /// far as the redirect policy is concerned.
+    #[tokio::test]
+    async fn oauth_exchange_does_not_follow_a_redirect_to_another_host() {
+        let sink = MockServer::start().await;
+        let sink_port = sink.address().port();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("http://localhost:{sink_port}/token")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = exchange_code(
+            &reqwest::Client::new(),
+            "oauth-code",
+            "oauth-state",
+            "oauth-verifier",
+            &format!("{}/token", server.uri()),
+            MANUAL_REDIRECT_URL,
+            None,
+        )
+        .await
+        .expect_err("a redirect to another host must not be followed");
+        assert!(
+            format!("{error:#}").contains("redirect refused"),
+            "got: {error:#}"
+        );
+        assert!(sink.received_requests().await.unwrap().is_empty());
     }
 
     /// The authorization-code exchange must present Claude Code's User-Agent for
