@@ -159,7 +159,7 @@ async fn forward(
             "upstream returned 429"
         );
     }
-    // An account-level refusal is judged here, on the one 400/402 body read,
+    // An account-level refusal is judged here, on the one 400/402/403 body read,
     // and handed to the chain as a marker so it advances (#817).
     // The non-pooled path builds its response exactly like the pooled path's
     // relay_response (header filtering, SSE keepalive, status passthrough), so
@@ -1792,7 +1792,7 @@ pub(crate) async fn chain_attempt(
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .cloned();
-        // The one exception to the deferred read: a 400 or 402 body is peeked
+        // The one exception to the deferred read: a 400, 402 or 403 body is peeked
         // briefly, because an account-level refusal advances although its
         // status is terminal (#817). An exhausted chain relays the refusal's
         // own envelope. A body that is no refusal, or that the peek could not
