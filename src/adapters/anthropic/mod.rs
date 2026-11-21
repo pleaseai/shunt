@@ -159,7 +159,7 @@ async fn forward(
             "upstream returned 429"
         );
     }
-    // An account-level refusal is judged here, on the one 400/402 body read,
+    // An account-level refusal is judged here, on the one 400/402/403 body read,
     // and handed to the chain as a marker so it advances (#817).
     // The non-pooled path builds its response exactly like the pooled path's
     // relay_response (header filtering, SSE keepalive, status passthrough), so
@@ -191,6 +191,29 @@ async fn relay_judged(
             .insert(crate::proxy::failover::AccountRefused);
     }
     Ok((status, response))
+}
+
+/// Name the pool account behind a client error the pool relays as final, so
+/// an operator can tell which account a `4xx` came from. Only the account's
+/// configured `name` is logged, as every other pool log line does; that is the
+/// operator's own label (which they may have set to the login's email
+/// address), never the account's uuid or token. A success or
+/// a rotation logs elsewhere (or not at all), so this covers the one relayed
+/// answer that otherwise leaves no account in the log.
+fn warn_relayed_client_error(
+    route: &Route,
+    account: &crate::config::AccountConfig,
+    status: StatusCode,
+) {
+    if status.is_client_error() {
+        tracing::warn!(
+            provider = %route.provider,
+            model = %route.model,
+            account = %account.name,
+            status = status.as_u16(),
+            "Claude OAuth account answered with a client error; relaying it"
+        );
+    }
 }
 
 async fn forward_claude_oauth(
@@ -384,6 +407,7 @@ async fn forward_claude_oauth(
                     status.is_success(),
                     is_fable,
                 );
+                warn_relayed_client_error(&route, account, status);
                 return relay_response(&state, &route, upstream, Some(&account.name), bounds)
                     .await
                     .map(|(status, response)| {
@@ -708,6 +732,7 @@ async fn forward_claude_oauth(
                             // alter routing.
                             state.accounts.clear_needs_relogin(&route.provider, account);
                         }
+                        warn_relayed_client_error(&route, account, retry_status);
                         return relay_response(&state, &route, retry, Some(&account.name), bounds)
                             .await
                             .map(|(status, response)| {
@@ -1774,7 +1799,7 @@ pub(crate) async fn chain_attempt(
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .cloned();
-        // The one exception to the deferred read: a 400 or 402 body is peeked
+        // The one exception to the deferred read: a 400, 402 or 403 body is peeked
         // briefly, because an account-level refusal advances although its
         // status is terminal (#817). An exhausted chain relays the refusal's
         // own envelope. A body that is no refusal, or that the peek could not

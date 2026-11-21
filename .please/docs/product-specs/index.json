@@ -200,7 +200,7 @@
       "domain": "routing",
       "feature": "failover",
       "created_at": "2026-10-23T08:13:28.479Z",
-      "updated_at": "2026-10-23T08:13:28.479Z",
+      "updated_at": "2026-11-21T03:27:23.000Z",
       "source_tracks": [
         "anthropic-account-refusal-20261022"
       ],
@@ -222,6 +222,11 @@
           "statement": "classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 402 and error type `billing_error`"
         },
         {
+          "id": "REQ-016",
+          "kind": "functional",
+          "statement": "classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 403 whose error message contains `OAuth authentication is currently not allowed for this organization`, so a gateway-owned credential is skipped (a direct upstream) or cooled (a Claude OAuth pool account) for 1 hour like the other refusals, while a passthrough credential is never skipped and only advances the current request"
+        },
+        {
           "id": "REQ-004",
           "kind": "functional",
           "statement": "advance the failover chain to the next element on an account-level refusal, the same way it advances on a 429, both before response headers are committed to the client and inside an already committed streaming response"
@@ -229,7 +234,7 @@
         {
           "id": "REQ-005",
           "kind": "functional",
-          "statement": "keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream"
+          "statement": "keep every other 400 and 402 response terminal: relay it to the client unchanged after the bounded body inspection, without trying another upstream; a 403 other than the organisation-OAuth refusal is not an account-level refusal and is never re-sent to the rest of a Claude OAuth pool"
         },
         {
           "id": "REQ-006",
@@ -259,7 +264,7 @@
         {
           "id": "REQ-011",
           "kind": "functional",
-          "statement": "update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the three refusals, the skip durations, and that all other 400s stay terminal"
+          "statement": "update the failover contract and the user-facing failover and troubleshooting documentation, including every maintained translation, to describe the four refusals, the skip durations, and that all other 400s stay terminal"
         },
         {
           "id": "REQ-012",
@@ -269,7 +274,7 @@
         {
           "id": "REQ-013",
           "kind": "non-functional",
-          "statement": "read an error body for refusal classification only for 400 and 402 responses, within a fixed budget, so other statuses decide failover from the status line alone (except where a path already buffers bodies for another reason, such as alias routes)"
+          "statement": "read an error body for refusal classification only for 400, 402, and 403 responses (a 403 only to recognise the organisation-OAuth refusal, whose sole signal is its error message), within a fixed budget, so other statuses decide failover from the status line alone (except where a path already buffers bodies for another reason, such as alias routes)"
         },
         {
           "id": "REQ-014",
