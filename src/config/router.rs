@@ -22,6 +22,7 @@ mod advisor;
 mod bounds;
 mod classifier;
 mod composite;
+pub(crate) mod conditional;
 mod prefill;
 mod random;
 mod stage;
@@ -39,6 +40,10 @@ pub use classifier::{
 };
 pub use composite::{
     CompositeClassifierConfig, CompositeRouterConfig, CompositeStageConfig, CompositeTrigger,
+};
+pub use conditional::{
+    parse_hh_mm, ConditionalRouterConfig, ConditionalRule, HeaderMatch, HeaderMatchMode,
+    TimeBetween, Weekday, WhenCondition,
 };
 pub use prefill::PrefillRouterConfig;
 
@@ -93,6 +98,8 @@ pub enum RouterConfig {
     /// The executor answers every turn and a stronger advisor reviews the
     /// first terminal one before the caller sees it (ADR-0005 §4).
     Advisor(AdvisorRouterConfig),
+    /// Condition-based routing: composable time/header/model rules.
+    Conditional(ConditionalRouterConfig),
     /// Makes no upstream call and synthesizes an empty terminal assistant
     /// message in the caller's mode.
     Noop {},
@@ -118,6 +125,7 @@ impl RouterConfig {
             | Self::LlmClassifier(_)
             | Self::Composite(_)
             | Self::Advisor(_)
+            | Self::Conditional(_)
             | Self::Noop {} => None,
         }
     }
@@ -132,6 +140,7 @@ impl RouterConfig {
             Self::LlmClassifier(_) => "llm_classifier",
             Self::Composite(_) => "composite",
             Self::Advisor(_) => "advisor",
+            Self::Conditional(_) => "conditional",
             Self::Noop {} => "noop",
         }
     }
@@ -186,6 +195,17 @@ impl RouterConfig {
                 advisor.executor_target.as_str(),
             )],
             // A noop entry answers as itself and names no destination.
+            Self::Conditional(conditional) => {
+                let mut targets: Vec<(Cow<'static, str>, &str)> = Vec::new();
+                for rule in &conditional.rules {
+                    targets.push((Cow::Borrowed("rules.target"), rule.target.as_str()));
+                }
+                targets.push((
+                    Cow::Borrowed("default_target"),
+                    conditional.default_target.as_str(),
+                ));
+                targets
+            }
             Self::Noop {} => Vec::new(),
         }
     }
@@ -269,6 +289,9 @@ impl RouterConfig {
             // first-target fallback walk `enabled()`, so a target parked at
             // weight `0` is never served. A random router has no judge.
             Self::Random(random) => random.enabled().map(|(_, target)| target).collect(),
+            // A conditional rule serves one of its rule targets, and the
+            // default answers when no rule matches. There is no judge.
+            Self::Conditional(_) => self.targets(),
             // A stage or auto tier is one of the two targets, the picker's
             // default included, and a stage classifier's verdict only picks
             // between them. `prefill_router` chooses from `targets`, falling
@@ -302,6 +325,7 @@ impl RouterConfig {
             // The executor answers every turn the advisor does not redirect,
             // including one it could not review.
             Self::Advisor(advisor) => Some(advisor.executor_target.as_str()),
+            Self::Conditional(conditional) => Some(conditional.default_target.as_str()),
             _ => None,
         }
     }
@@ -315,7 +339,7 @@ impl RouterConfig {
             Self::LlmClassifier(classifier) => Some(classifier.bounds()),
             Self::Composite(composite) => Some(composite.bounds()),
             Self::Advisor(advisor) => Some(advisor.bounds()),
-            Self::Random(_) | Self::PrefillRouter(_) | Self::Noop {} => None,
+            Self::Random(_) | Self::PrefillRouter(_) | Self::Conditional(_) | Self::Noop {} => None,
         }
     }
 }
