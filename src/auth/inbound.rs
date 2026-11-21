@@ -289,11 +289,13 @@ pub(crate) enum ConsumedBy {
     StaticToken,
     InboundJwt,
     AdminCredential,
+    ExchangeToken,
 }
 
 /// Whether `value` — the raw contents of a header slot — is a credential shunt
 /// itself consumes rather than the caller's own upstream credential, and which
-/// one. Four kinds qualify: shunt's gateway JWT (checked as a bare token, no
+/// one. Five kinds qualify: a shunt-issued workload exchange token (by its
+/// unverified marker, whatever the configuration), shunt's gateway JWT (checked as a bare token, no
 /// `Bearer ` prefix), a configured static `[server.auth]` token, a JWT from a
 /// configured `[[server.auth.jwt]]` issuer, and a `[server.admin]` credential (a `tokens_env`/`tokens_file` pair or either key
 /// array — the read tier included, since a read key still reaches the admin
@@ -347,6 +349,15 @@ pub(crate) fn consumed_by(
     });
     if is_gateway_jwt {
         return Some(ConsumedBy::GatewayJwt);
+    }
+    // Config-independent on purpose: judged by the unverified marker alone, so
+    // an expired, rotated-out or orphaned token, and one issued before
+    // `[server.auth.exchange]` (or all of `[server.auth]`) was removed, is
+    // still stripped. See `crate::auth::exchange::is_exchange_shaped`.
+    if std::str::from_utf8(value)
+        .is_ok_and(|token| crate::auth::exchange::is_exchange_shaped(token.trim().as_bytes()))
+    {
+        return Some(ConsumedBy::ExchangeToken);
     }
     if static_auth.is_some_and(|auth| auth.authenticate_value(value).is_some()) {
         return Some(ConsumedBy::StaticToken);

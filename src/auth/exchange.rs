@@ -9,11 +9,6 @@
 //! who may authenticate therefore revokes every token it issued, without
 //! shunt keeping any revocation state.
 
-// `mint` is called by the exchange endpoint (`handler`) and `verify` by the
-// inbound gate. `is_exchange_shaped` (credential strip, T005) has no caller
-// yet, so only the tests reach it. Remove this attribute when it gains one.
-#![cfg_attr(not(test), allow(dead_code))]
-
 pub(crate) mod handler;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
