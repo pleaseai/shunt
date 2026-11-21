@@ -195,7 +195,9 @@ async fn relay_judged(
 
 /// Name the pool account behind a client error the pool relays as final, so
 /// an operator can tell which account a `4xx` came from. Only the account's
-/// configured label is logged, never its email, uuid, or token. A success or
+/// configured `name` is logged, as every other pool log line does; that is the
+/// operator's own label (which they may have set to the login's email
+/// address), never the account's uuid or token. A success or
 /// a rotation logs elsewhere (or not at all), so this covers the one relayed
 /// answer that otherwise leaves no account in the log.
 fn warn_relayed_client_error(

@@ -181,10 +181,10 @@ The system MUST try a chain whose every element is in the skip window as configu
 
 ## Non-functional Requirements
 
-### Requirement: read an error body for refusal classification only for 400 and 402 responses, within a fixed budget, so other statuses decide failover from the status line alone (except where a path already buffers bodies for another reason, such as alias routes)
+### Requirement: read an error body for refusal classification only for 400, 402, and 403 responses (a 403 only to recognise the organisation-OAuth refusal, whose sole signal is its error message), within a fixed budget, so other statuses decide failover from the status line alone (except where a path already buffers bodies for another reason, such as alias routes)
 <!-- req: REQ-013 tracks=anthropic-account-refusal-20261022 -->
 
-The system SHOULD read an error body for refusal classification only for 400 and 402 responses, within a fixed budget, so other statuses decide failover from the status line alone (except where a path already buffers bodies for another reason, such as alias routes).
+The system SHOULD read an error body for refusal classification only for 400, 402, and 403 responses (a 403 only to recognise the organisation-OAuth refusal, whose sole signal is its error message), within a fixed budget, so other statuses decide failover from the status line alone (except where a path already buffers bodies for another reason, such as alias routes).
 
 ### Requirement: leave successful and non-refusal responses byte-for-byte unchanged, including streaming responses
 <!-- req: REQ-014 tracks=anthropic-account-refusal-20261022 -->

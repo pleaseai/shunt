@@ -3168,15 +3168,24 @@ impl CapturedLogs {
     }
 }
 
-/// Mount a pool account's answer: the organisation-OAuth `403` or a `200`.
-async fn mount_org_refusal(upstream: &MockServer, token: &str, calls: u64) {
+/// The organisation-OAuth `403` body `label`'s account answers with. Each
+/// account's body differs, so a test can tell which account's refusal reached
+/// the client.
+fn org_refusal_body(label: &str) -> String {
+    error_envelope(
+        "permission_error",
+        &format!("{ORG_OAUTH_DISABLED_MESSAGE} ({label})"),
+    )
+}
+
+/// Mount a pool account's organisation-OAuth `403`, labelled with `label`.
+async fn mount_org_refusal(upstream: &MockServer, token: &str, label: &str, calls: u64) {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(BearerToken(token.to_string()))
-        .respond_with(ResponseTemplate::new(403).set_body_raw(
-            error_envelope("permission_error", ORG_OAUTH_DISABLED_MESSAGE),
-            "application/json",
-        ))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_raw(org_refusal_body(label), "application/json"),
+        )
         .expect(calls)
         .mount(upstream)
         .await;
@@ -3221,8 +3230,8 @@ async fn an_org_oauth_disabled_403_rotates_through_the_whole_pool() {
     }
 
     let upstream = MockServer::start().await;
-    mount_org_refusal(&upstream, &tokens[0], 1).await;
-    mount_org_refusal(&upstream, &tokens[1], 1).await;
+    mount_org_refusal(&upstream, &tokens[0], "account-a", 1).await;
+    mount_org_refusal(&upstream, &tokens[1], "account-b", 1).await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(BearerToken(tokens[2].clone()))
@@ -3281,8 +3290,8 @@ async fn a_pool_where_every_org_refuses_oauth_relays_the_final_403() {
     }
 
     let upstream = MockServer::start().await;
-    for token in &tokens {
-        mount_org_refusal(&upstream, token, 1).await;
+    for (token, label) in tokens.iter().zip(["account-a", "account-b", "account-c"]) {
+        mount_org_refusal(&upstream, token, label, 1).await;
     }
 
     let (gateway, _state, _accounts) =
@@ -3292,7 +3301,7 @@ async fn a_pool_where_every_org_refuses_oauth_relays_the_final_403() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(
         response.text().await.unwrap(),
-        error_envelope("permission_error", ORG_OAUTH_DISABLED_MESSAGE)
+        org_refusal_body("account-c")
     );
     upstream.verify().await;
 }

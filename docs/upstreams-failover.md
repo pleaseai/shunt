@@ -300,7 +300,9 @@ The pool survives as the **intra-upstream** mechanism; the chain is the
     `skip_until_epoch_secs`. The pool rotation metric records the reason
     `account_refusal`. Any other client error (`4xx`) a Claude OAuth pool
     account answers and the pool relays logs one `warn` with `provider`,
-    `model`, `account` (the configured label only), and `status`.
+    `model`, `account` (the configured `name`, as the other pool logs carry it;
+    an operator who named the account by its email address sees that address),
+    and `status`.
 - **Physical-account state sharing**: per-account state (quota windows,
   health, cooldowns, in-flight admission counts, refresh locks) is re-keyed
   from provider name to *(store family, stable account identity)*. Identity
