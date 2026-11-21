@@ -68,7 +68,7 @@ Alternatives rejected: an asymmetric signing key with a JWKS endpoint (more surf
 - [x] T002 Mint and verify exchange tokens bound to the entry fingerprint (file: src/auth/exchange.rs) (depends on T001) [FR-5, FR-6, FR-8, AC-015, AC-016, AC-017, AC-018, AC-019, AC-020]
   Validation: a token verifies under any listed secret until `exp`. It is rejected after the verifying entry is removed, loses `exchange = true`, or has any verification rule changed, and after every secret that signed it is dropped (AC-015..AC-018, exercised through a real `shared.store` + `refreshed()` reload). It is not accepted by `gateway::jwt::verify`, and a gateway session token is not accepted by it (AC-019, AC-020).
   Method: `cargo test --all-features auth::exchange`
-- [ ] T003 Serve `POST /v1/oauth/token` (file: src/server.rs) (depends on T002) [FR-1, FR-2, FR-4, FR-9, FR-10, NFR-1, NFR-2, NFR-3, NFR-4, AC-001, AC-002, AC-005, AC-006, AC-007, AC-008, AC-009, AC-010, AC-011, AC-012, AC-024]
+- [x] T003 Serve `POST /v1/oauth/token` (file: src/server.rs) (depends on T002) [FR-1, FR-2, FR-4, FR-9, FR-10, NFR-1, NFR-2, NFR-3, NFR-4, AC-001, AC-002, AC-005, AC-006, AC-007, AC-008, AC-009, AC-010, AC-011, AC-012, AC-024]
   Validation: the sidecar's exact JSON body yields 200 with `access_token`, `token_type: Bearer`, and `expires_in == max_ttl_seconds`, including for an assertion with under 60 s left (AC-001, AC-002, AC-012). Each rejection class returns its FR-10 code and status (AC-005..AC-011). The route is 404 when the table is absent at boot or removed by reload (AC-024). The response carries `Cache-Control: no-store`. A body without a JSON content type gets 400 `invalid_request`, and unknown fields are ignored. Every verification failure (AC-005..AC-008) returns a byte-identical `401 invalid_grant` body (NFR-3). No log line, metrics label, or `error_description` contains the assertion, the issued token, or which check failed (NFR-2).
   Method: new integration suite under `tests/inbound/` using `tests/common/jwt.rs` issuers, plus `cargo test --test router_surface`
 - [ ] T004 Accept exchange tokens in the inbound gate (file: src/auth/gate.rs) (depends on T002) [FR-7, AC-003, AC-004, AC-013, AC-014]
@@ -132,6 +132,10 @@ Alternatives rejected: an asymmetric signing key with a JWKS endpoint (more surf
 - [x] (2026-11-21 KST) T003 serve `POST /v1/oauth/token`
   Evidence: `cargo test --features bench --test inbound inbound_exchange` -> 16 passed, 0 failed (sidecar body 200 + full `max_ttl`, 30 s assertion, no/odd federation ids, 8 failure causes give byte-identical 401, opt-in/shared-issuer, static + issued token as assertion, grant/body 400s, JWKS 500 -> 503, no table -> 404, reload removes table -> 404, `Cache-Control: no-store` on every answer); `cargo test --features bench --test router_surface` -> 14 passed (inventory + literal count 51); `cargo test --features bench --workspace --no-fail-fast` -> 4792 passed, 2 failed (both pre-existing `responses_chain_stream` environmental); clippy `-D warnings` clean.
   Deferred: `--all-features` run (prefill-router needs Python); `--features bench` used locally.
+
+## Surprises & Discoveries
+
+- 2026-11-21: `tests/responses_chain_stream.rs` fails locally without this track's code. `refused_port_is_deterministically_refused` and `a_body_error_before_message_stop_still_emits_the_terminal_error_event` fail on a pristine control worktree at the base commit 3ed99c0 (separate target dir), and `a_body_error_after_message_stop_ends_the_relay_silently` failed 5 of 6 runs there. They are environmental on this machine, not caused by the exchange.
 
 ## Decision Log
 
