@@ -126,6 +126,9 @@ Alternatives rejected: an asymmetric signing key with a JWKS endpoint (more surf
 - [x] (2026-11-21 KST) T001 config surface + validation — commit 5654cd2d
   Evidence: `cargo test --features bench --lib config::` → 484 passed, 0 failed (re-run by orchestrator); `shunt check` → `config ok` on the valid sample and exit 1 with the matching message for each of the 7 FR-12 variants (no table / no opt-in / empty secret / short secret / zero ttl / reserved issuer / gateway-shared secret).
   Deferred: `--all-features` run needs `ui/dist` (built before the 5.5 full-suite gate).
+- [x] (2026-11-21 KST) T002 mint and verify exchange tokens bound to the entry fingerprint
+  Evidence: `cargo test --features bench --lib auth::exchange` → 14 passed, 0 failed (reload via real `shared.store` + `refreshed()`: entry removed / opt-in cleared / `require` value dropped / each policy field edited revoke; freshness + `jwks_url` tuning does not; secret kept as non-first verifies, all signing secrets dropped rejects; same-secret gateway/exchange cross-rejection); `cargo test --features bench --lib gateway::jwt` → 16 passed (shared `src/auth/hs256.rs` helper, behaviour unchanged).
+  Deferred: `--all-features` run (prefill-router needs Python); `--features bench` used locally.
 
 ## Decision Log
 

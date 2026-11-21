@@ -19,6 +19,7 @@ pub mod exchange;
 pub mod gate;
 pub mod gateway;
 pub mod google;
+pub(crate) mod hs256;
 pub mod inbound;
 pub mod inbound_jwt;
 pub(crate) mod jwt_slots;
