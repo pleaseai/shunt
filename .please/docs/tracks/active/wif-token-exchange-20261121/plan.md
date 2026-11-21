@@ -62,7 +62,7 @@ Alternatives rejected: an asymmetric signing key with a JWKS endpoint (more surf
 
 ## Tasks
 
-- [ ] T001 Add `[server.auth.exchange]` and per-entry `exchange` config with load-time validation (file: src/config.rs) [FR-3, FR-12, AC-023]
+- [x] T001 Add `[server.auth.exchange]` and per-entry `exchange` config with load-time validation (file: src/config.rs) [FR-3, FR-12, AC-023]
   Validation: `shunt check` accepts a config with a valid exchange table and one opted-in entry. It fails with an entry-naming error for each FR-12 case: `exchange = true` without the table (AC-023), the table with no opted-in entry, an empty secret list, a secret under 32 bytes, `max_ttl_seconds = 0`, a secret equal to a `[server.gateway]` session secret, and an entry whose issuer equals the exchange issuer. Serializing the config never prints a secret.
   Method: `cargo test --all-features config::` plus a `cargo run -- check` against a sample TOML
 - [ ] T002 Mint and verify exchange tokens bound to the entry fingerprint (file: src/auth/exchange.rs) (depends on T001) [FR-5, FR-6, FR-8, AC-015, AC-016, AC-017, AC-018, AC-019, AC-020]
@@ -121,6 +121,13 @@ Alternatives rejected: an asymmetric signing key with a JWKS endpoint (more surf
 - Edge case: two entries on one issuer, token minted by entry 2, entry 1 edited → still verifies. Entry 2 edited → rejected.
 - Error path: token with a valid signature but `shunt_token_use` absent, or `exp` in the past → rejected.
 
+## Progress
+
+- [x] (2026-11-21 KST) T001 config surface + validation — commit 5654cd2d
+  Evidence: `cargo test --features bench --lib config::` → 484 passed, 0 failed (re-run by orchestrator); `shunt check` → `config ok` on the valid sample and exit 1 with the matching message for each of the 7 FR-12 variants (no table / no opt-in / empty secret / short secret / zero ttl / reserved issuer / gateway-shared secret).
+  Deferred: `--all-features` run needs `ui/dist` (built before the 5.5 full-suite gate).
+
 ## Decision Log
 
 - 2026-11-21: separate signing key, table plus per-entry opt-in, and no rate limiting in this track (user decisions on the issue's open questions). A rule change revokes outstanding tokens (spec review D1).
+- 2026-11-21: added `[FR/NFR/AC]` traceability tags to the task lines so the coverage gate maps them (no requirement change). Reused the issue-linked worktree branch as `code_branch` instead of creating one with `gh issue develop`.
