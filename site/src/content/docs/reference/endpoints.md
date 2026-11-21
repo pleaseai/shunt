@@ -12,6 +12,7 @@ description: The endpoints shunt serves as a Claude Code LLM gateway.
 | `GET` | `/routes` | shunt-native route discovery — returns the configured `[[routes]]` table verbatim (model → provider/upstream_model/effort mapping, including claude-prefixed discovery aliases); distinct from `/v1/models`, which serves the narrower Anthropic-protocol discovery response (`id`, `display_name`, and upstream model metadata). A `routers` array is added when at least one `[[models]]` entry configures a `[models.router]` table, naming each router's model id, its `algorithm` (the configured `type`), and every `targets` id it can route to; a router that configures a judge also reports `judges`, the ids it consults but never serves (omitted when it has none); a [stage router](/guides/stage-router/) or `auto` entry additionally reports its two tier targets and the tier its picker falls back to when no signal decides |
 | `POST` | `/v1/messages` | Inference — routed per the request's `model` id |
 | `POST` | `/v1/messages/count_tokens` | [Token counting](/guides/effort-and-context/#token-counting-count_tokens) |
+| `POST` | `/v1/oauth/token` | [Workload token exchange](#workload-token-exchange) — trade a verified GitHub Actions OIDC JWT for a short-lived shunt-issued bearer token. Only when `[server.auth.exchange]` is configured at boot |
 | `GET` | `/managed/settings` | Per-user Claude Code managed settings for a gateway JWT; supports `ETag`, `If-None-Match`, and `304 Not Modified` |
 | `GET` | `/user/bootstrap` | Claude Desktop bootstrap configuration for a gateway JWT; supports `ETag`, `If-None-Match`, and `304 Not Modified` |
 | `GET` | `/v1/organizations/spend_limits` | List stored spend caps with directional cursor pagination |
@@ -237,8 +238,34 @@ The `/api/oauth/usage` route exists only when [`[server.oauth_usage]`](/referenc
 
 `five_hour`/`seven_day` are omitted (not `null`) when no non-disabled Claude account reports that window; `limits` is omitted entirely (not an empty array) when no account reports the Fable-scoped window.
 
-`GET /` and `GET /health` stay open even when [`[server.auth]`](/guides/shared-gateway/) is enabled (healthcheck tools usually cannot attach tokens) and expose nothing sensitive — only status, version, and the already-public endpoint list. With `[server.auth]` enabled, `GET /v1/models` requires a valid client token in the configured header, `x-api-key`, or `Authorization: Bearer`; it stays open when inbound auth is not configured. When [`[[server.auth.jwt]]`](/reference/configuration/#serverauthjwt-optional) entries are configured, a verified external JWT in `Authorization: Bearer` authenticates the same gated routes as a client token; a token that verifies against no entry is `401`, while a matching entry that has no cached key set and cannot fetch one answers `503`. `GET /routes` remains open as shunt-native routing metadata.
+`GET /` and `GET /health` stay open even when [`[server.auth]`](/guides/shared-gateway/) is enabled (healthcheck tools usually cannot attach tokens) and expose nothing sensitive — only status, version, and the already-public endpoint list. With `[server.auth]` enabled, `GET /v1/models` requires a valid client token in the configured header, `x-api-key`, or `Authorization: Bearer`; it stays open when inbound auth is not configured. When [`[[server.auth.jwt]]`](/reference/configuration/#serverauthjwt-optional) entries are configured, a verified external JWT in `Authorization: Bearer`, or a token issued by the [workload token exchange](#workload-token-exchange), authenticates the same gated routes as a client token; a token that verifies against no entry is `401`, while a matching entry that has no cached key set and cannot fetch one answers `503`. `GET /routes` remains open as shunt-native routing metadata.
+
+## Workload token exchange
+
+`POST /v1/oauth/token` exists only when [`[server.auth.exchange]`](/reference/configuration/#serverauthexchange-optional) was configured at boot; otherwise it answers `404`. Adding the table needs a restart, and a reload that removes it makes the route `404`. It is unauthenticated: the credential is the JWT `assertion` in the body. The request is JSON (`Content-Type: application/json`):
+
+```json
+{
+  "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+  "assertion": "<JWT>",
+  "federation_rule_id": "fdrl_shunt",
+  "organization_id": "org_shunt",
+  "service_account_id": "svac_shunt",
+  "workspace_id": "ws_shunt"
+}
+```
+
+The four federation ids are accepted and ignored, present or absent. Only `[[server.auth.jwt]]` entries with `exchange = true` are tried, and the assertion is verified exactly as a direct Bearer JWT would be. Success is `200` with `{"access_token": "...", "token_type": "Bearer", "expires_in": N}`, where `N` is `max_ttl_seconds` regardless of the assertion's own lifetime. Send the token as `Authorization: Bearer` on the routes that accept a `[[server.auth.jwt]]` JWT; see the [GitHub Actions guide](/guides/github-actions-oidc/#github-agentic-workflows-gh-aw).
+
+Errors use the OAuth shape `{"error", "error_description"}` rather than the Anthropic shape, because the AWF sidecar parses them as OAuth errors. Every response carries `Cache-Control: no-store`.
+
+| Status | `error` | When |
+| :-- | :-- | :-- |
+| `400` | `invalid_request` | The body is not JSON or not an object, `Content-Type` is not JSON, a field has the wrong type, or `assertion` is missing or blank |
+| `400` | `unsupported_grant_type` | `grant_type` is missing or is not the jwt-bearer URN |
+| `401` | `invalid_grant` | No opted-in entry verifies the assertion. The response is identical for every cause |
+| `503` | `temporarily_unavailable` | A matching issuer's key set cannot be fetched, or the gateway is at its inbound concurrency limit (then with `Retry-After: 1`) |
 
 ## Gateway protocol
 
-shunt implements the official [Claude Code LLM gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol): correct header and body-field forwarding, feature pass-through, and system-prompt attribution handling. Gateway-owned errors are returned in the Anthropic error shape, upstream context-overflow errors are rewritten to Anthropic's `prompt is too long` wording so Claude Code's [compact-and-retry](/guides/effort-and-context/#context-overflow-recovery) fires, and streaming responses are relayed without buffering (with optional [keepalive pings](/guides/shared-gateway/#sse-keepalive-pings)).
+shunt implements the official [Claude Code LLM gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol): correct header and body-field forwarding, feature pass-through, and system-prompt attribution handling. Gateway-owned errors are returned in the Anthropic error shape (except `POST /v1/oauth/token`, which answers OAuth-shaped errors, and the inbound Codex endpoint, which uses the OpenAI shape), upstream context-overflow errors are rewritten to Anthropic's `prompt is too long` wording so Claude Code's [compact-and-retry](/guides/effort-and-context/#context-overflow-recovery) fires, and streaming responses are relayed without buffering (with optional [keepalive pings](/guides/shared-gateway/#sse-keepalive-pings)).

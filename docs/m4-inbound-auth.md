@@ -1,8 +1,9 @@
 # M4 — Inbound client authentication (shared-gateway tokens)
 
-> Since #344, `[server.auth]` accepts a second kind of inbound credential: a verify-only JWT
-> from an external identity provider, configured as `[[server.auth.jwt]]`. This note
-> describes the static-token path only — see `inbound-jwt-auth.md` for the other.
+> Since #344, `[server.auth]` accepts a second kind of inbound credential: a JWT from an
+> external identity provider, verified but not issued by shunt, configured as
+> `[[server.auth.jwt]]`. This note describes the static-token path only — see
+> `inbound-jwt-auth.md` for the other, including the opt-in workload token exchange.
 
 ## 0. Problem
 

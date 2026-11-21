@@ -156,6 +156,7 @@ fn entry(issuer: &str, jwks_url: &str) -> InboundJwtConfig {
         clock_skew_seconds: 0,
         max_token_age_seconds: 3600,
         jwks_url: Some(jwks_url.to_string()),
+        exchange: false,
     }
 }
 
@@ -1527,6 +1528,7 @@ fn auth_with_jwt_cookie(entries: Vec<InboundJwtConfig>) -> InboundAuth {
         jwt: entries,
         jwt_header: Some(JWT_HEADER.to_string()),
         jwt_cookie: Some(JWT_COOKIE.to_string()),
+        exchange: None,
     }
     .resolve()
     .expect("test inbound auth resolves")

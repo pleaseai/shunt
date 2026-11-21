@@ -1,22 +1,17 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 
-use crate::auth::inbound::constant_time_eq;
+use crate::auth::hs256;
 
 use super::approval::Identity;
 
 const AUDIENCE: &str = "shunt";
-const HEADER_JSON: &[u8] = br#"{"alg":"HS256","typ":"JWT"}"#;
 /// Claim name of the dedicated shunt marker (see [`has_shunt_shape`]).
 const MARKER_CLAIM: &str = "shunt_token_use";
 /// Claim value of the dedicated shunt marker (see [`has_shunt_shape`]).
 const MARKER_VALUE: &str = "gateway-session";
-
-type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claims {
@@ -54,35 +49,15 @@ fn mint_at(identity: &Identity, issuer: &str, secret: &[u8], ttl_seconds: u64, n
         exp: now.saturating_add(ttl_seconds),
         shunt_token_use: MARKER_VALUE.to_string(),
     };
-    let header = URL_SAFE_NO_PAD.encode(HEADER_JSON);
-    let payload =
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("JWT claims serialize"));
-    let signing_input = format!("{header}.{payload}");
-    let signature = sign(signing_input.as_bytes(), secret);
-    format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(signature))
+    hs256::sign_token(
+        &serde_json::to_vec(&claims).expect("JWT claims serialize"),
+        secret,
+    )
 }
 
 fn verify_at(token: &str, issuer: &str, secret: &[u8], now: u64) -> Option<Claims> {
-    let mut parts = token.split('.');
-    let header = parts.next()?;
-    let payload = parts.next()?;
-    let signature = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-
-    let decoded_header = URL_SAFE_NO_PAD.decode(header).ok()?;
-    if decoded_header != HEADER_JSON {
-        return None;
-    }
-    let presented_signature = URL_SAFE_NO_PAD.decode(signature).ok()?;
-    let signing_input = format!("{header}.{payload}");
-    let expected_signature = sign(signing_input.as_bytes(), secret);
-    if !constant_time_eq(&presented_signature, &expected_signature) {
-        return None;
-    }
-
-    let claims: Claims = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+    let payload = hs256::verified_payload(token, secret)?;
+    let claims: Claims = serde_json::from_slice(&payload).ok()?;
     if claims.aud != AUDIENCE || claims.iss != issuer || claims.exp <= now {
         return None;
     }
@@ -156,12 +131,6 @@ pub fn has_shunt_shape(token: &str, issuer: &str) -> bool {
         || object.get(MARKER_CLAIM).and_then(serde_json::Value::as_str) == Some(MARKER_VALUE)
 }
 
-fn sign(message: &[u8], secret: &[u8]) -> Vec<u8> {
-    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
-    mac.update(message);
-    mac.finalize().into_bytes().to_vec()
-}
-
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -173,7 +142,8 @@ fn unix_now() -> u64 {
 mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
-    use super::{has_shunt_shape, mint_at, verify_at, HEADER_JSON};
+    use super::{has_shunt_shape, mint_at, verify_at};
+    use crate::auth::hs256::{sign, HEADER_JSON};
     use crate::gateway::approval::Identity;
 
     const SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
@@ -399,7 +369,7 @@ mod tests {
         let header = URL_SAFE_NO_PAD.encode(HEADER_JSON);
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
         let signing_input = format!("{header}.{payload_b64}");
-        let signature = super::sign(signing_input.as_bytes(), SECRET);
+        let signature = sign(signing_input.as_bytes(), SECRET);
         let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(signature));
 
         let claims = verify_at(&token, "https://gateway.example", SECRET, 1001)

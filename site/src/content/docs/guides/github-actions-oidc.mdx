@@ -99,6 +99,61 @@ jobs:
 
 `audience` must equal the `audience` in the shunt entry. `::add-mask::` registers the token as a secret before it is stored, so it is redacted if it reaches the log; still, never `echo` it or run with `set -x`. Pull requests from forks do not get write permissions on their token (GitHub downgrades them to read), so a job triggered by a fork pull request generally cannot request the OIDC token. Keep that in mind for `pull_request` workflows.
 
+## GitHub Agentic Workflows (gh-aw)
+
+[GitHub Agentic Workflows](https://github.github.com/gh-aw/) runs Claude Code inside the AWF firewall sandbox, where the credential is held by the AWF api-proxy sidecar and not by the agent. The direct approach above does not fit: the OIDC token lasts about five minutes, the agent cannot mint a new one, and the sidecar's static-key path sends `x-api-key`, which shunt never reads a JWT from.
+
+gh-aw's keyless option for Claude is Anthropic Workload Identity Federation (`engine.auth.type: github-oidc`, `provider: anthropic`) with a configurable `token-url`. The sidecar mints the GitHub OIDC token, trades it at that URL for an access token, caches the access token, and refreshes it before expiry. shunt can be that URL with the [workload token exchange](/reference/configuration/#serverauthexchange-optional): no static secret, and runs of any length.
+
+Add the exchange to the entry from [shunt configuration](#shunt-configuration):
+
+```toml
+[server.auth.exchange]
+signing_secret = "${SHUNT_EXCHANGE_SECRET}"   # at least 32 bytes, kept separate from any [server.gateway] secret
+max_ttl_seconds = 3600
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]     # same value as oidc-audience below
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
+exchange = true
+```
+
+Workflow frontmatter:
+
+```yaml
+permissions:
+  id-token: write
+engine:
+  id: claude
+  env:
+    ANTHROPIC_BASE_URL: https://shunt.example.com
+  auth:
+    type: github-oidc
+    provider: anthropic
+    oidc-audience: https://shunt.example.com
+    token-url: https://shunt.example.com/v1/oauth/token
+    federation-rule-id: fdrl_shunt        # placeholders; shunt ignores these
+    organization-id: org_shunt
+    service-account-id: svac_shunt
+    workspace-id: ws_shunt
+```
+
+How it works and what to watch:
+
+- **Set `oidc-audience` and the entry's `audience` to the same shunt-specific value.** `require` is still what authorizes, exactly as above.
+- **Never use `https://api.anthropic.com` as the entry's `audience`.** It is the sidecar's default `oidc-audience` when you omit the field, so an entry that accepts it would accept tokens minted for Anthropic. Always set `oidc-audience` explicitly.
+- **The federation ids are placeholders.** The sidecar needs them to build its request; shunt accepts and ignores them.
+- **The issued token is shunt's own.** It carries the same identity (`org/repo` here) as the direct JWT would, authenticates `Authorization: Bearer` on the routes that accept a `[[server.auth.jwt]]` JWT, and is attributed and spend-limited as that identity. It lives `max_ttl_seconds`, independent of the assertion's five minutes, and the sidecar re-exchanges before it expires.
+- **A rule edit cuts a running workflow.** The token is bound to the entry's rules (`issuer`, `audience`, `algorithms`, `authorized_parties`, email rules, `require`, `subject_prefix`, `identity_claim`). Removing the entry, clearing `exchange = true`, editing any of them, or dropping every signing secret that verifies it rejects tokens already issued on the next hot reload. A workflow already running keeps its old token until the sidecar's next scheduled refresh, so its requests fail with `401` until then. Edit rules when no workflow is mid-run.
+- **Keep `max_ttl_seconds` well above 300 for gh-aw.** The sidecar schedules its next exchange at 75% of `expires_in` or 300 seconds before expiry, whichever is sooner, and runs it immediately when that falls below zero. At 300 seconds or less it therefore re-exchanges as soon as it receives a token. The default 3600 refreshes after 45 minutes.
+- **Rotate the signing secret by prepending.** Use a list, `["new", "old"]`: the first signs, every entry verifies. Drop `"old"` after `max_ttl_seconds`.
+- The sidecar sends `anthropic-beta: oauth-2025-04-20,oidc-federation-2026-04-01` on the exchange and `anthropic-beta: oauth-2025-04-20` on API requests; shunt routes them like any other request.
+- The exchange endpoint is not rate limited in this release ([#914](https://github.com/pleaseai/shunt/issues/914)).
+
+If the exchange fails, the sidecar logs the OAuth error: `invalid_grant` (`401`) means the assertion did not verify (use the table under Troubleshooting; the response never says which check failed), `unsupported_grant_type` or `invalid_request` (`400`) means the request is not the jwt-bearer JSON the endpoint expects, and `temporarily_unavailable` (`503`) means shunt could not fetch GitHub's key set or, when it carries `Retry-After: 1`, that the gateway is at its inbound concurrency limit. A `404` means `[server.auth.exchange]` was not present when shunt booted.
+
 ## Token lifetime
 
 The OIDC token is a bearer: it works until it expires, and shunt keeps no revocation state. GitHub's documentation lists `exp` and `iat` as claims but states no lifetime; the token in GitHub's own enterprise example has `exp - iat` of 300 seconds. shunt rejects a token only when `exp - iat` *exceeds* `max_token_age_seconds` (default `3600`), so the default accepts it. A long job should request a fresh token before each stage that calls shunt, using the same step as above, rather than hold one for the whole job. A single process, such as one Claude Code session, keeps the token it started with and gets `401` once that token expires. For a session that outlives the token, configure Claude Code's `apiKeyHelper` with a script that requests a fresh token the same way (the request variables are set for every step of a job that has `id-token: write`), and launch Claude Code without `ANTHROPIC_AUTH_TOKEN`: an exported `ANTHROPIC_AUTH_TOKEN` takes precedence over `apiKeyHelper`, so the session would keep the expired token.

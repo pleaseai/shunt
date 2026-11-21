@@ -16,7 +16,7 @@ Any string value in the config file may be written as `${VAR}` or `${file:/abs/p
 
 `$${` escapes to a literal `${`. Resolution is not recursive — a resolved value is not re-scanned for further references. This applies only to the config file; `SHUNT_*` environment overrides are used as-is. It reruns on every config load, including [hot reload](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md), so a `${file:}`-backed secret can be rotated by rewriting the referenced file and triggering a reload, without restarting shunt. Whether the new value then takes effect follows the field's own reload behavior: `[sentry]` and `[otel]` are initialized once at startup, so rotating a secret in those two sections updates the config but needs a restart to apply.
 
-Six field paths are additionally typed as a redacting secret and render as `[redacted]` in diagnostic output: [`[sentry] dsn`](#sentry-optional), [`[otel.headers]`](#otelheaders-optional) values, [`[server.gateway.telemetry] forward_to[].headers`](#servergatewaytelemetry-optional) values, [`[server.gateway.session] jwt_secret`](#servergatewaysession-optional), and the `key` of each [`[[server.admin.write_keys]]` and `[[server.admin.read_keys]]`](#serveradmin-optional) entry. For the first four, a literal value still works exactly as before; shunt additionally logs one advisory boot warning naming the affected field paths — never the values — suggesting `${VAR}` / `${file:...}`. The two admin key arrays are the exception: a literal there **fails config load** rather than warning, so an admin key never lives in the config file.
+Seven field paths are additionally typed as a redacting secret and render as `[redacted]` in diagnostic output: [`[sentry] dsn`](#sentry-optional), [`[otel.headers]`](#otelheaders-optional) values, [`[server.gateway.telemetry] forward_to[].headers`](#servergatewaytelemetry-optional) values, [`[server.gateway.session] jwt_secret`](#servergatewaysession-optional), [`[server.auth.exchange] signing_secret`](#serverauthexchange-optional), and the `key` of each [`[[server.admin.write_keys]]` and `[[server.admin.read_keys]]`](#serveradmin-optional) entry. For the first five, a literal value still works exactly as before; shunt additionally logs one advisory boot warning naming the affected field paths — never the values — suggesting `${VAR}` / `${file:...}`. The two admin key arrays are the exception: a literal there **fails config load** rather than warning, so an admin key never lives in the config file.
 
 The existing `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`, and `tokens_file` fields are unaffected by this and keep naming an environment variable or file path, as before (`jwt_secret_env` is separately deprecated in favor of [`session.jwt_secret`](#servergatewaysession-optional)) — see each field's own entry below.
 
@@ -90,7 +90,7 @@ With no inbound authentication configured (neither this table nor [`[server.gate
 
 ### `[[server.auth.jwt]]` (optional)
 
-An array of tables adding a second kind of inbound credential: a JWT minted by an external identity provider, which shunt **verifies but never issues** — no login flow, no session store, no signing secret. The client is configured exactly as it is for a static token (a base URL plus a bearer), so unlike [`[server.gateway]`](#servergateway-optional) login it does not put Claude Code into gateway provider mode or cost it the client features that mode disables. See the [behavior specification](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md).
+An array of tables adding a second kind of inbound credential: a JWT minted by an external identity provider, which shunt **verifies** against the issuer's key set. shunt issues no token of its own for this path — no login flow, no session store, no signing secret — unless you opt an entry into the [workload token exchange](#serverauthexchange-optional). The client is configured exactly as it is for a static token (a base URL plus a bearer), so unlike [`[server.gateway]`](#servergateway-optional) login it does not put Claude Code into gateway provider mode or cost it the client features that mode disables. See the [behavior specification](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md).
 
 ```toml
 [server.auth]
@@ -123,6 +123,7 @@ identity_claim = "repository"
 | `clock_skew_seconds` | `0` | Tolerance applied to `exp` and `nbf` |
 | `max_token_age_seconds` | `3600` | Reject when `exp - iat` exceeds this |
 | `jwks_url` | discovery | Explicit JWKS endpoint, for issuers serving no discovery document |
+| `exchange` | `false` | Opt this entry into the [workload token exchange](#serverauthexchange-optional). Requires `[server.auth.exchange]` |
 
 Each entry needs `issuer`, `audience`, and at least one authorization rule: an `email_domains`/`allowed_emails` value, a `require` table naming a claim other than `aud` or `iss` (those repeat checks shunt already makes), or a `subject_prefix`. `audience` alone is not an authorization rule, because for some issuers the caller chooses their own audience — any GitHub repository can mint a token with any `aud`. An entry without an email rule must also set `identity_claim`. Every configured group must pass (email rule, `require`, `subject_prefix`). `email_verified = true` is enforced whenever the entry has an email rule, its identity claim is `email`, or `require` names `email`; other entries never read `email`. Startup also fails closed for a symmetric or unknown `algorithms` entry, and for an entry whose `issuer` equals `[server.gateway]`'s `public_url` — both verifiers read the same bearer slot, so a shared issuer would make ownership of a token depend on evaluation order.
 
@@ -133,6 +134,36 @@ A JWT is accepted in `Authorization: Bearer` — the slot Claude Code already se
 Key sets are fetched lazily on first use per issuer, so an unreachable IdP does not block startup. A cached key set is trusted for at most 5 minutes; after that the next request attempts a refresh (subject to the 60-second refetch floor), and a successful refresh replaces the set, so a key the issuer withdraws stops verifying within about 5 minutes. If the refresh fails, the expired set keeps serving rather than turning an IdP outage into a total one; when discovery itself fails, the last discovered `jwks_uri` is tried instead. A config reload keeps cached keys only while an entry's `issuer` and `jwks_url` are both unchanged. An unknown `kid` triggers at most one refetch per 60-second window per key set. A token that verifies against no entry is `401`; a matching entry that has no cached key set and cannot fetch one is **`503`**, so an IdP outage is not reported as a bad credential.
 
 shunt keeps no revocation state, so a valid token works until it expires: `max_token_age_seconds` is what bounds that, and issuers should mint minutes-scale tokens. Removing a domain or address from the allowlist does take effect on the next request.
+
+### `[server.auth.exchange]` (optional)
+
+Lets a workload trade a verified JWT for a short-lived token that shunt itself signs, so a client that cannot hold a fresh IdP token for the whole run (GitHub Agentic Workflows behind the AWF sidecar, for example) can keep calling the gateway. It adds `POST /v1/oauth/token` and extends the lifetime of an identity shunt already trusts; it never authorizes a caller that direct use of the same JWT would not. Absent by default, and then the route answers `404`. See the [behavior specification](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md) and the [GitHub Actions guide](/guides/github-actions-oidc/#github-agentic-workflows-gh-aw).
+
+```toml
+[server.auth.exchange]
+signing_secret = "${SHUNT_EXCHANGE_SECRET}"
+max_ttl_seconds = 3600
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567" }
+identity_claim = "repository"
+exchange = true
+```
+
+| Key | Default | Meaning |
+| :-- | :-- | :-- |
+| `signing_secret` | required | HS256 signing secret, at least 32 bytes. A single string, or an array for rotation — the first entry signs and every entry verifies. A `Secret`-typed field with the same syntax as [`[server.gateway.session] jwt_secret`](#servergatewaysession-optional) |
+| `max_ttl_seconds` | `3600` | Lifetime of an issued token and the `expires_in` the endpoint reports. Must be greater than zero. It does not depend on the assertion's own lifetime. Keep it short: it bounds how long a token outlives the identity behind it. For gh-aw, keep it well above 300 seconds: at or below that the AWF sidecar re-exchanges as soon as it receives a token |
+
+Only `[[server.auth.jwt]]` entries with `exchange = true` are tried on the endpoint, and the assertion is verified exactly as the same JWT would be in `Authorization: Bearer` for that entry. Startup and `shunt check` fail on: `exchange = true` without this table (the message names the entry), this table with no opted-in entry, an empty `signing_secret` list, a secret under 32 bytes (the message names its index), `max_ttl_seconds = 0`, a secret that is also a `[server.gateway]` session signing secret (the two token families must not share one), and an entry whose `issuer` is `urn:shunt:workload-exchange` (reserved).
+
+The route is registered only when this table is present at boot, so adding it needs a restart; a reload that removes it makes the route `404`. Everything else hot-reloads.
+
+An issued token is accepted in `Authorization: Bearer` only, on every route that accepts a `[[server.auth.jwt]]` JWT there (`/v1/messages`, `count_tokens`, model discovery, `GET /usage`, `GET /api/oauth/usage`, and the inbound Codex endpoint), as the same identity, usage, and spend principal as direct JWT use. It is never read from `x-api-key`, the `[server.auth]` `header`, `jwt_header`, or `jwt_cookie`, and it does not authenticate the admin surface, the spend Admin API, or telemetry ingest. A static token wins when both are present. shunt never forwards an issued token upstream, whatever its state.
+
+An issued token is bound to the entry that verified the assertion: it carries a fingerprint of that entry's `issuer`, `audience`, `algorithms`, `authorized_parties`, `email_domains`, `allowed_emails`, `require`, `subject_prefix`, and `identity_claim` (not `jwks_url`, `clock_skew_seconds`, or `max_token_age_seconds`). Removing the entry, clearing `exchange = true`, editing any of those rules, or dropping every signing secret that verifies it rejects tokens already issued on the next hot reload. A rule edit therefore cuts a running GitHub Agentic Workflows run until the AWF sidecar's next scheduled refresh. There is no per-token revocation, and the endpoint is not rate limited in this release ([#914](https://github.com/pleaseai/shunt/issues/914)).
 
 ### Codex gateway OAuth: `jwt_header` and `jwt_cookie`
 

@@ -52,7 +52,7 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 ## 自組織の identity provider が発行する JWT の検証
 
-組織がすでに identity provider を運用しているなら、`[[server.auth.jwt]]` で共有 secret の代わりにそのトークンを受け付けられます — shunt を認証サーバーにせずにユーザーごとの identity を得る方法です。shunt は**検証するだけ**で、ログインフローもセッションストアも署名 secret もありません。[gateway ログイン](/ja/guides/gateway-login/)と違い、クライアントの設定は base URL と bearer だけのままなので、Claude Code の gateway provider モードには入らず、そのモードで無効化される機能も失いません。
+組織がすでに identity provider を運用しているなら、`[[server.auth.jwt]]` で共有 secret の代わりにそのトークンを受け付けられます — shunt を認証サーバーにせずにユーザーごとの identity を得る方法です。shunt は発行元の鍵でトークンを**検証**するだけで、既定では何も発行しません。ログインフローもセッションストアも署名 secret もありません（長い実行の間ずっと新しいトークンを持てないワークロードは、[ワークロードトークン交換](/ja/guides/github-actions-oidc/#github-agentic-workflows-gh-aw)にオプトインできます）。[gateway ログイン](/ja/guides/gateway-login/)と違い、クライアントの設定は base URL と bearer だけのままなので、Claude Code の gateway provider モードには入らず、そのモードで無効化される機能も失いません。
 
 ```toml
 [server.auth]

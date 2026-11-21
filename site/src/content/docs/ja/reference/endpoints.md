@@ -12,6 +12,7 @@ description: shunt が Claude Code LLM ゲートウェイとして提供する�
 | `GET` | `/routes` | shunt ネイティブのルート discovery — 設定された `[[routes]]` テーブルをそのまま返す（model → provider/upstream_model/effort のマッピング、claude プレフィックスの discovery エイリアスを含む）。`/v1/models` とは別物で、後者はより狭い Anthropic プロトコルの discovery レスポンス（`id`、`display_name`、およびアップストリームのモデルメタデータ）を提供する。`[models.router]` テーブルを設定した `[[models]]` エントリが 1 つでもあれば `routers` 配列が加わり、各ルーターの model id、`algorithm`（設定された `type`）、ルーティングしうるすべての `targets` id を示す。ジャッジを設定したルーターは、尋ねるだけで提供はしない id を `judges` としても示す（ない場合は省略）。[ステージルーター](/ja/guides/stage-router/)と `auto` のエントリはさらに、2 つのティアのターゲットと、シグナルが何も決めなかったときに picker が戻るティアも示す |
 | `POST` | `/v1/messages` | 推論 — リクエストの `model` id に従ってルーティング |
 | `POST` | `/v1/messages/count_tokens` | [トークンカウント](/ja/guides/effort-and-context/#トークンカウントcount_tokens) |
+| `POST` | `/v1/oauth/token` | [ワークロードトークン交換](#ワークロードトークン交換) — 検証済みの GitHub Actions OIDC JWT を、shunt が発行する有効期間の短い bearer トークンに交換する。起動時に `[server.auth.exchange]` が設定されている場合のみ |
 | `GET` | `/managed/settings` | ゲートウェイ JWT ごとの Claude Code managed settings。`ETag`、`If-None-Match`、`304 Not Modified` に対応 |
 | `GET` | `/user/bootstrap` | ゲートウェイ JWT 向けの Claude Desktop bootstrap 構成。`ETag`、`If-None-Match`、`304 Not Modified` をサポート |
 | `GET` | `/v1/organizations/spend_limits` | 保存された支出上限を方向付きカーソルページネーションで一覧表示 |
@@ -151,8 +152,34 @@ Inbound Codex Responses、Web 検索、モデルカタログ、analytics のル�
 
 プール状態 `capped` は、利用可能なアカウントがなく、有効（`disabled` でない）かつ一時停止されていないアカウントのうち 1 つ以上が `max_utilization*` のハードキャップで除外されていることを意味し（[`[server.pool]`](/ja/reference/configuration/#serverpoolオプション) を参照）、`exhausted` とは区別されます。
 
-`GET /` と `GET /health` は、[`[server.auth]`](/ja/guides/shared-gateway/) が有効なときも開いたままです（ヘルスチェックツールは通常トークンを付けられません）。機密情報は何も公開しません — ステータス、バージョン、およびすでに公開されているエンドポイント一覧のみです。 [`[[server.auth.jwt]]`](/ja/reference/configuration/) エントリを設定すると、`Authorization: Bearer` の検証済み外部 JWT がクライアントトークンと同じゲート対象ルートを認証します。どのエントリでも検証できなかったトークンは `401`、検証できたエントリがなく、トークンの issuer に一致するエントリのうちキャッシュ済みの key set がなく取得にも失敗したものがある場合は `503` です。
+`GET /` と `GET /health` は、[`[server.auth]`](/ja/guides/shared-gateway/) が有効なときも開いたままです（ヘルスチェックツールは通常トークンを付けられません）。機密情報は何も公開しません — ステータス、バージョン、およびすでに公開されているエンドポイント一覧のみです。 [`[[server.auth.jwt]]`](/ja/reference/configuration/) エントリを設定すると、`Authorization: Bearer` の検証済み外部 JWT、または[ワークロードトークン交換](#ワークロードトークン交換)が発行したトークンが、クライアントトークンと同じゲート対象ルートを認証します。どのエントリでも検証できなかったトークンは `401`、検証できたエントリがなく、トークンの issuer に一致するエントリのうちキャッシュ済みの key set がなく取得にも失敗したものがある場合は `503` です。
+
+## ワークロードトークン交換
+
+`POST /v1/oauth/token` は、起動時に [`[server.auth.exchange]`](/ja/reference/configuration/#serverauthexchangeオプション) が設定されている場合にのみ存在し、それ以外は `404` を返します。テーブルの追加には再起動が必要で、リロードでテーブルを削除するとルートは `404` になります。認証のないルートで、認証情報は本文の JWT `assertion` です。リクエストは JSON（`Content-Type: application/json`）です:
+
+```json
+{
+  "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+  "assertion": "<JWT>",
+  "federation_rule_id": "fdrl_shunt",
+  "organization_id": "org_shunt",
+  "service_account_id": "svac_shunt",
+  "workspace_id": "ws_shunt"
+}
+```
+
+4 つの federation ID は、あってもなくても受け付けて無視します。試すのは `exchange = true` の `[[server.auth.jwt]]` エントリだけで、assertion は直接送られた Bearer JWT とまったく同じように検証されます。成功すると `200` と `{"access_token": "...", "token_type": "Bearer", "expires_in": N}` を返し、`N` は assertion 自身の有効期間にかかわらず `max_ttl_seconds` です。トークンは、`[[server.auth.jwt]]` の JWT を受け付けるルートに `Authorization: Bearer` で送ります。[GitHub Actions ガイド](/ja/guides/github-actions-oidc/#github-agentic-workflows-gh-aw)を参照してください。
+
+エラーは Anthropic 形ではなく OAuth 形の `{"error", "error_description"}` を使います。AWF sidecar がこれを OAuth エラーとして解析するためです。すべての応答に `Cache-Control: no-store` が付きます。
+
+| ステータス | `error` | 条件 |
+| :-- | :-- | :-- |
+| `400` | `invalid_request` | 本文が JSON でない、またはオブジェクトでない、`Content-Type` が JSON でない、フィールドの型が違う、または `assertion` がないか空 |
+| `400` | `unsupported_grant_type` | `grant_type` がないか、jwt-bearer URN ではない |
+| `401` | `invalid_grant` | オプトインしたどのエントリも assertion を検証できない。原因にかかわらず応答は同一 |
+| `503` | `temporarily_unavailable` | 一致する issuer の key set を取得できない、またはゲートウェイがインバウンドの同時リクエスト上限に達している（このときは `Retry-After: 1` 付き） |
 
 ## ゲートウェイプロトコル
 
-shunt は公式の [Claude Code LLM ゲートウェイプロトコル](https://code.claude.com/docs/en/llm-gateway-protocol)を実装します: 正しいヘッダーとボディフィールドの転送、機能のパススルー、システムプロンプトのアトリビューション処理。ゲートウェイ所有のエラーは Anthropic のエラー形で返され、上流のコンテキストオーバーフローエラーは Anthropic の `prompt is too long` の文言へ書き換えられて Claude Code の[コンパクト＆リトライ](/ja/guides/effort-and-context/#コンテキストオーバーフローの回復)が発火し、ストリーミングレスポンスはバッファリングなしで中継されます（オプションで[キープアライブ ping](/ja/guides/shared-gateway/#sse-キープアライブ-ping) 付き）。
+shunt は公式の [Claude Code LLM ゲートウェイプロトコル](https://code.claude.com/docs/en/llm-gateway-protocol)を実装します: 正しいヘッダーとボディフィールドの転送、機能のパススルー、システムプロンプトのアトリビューション処理。ゲートウェイ所有のエラーは Anthropic のエラー形で返され（OAuth 形のエラーを返す `POST /v1/oauth/token` と、OpenAI 形を使うインバウンド Codex エンドポイントは例外）、上流のコンテキストオーバーフローエラーは Anthropic の `prompt is too long` の文言へ書き換えられて Claude Code の[コンパクト＆リトライ](/ja/guides/effort-and-context/#コンテキストオーバーフローの回復)が発火し、ストリーミングレスポンスはバッファリングなしで中継されます（オプションで[キープアライブ ping](/ja/guides/shared-gateway/#sse-キープアライブ-ping) 付き）。

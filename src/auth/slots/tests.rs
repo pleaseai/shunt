@@ -15,7 +15,12 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use crate::{
     adapters::responses::inbound::passthrough_request_headers,
     admin::AdminAuth,
-    auth::{inbound::InboundAuth, jwt_slots::JwtSlots},
+    auth::{
+        exchange::{fingerprint, mint, unix_now, ExchangeSettings},
+        inbound::InboundAuth,
+        inbound_jwt::JwtIssuerRule,
+        jwt_slots::JwtSlots,
+    },
     config::{AdminKey, AdminKeyring, AuthMode, Config, Secret},
     discovery::upstream::upstream_headers,
     gateway::{approval::Identity, jwt, GatewayAuth},
@@ -25,6 +30,40 @@ use crate::{
 };
 
 use super::ShuntCredentials;
+
+const EXCHANGE_SECRET: &[u8] = b"exchange-secret-0123456789abcdef0123";
+const OTHER_EXCHANGE_SECRET: &[u8] = b"exchange-secret-fedcba9876543210fedc";
+
+/// The `exchange = true` entry the fixture's exchange tokens are bound to.
+fn exchange_rule() -> JwtIssuerRule {
+    JwtIssuerRule {
+        issuer: "https://idp.example".to_string(),
+        jwks_url: Some("http://127.0.0.1:9/jwks".to_string()),
+        audience: vec!["shunt-aud".to_string()],
+        algorithms: vec![jsonwebtoken::Algorithm::RS256],
+        authorized_parties: Vec::new(),
+        allowed_domains: Vec::new(),
+        allowed_emails: Vec::new(),
+        require: vec![("repository".to_string(), vec!["org/a".to_string()])],
+        subject_prefixes: Vec::new(),
+        identity_claim: "repository".to_string(),
+        clock_skew_seconds: 0,
+        max_token_age_seconds: 3600,
+        exchange: true,
+    }
+}
+
+/// A real exchange token for `exchange_rule()`, signed under `secret`, minted
+/// at `now` with the fixture's 600 s lifetime.
+fn exchange_token(secret: &[u8], now: u64) -> String {
+    mint(
+        &ExchangeSettings::new(vec![secret.to_vec()], 600),
+        "org/a",
+        &fingerprint(&exchange_rule()),
+        now,
+    )
+    .token
+}
 
 const GATEWAY_URL: &str = "https://gateway.example";
 const GATEWAY_SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
@@ -79,10 +118,14 @@ fn state_with_headers(static_header: HeaderName, admin_header: HeaderName) -> Ap
         false,
         None,
     )));
-    state.inbound_auth = Some(Arc::new(InboundAuth::new(
-        static_header,
-        vec![("client".to_string(), STATIC_TOKEN.to_string())],
-    )));
+    state.inbound_auth = Some(Arc::new(
+        InboundAuth::new(
+            static_header,
+            vec![("client".to_string(), STATIC_TOKEN.to_string())],
+        )
+        .with_jwt(vec![exchange_rule()])
+        .with_exchange(ExchangeSettings::new(vec![EXCHANGE_SECRET.to_vec()], 600)),
+    ));
     state.admin_auth = Some(Arc::new(AdminAuth::new(
         admin_header,
         admin_keyring(),
@@ -117,8 +160,10 @@ fn fixtures() -> Vec<Fixture> {
             name: "defaults",
             // The verifying gateway JWT in `Bearer` (1); the static token in
             // `Bearer`, `x-api-key`, and its own header (3); each of the three
-            // admin credentials in `x-api-key` and the admin header (6).
-            accepted_pairs: 10,
+            // admin credentials in `x-api-key` and the admin header (6); the
+            // verifying exchange token in `Bearer` only, the one slot
+            // `authenticate_exchange` reads (1).
+            accepted_pairs: 11,
             state: state(),
         },
         Fixture {
@@ -130,8 +175,9 @@ fn fixtures() -> Vec<Fixture> {
             // The verifying gateway JWT in `Bearer` (1); the static token in all
             // five shapes, since two of them now *are* its configured header
             // (5); each of the three admin credentials in the two shapes that
-            // name `x-api-key` (6).
-            accepted_pairs: 12,
+            // name `x-api-key` (6); the verifying exchange token in `Bearer`
+            // only (1).
+            accepted_pairs: 13,
             state: state_with_headers(
                 HeaderName::from_static("authorization"),
                 HeaderName::from_static("x-api-key"),
@@ -190,6 +236,18 @@ fn credential_kinds() -> Vec<CredentialKind> {
         CredentialKind {
             name: "gateway JWT (sibling issuer; shunt-shaped, does not verify)",
             value: gateway_jwt(SIBLING_URL),
+        },
+        CredentialKind {
+            name: "workload exchange token (verifies)",
+            value: exchange_token(EXCHANGE_SECRET, unix_now()),
+        },
+        CredentialKind {
+            name: "workload exchange token (expired)",
+            value: exchange_token(EXCHANGE_SECRET, unix_now().saturating_sub(100_000)),
+        },
+        CredentialKind {
+            name: "workload exchange token (rotated-out secret; shunt-shaped, does not verify)",
+            value: exchange_token(OTHER_EXCHANGE_SECRET, unix_now()),
         },
         CredentialKind {
             name: "[server.auth] static token",
@@ -278,6 +336,7 @@ fn accepted_by_any_gate(state: &AppState, headers: &HeaderMap) -> bool {
         auth.authenticate(headers).is_some()
             || auth.authenticate_bearer(headers).is_some()
             || auth.authenticate_client(headers).is_some()
+            || auth.authenticate_exchange(headers).is_some()
     });
     let accepted_gateway = state
         .gateway_auth

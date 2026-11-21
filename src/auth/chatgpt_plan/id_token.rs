@@ -57,6 +57,7 @@ fn rule(issuer: &str, client_id: &str, nonce: &str) -> JwtIssuerRule {
         identity_claim: "sub".to_string(),
         clock_skew_seconds: CLOCK_SKEW_SECONDS,
         max_token_age_seconds: MAX_TOKEN_AGE_SECONDS,
+        exchange: false,
     }
 }
 

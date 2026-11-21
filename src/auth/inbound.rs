@@ -18,10 +18,10 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue};
 
 use crate::{config::AdminKeyring, gateway::GatewayAuth};
 
-use crate::auth::{inbound_jwt::JwtIssuerRule, jwt_slots::JwtSlots};
+use crate::auth::{exchange::ExchangeSettings, inbound_jwt::JwtIssuerRule, jwt_slots::JwtSlots};
 
 /// Resolved inbound-auth state: the header to inspect, the accepted
-/// `name → token` pairs, and the verify-only JWT issuers. Built once at startup
+/// `name → token` pairs, and the external JWT issuers. Built once at startup
 /// from `[server.auth]` plus the configured env var, and rebuilt on reload;
 /// absent entirely when inbound auth is not configured.
 ///
@@ -35,6 +35,7 @@ pub struct InboundAuth {
     tokens: Vec<(String, String)>,
     jwt: Vec<JwtIssuerRule>,
     jwt_slots: JwtSlots,
+    exchange: Option<ExchangeSettings>,
 }
 
 impl InboundAuth {
@@ -44,10 +45,23 @@ impl InboundAuth {
             tokens,
             jwt: Vec::new(),
             jwt_slots: JwtSlots::default(),
+            exchange: None,
         }
     }
 
-    /// Attach verify-only JWT issuers. A builder rather than a `new` parameter
+    /// Attach the resolved `[server.auth.exchange]` settings. Absent by
+    /// default, so an unconfigured deployment behaves exactly as before.
+    pub(crate) fn with_exchange(mut self, exchange: ExchangeSettings) -> Self {
+        self.exchange = Some(exchange);
+        self
+    }
+
+    /// The resolved workload-exchange settings, if configured.
+    pub fn exchange(&self) -> Option<&ExchangeSettings> {
+        self.exchange.as_ref()
+    }
+
+    /// Attach external JWT issuers. A builder rather than a `new` parameter
     /// because the admin surface reuses this type for its own `name:token`
     /// store (`AdminAuth`), where external issuers have no meaning.
     pub fn with_jwt(mut self, jwt: Vec<JwtIssuerRule>) -> Self {
@@ -82,10 +96,20 @@ impl InboundAuth {
         &self.header
     }
 
-    /// The configured verify-only JWT issuers. Empty when none are configured,
+    /// The configured external JWT issuers. Empty when none are configured,
     /// which is what lets every call site skip the async path entirely.
     pub fn jwt(&self) -> &[JwtIssuerRule] {
         &self.jwt
+    }
+
+    /// Resolve a shunt-issued workload exchange token presented in
+    /// `Authorization: Bearer` to the identity it carries. Sync and
+    /// network-free; `None` when exchange is not configured, no bearer is
+    /// presented, or the token does not verify against this snapshot.
+    pub(crate) fn authenticate_exchange(&self, headers: &HeaderMap) -> Option<String> {
+        self.exchange()?;
+        let token = std::str::from_utf8(bearer_token(headers)?).ok()?;
+        crate::auth::exchange::verify(self, token, crate::auth::exchange::unix_now())
     }
 
     /// Whether `value` is a JWT from one of the configured
@@ -265,11 +289,13 @@ pub(crate) enum ConsumedBy {
     StaticToken,
     InboundJwt,
     AdminCredential,
+    ExchangeToken,
 }
 
 /// Whether `value` — the raw contents of a header slot — is a credential shunt
 /// itself consumes rather than the caller's own upstream credential, and which
-/// one. Four kinds qualify: shunt's gateway JWT (checked as a bare token, no
+/// one. Five kinds qualify: a shunt-issued workload exchange token (by its
+/// unverified marker, whatever the configuration), shunt's gateway JWT (checked as a bare token, no
 /// `Bearer ` prefix), a configured static `[server.auth]` token, a JWT from a
 /// configured `[[server.auth.jwt]]` issuer, and a `[server.admin]` credential (a `tokens_env`/`tokens_file` pair or either key
 /// array — the read tier included, since a read key still reaches the admin
@@ -323,6 +349,15 @@ pub(crate) fn consumed_by(
     });
     if is_gateway_jwt {
         return Some(ConsumedBy::GatewayJwt);
+    }
+    // Config-independent on purpose: judged by the unverified marker alone, so
+    // an expired, rotated-out or orphaned token, and one issued before
+    // `[server.auth.exchange]` (or all of `[server.auth]`) was removed, is
+    // still stripped. See `crate::auth::exchange::is_exchange_shaped`.
+    if std::str::from_utf8(value)
+        .is_ok_and(|token| crate::auth::exchange::is_exchange_shaped(token.trim().as_bytes()))
+    {
+        return Some(ConsumedBy::ExchangeToken);
     }
     if static_auth.is_some_and(|auth| auth.authenticate_value(value).is_some()) {
         return Some(ConsumedBy::StaticToken);

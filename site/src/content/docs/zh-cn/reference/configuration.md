@@ -54,7 +54,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 ### `[[server.auth.jwt]]`(可选)
 
-一个表数组,增加第二种入站凭据:由外部 identity provider 签发的 JWT,shunt **只验证、从不签发** —— 没有登录流程、没有会话存储、没有签名 secret。客户端的配置方式与静态 token 完全相同(base URL 加 bearer),因此不同于 `[server.gateway]` 登录,它不会让 Claude Code 进入 gateway provider 模式,也不会失去该模式禁用的客户端功能。参见[行为规范](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)。
+一个表数组,增加第二种入站凭据:由外部 identity provider 签发的 JWT,shunt 用发行方的密钥集**验证**它。这条路径上 shunt 不签发自己的 token —— 没有登录流程、没有会话存储、没有签名 secret —— 除非你让某个条目选择加入[工作负载 token 交换](#serverauthexchange可选)。客户端的配置方式与静态 token 完全相同(base URL 加 bearer),因此不同于 `[server.gateway]` 登录,它不会让 Claude Code 进入 gateway provider 模式,也不会失去该模式禁用的客户端功能。参见[行为规范](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)。
 
 ```toml
 [server.auth]
@@ -87,6 +87,7 @@ identity_claim = "repository"
 | `clock_skew_seconds` | `0` | 应用于 `exp` 和 `nbf` 的容差 |
 | `max_token_age_seconds` | `3600` | `exp - iat` 超过该值时拒绝 |
 | `jwks_url` | discovery | 为不提供 discovery 文档的 issuer 显式指定 JWKS 端点 |
+| `exchange` | `false` | 让该条目选择加入[工作负载 token 交换](#serverauthexchange可选)。需要 `[server.auth.exchange]` |
 
 每个条目都需要 `issuer`、`audience`,以及至少一条授权规则:`email_domains`/`allowed_emails` 值、指定了 `aud`、`iss` 以外声明的 `require` 表(这两者只是重复 shunt 已经做过的检查)或 `subject_prefix`。仅有 `audience` 不构成授权规则 —— 对某些 issuer 来说,调用方可以自行选择 audience(任何 GitHub 仓库都可以签发带有任意 `aud` 的 token)。没有邮箱规则的条目还必须设置 `identity_claim`。所有已配置的组(邮箱规则、`require`、`subject_prefix`)都必须通过。条目有邮箱规则、身份声明为 `email`,或 `require` 指定了 `email` 时,会强制 `email_verified = true`;其他条目不会读取 `email`。如果 `algorithms` 含有对称算法或未知值,或者 `issuer` 与 `[server.gateway]` 的 `public_url` 相同,启动同样会 fail closed:两个验证器读取同一个 bearer 槽位,issuer 相同会让 token 的归属取决于求值顺序。
 
@@ -97,6 +98,36 @@ JWT 通过 `Authorization: Bearer` 接受,这正是 Claude Code 已经发送 `AN
 key set 按 issuer 在首次使用时惰性拉取,因此 IdP 不可达不会阻塞启动。缓存的 key set 最多信任 5 分钟,之后由下一个请求尝试重新拉取(受 60 秒重新拉取下限约束);拉取成功会整体替换 key set,因此 issuer 撤下的密钥大约 5 分钟内就不再参与验证。拉取失败时会继续使用已过期的 key set,以免 IdP 故障变成全面故障;discovery 本身失败时则改为尝试上次发现的 `jwks_uri`。只有条目的 `issuer` 和 `jwks_url` 都未变化时,config reload 才会保留已缓存的密钥。未知的 `kid` 在每个 key set 的 60 秒窗口内最多触发一次重新拉取。没有任何条目能验证的 token 返回 `401`;没有任何条目验证通过、且与 token 的 issuer 匹配的条目中存在既无缓存 key set 又拉取失败的条目时,返回 **`503`**,这样 IdP 故障就不会被报告成凭据错误。
 
 shunt 不保存吊销状态,所以有效的 token 会一直可用到过期:限制这一范围的是 `max_token_age_seconds`,issuer 应当签发分钟级寿命的 token。从允许列表中移除域名或地址会在下一次请求时生效。
+
+### `[server.auth.exchange]`(可选)
+
+让工作负载把已验证的 JWT 换成 shunt 自己签名的短期 token,这样无法在整个运行期间持有新 IdP token 的客户端(例如 AWF sidecar 之后的 GitHub Agentic Workflows)也能持续调用网关。它新增 `POST /v1/oauth/token`,只是延长 shunt 已经信任的身份的有效期,不会授权直接使用同一 JWT 时不会被授权的调用方。默认不配置,此时该路由返回 `404`。参见[行为规范](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)和 [GitHub Actions 指南](/zh-cn/guides/github-actions-oidc/#github-agentic-workflows-gh-aw)。
+
+```toml
+[server.auth.exchange]
+signing_secret = "${SHUNT_EXCHANGE_SECRET}"
+max_ttl_seconds = 3600
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567" }
+identity_claim = "repository"
+exchange = true
+```
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `signing_secret` | 必填 | 至少 32 字节的 HS256 签名 secret。一个字符串,或用于轮换的数组:第一项签名,所有项都验证。`Secret` 类型字段,语法与 [`[server.gateway.session] jwt_secret`](#servergatewaysession可选) 相同 |
+| `max_ttl_seconds` | `3600` | 签发 token 的有效期,也是端点报告的 `expires_in`。必须大于零。与 assertion 自身的有效期无关。请保持较短:它限定了 token 比其背后的身份多存活的时间。但用于 gh-aw 时请明显大于 300 秒:等于或低于该值时,AWF sidecar 每拿到 token 就会立即重新交换 |
+
+端点只尝试 `exchange = true` 的 `[[server.auth.jwt]]` 条目,assertion 由该条目验证,方式与把同一 JWT 作为 `Authorization: Bearer` 发送时完全相同。启动和 `shunt check` 在以下情况失败:没有此表却设置了 `exchange = true`(消息指出该条目)、此表存在但没有条目选择加入、`signing_secret` 列表为空、secret 不足 32 字节(消息指出其索引)、`max_ttl_seconds = 0`、secret 与 `[server.gateway]` 会话签名 secret 相同(两类 token 不得共用 secret)、条目的 `issuer` 为 `urn:shunt:workload-exchange`(保留)。
+
+路由仅在启动时存在此表才会注册,因此添加它需要重启;重载时移除该表会使路由返回 `404`。其余内容均可热重载。
+
+签发的 token 只在 `Authorization: Bearer` 中被接受,适用于每个接受 `[[server.auth.jwt]]` JWT 的路由(`/v1/messages`、`count_tokens`、模型发现、`GET /usage`、`GET /api/oauth/usage` 以及入站 Codex 端点),并作为与直接使用 JWT 相同的身份、用量和 spend 主体处理。它不会从 `x-api-key`、`[server.auth]` 的 `header`、`jwt_header` 或 `jwt_cookie` 读取,也不能认证管理界面、spend Admin API 或遥测接收。两者同时出现时静态 token 优先。shunt 无论签发的 token 处于什么状态,都不会把它转发到上游。
+
+签发的 token 绑定到验证 assertion 的那个条目:它携带该条目 `issuer`、`audience`、`algorithms`、`authorized_parties`、`email_domains`、`allowed_emails`、`require`、`subject_prefix` 和 `identity_claim` 的指纹(不含 `jwks_url`、`clock_skew_seconds`、`max_token_age_seconds`)。移除该条目、清除 `exchange = true`、修改其中任何一条规则,或去掉所有能验证它的签名 secret,都会让已签发的 token 在下一次热重载时被拒绝。因此修改规则会使正在运行的 GitHub Agentic Workflows 中断,直到 AWF sidecar 下一次定时刷新。没有按 token 的撤销,本版本也没有对该端点限流([#914](https://github.com/pleaseai/shunt/issues/914))。
 
 ### Codex gateway OAuth:`jwt_header` 与 `jwt_cookie`
 

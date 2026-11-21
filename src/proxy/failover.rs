@@ -1173,6 +1173,7 @@ fn reason_label(reason: ConsumedBy) -> &'static str {
         ConsumedBy::StaticToken => "static_token",
         ConsumedBy::InboundJwt => "inbound_jwt",
         ConsumedBy::AdminCredential => "admin_credential",
+        ConsumedBy::ExchangeToken => "exchange_token",
     }
 }
 

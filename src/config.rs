@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod admin_keys;
+mod exchange;
 mod http_tuning;
 mod presets;
 mod pricing;
@@ -23,6 +24,7 @@ mod subagents;
 mod upstreams;
 
 pub use admin_keys::{AdminAccess, AdminCredential, AdminKey, AdminKeyring};
+pub use exchange::ExchangeConfig;
 pub use http_tuning::{
     AccessControlConfig, LimitsConfig, RateLimitConfig, RateLimitsConfig, TimeoutsConfig,
 };
@@ -422,7 +424,7 @@ pub struct InboundAuthConfig {
     /// Env var holding the `name:token` pairs.
     #[serde(default = "default_tokens_env")]
     pub tokens_env: String,
-    /// `[[server.auth.jwt]]` — verify-only external JWT issuers. An array from
+    /// `[[server.auth.jwt]]` — external JWT issuers, verified against their own JWKS. An array from
     /// the start: one Google issuer with separate client ids for humans and
     /// services is a normal configuration, and human SSO and workload identity
     /// use different claim vocabularies.
@@ -439,6 +441,11 @@ pub struct InboundAuthConfig {
     /// least one `[[server.auth.jwt]]` entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jwt_cookie: Option<String>,
+    /// `[server.auth.exchange]` — workload token exchange. Holds signing
+    /// secrets, so it stays behind an `Option` (see `secrets.rs`). Absent
+    /// disables the feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exchange: Option<ExchangeConfig>,
 }
 
 impl Default for InboundAuthConfig {
@@ -452,15 +459,16 @@ impl Default for InboundAuthConfig {
             jwt: Vec::new(),
             jwt_header: None,
             jwt_cookie: None,
+            exchange: None,
         }
     }
 }
 
 /// One `[[server.auth.jwt]]` entry: an external issuer whose JWTs shunt
-/// verifies. shunt issues nothing here — no login flow, no session, no signing
-/// secret — so this table holds no secret material and needs no
+/// verifies. The entry itself holds no secret material and needs no
 /// [`crate::config::secrets::Secret`] field: an issuer, an audience, and a
-/// JWKS endpoint are all public.
+/// JWKS endpoint are all public. `exchange = true` only opts the entry into
+/// `[server.auth.exchange]`, whose signing secrets live in that table.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InboundJwtConfig {
     /// Exact `iss` match. The JWKS is derived from
@@ -511,6 +519,10 @@ pub struct InboundJwtConfig {
     /// Explicit JWKS endpoint, for issuers that serve no discovery document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jwks_url: Option<String>,
+    /// Opt this entry into the workload token exchange. Requires
+    /// `[server.auth.exchange]`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exchange: bool,
 }
 
 /// A config value that accepts either one string or a list of them.
@@ -586,6 +598,20 @@ impl InboundAuthConfig {
             &header,
         )
         .map_err(|(key, message)| ConfigError::InvalidInboundJwtSlot { key, message })?;
+        let exchange = match &self.exchange {
+            Some(exchange) => {
+                if !self.jwt.iter().any(|entry| entry.exchange) {
+                    return Err(ConfigError::ExchangeWithoutOptedInEntry);
+                }
+                Some(exchange.resolve()?)
+            }
+            None => {
+                if let Some(index) = self.jwt.iter().position(|entry| entry.exchange) {
+                    return Err(ConfigError::InboundJwtExchangeWithoutTable { index });
+                }
+                None
+            }
+        };
         let raw = std::env::var(&self.tokens_env).unwrap_or_default();
         let tokens = if raw.trim().is_empty() {
             if jwt.is_empty() {
@@ -602,9 +628,13 @@ impl InboundAuthConfig {
                 }
             })?
         };
-        Ok(crate::auth::inbound::InboundAuth::new(header, tokens)
+        let mut auth = crate::auth::inbound::InboundAuth::new(header, tokens)
             .with_jwt(jwt)
-            .with_jwt_slots(jwt_slots))
+            .with_jwt_slots(jwt_slots);
+        if let Some(exchange) = exchange {
+            auth = auth.with_exchange(exchange);
+        }
+        Ok(auth)
     }
 }
 
@@ -618,6 +648,11 @@ impl InboundJwtConfig {
         let issuer = self.issuer.trim();
         if issuer.is_empty() {
             return Err(invalid("issuer must not be empty".to_string()));
+        }
+        if issuer == crate::auth::exchange::EXCHANGE_ISSUER {
+            return Err(invalid(format!(
+                "issuer {issuer} is reserved for shunt's own workload exchange tokens"
+            )));
         }
         validate_idp_url(OidcSection::InboundJwt(index), issuer, true, "issuer")?;
         // Kept exactly as configured: verification selects a rule by exact
@@ -771,6 +806,7 @@ impl InboundJwtConfig {
             identity_claim,
             clock_skew_seconds: self.clock_skew_seconds,
             max_token_age_seconds: self.max_token_age_seconds,
+            exchange: self.exchange,
         })
     }
 }
@@ -1516,7 +1552,7 @@ enum OidcSection {
     Gateway,
     Admin,
     /// `[[server.auth.jwt]]` at this index. Not an OIDC *client* section — it
-    /// borrows only the URL validation, since a verify-only entry's issuer must
+    /// borrows only the URL validation, since an inbound JWT entry's issuer must
     /// satisfy the same transport and shape rules as a sign-in issuer.
     InboundJwt(usize),
 }
@@ -3314,6 +3350,18 @@ pub enum ConfigError {
     InvalidInboundJwt { index: usize, message: String },
     #[error("server.auth.{key} is invalid: {message}")]
     InvalidInboundJwtSlot { key: &'static str, message: String },
+    #[error("[[server.auth.jwt]] entry {index} sets exchange = true but [server.auth.exchange] is not configured")]
+    InboundJwtExchangeWithoutTable { index: usize },
+    #[error("[server.auth.exchange] is configured but no [[server.auth.jwt]] entry sets exchange = true")]
+    ExchangeWithoutOptedInEntry,
+    #[error("[server.auth.exchange] signing_secret must list at least one secret")]
+    EmptyExchangeSigningSecret,
+    #[error("[server.auth.exchange] signing_secret[{index}] must be at least 32 bytes")]
+    InvalidExchangeSigningSecret { index: usize },
+    #[error("[server.auth.exchange] max_ttl_seconds must be greater than zero")]
+    InvalidExchangeMaxTtl,
+    #[error("[server.auth.exchange] signing_secret[{index}] is also a [server.gateway] session signing secret; the two token families must not share a secret")]
+    ExchangeSecretSharedWithGateway { index: usize },
     #[error("[[server.auth.jwt]] entry {index} uses issuer {issuer}, which is also [server.gateway] public_url: the gateway's own session tokens and this issuer's tokens would be indistinguishable")]
     InboundJwtCollidesWithGateway { index: usize, issuer: String },
     #[error("sentry.dsn is not a valid DSN: {message}")]
@@ -4531,8 +4579,10 @@ impl Config {
         // Fail closed at boot: [server.auth] without resolvable tokens is an
         // error, not an open gateway.
         let mut jwt_header = None;
+        let mut resolved_exchange = None;
         if let Some(auth) = &self.server.auth {
             let resolved = auth.resolve()?;
+            resolved_exchange = resolved.exchange().cloned();
             jwt_header = resolved.jwt_header().cloned();
             // Keep the two JWT paths unambiguous. `[server.gateway]` mints its
             // own session tokens with `iss` equal to its `public_url`, and
@@ -4624,7 +4674,18 @@ impl Config {
         // Fail closed at boot: a configured gateway must have a valid issuer,
         // sufficiently strong signing secret, and at least one approval path.
         if let Some(gateway) = &mut self.server.gateway {
-            gateway.resolve()?;
+            let gateway_auth = gateway.resolve()?;
+            // The two token families must not share a signing secret: a shared
+            // secret would let one family's HMAC verify as the other's.
+            if let Some(exchange) = &resolved_exchange {
+                if let Some(index) = exchange
+                    .verifying_secrets()
+                    .iter()
+                    .position(|secret| gateway_auth.signing_secrets().contains(secret))
+                {
+                    return Err(ConfigError::ExchangeSecretSharedWithGateway { index });
+                }
+            }
         }
         // [server.pool] thresholds are consumed unchecked by pool selection, so
         // an out-of-range (or NaN) value would silently distort load balancing
@@ -6227,13 +6288,14 @@ mod tests {
     use super::{
         config_file_candidates, default_auth_header, host_is_chatgpt, host_is_kimi,
         identity_collisions, AccountConfig, AdminConfig, AdminKey, AdminOidcConfig, AuthMode,
-        CodexEndpointConfig, CodexRouteConfig, Config, ConfigError, ConfigFormat, GatewayConfig,
-        GatewayOidcConfig, GatewayPolicyConfig, GatewayPolicyMatch, GatewaySessionConfig,
-        GatewayTelemetryConfig, GatewayTelemetryDestination, InboundAuthConfig, InboundJwtConfig,
-        ModelConfig, OauthUsageConfig, OidcProviderConfig, PoolAssignment, PoolConfig,
-        PricingConfig, PricingOverride, ProviderConfig, ProviderKind, ResponsesFlavor, RetryConfig,
-        RouteConfig, RoutePrefixConfig, Secret, SpendConfig, StatusConfig, StatusSource,
-        UsageEndpointConfig, CONFIG_ENV_LOCK, MAX_SHUTDOWN_TIMEOUT_SECONDS,
+        CodexEndpointConfig, CodexRouteConfig, Config, ConfigError, ConfigFormat, ExchangeConfig,
+        GatewayConfig, GatewayOidcConfig, GatewayPolicyConfig, GatewayPolicyMatch,
+        GatewaySessionConfig, GatewayTelemetryConfig, GatewayTelemetryDestination,
+        InboundAuthConfig, InboundJwtConfig, ModelConfig, OauthUsageConfig, OidcProviderConfig,
+        PoolAssignment, PoolConfig, PricingConfig, PricingOverride, ProviderConfig, ProviderKind,
+        ResponsesFlavor, RetryConfig, RouteConfig, RoutePrefixConfig, Secret, SpendConfig,
+        StatusConfig, StatusSource, UsageEndpointConfig, CONFIG_ENV_LOCK,
+        MAX_SHUTDOWN_TIMEOUT_SECONDS,
     };
 
     fn model_config(id: &str, upstream_model: Option<BTreeMap<String, String>>) -> ModelConfig {
@@ -14211,6 +14273,92 @@ provider = "kimi"
     }
 
     #[test]
+    fn literal_exchange_signing_secret_is_attributed_in_both_wire_forms() {
+        // End-to-end companion to
+        // `is_secret_field_path_matches_exchange_signing_secret_scalar_and_array_forms`
+        // in `secrets.rs`, driving the real `Config::load` traversal so a path
+        // shape mismatch cannot pass with the hand-built map alone.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Clearly-fake literals, each over the 32-byte floor.
+        let scalar = "literal-exchange-secret-0123456789abcdef";
+        let rotated_new = "literal-exchange-new-0123456789abcdef";
+        let rotated_old = "literal-exchange-old-0123456789abcdef";
+
+        let load_logs = |secret_line: &str| -> String {
+            let dir = std::env::temp_dir().join(format!(
+                "shunt-config-test-exchange-literal-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("shunt.toml");
+            std::fs::write(
+                &path,
+                format!(
+                    "[server]\ndefault_provider = \"anthropic\"\n\n\
+                     [[server.auth.jwt]]\n\
+                     issuer = \"https://token.actions.githubusercontent.com\"\n\
+                     audience = \"https://shunt.example.com\"\n\
+                     subject_prefix = \"repo:acme/\"\n\
+                     identity_claim = \"repository\"\n\
+                     exchange = true\n\n\
+                     [server.auth.exchange]\n{secret_line}\n"
+                ),
+            )
+            .unwrap();
+
+            let output = Arc::new(Mutex::new(Vec::new()));
+            let writer_output = Arc::clone(&output);
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || BufferWriter {
+                    buffer: Arc::clone(&writer_output),
+                })
+                .with_ansi(false)
+                .without_time()
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                Config::load(Some(&path)).unwrap();
+            });
+            let _ = std::fs::remove_dir_all(dir);
+            let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+            logs
+        };
+
+        let logs = load_logs(&format!("signing_secret = \"{scalar}\""));
+        assert_eq!(
+            logs.matches("[server.auth.exchange].signing_secret")
+                .count(),
+            1,
+            "the bare-string form must be attributed by path exactly once: {logs}"
+        );
+        assert!(
+            !logs.contains("could not be attributed"),
+            "the bare-string form must not fall back to an unattributed count: {logs}"
+        );
+
+        let logs = load_logs(&format!(
+            "signing_secret = [\"{rotated_new}\", \"{rotated_old}\"]"
+        ));
+        for index in 0..2 {
+            assert_eq!(
+                logs.matches(&format!("[server.auth.exchange.signing_secret].{index}"))
+                    .count(),
+                1,
+                "array element {index} must be attributed by path exactly once: {logs}"
+            );
+        }
+        assert!(
+            !logs.contains("could not be attributed"),
+            "the array form must not fall back to an unattributed count: {logs}"
+        );
+    }
+
+    #[test]
     fn literal_gateway_session_jwt_secret_is_attributed_in_both_wire_forms() {
         // End-to-end companion to
         // `is_secret_field_path_matches_gateway_session_jwt_secret_scalar_and_array_forms`
@@ -14588,6 +14736,7 @@ routes:
             clock_skew_seconds: 0,
             max_token_age_seconds: 3600,
             jwks_url: None,
+            exchange: false,
         }
     }
 
@@ -15216,5 +15365,253 @@ routes:
             config.validate().unwrap_err(),
             ConfigError::InboundJwtCollidesWithGateway { .. }
         ));
+    }
+
+    const EXCHANGE_SECRET: &str = "exchange-secret-0123456789abcdef0123";
+
+    fn exchange_table(secrets: &[&str]) -> ExchangeConfig {
+        ExchangeConfig {
+            signing_secret: secrets.iter().map(|s| Secret::from(*s)).collect(),
+            max_ttl_seconds: 3600,
+        }
+    }
+
+    fn opted_in_entry() -> InboundJwtConfig {
+        InboundJwtConfig {
+            exchange: true,
+            ..jwt_entry()
+        }
+    }
+
+    fn auth_with_exchange(
+        entries: Vec<InboundJwtConfig>,
+        exchange: Option<ExchangeConfig>,
+        tokens_env: &str,
+    ) -> InboundAuthConfig {
+        InboundAuthConfig {
+            exchange,
+            ..auth_with_jwt(entries, tokens_env)
+        }
+    }
+
+    #[test]
+    fn exchange_resolves_onto_inbound_auth_with_an_opted_in_entry() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("EXCHANGE_OK");
+        let resolved = auth_with_exchange(
+            vec![jwt_entry(), opted_in_entry()],
+            Some(exchange_table(&[EXCHANGE_SECRET])),
+            &env,
+        )
+        .resolve()
+        .expect("valid exchange config resolves");
+        let exchange = resolved.exchange().expect("exchange settings attached");
+        assert_eq!(exchange.max_ttl_seconds(), 3600);
+        assert_eq!(exchange.signing_secret(), EXCHANGE_SECRET.as_bytes());
+        assert!(!resolved.jwt()[0].exchange);
+        assert!(resolved.jwt()[1].exchange);
+
+        // Absent table and no opt-in: nothing attached.
+        let plain = auth_with_jwt(vec![jwt_entry()], &env).resolve().unwrap();
+        assert!(plain.exchange().is_none());
+    }
+
+    #[test]
+    fn exchange_opt_in_without_the_table_names_the_entry() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("EXCHANGE_NO_TABLE");
+        let error = auth_with_exchange(vec![jwt_entry(), opted_in_entry()], None, &env)
+            .resolve()
+            .unwrap_err();
+        let rendered = error.to_string();
+        assert!(
+            matches!(
+                error,
+                ConfigError::InboundJwtExchangeWithoutTable { index: 1 }
+            ),
+            "{rendered}"
+        );
+        assert!(rendered.contains("entry 1"), "{rendered}");
+    }
+
+    #[test]
+    fn exchange_table_without_an_opted_in_entry_is_rejected() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("EXCHANGE_NO_ENTRY");
+        let error = auth_with_exchange(
+            vec![jwt_entry()],
+            Some(exchange_table(&[EXCHANGE_SECRET])),
+            &env,
+        )
+        .resolve()
+        .unwrap_err();
+        assert!(matches!(error, ConfigError::ExchangeWithoutOptedInEntry));
+    }
+
+    #[test]
+    fn exchange_rejects_bad_secrets_and_zero_ttl() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("EXCHANGE_BAD");
+        let resolve = |exchange: ExchangeConfig| {
+            auth_with_exchange(vec![opted_in_entry()], Some(exchange), &env)
+                .resolve()
+                .unwrap_err()
+        };
+        assert!(matches!(
+            resolve(exchange_table(&[])),
+            ConfigError::EmptyExchangeSigningSecret
+        ));
+        assert!(matches!(
+            resolve(exchange_table(&[
+                EXCHANGE_SECRET,
+                "31-bytes-0123456789abcdef012345"
+            ])),
+            ConfigError::InvalidExchangeSigningSecret { index: 1 }
+        ));
+        assert!(matches!(
+            resolve(ExchangeConfig {
+                max_ttl_seconds: 0,
+                ..exchange_table(&[EXCHANGE_SECRET])
+            }),
+            ConfigError::InvalidExchangeMaxTtl
+        ));
+    }
+
+    #[test]
+    fn inbound_jwt_entry_may_not_claim_the_exchange_issuer() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("EXCHANGE_ISSUER");
+        let mut entry = jwt_entry();
+        entry.issuer = crate::auth::exchange::EXCHANGE_ISSUER.to_string();
+        let error = auth_with_jwt(vec![jwt_entry(), entry], &env)
+            .resolve()
+            .unwrap_err();
+        assert!(
+            matches!(&error, ConfigError::InvalidInboundJwt { index: 1, message }
+                if message.contains("reserved")),
+            "{error}"
+        );
+    }
+
+    /// A gateway that resolves fully, signing with `secrets`.
+    fn resolvable_gateway(secrets: &[&str], users_env: &str) -> GatewayConfig {
+        std::env::set_var(users_env, "dev@example.com:password");
+        GatewayConfig {
+            jwt_secret_env: None,
+            token_ttl_seconds: None,
+            users_env: users_env.to_string(),
+            session: Some(GatewaySessionConfig {
+                jwt_secret: secrets.iter().map(|s| Secret::from(*s)).collect(),
+                ttl_hours: None,
+            }),
+            ..gateway_config()
+        }
+    }
+
+    #[test]
+    fn exchange_secret_may_not_be_a_gateway_session_secret() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("EXCHANGE_GW_SHARED");
+        let users_env = format!("SHUNT_TEST_EXCHANGE_GW_USERS_{}", std::process::id());
+        let gateway_secret = "gateway-secret-0123456789abcdef012345";
+        let build = |exchange_secrets: &[&str]| {
+            let mut config = Config::default();
+            config.server.auth = Some(auth_with_exchange(
+                vec![opted_in_entry()],
+                Some(exchange_table(exchange_secrets)),
+                &env,
+            ));
+            config.server.gateway = Some(resolvable_gateway(
+                &["rotated-gw-secret-0123456789abcdef0", gateway_secret],
+                &users_env,
+            ));
+            config
+        };
+
+        let error = build(&[EXCHANGE_SECRET, gateway_secret])
+            .validate()
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ConfigError::ExchangeSecretSharedWithGateway { index: 1 }
+            ),
+            "{error}"
+        );
+        // Non-vacuity control: distinct secrets validate.
+        build(&[EXCHANGE_SECRET])
+            .validate()
+            .expect("distinct secrets validate");
+        std::env::remove_var(&users_env);
+    }
+
+    #[test]
+    fn exchange_secret_may_not_be_the_legacy_gateway_secret() {
+        let _env_lock = crate::config::test_env_lock();
+        let env = unset_tokens_env("EXCHANGE_GW_LEGACY");
+        let users_env = format!("SHUNT_TEST_EXCHANGE_LEGACY_USERS_{}", std::process::id());
+        let secret_env = format!("SHUNT_TEST_EXCHANGE_LEGACY_SECRET_{}", std::process::id());
+        std::env::set_var(&secret_env, EXCHANGE_SECRET);
+        let mut config = Config::default();
+        config.server.auth = Some(auth_with_exchange(
+            vec![opted_in_entry()],
+            Some(exchange_table(&[EXCHANGE_SECRET])),
+            &env,
+        ));
+        config.server.gateway = Some(GatewayConfig {
+            jwt_secret_env: Some(secret_env.clone()),
+            session: None,
+            ..resolvable_gateway(&[], &users_env)
+        });
+        let error = config.validate().unwrap_err();
+        std::env::remove_var(&secret_env);
+        std::env::remove_var(&users_env);
+        assert!(
+            matches!(
+                error,
+                ConfigError::ExchangeSecretSharedWithGateway { index: 0 }
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn exchange_config_round_trips_from_toml_without_printing_the_secret() {
+        let _env_lock = crate::config::test_env_lock();
+        let auth: InboundAuthConfig = toml::from_str(&format!(
+            r#"
+[[jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = "shunt"
+subject_prefix = "repo:acme/"
+identity_claim = "repository"
+exchange = true
+
+[exchange]
+signing_secret = ["{EXCHANGE_SECRET}"]
+max_ttl_seconds = 900
+"#
+        ))
+        .unwrap();
+        assert!(auth.jwt[0].exchange);
+        let exchange = auth.exchange.as_ref().unwrap();
+        assert_eq!(exchange.max_ttl_seconds, 900);
+        let serialized = toml::to_string(&auth).unwrap();
+        assert!(!serialized.contains(EXCHANGE_SECRET), "{serialized}");
+        assert!(!format!("{auth:?}").contains(EXCHANGE_SECRET));
+        // `exchange = false` is the default and is not serialized.
+        let plain: InboundAuthConfig =
+            toml::from_str("[[jwt]]\nissuer = \"https://i.example\"\naudience = \"a\"\n").unwrap();
+        assert!(!plain.jwt[0].exchange);
+        assert!(!toml::to_string(&plain).unwrap().contains("exchange"));
+
+        let env = unset_tokens_env("EXCHANGE_DEBUG");
+        let resolved = InboundAuthConfig {
+            tokens_env: env,
+            ..auth
+        }
+        .resolve()
+        .unwrap();
+        assert!(!format!("{resolved:?}").contains(EXCHANGE_SECRET));
     }
 }

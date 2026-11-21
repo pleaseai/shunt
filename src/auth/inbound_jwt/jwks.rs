@@ -314,7 +314,7 @@ impl JwksCache {
 
 /// Only the two fields the JWKS path needs. `crate::gateway::idp_client`'s
 /// `DiscoveredEndpoints` requires the authorization/token/userinfo endpoints,
-/// which a verify-only deployment's issuer has no reason to serve.
+/// which an issuer that only publishes signing keys has no reason to serve.
 #[derive(Deserialize)]
 struct DiscoveryDocument {
     issuer: String,

@@ -80,7 +80,7 @@
   trees (see [Documentation](#documentation)).
 - Keep Rust files focused and preferably under 500 lines.
 - Preserve streaming semantics; do not buffer upstream SSE responses unless the client requested non-streaming output or the entry's router (`escalation`, `advisor`) requires the completed turn before serving it.
-- Keep gateway-owned errors in the Anthropic error shape, except on the inbound Codex endpoint (`[server.codex_endpoint]`), where gateway-owned errors use the OpenAI Responses error shape so its OpenAI-protocol clients parse them through their own error path (issue #127).
+- Keep gateway-owned errors in the Anthropic error shape, except on the inbound Codex endpoint (`[server.codex_endpoint]`), where gateway-owned errors use the OpenAI Responses error shape so its OpenAI-protocol clients parse them through their own error path (issue #127). `POST /v1/oauth/token` (`[server.auth.exchange]`) is the other exception: it answers OAuth-shaped errors (`{error, error_description}`), because the AWF sidecar parses them as OAuth errors (issue #913).
 - Prefer table-driven config additions over hardcoded provider logic.
 
 ## Documentation

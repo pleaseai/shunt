@@ -290,6 +290,7 @@ fn inbound_auth_with_jwt() -> InboundAuth {
         identity_claim: "email".to_string(),
         clock_skew_seconds: 0,
         max_token_age_seconds: 3600,
+        exchange: false,
     }])
 }
 

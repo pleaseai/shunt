@@ -24,7 +24,9 @@ pub struct GatewaySessionConfig {
     pub ttl_hours: Option<u64>,
 }
 
-fn deserialize_one_or_many_secrets<'de, D>(deserializer: D) -> Result<Vec<Secret>, D::Error>
+pub(super) fn deserialize_one_or_many_secrets<'de, D>(
+    deserializer: D,
+) -> Result<Vec<Secret>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
