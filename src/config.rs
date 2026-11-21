@@ -14273,6 +14273,92 @@ provider = "kimi"
     }
 
     #[test]
+    fn literal_exchange_signing_secret_is_attributed_in_both_wire_forms() {
+        // End-to-end companion to
+        // `is_secret_field_path_matches_exchange_signing_secret_scalar_and_array_forms`
+        // in `secrets.rs`, driving the real `Config::load` traversal so a path
+        // shape mismatch cannot pass with the hand-built map alone.
+        let _guard = CONFIG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Clearly-fake literals, each over the 32-byte floor.
+        let scalar = "literal-exchange-secret-0123456789abcdef";
+        let rotated_new = "literal-exchange-new-0123456789abcdef";
+        let rotated_old = "literal-exchange-old-0123456789abcdef";
+
+        let load_logs = |secret_line: &str| -> String {
+            let dir = std::env::temp_dir().join(format!(
+                "shunt-config-test-exchange-literal-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("shunt.toml");
+            std::fs::write(
+                &path,
+                format!(
+                    "[server]\ndefault_provider = \"anthropic\"\n\n\
+                     [[server.auth.jwt]]\n\
+                     issuer = \"https://token.actions.githubusercontent.com\"\n\
+                     audience = \"https://shunt.example.com\"\n\
+                     subject_prefix = \"repo:acme/\"\n\
+                     identity_claim = \"repository\"\n\
+                     exchange = true\n\n\
+                     [server.auth.exchange]\n{secret_line}\n"
+                ),
+            )
+            .unwrap();
+
+            let output = Arc::new(Mutex::new(Vec::new()));
+            let writer_output = Arc::clone(&output);
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || BufferWriter {
+                    buffer: Arc::clone(&writer_output),
+                })
+                .with_ansi(false)
+                .without_time()
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                Config::load(Some(&path)).unwrap();
+            });
+            let _ = std::fs::remove_dir_all(dir);
+            let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+            logs
+        };
+
+        let logs = load_logs(&format!("signing_secret = \"{scalar}\""));
+        assert_eq!(
+            logs.matches("[server.auth.exchange].signing_secret")
+                .count(),
+            1,
+            "the bare-string form must be attributed by path exactly once: {logs}"
+        );
+        assert!(
+            !logs.contains("could not be attributed"),
+            "the bare-string form must not fall back to an unattributed count: {logs}"
+        );
+
+        let logs = load_logs(&format!(
+            "signing_secret = [\"{rotated_new}\", \"{rotated_old}\"]"
+        ));
+        for index in 0..2 {
+            assert_eq!(
+                logs.matches(&format!("[server.auth.exchange.signing_secret].{index}"))
+                    .count(),
+                1,
+                "array element {index} must be attributed by path exactly once: {logs}"
+            );
+        }
+        assert!(
+            !logs.contains("could not be attributed"),
+            "the array form must not fall back to an unattributed count: {logs}"
+        );
+    }
+
+    #[test]
     fn literal_gateway_session_jwt_secret_is_attributed_in_both_wire_forms() {
         // End-to-end companion to
         // `is_secret_field_path_matches_gateway_session_jwt_secret_scalar_and_array_forms`

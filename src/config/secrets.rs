@@ -233,7 +233,8 @@ pub(crate) fn format_literal_path(path: &str) -> String {
 /// `otel.headers.<key>`,
 /// `server.gateway.telemetry.forward_to.<index>.headers.<key>`,
 /// `server.gateway.session.jwt_secret` (scalar or, per array element,
-/// `server.gateway.session.jwt_secret.<index>`), and the admin key arrays
+/// `server.gateway.session.jwt_secret.<index>`),
+/// `server.auth.exchange.signing_secret` (the same two shapes), and the admin key arrays
 /// (`is_admin_key_path`). Used to
 /// filter candidate paths for a literal value down to Secret-shaped ones
 /// before deciding whether the attribution is unambiguous, so a plain
@@ -275,6 +276,16 @@ fn is_secret_field_path(path: &str) -> bool {
         && segments[1] == "gateway"
         && segments[2] == "session"
         && segments[3] == "jwt_secret"
+    {
+        return true;
+    }
+    // `server.auth.exchange.signing_secret` (bare-string form) or
+    // `server.auth.exchange.signing_secret.<index>` (array element).
+    if (segments.len() == 4 || segments.len() == 5)
+        && segments[0] == "server"
+        && segments[1] == "auth"
+        && segments[2] == "exchange"
+        && segments[3] == "signing_secret"
     {
         return true;
     }
@@ -985,6 +996,33 @@ mod tests {
             vec![
                 "server.gateway.session.jwt_secret".to_string(),
                 "server.gateway.session.jwt_secret.1".to_string(),
+            ]
+        );
+        assert_eq!(LiteralScope::unattributed_count(), 0);
+    }
+
+    #[test]
+    fn is_secret_field_path_matches_exchange_signing_secret_scalar_and_array_forms() {
+        // `[server.auth.exchange] signing_secret` takes the same two wire
+        // forms as the gateway session secret; without its arm both values
+        // degrade to unattributed instead of being named by path.
+        let mut map = HashMap::new();
+        map.insert(
+            "scalar-exchange-secret".to_string(),
+            vec!["server.auth.exchange.signing_secret".to_string()],
+        );
+        map.insert(
+            "rotated-exchange-secret".to_string(),
+            vec!["server.auth.exchange.signing_secret.1".to_string()],
+        );
+        let _scope = LiteralScope::enter(map, HashSet::new());
+        record_literal_hit("scalar-exchange-secret");
+        record_literal_hit("rotated-exchange-secret");
+        assert_eq!(
+            LiteralScope::hits(),
+            vec![
+                "server.auth.exchange.signing_secret".to_string(),
+                "server.auth.exchange.signing_secret.1".to_string(),
             ]
         );
         assert_eq!(LiteralScope::unattributed_count(), 0);
