@@ -13,7 +13,7 @@ use axum::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::error::{into_openai_error_shape, ShuntError};
+use crate::error::{into_oauth_error_shape, into_openai_error_shape, ShuntError};
 
 const OVERLOADED_MESSAGE: &str = "too many requests are already in flight";
 
@@ -46,6 +46,7 @@ pub(crate) async fn limit_requests(
 ) -> Response {
     let path = request.uri().path();
     let codex_shape = is_codex_request(request.uri(), limit.codex_endpoint_enabled);
+    let oauth_shape = is_exchange_path(path);
     // Move the `Arc` rather than cloning it: `try_acquire_owned` consumes an
     // `Arc<Semaphore>`, and axum's `State` extractor already handed us an owned
     // clone of the limiter, so cloning again would add a redundant refcount pair
@@ -59,7 +60,7 @@ pub(crate) async fn limit_requests(
             // and so never lands in `record_proxied_request` or a request span.
             tracing::debug!(path, "shedding request at inbound concurrency limit");
             crate::metrics::record_request_shed();
-            return overloaded_response(codex_shape).await;
+            return overloaded_response(codex_shape, oauth_shape).await;
         }
     };
 
@@ -104,7 +105,12 @@ pub(crate) fn is_codex_path(path: &str) -> bool {
         || crate::codex_analytics::PATHS.contains(&path)
 }
 
-async fn overloaded_response(codex_shape: bool) -> Response {
+/// Whether gateway-owned errors on this path use the OAuth error envelope.
+pub(crate) fn is_exchange_path(path: &str) -> bool {
+    path == crate::auth::exchange::PATH
+}
+
+async fn overloaded_response(codex_shape: bool, oauth_shape: bool) -> Response {
     let response = ShuntError::new(
         StatusCode::SERVICE_UNAVAILABLE,
         "overloaded_error",
@@ -113,6 +119,8 @@ async fn overloaded_response(codex_shape: bool) -> Response {
     .into_response();
     let mut response = if codex_shape {
         into_openai_error_shape(response).await
+    } else if oauth_shape {
+        into_oauth_error_shape(response).await
     } else {
         response
     };
@@ -328,6 +336,35 @@ mod tests {
         assert!(body["error"]["message"]
             .as_str()
             .is_some_and(|message| !message.is_empty()));
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn exchange_path_shed_uses_oauth_shape_but_other_paths_do_not() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let path = crate::auth::exchange::PATH;
+        let response = limited_router_with_calls(path, 0, calls.clone())
+            .oneshot(Request::post(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[RETRY_AFTER], "1");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let body = json_body(response).await;
+        assert!(body.get("type").is_none(), "{body}");
+        assert_eq!(body["error"], "temporarily_unavailable");
+        assert!(body["error_description"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()));
+
+        let response = limited_router_with_calls("/v1/messages", 0, calls.clone())
+            .oneshot(Request::post("/v1/messages").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(response.headers().get("cache-control").is_none());
+        let body = json_body(response).await;
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "overloaded_error");
         assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
 

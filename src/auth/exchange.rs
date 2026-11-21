@@ -11,6 +11,10 @@
 
 pub(crate) mod handler;
 
+/// Path the exchange route is registered at. The router and the error-shape
+/// middleware both read it, so they cannot drift apart.
+pub(crate) const PATH: &str = "/v1/oauth/token";
+
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

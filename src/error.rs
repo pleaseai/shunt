@@ -303,6 +303,59 @@ pub async fn into_openai_error_shape(response: Response) -> Response {
     shaped
 }
 
+/// Re-shape a gateway-owned, Anthropic-shaped error [`Response`] into the
+/// OAuth error envelope (`{"error", "error_description"}`) with
+/// `Cache-Control: no-store`, preserving the HTTP status and `Retry-After`.
+///
+/// `POST /v1/oauth/token` answers OAuth-shaped errors because its client (the
+/// AWF sidecar) parses them as OAuth errors; middleware rejections that wrap
+/// that route (concurrency shed, access control, size limits) use this so the
+/// wire matches the handler's own errors. The `error_description` is the
+/// gateway's fixed message, never request data.
+pub async fn into_oauth_error_shape(response: Response) -> Response {
+    let status = response.status();
+    let retry_after = response
+        .headers()
+        .get(axum::http::header::RETRY_AFTER)
+        .cloned();
+    let body = to_bytes(response.into_body(), 64 * 1024).await.ok();
+    let description = body
+        .as_deref()
+        .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+        .and_then(|value| {
+            value
+                .get("error")?
+                .get("message")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "The request was rejected.".to_string());
+    let code = match status {
+        StatusCode::SERVICE_UNAVAILABLE => "temporarily_unavailable",
+        StatusCode::FORBIDDEN => "access_denied",
+        status if status.is_client_error() => "invalid_request",
+        _ => "server_error",
+    };
+    let mut shaped = (
+        status,
+        Json(serde_json::json!({
+            "error": code,
+            "error_description": description,
+        })),
+    )
+        .into_response();
+    shaped.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    if let Some(retry_after) = retry_after {
+        shaped
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, retry_after);
+    }
+    shaped
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;

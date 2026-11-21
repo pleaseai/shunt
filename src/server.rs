@@ -381,7 +381,7 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // Unauthenticated by design: the credential is the assertion in the body.
     if exchange_enabled {
         router = router.route(
-            "/v1/oauth/token",
+            crate::auth::exchange::PATH,
             post(crate::auth::exchange::handler::post),
         );
     }
