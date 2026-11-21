@@ -70,11 +70,7 @@ pub async fn post(
     async move {
         match failover::forward(state, &uri, &headers, body, started_at).await {
             Ok((status, response)) => {
-                tracing::info!(
-                    upstream_status = status.as_u16(),
-                    latency_ms = started_at.elapsed().as_millis(),
-                    "proxied request"
-                );
+                log_proxied_request(status, started_at, &response);
                 crate::response_coding::encode_response(response)
             }
             Err(error) => {
@@ -89,6 +85,36 @@ pub async fn post(
     }
     .instrument(span)
     .await
+}
+
+/// Log one answered request.
+///
+/// `account` names the pool account that served it, read back from the
+/// `x-shunt-account` response header the pool adapters set. With the span's
+/// session id, it shows from the log alone when a session moved to another
+/// account, which costs that session its prompt cache. It is the label the
+/// client receives: a pool replaces any label its upstream sent, while a
+/// provider without a pool relays its upstream's, so behind a chained shunt
+/// it names that shunt's account. It is absent when the response carries no
+/// such header: after pool exhaustion, unless the upstream sent one, and on a
+/// Codex or ChatGPT pool stream committed before its account was chosen,
+/// which names the account in an `event: account` frame instead (see
+/// `adapters::responses::pool::pool_events_stream`).
+fn log_proxied_request(
+    status: StatusCode,
+    started_at: Instant,
+    response: &axum::response::Response,
+) {
+    let account = response
+        .headers()
+        .get("x-shunt-account")
+        .and_then(|value| value.to_str().ok());
+    tracing::info!(
+        upstream_status = status.as_u16(),
+        latency_ms = started_at.elapsed().as_millis(),
+        account,
+        "proxied request"
+    );
 }
 
 pub(crate) struct ForwardError {
@@ -228,10 +254,66 @@ fn count_tokens_unsupported() -> (StatusCode, axum::response::Response) {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::Uri;
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex},
+        time::Instant,
+    };
+
+    use axum::http::{StatusCode, Uri};
     use serde_json::json;
 
-    use super::{is_count_tokens, is_empty_text_block, normalize_empty_text_blocks};
+    use super::{
+        is_count_tokens, is_empty_text_block, log_proxied_request, normalize_empty_text_blocks,
+    };
+
+    fn capture(operation: impl FnOnce()) -> String {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer_output = Arc::clone(&output);
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || BufferWriter(Arc::clone(&writer_output)))
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, operation);
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        logs
+    }
+
+    struct BufferWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for BufferWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The account that served a pooled request must be on its log line: it
+    /// is the only per-request record of which account a session landed on.
+    #[test]
+    fn proxied_request_log_names_the_serving_account() {
+        let response = axum::response::Response::builder()
+            .header("x-shunt-account", "backup")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let logs = capture(|| log_proxied_request(StatusCode::OK, Instant::now(), &response));
+        assert!(logs.contains("proxied request"), "{logs}");
+        assert!(logs.contains("upstream_status=200"), "{logs}");
+        assert!(logs.contains("account=\"backup\""), "{logs}");
+    }
+
+    #[test]
+    fn proxied_request_log_omits_the_account_without_a_pool_header() {
+        let response = axum::response::Response::new(axum::body::Body::empty());
+        let logs = capture(|| log_proxied_request(StatusCode::OK, Instant::now(), &response));
+        assert!(logs.contains("proxied request"), "{logs}");
+        assert!(!logs.contains("account="), "{logs}");
+    }
 
     #[test]
     fn detects_count_tokens_path() {
