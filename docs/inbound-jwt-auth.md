@@ -1,6 +1,6 @@
-# Inbound JWT authentication (verify-only)
+# Inbound JWT authentication
 
-Issue [#344](https://github.com/pleaseai/shunt/issues/344), phases 1 and 2 (workload identity).
+Issue [#344](https://github.com/pleaseai/shunt/issues/344), phases 1 and 2 (workload identity); the optional workload token exchange (§7) is issue [#913](https://github.com/pleaseai/shunt/issues/913).
 
 ## 0. Problem
 
@@ -19,9 +19,14 @@ feature loss. The client is configured exactly as it is for a static token — a
 a bearer — so it stays in first-party mode; the bearer is simply a JWT shunt can verify
 instead of a string it compares.
 
-shunt issues nothing here. No login flow, no session store, no refresh token, no signing
-secret. Token lifetime and revocation belong to the issuer, so shunt stays stateless across
-replicas and never acquires the deprovisioning problem the gateway path has.
+By default shunt issues nothing here. No login flow, no session store, no refresh token, no
+signing secret. Token lifetime and revocation belong to the issuer, so shunt stays stateless
+across replicas and never acquires the deprovisioning problem the gateway path has.
+
+The one opt-in exception is the workload token exchange (§7, `[server.auth.exchange]`): for a
+workload whose client cannot hold a fresh IdP token for the whole run, shunt trades a verified
+JWT for a short-lived token of its own. It needs one dedicated signing secret and keeps no
+session store; revocation follows the configuration, not a stored token list.
 
 ## 1. Configuration
 
@@ -341,6 +346,12 @@ The gate covers the routes `[server.auth]` already guards — injected-credentia
 inference is never checked, because the caller pays with their own credential; "per-user identity" therefore
 covers the gated routes, not the whole surface.
 
+A token issued by the workload exchange (§7) is accepted on the same `Authorization: Bearer`
+slot and on the same gated routes. It is checked after the static token and before JWT entries,
+needs no network, and is never read from `x-api-key`, the `[server.auth]` `header`, `jwt_header`,
+or `jwt_cookie`. A static token wins when both are present. Like an IdP JWT it is never
+forwarded upstream (§7, "Stripping").
+
 ## 4. Accepted tradeoffs
 
 **No replay protection beyond expiry.** A JWT is a bearer token: whoever holds it can use it
@@ -357,12 +368,233 @@ the IdP does to the account behind it.
 ## 5. Not implemented
 
 - Groups. See issue #347.
+- Rate limiting of the exchange endpoint (§7). Tracked in issue #914.
 
 ## 6. Not in scope at all
 
-- Issuance of any kind.
+- Issuance of any kind other than the opt-in workload exchange (§7): no login flow, refresh
+  token, or session store.
 - Non-OIDC providers. GitHub user login is plain OAuth2 with no ID token; it connects
   through an OIDC broker such as Dex, as `gateway-login.md` already states.
 - Extending `[server.gateway] policies` (managed settings) to these identities. Managed
   settings only reach gateway-mode sessions.
 - Changes to `[server.gateway]`. This is additive; the device-login path is untouched.
+
+## 7. Workload token exchange (GitHub Agentic Workflows)
+
+Issue [#913](https://github.com/pleaseai/shunt/issues/913). Opt-in; deployments without
+`[server.auth.exchange]` behave exactly as before.
+
+### Problem
+
+GitHub Agentic Workflows (gh-aw) runs Claude Code inside the AWF firewall sandbox, where the
+credential is held by the AWF api-proxy sidecar and not by the agent. A pre-minted GitHub
+Actions OIDC token expires after about five minutes, while AWF treats a static key as fixed for
+the whole run. The agent cannot mint fresh tokens, and AWF's static-key path sends `x-api-key`,
+which shunt never reads a JWT from. So a long run cannot use the direct JWT path above.
+
+gh-aw's keyless option for Claude is Anthropic Workload Identity Federation
+(`engine.auth.type: github-oidc`, `provider: anthropic`) with a configurable `token-url`. The
+sidecar mints the GitHub OIDC token, trades it at that URL for an access token, caches the
+access token, and refreshes it before expiry. shunt can be that token URL.
+
+The exchange only extends the lifetime of an identity shunt already trusts. Every assertion it
+accepts would also be accepted as a direct Bearer JWT by the same `[[server.auth.jwt]]` entry,
+and no credential other than such a JWT can be exchanged.
+
+### Configuration
+
+```toml
+[server.auth.exchange]
+signing_secret = "${SHUNT_EXCHANGE_SECRET}"   # >= 32 bytes; or a list, see below
+max_ttl_seconds = 3600                            # default 3600
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]          # shunt-specific, see the warning below
+require = { repository_owner_id = "1234567" }
+identity_claim = "repository"
+exchange = true                                   # default false
+```
+
+| Key | Required | Default | Meaning |
+| :-- | :-- | :-- | :-- |
+| `[server.auth.exchange] signing_secret` | yes | — | One secret, or a list for rotation: the first signs, every entry verifies. Same secret syntax as `[server.gateway.session] jwt_secret`. Each must be at least 32 bytes |
+| `[server.auth.exchange] max_ttl_seconds` | — | `3600` | Lifetime of an issued token, and the `expires_in` the endpoint reports. Must be greater than zero. Independent of the assertion's own lifetime. Keep it short: a long lifetime delays revocation (see "Revocation") |
+| `[[server.auth.jwt]] exchange` | — | `false` | Opt this entry into the exchange. Only opted-in entries are tried on the endpoint |
+
+Load-time and `shunt check` errors:
+
+- `exchange = true` on an entry while `[server.auth.exchange]` is absent. The message names the
+  entry.
+- `[server.auth.exchange]` present while no entry sets `exchange = true`.
+- An empty `signing_secret` list.
+- A `signing_secret` entry under 32 bytes. The message names its index.
+- `max_ttl_seconds = 0`.
+- A `signing_secret` that is also a `[server.gateway]` session signing secret. The two token
+  families must not share a secret.
+- A `[[server.auth.jwt]]` `issuer` equal to `urn:shunt:workload-exchange`, which is reserved for
+  the exchange's own tokens.
+
+### Endpoint
+
+`POST /v1/oauth/token` is registered only when `[server.auth.exchange]` is present at boot.
+Adding the table needs a restart; a reload that removes it makes the route answer `404`. The
+route is unauthenticated: the credential is the JWT `assertion` in the body.
+
+Request, `Content-Type: application/json`:
+
+```json
+{
+  "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+  "assertion": "<GitHub Actions OIDC JWT>",
+  "federation_rule_id": "fdrl_shunt",
+  "organization_id": "org_shunt",
+  "service_account_id": "svac_shunt",
+  "workspace_id": "ws_shunt"
+}
+```
+
+`federation_rule_id`, `organization_id`, `service_account_id`, and `workspace_id` are accepted
+and ignored, present or absent. shunt does not pin an entry to a federation rule. The body is
+capped at 64 KiB.
+
+Success is `200`:
+
+```json
+{ "access_token": "<shunt-signed JWT>", "token_type": "Bearer", "expires_in": 3600 }
+```
+
+`expires_in` is `max_ttl_seconds`, whatever time the assertion has left.
+
+Every answer, success or failure, carries `Cache-Control: no-store`. Errors use the OAuth shape
+`{"error", "error_description"}` instead of the Anthropic shape, because the AWF sidecar parses
+them as OAuth errors (an exception recorded in `AGENTS.md`):
+
+| Status | `error` | When |
+| :-- | :-- | :-- |
+| `400` | `invalid_request` | `Content-Type` is not JSON, the body is not a JSON object, a field has the wrong JSON type, or `assertion` is missing or blank |
+| `400` | `unsupported_grant_type` | `grant_type` is missing or is not the jwt-bearer URN |
+| `401` | `invalid_grant` | No opted-in entry verifies the assertion. One identical response for every cause: wrong audience, expired, too old, missing required claim, bad signature, unknown `kid`, an entry that has not opted in, or a credential that is not an IdP JWT (a static token, a gateway session token, an earlier exchange token) |
+| `503` | `temporarily_unavailable` | A matching issuer's key set cannot be fetched |
+
+The `error_description` is a fixed string per code. It never names the failed check and never
+echoes the assertion.
+
+The assertion is verified exactly as the same JWT would be on `Authorization: Bearer`, by each
+opted-in entry in turn (§2): issuer selection, signature, audience, `exp`/`nbf`,
+`max_token_age_seconds`, `require`, `subject_prefix`, `authorized_parties`, email rules, and the
+identity claim. The issued token's caller identity is the identity-claim value the entry
+resolved.
+
+### Where the issued token is accepted
+
+In `Authorization: Bearer` only, on every route that accepts a `[[server.auth.jwt]]` JWT there:
+`/v1/messages`, `/v1/messages/count_tokens`, model discovery, `GET /usage`,
+`GET /api/oauth/usage`, and the inbound Codex endpoint. It resolves to the same identity, usage
+attribution, and spend-limit principal as direct use of the verifying entry's JWT (for example
+`org/repo` for `identity_claim = "repository"`).
+
+It is not accepted in `x-api-key`, the `[server.auth]` `header`, `jwt_header`, or `jwt_cookie`,
+and not on the admin surface, the spend Admin API, or telemetry ingest. Those reject it as they
+reject any other non-admin credential. Where a gateway session token is expected it is not
+accepted either, and the reverse holds: the two families use different markers and audiences.
+
+### Revocation
+
+An issued token is bound to the entry that verified the assertion, not to a position in the
+config. It carries a fingerprint of that entry's verification rules: `issuer`, `audience`,
+`algorithms`, `authorized_parties`, `email_domains`, `allowed_emails`, `require`,
+`subject_prefix`, and `identity_claim`. `jwks_url`, `clock_skew_seconds`, and
+`max_token_age_seconds` are not covered, since they only bound the assertion at exchange time.
+
+shunt accepts the token only while an `exchange = true` entry with that exact fingerprint is
+configured and one current signing secret verifies it. On hot reload, each of these therefore
+rejects tokens already issued, with no revocation list:
+
+- removing the entry;
+- clearing its `exchange = true`;
+- editing any covered rule;
+- dropping every signing secret that verifies the token. Rotation that keeps the old secret as
+  a non-first entry keeps old tokens valid until they expire.
+
+A rule edit cuts a running gh-aw workflow. The sidecar holds the old token until its next
+scheduled refresh, so requests fail with `401` until then. Plan rule edits for a time when no
+workflow is mid-run, or accept the cut.
+
+There is no per-token revocation. Revoke per entry or per secret, and keep `max_ttl_seconds`
+short: it bounds how long a token for a removed *identity* (as opposed to a changed rule) stays
+usable.
+
+### Stripping
+
+shunt never forwards an issued token upstream, whatever its state: valid, expired, signed by a
+rotated-out secret, bound to a removed entry, or issued before `[server.auth.exchange]` or
+`[server.auth]` was removed. It is the exchange-token kind in `auth::inbound::consumed_by`,
+recognised by its shunt marker claim without verifying the signature or expiry, and applied
+with the other kinds on every forward site (§3).
+
+### GitHub Agentic Workflows example
+
+Workflow frontmatter:
+
+```yaml
+permissions:
+  id-token: write
+engine:
+  id: claude
+  env:
+    ANTHROPIC_BASE_URL: https://shunt.example.com
+  auth:
+    type: github-oidc
+    provider: anthropic
+    oidc-audience: https://shunt.example.com
+    token-url: https://shunt.example.com/v1/oauth/token
+    federation-rule-id: fdrl_shunt        # placeholders; shunt ignores these
+    organization-id: org_shunt
+    service-account-id: svac_shunt
+    workspace-id: ws_shunt
+```
+
+Matching shunt configuration:
+
+```toml
+[server.auth.exchange]
+signing_secret = "${SHUNT_EXCHANGE_SECRET}"
+max_ttl_seconds = 3600
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]          # equals oidc-audience above
+require = { repository_owner_id = "1234567" }
+identity_claim = "repository"
+exchange = true
+```
+
+Notes:
+
+- **Set `oidc-audience` and the entry's `audience` to the same shunt-specific value.** A GitHub
+  workflow chooses its own `aud`, so a matching audience proves nothing by itself; `require` is
+  what authorizes (§1, "Workload identity").
+- **Do not use `https://api.anthropic.com` as the entry's `audience`.** It is the sidecar's
+  default `oidc-audience` when the field is omitted. An entry that accepts it would accept
+  tokens minted for Anthropic. Always set `oidc-audience` explicitly.
+- **The federation ids are placeholders.** The sidecar needs them to build its request; shunt
+  ignores them.
+- The sidecar sends `anthropic-beta: oauth-2025-04-20,oidc-federation-2026-04-01` on the
+  exchange and `anthropic-beta: oauth-2025-04-20` on API requests. shunt routes those like any
+  other request.
+- A rule edit cuts a running workflow until the sidecar's next scheduled refresh (see
+  "Revocation").
+
+### Accepted tradeoffs and not in this release
+
+- **No rate limiting on the endpoint.** It does no work before checking the assertion that an
+  unauthenticated caller could not already trigger on `/v1/messages`, but it is not throttled
+  per identity or per address. Tracked in issue
+  [#914](https://github.com/pleaseai/shunt/issues/914).
+- **Assertion replay within its life is accepted**, as for any bearer JWT (§4). An assertion
+  lives about five minutes.
+- **No pinning to a `federation_rule_id`**, and no refresh tokens, scopes, form-encoded bodies,
+  or client authentication (RFC 8693 / RFC 7523 beyond the jwt-bearer grant).
+- **No per-token revocation** (see "Revocation").

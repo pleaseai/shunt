@@ -21,7 +21,7 @@ use crate::{config::AdminKeyring, gateway::GatewayAuth};
 use crate::auth::{exchange::ExchangeSettings, inbound_jwt::JwtIssuerRule, jwt_slots::JwtSlots};
 
 /// Resolved inbound-auth state: the header to inspect, the accepted
-/// `name → token` pairs, and the verify-only JWT issuers. Built once at startup
+/// `name → token` pairs, and the external JWT issuers. Built once at startup
 /// from `[server.auth]` plus the configured env var, and rebuilt on reload;
 /// absent entirely when inbound auth is not configured.
 ///
@@ -61,7 +61,7 @@ impl InboundAuth {
         self.exchange.as_ref()
     }
 
-    /// Attach verify-only JWT issuers. A builder rather than a `new` parameter
+    /// Attach external JWT issuers. A builder rather than a `new` parameter
     /// because the admin surface reuses this type for its own `name:token`
     /// store (`AdminAuth`), where external issuers have no meaning.
     pub fn with_jwt(mut self, jwt: Vec<JwtIssuerRule>) -> Self {
@@ -96,7 +96,7 @@ impl InboundAuth {
         &self.header
     }
 
-    /// The configured verify-only JWT issuers. Empty when none are configured,
+    /// The configured external JWT issuers. Empty when none are configured,
     /// which is what lets every call site skip the async path entirely.
     pub fn jwt(&self) -> &[JwtIssuerRule] {
         &self.jwt

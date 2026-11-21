@@ -424,7 +424,7 @@ pub struct InboundAuthConfig {
     /// Env var holding the `name:token` pairs.
     #[serde(default = "default_tokens_env")]
     pub tokens_env: String,
-    /// `[[server.auth.jwt]]` — verify-only external JWT issuers. An array from
+    /// `[[server.auth.jwt]]` — external JWT issuers, verified against their own JWKS. An array from
     /// the start: one Google issuer with separate client ids for humans and
     /// services is a normal configuration, and human SSO and workload identity
     /// use different claim vocabularies.
@@ -1552,7 +1552,7 @@ enum OidcSection {
     Gateway,
     Admin,
     /// `[[server.auth.jwt]]` at this index. Not an OIDC *client* section — it
-    /// borrows only the URL validation, since a verify-only entry's issuer must
+    /// borrows only the URL validation, since an inbound JWT entry's issuer must
     /// satisfy the same transport and shape rules as a sign-in issuer.
     InboundJwt(usize),
 }

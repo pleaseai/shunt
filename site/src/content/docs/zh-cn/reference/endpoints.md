@@ -12,6 +12,7 @@ description: shunt 作为 Claude Code LLM 网关所提供的端点。
 | `GET` | `/routes` | shunt 原生路由发现 —— 逐字返回配置的 `[[routes]]` 表(model → provider/upstream_model/effort 映射,包括 claude 前缀的发现别名);区别于 `/v1/models`,后者提供更窄的 Anthropic 协议发现响应(`id`、`display_name` 以及上游模型元数据)。只要有一个 `[[models]]` 条目配置了 `[models.router]` 表,响应就会多出一个 `routers` 数组,列出每个路由器的模型 id、`algorithm`(即配置的 `type`)以及它可以路由到的全部 `targets` id;配置了裁判的路由器还会给出 `judges`,即它只询问、从不提供的那些 id(没有时省略);[阶段路由器](/zh-cn/guides/stage-router/)和 `auto` 条目还会额外给出两个档位的目标,以及没有信号做出决定时 picker 回退到的档位 |
 | `POST` | `/v1/messages` | 推理 —— 按请求的 `model` id 路由 |
 | `POST` | `/v1/messages/count_tokens` | [Token 计数](/zh-cn/guides/effort-and-context/#token-计数count_tokens) |
+| `POST` | `/v1/oauth/token` | [工作负载 token 交换](#工作负载-token-交换) —— 把已验证的 GitHub Actions OIDC JWT 换成 shunt 签发的短期 bearer token。仅当启动时配置了 `[server.auth.exchange]` |
 | `GET` | `/managed/settings` | 按网关 JWT 提供的 Claude Code managed settings;支持 `ETag`、`If-None-Match` 与 `304 Not Modified` |
 | `GET` | `/user/bootstrap` | 按网关 JWT 提供的 Claude Desktop bootstrap 配置;支持 `ETag`、`If-None-Match` 与 `304 Not Modified` |
 | `GET` | `/v1/organizations/spend_limits` | 使用方向游标分页列出已存储的支出限制 |
@@ -144,8 +145,34 @@ spend-limit 路由仅在启动时配置了 [`[server.spend]`](/zh-cn/reference/c
 
 池状态 `capped` 表示没有可用账户,且至少有一个已启用(非 `disabled`)且未暂停的账户被 `max_utilization*` 硬上限剔除(参见 [`[server.pool]`](/zh-cn/reference/configuration/#serverpool可选));它不同于 `exhausted`。
 
-即使启用了 [`[server.auth]`](/zh-cn/guides/shared-gateway/),`GET /` 和 `GET /health` 也保持开放(健康检查工具通常无法附带 token),并且不暴露任何敏感信息 —— 只有状态、版本以及已经公开的端点列表。 配置了 [`[[server.auth.jwt]]`](/zh-cn/reference/configuration/) 条目时,`Authorization: Bearer` 中经过验证的外部 JWT 可以像客户端 token 一样认证同一批受控路由。没有任何条目能验证的 token 返回 `401`;没有任何条目验证通过、且与 token 的 issuer 匹配的条目中存在既无缓存 key set 又拉取失败的条目时,返回 `503`。
+即使启用了 [`[server.auth]`](/zh-cn/guides/shared-gateway/),`GET /` 和 `GET /health` 也保持开放(健康检查工具通常无法附带 token),并且不暴露任何敏感信息 —— 只有状态、版本以及已经公开的端点列表。 配置了 [`[[server.auth.jwt]]`](/zh-cn/reference/configuration/) 条目时,`Authorization: Bearer` 中经过验证的外部 JWT,或由[工作负载 token 交换](#工作负载-token-交换)签发的 token,可以像客户端 token 一样认证同一批受控路由。没有任何条目能验证的 token 返回 `401`;没有任何条目验证通过、且与 token 的 issuer 匹配的条目中存在既无缓存 key set 又拉取失败的条目时,返回 `503`。
+
+## 工作负载 token 交换
+
+`POST /v1/oauth/token` 仅当启动时配置了 [`[server.auth.exchange]`](/zh-cn/reference/configuration/#serverauthexchange可选) 才存在,否则返回 `404`。添加该表需要重启,重载时移除该表会使路由返回 `404`。该路由不做认证:凭据是请求体中的 JWT `assertion`。请求为 JSON(`Content-Type: application/json`):
+
+```json
+{
+  "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+  "assertion": "<JWT>",
+  "federation_rule_id": "fdrl_shunt",
+  "organization_id": "org_shunt",
+  "service_account_id": "svac_shunt",
+  "workspace_id": "ws_shunt"
+}
+```
+
+四个 federation id 无论是否出现都会被接受并忽略。只尝试 `exchange = true` 的 `[[server.auth.jwt]]` 条目,assertion 的验证方式与直接发送的 Bearer JWT 完全相同。成功时返回 `200` 和 `{"access_token": "...", "token_type": "Bearer", "expires_in": N}`,其中 `N` 为 `max_ttl_seconds`,与 assertion 自身的有效期无关。把该 token 作为 `Authorization: Bearer` 发送到接受 `[[server.auth.jwt]]` JWT 的路由;参见 [GitHub Actions 指南](/zh-cn/guides/github-actions-oidc/#github-agentic-workflows-gh-aw)。
+
+错误使用 OAuth 形状 `{"error", "error_description"}` 而不是 Anthropic 形状,因为 AWF sidecar 按 OAuth 错误解析它们。每个响应都带有 `Cache-Control: no-store`。
+
+| 状态 | `error` | 条件 |
+| :-- | :-- | :-- |
+| `400` | `invalid_request` | 请求体不是 JSON 或不是对象、`Content-Type` 不是 JSON、字段类型错误,或 `assertion` 缺失或为空 |
+| `400` | `unsupported_grant_type` | `grant_type` 缺失或不是 jwt-bearer URN |
+| `401` | `invalid_grant` | 没有任何选择加入的条目能验证该 assertion。无论原因如何,响应都相同 |
+| `503` | `temporarily_unavailable` | 无法拉取匹配 issuer 的 key set |
 
 ## 网关协议
 
-shunt 实现官方的 [Claude Code LLM 网关协议](https://code.claude.com/docs/en/llm-gateway-protocol):正确的头部和正文字段转发、特性透传以及系统提示归属处理。网关自身产生的错误以 Anthropic 错误形状返回,上游上下文溢出错误被重写为 Anthropic 的 `prompt is too long` 措辞,以便触发 Claude Code 的 [压缩并重试](/zh-cn/guides/effort-and-context/#上下文溢出恢复),而流式响应无缓冲地中继(带可选的 [keepalive ping](/zh-cn/guides/shared-gateway/#sse-keepalive-ping))。
+shunt 实现官方的 [Claude Code LLM 网关协议](https://code.claude.com/docs/en/llm-gateway-protocol):正确的头部和正文字段转发、特性透传以及系统提示归属处理。网关自身产生的错误以 Anthropic 错误形状返回(`POST /v1/oauth/token` 返回 OAuth 形状的错误、入站 Codex 端点使用 OpenAI 形状,二者除外),上游上下文溢出错误被重写为 Anthropic 的 `prompt is too long` 措辞,以便触发 Claude Code 的 [压缩并重试](/zh-cn/guides/effort-and-context/#上下文溢出恢复),而流式响应无缓冲地中继(带可选的 [keepalive ping](/zh-cn/guides/shared-gateway/#sse-keepalive-ping))。

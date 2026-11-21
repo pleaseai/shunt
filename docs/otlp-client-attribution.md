@@ -56,8 +56,9 @@ client's, the duplicate becomes real.
 
    `managed` is `true` when the request authenticated with a gateway-issued JWT,
    the same credential that makes the client eligible for the pushed `OTEL_*`
-   environment. Static `[server.auth]` tokens, verify-only JWTs from an
-   external identity provider, admin keys, and unauthenticated passthrough are
+   environment. Static `[server.auth]` tokens, JWTs from an
+   external identity provider (and the workload exchange tokens shunt issues for
+   them), admin keys, and unauthenticated passthrough are
    `false`: none of them can fetch managed settings, so none of them receives
    the pushed exporter environment. The inbound Codex endpoint, over HTTP and over its
    Responses WebSocket alike, authenticates only `[server.auth]` credentials

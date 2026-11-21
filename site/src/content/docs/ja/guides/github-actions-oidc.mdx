@@ -99,6 +99,60 @@ jobs:
 
 `audience` は shunt エントリの `audience` と一致させてください。`::add-mask::` はトークンを保存する前に secret として登録するので、ログに出ても伏せられます。それでも `echo` したり `set -x` で実行したりしないでください。フォークからの pull request ではトークンに書き込み権限が付与されない (GitHub が読み取りに下げる) ため、フォークの pull request で起動されたジョブは通常 OIDC トークンを要求できません。`pull_request` ワークフローでは、この点に留意してください。
 
+## GitHub Agentic Workflows (gh-aw)
+
+[GitHub Agentic Workflows](https://github.github.com/gh-aw/) は AWF ファイアウォールのサンドボックス内で Claude Code を実行し、認証情報はエージェントではなく AWF api-proxy sidecar が保持します。上の直接方式は合いません。OIDC トークンは約 5 分で失効し、エージェントは新しいトークンを発行できず、sidecar の静的キー経路は shunt が JWT を読まない `x-api-key` で送ります。
+
+gh-aw が Claude に用意しているキー不要の方法は、`token-url` を設定できる Anthropic Workload Identity Federation（`engine.auth.type: github-oidc`、`provider: anthropic`）です。sidecar が GitHub OIDC トークンを発行し、その URL でアクセストークンに交換し、アクセストークンをキャッシュして、期限切れ前に更新します。shunt は[ワークロードトークン交換](/ja/reference/configuration/#serverauthexchangeオプション)でその URL になれます。静的 secret なしで、どれだけ長い実行でも使えます。
+
+上の shunt 設定のエントリに交換を追加します。
+
+```toml
+[server.auth.exchange]
+signing_secret = "${SHUNT_EXCHANGE_SECRET}"   # at least 32 bytes, kept separate from any [server.gateway] secret
+max_ttl_seconds = 3600
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]     # same value as oidc-audience below
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
+exchange = true
+```
+
+ワークフローの frontmatter:
+
+```yaml
+permissions:
+  id-token: write
+engine:
+  id: claude
+  env:
+    ANTHROPIC_BASE_URL: https://shunt.example.com
+  auth:
+    type: github-oidc
+    provider: anthropic
+    oidc-audience: https://shunt.example.com
+    token-url: https://shunt.example.com/v1/oauth/token
+    federation-rule-id: fdrl_shunt        # placeholders; shunt ignores these
+    organization-id: org_shunt
+    service-account-id: svac_shunt
+    workspace-id: ws_shunt
+```
+
+仕組みと注意点:
+
+- **`oidc-audience` とエントリの `audience` を、同じ shunt 専用の値にしてください。** 認可するのは、上と同じく依然として `require` です。
+- **`https://api.anthropic.com` をエントリの `audience` にしないでください。** このフィールドを省略したときの sidecar の既定の `oidc-audience` がこの値なので、これを受け付けるエントリは Anthropic 向けに発行されたトークンも受け付けてしまいます。`oidc-audience` は必ず明示してください。
+- **federation ID はプレースホルダーです。** sidecar がリクエストを組み立てるのに必要で、shunt は受け付けて無視します。
+- **発行されたトークンは shunt 自身のトークンです。** JWT を直接使った場合と同じ ID（ここでは `org/repo`）を持ち、`[[server.auth.jwt]]` の JWT を受け付けるルートで `Authorization: Bearer` を認証し、その ID として帰属され spend 制限を受けます。有効期間は assertion の 5 分とは無関係に `max_ttl_seconds` で、sidecar は期限切れ前に再度交換します。
+- **ルールを編集すると、実行中のワークフローが切断されます。** トークンはエントリのルール（`issuer`、`audience`、`algorithms`、`authorized_parties`、メールのルール、`require`、`subject_prefix`、`identity_claim`）に紐づいています。エントリの削除、`exchange = true` の解除、これらのいずれかの編集、そのトークンを検証できる署名 secret をすべて外すことのいずれでも、発行済みのトークンは次のホットリロードで拒否されます。すでに実行中のワークフローは sidecar の次の定期更新まで古いトークンを保持するため、それまでリクエストは `401` で失敗します。実行中のワークフローがないときにルールを編集してください。
+- **署名 secret は先頭に追加してローテーションします。** `["new", "old"]` のリストを使うと、先頭が署名し、すべての要素が検証します。`max_ttl_seconds` が経過したら `"old"` を外します。
+- sidecar は交換リクエストに `anthropic-beta: oauth-2025-04-20,oidc-federation-2026-04-01` を、API リクエストに `anthropic-beta: oauth-2025-04-20` を送り、shunt はそれらを他のリクエストと同じようにルーティングします。
+- このリリースでは、交換エンドポイントにレート制限がありません（[#914](https://github.com/pleaseai/shunt/issues/914)）。
+
+交換に失敗すると、sidecar が OAuth エラーをログに出します。`invalid_grant`（`401`）は assertion が検証できなかったことを示します（トラブルシューティングの表を使ってください。応答はどのチェックが失敗したかを教えません）。`unsupported_grant_type` または `invalid_request`（`400`）は、リクエストがエンドポイントの期待する jwt-bearer の JSON ではないことを示します。`temporarily_unavailable`（`503`）は shunt が GitHub の key set を取得できなかったことを示します。`404` は、shunt の起動時に `[server.auth.exchange]` がなかったことを示します。
+
 ## トークンの有効期間
 
 OIDC トークンは bearer です。期限が切れるまで使え、shunt は失効状態を保持しません。GitHub のドキュメントは `exp` と `iat` をクレームとして挙げていますが、有効期間は明記していません。GitHub 自身のエンタープライズ向け例のトークンでは `exp - iat` が 300 秒です。shunt は `exp - iat` が `max_token_age_seconds` (既定 `3600`) を*超える*場合にのみ拒否するので、既定値で受け付けられます。長いジョブでは、1 つのトークンをジョブ全体で保持せず、shunt を呼び出すステージの前に上記と同じステップで新しいトークンを要求してください。Claude Code セッションのような単一のプロセスは、起動時に受け取ったトークンを使い続け、そのトークンが期限切れになると `401` を受け取ります。トークンより長く動くセッションには、同じ方法で新しいトークンを要求するスクリプトを Claude Code の `apiKeyHelper` に設定してください（要求用の変数は `id-token: write` を持つジョブのすべてのステップに設定されます）。その際は `ANTHROPIC_AUTH_TOKEN` を設定せずに Claude Code を起動してください。`ANTHROPIC_AUTH_TOKEN` が設定されていると `apiKeyHelper` より優先されるため、セッションは期限切れのトークンを使い続けます。

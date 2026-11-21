@@ -1,12 +1,13 @@
-//! Verify-only inbound JWT credentials (`[[server.auth.jwt]]`, issue #344).
+//! Inbound JWT credentials from external issuers (`[[server.auth.jwt]]`, issue #344).
 //!
 //! shunt accepts a JWT minted by an external identity provider, validates it
 //! against that issuer's JWKS, and maps the verified claims to a caller
-//! identity. There is no issuance here: no login flow, no session store, no
-//! signing secret. That is the whole point — a client keeps talking to shunt
-//! with `ANTHROPIC_BASE_URL` plus a bearer token, so it never enters Claude
-//! Code's gateway provider mode and never pays the feature loss a gateway
-//! login costs.
+//! identity. There is no issuance in this module: no login flow, no session
+//! store, no signing secret (the opt-in workload exchange that trades such a
+//! JWT for a shunt token lives in [`crate::auth::exchange`]). That is the
+//! whole point — a client keeps talking to shunt with `ANTHROPIC_BASE_URL`
+//! plus a bearer token, so it never enters Claude Code's gateway provider
+//! mode and never pays the feature loss a gateway login costs.
 //!
 //! Distinct from [`crate::gateway::jwt`], which mints *and* verifies shunt's
 //! own symmetric HS256 session token. Here shunt only ever verifies, and the
