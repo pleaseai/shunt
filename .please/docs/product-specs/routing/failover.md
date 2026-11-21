@@ -59,10 +59,10 @@ The system MUST classify as an account-level refusal a response from an upstream
 - WHEN an upstream answers 402 `billing_error` with any other message
 - THEN advance to the next chain element
 
-### Requirement: classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 403 whose error message contains `OAuth authentication is currently not allowed for this organization`, so the account is skipped or cooled for 1 hour like the other refusals
+### Requirement: classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 403 whose error message contains `OAuth authentication is currently not allowed for this organization`, so a gateway-owned credential is skipped (a direct upstream) or cooled (a Claude OAuth pool account) for 1 hour like the other refusals, while a passthrough credential is never skipped and only advances the current request
 <!-- req: REQ-016 tracks= -->
 
-The system MUST classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 403 whose error message contains `OAuth authentication is currently not allowed for this organization`, so the account is skipped or cooled for 1 hour like the other refusals.
+The system MUST classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 403 whose error message contains `OAuth authentication is currently not allowed for this organization`, so a gateway-owned credential is skipped (a direct upstream) or cooled (a Claude OAuth pool account) for 1 hour like the other refusals, while a passthrough credential is never skipped and only advances the current request.
 
 #### Scenario: When a Claude OAuth pool account answers 403 with the organisation-OAuth message, the system shall cool that account for 1 hour and send the request to the next pool account.
 

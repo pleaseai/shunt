@@ -8,7 +8,7 @@
   "conflicts": [],
   "traces": [],
   "created_at": "2026-10-23T08:13:28.479Z",
-  "updated_at": "2026-10-23T08:13:28.479Z",
+  "updated_at": "2026-11-21T03:27:23.000Z",
   "source_tracks": [
     "anthropic-account-refusal-20261022"
   ],
@@ -96,7 +96,7 @@
     {
       "id": "REQ-016",
       "kind": "functional",
-      "statement": "classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 403 whose error message contains `OAuth authentication is currently not allowed for this organization`, so the account is skipped or cooled for 1 hour like the other refusals",
+      "statement": "classify as an account-level refusal a response from an upstream the Anthropic adapter serves directly or through a Claude OAuth pool (a Kimi OAuth pool is out of scope and relays these unchanged) with HTTP 403 whose error message contains `OAuth authentication is currently not allowed for this organization`, so a gateway-owned credential is skipped (a direct upstream) or cooled (a Claude OAuth pool account) for 1 hour like the other refusals, while a passthrough credential is never skipped and only advances the current request",
       "source_tracks": [],
       "scenarios": [
         {
