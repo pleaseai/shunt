@@ -1,0 +1,32 @@
+# cargo-deny configuration. CI runs `cargo deny --all-features check advisories sources`
+# (.github/workflows/ci.yml, `deny` job). Every ignore below names its reason; remove it
+# once the underlying dependency moves.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# Report unsound advisories for every crate in the graph, not only direct dependencies
+# (cargo-deny's default scope for `unsound` is the workspace).
+unsound = "all"
+ignore = [
+    # unsafe-libyaml is unmaintained (no known vulnerability). It is reached only through
+    # serde_yaml, which loads YAML config files; replacing serde_yaml is a separate change.
+    { id = "RUSTSEC-2024-0449", reason = "unmaintained, no vulnerability; via serde_yaml config loading" },
+    # pyo3 0.28 advisories. pyo3 is reached only through the optional `prefill-router`
+    # feature, which release builds never enable; the fix (0.29) is a breaking upgrade
+    # held back by the pinned Switchyard `prefill-router` dependency.
+    { id = "RUSTSEC-2026-0176", reason = "pyo3 only via optional prefill-router; fix needs a Switchyard bump" },
+    { id = "RUSTSEC-2026-0177", reason = "pyo3 only via optional prefill-router; fix needs a Switchyard bump" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# The git dependencies already pinned to a commit in Cargo.toml.
+allow-git = [
+    "https://github.com/NVIDIA-NeMo/Switchyard",
+    "https://github.com/openai-oss-forks/tungstenite-rs",
+    "https://github.com/openai-oss-forks/tokio-tungstenite",
+]
