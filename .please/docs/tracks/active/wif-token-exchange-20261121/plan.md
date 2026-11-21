@@ -129,8 +129,12 @@ Alternatives rejected: an asymmetric signing key with a JWKS endpoint (more surf
 - [x] (2026-11-21 KST) T002 mint and verify exchange tokens bound to the entry fingerprint
   Evidence: `cargo test --features bench --lib auth::exchange` → 14 passed, 0 failed (reload via real `shared.store` + `refreshed()`: entry removed / opt-in cleared / `require` value dropped / each policy field edited revoke; freshness + `jwks_url` tuning does not; secret kept as non-first verifies, all signing secrets dropped rejects; same-secret gateway/exchange cross-rejection); `cargo test --features bench --lib gateway::jwt` → 16 passed (shared `src/auth/hs256.rs` helper, behaviour unchanged).
   Deferred: `--all-features` run (prefill-router needs Python); `--features bench` used locally.
+- [x] (2026-11-21 KST) T003 serve `POST /v1/oauth/token`
+  Evidence: `cargo test --features bench --test inbound inbound_exchange` -> 16 passed, 0 failed (sidecar body 200 + full `max_ttl`, 30 s assertion, no/odd federation ids, 8 failure causes give byte-identical 401, opt-in/shared-issuer, static + issued token as assertion, grant/body 400s, JWKS 500 -> 503, no table -> 404, reload removes table -> 404, `Cache-Control: no-store` on every answer); `cargo test --features bench --test router_surface` -> 14 passed (inventory + literal count 51); `cargo test --features bench --workspace --no-fail-fast` -> 4792 passed, 2 failed (both pre-existing `responses_chain_stream` environmental); clippy `-D warnings` clean.
+  Deferred: `--all-features` run (prefill-router needs Python); `--features bench` used locally.
 
 ## Decision Log
 
+- 2026-11-21: T003 precedence when a request is wrong in several ways: non-object body or wrongly typed `grant_type`/`assertion` is `invalid_request`; then absent/other `grant_type` is `unsupported_grant_type`; then missing/blank `assertion` is `invalid_request`. The 400 body size cap is 64 KiB.
 - 2026-11-21: separate signing key, table plus per-entry opt-in, and no rate limiting in this track (user decisions on the issue's open questions). A rule change revokes outstanding tokens (spec review D1).
 - 2026-11-21: added `[FR/NFR/AC]` traceability tags to the task lines so the coverage gate maps them (no requirement change). Reused the issue-linked worktree branch as `code_branch` instead of creating one with `gh issue develop`.

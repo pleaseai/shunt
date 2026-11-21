@@ -37,7 +37,8 @@ use axum::{
 use shunt::{
     config::{
         AccountConfig, AdminConfig, AuthMode, CodexEndpointConfig, Config, GatewayConfig,
-        InboundAuthConfig, OauthUsageConfig, SpendConfig, UsageEndpointConfig,
+        InboundAuthConfig, InboundJwtConfig, OauthUsageConfig, SpendConfig, StringList,
+        UsageEndpointConfig,
     },
     server,
 };
@@ -207,6 +208,9 @@ const CODEX_ENDPOINT_PATHS: [(&str, &str); 10] = [
 
 const USAGE_PATHS: [(&str, &str); 2] = [("/usage", "GET,HEAD"), ("/api/oauth/usage", "GET,HEAD")];
 
+/// `[server.auth.exchange]`: the workload token-exchange endpoint.
+const EXCHANGE_PATHS: [(&str, &str); 1] = [("/v1/oauth/token", "POST")];
+
 /// Substitute a concrete segment for each path placeholder, so a template from
 /// the inventory can be sent as a real request.
 fn probe_path(template: &str) -> String {
@@ -226,7 +230,8 @@ fn all_registered_entries() -> Vec<(&'static str, &'static str)> {
         .chain(GATEWAY_PATHS.iter())
         .chain(SPEND_PATHS.iter())
         .chain(CODEX_ENDPOINT_PATHS.iter())
-        .chain(USAGE_PATHS.iter());
+        .chain(USAGE_PATHS.iter())
+        .chain(EXCHANGE_PATHS.iter());
     #[cfg(feature = "ui")]
     let entries = entries.chain(UI_PROBE_PATHS.iter());
     entries.copied().collect()
@@ -290,8 +295,34 @@ async fn all_surfaces_config(label: &str) -> (Config, common::EnvVars) {
     let mut config = Config::default();
 
     // `[server.auth]` is not itself a route, but `[server.usage]` requires it.
+    // It also carries the exchange: one opted-in workload entry plus the table.
+    // Its signing secret must differ from the gateway's (FR-12).
     config.server.auth = Some(InboundAuthConfig {
-        jwt: Vec::new(),
+        jwt: vec![InboundJwtConfig {
+            issuer: "https://token.actions.example".to_string(),
+            audience: StringList::One("shunt-surface".to_string()),
+            email_domains: Vec::new(),
+            allowed_emails: Vec::new(),
+            require: [(
+                "repository_owner".to_string(),
+                StringList::One("pleaseai".to_string()),
+            )]
+            .into(),
+            subject_prefix: StringList::default(),
+            identity_claim: Some("repository".to_string()),
+            algorithms: vec!["RS256".to_string()],
+            authorized_parties: Vec::new(),
+            clock_skew_seconds: 0,
+            max_token_age_seconds: 3600,
+            jwks_url: Some("https://token.actions.example/.well-known/jwks".to_string()),
+            exchange: true,
+        }],
+        exchange: Some(
+            serde_json::from_value(serde_json::json!({
+                "signing_secret": "fedcba9876543210fedcba9876543210-exchange"
+            }))
+            .expect("exchange table"),
+        ),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env,
         ..Default::default()
@@ -705,7 +736,8 @@ fn the_source_scan_finds_every_literal_registration() {
         .iter()
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
-    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 25 admin
+    // 10 in `server.rs` (7 base + `/usage` + `/api/oauth/usage` +
+    // `/v1/oauth/token`), 25 admin
     // (`/admin/api/pool` merges its `PATCH` onto the existing `.route(` call,
     // so only the new `/admin/api/pool/{provider}/accounts/{account_ref}` literal
     // adds one) plus the 5 UI routes, 8 gateway (its 3 OTLP paths come from
@@ -713,8 +745,8 @@ fn the_source_scan_finds_every_literal_registration() {
     // this scan reads source text, and `#[cfg(feature = "ui")]` does not
     // remove the `.route("…"` literals from it.
     assert_eq!(
-        found, 50,
-        "the literal-path scan found {found} registrations, not 50; either a route was added or \
+        found, 51,
+        "the literal-path scan found {found} registrations, not 51; either a route was added or \
          removed, or `.route(\"…\"` is no longer how they are spelled"
     );
 }

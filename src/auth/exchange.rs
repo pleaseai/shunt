@@ -9,10 +9,12 @@
 //! who may authenticate therefore revokes every token it issued, without
 //! shunt keeping any revocation state.
 
-// Mint is called by the exchange endpoint (T003), `verify` by the inbound gate
-// (T004) and `is_exchange_shaped` by the credential strip (T005); until those
-// land only the tests reach them. Remove this attribute with the last caller.
+// `mint` is called by the exchange endpoint (`handler`). `verify` (inbound
+// gate, T004) and `is_exchange_shaped` (credential strip, T005) have no caller
+// yet, so only the tests reach them. Remove this attribute with the last one.
 #![cfg_attr(not(test), allow(dead_code))]
+
+pub(crate) mod handler;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};

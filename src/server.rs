@@ -241,6 +241,15 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // from the initial config; a reload only re-resolves the client tokens it
     // authenticates against, it cannot add or drop the route.
     let usage_enabled = config.server.usage.is_some();
+    // The workload token-exchange endpoint (`POST /v1/oauth/token`) is likewise
+    // registered once from the initial config. The handler re-reads the live
+    // snapshot, so a reload that removes `[server.auth.exchange]` turns the
+    // route into a `404`; adding the table needs a restart.
+    let exchange_enabled = config
+        .server
+        .auth
+        .as_ref()
+        .is_some_and(|auth| auth.exchange.is_some());
     // The Claude Code CLI's own native usage-bar synthesizer (`GET
     // /api/oauth/usage`, M-A) is likewise registered once from the initial
     // config; a reload only re-resolves the auth it gates against on a
@@ -365,6 +374,16 @@ pub fn build_router(config: Config) -> Result<(Router, SharedState, AppState), C
     // `oauth_usage::get` and `docs/m14-oauth-usage-endpoint.md`.
     if oauth_usage_enabled {
         router = router.route("/api/oauth/usage", get(oauth_usage::get));
+    }
+
+    // Opt-in workload token exchange: registered only when
+    // `[server.auth.exchange]` is set, so the default HTTP surface is unchanged.
+    // Unauthenticated by design: the credential is the assertion in the body.
+    if exchange_enabled {
+        router = router.route(
+            "/v1/oauth/token",
+            post(crate::auth::exchange::handler::post),
+        );
     }
 
     // Shed above the boot-time limit instead of queueing, and keep each permit
