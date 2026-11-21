@@ -119,7 +119,7 @@ exchange = true
 | 键 | 默认值 | 含义 |
 | :-- | :-- | :-- |
 | `signing_secret` | 必填 | 至少 32 字节的 HS256 签名 secret。一个字符串,或用于轮换的数组:第一项签名,所有项都验证。`Secret` 类型字段,语法与 [`[server.gateway.session] jwt_secret`](#servergatewaysession可选) 相同 |
-| `max_ttl_seconds` | `3600` | 签发 token 的有效期,也是端点报告的 `expires_in`。必须大于零。与 assertion 自身的有效期无关。请保持较短:它限定了 token 比其背后的身份多存活的时间 |
+| `max_ttl_seconds` | `3600` | 签发 token 的有效期,也是端点报告的 `expires_in`。必须大于零。与 assertion 自身的有效期无关。请保持较短:它限定了 token 比其背后的身份多存活的时间。但用于 gh-aw 时请明显大于 300 秒:等于或低于该值时,AWF sidecar 每拿到 token 就会立即重新交换 |
 
 端点只尝试 `exchange = true` 的 `[[server.auth.jwt]]` 条目,assertion 由该条目验证,方式与把同一 JWT 作为 `Authorization: Bearer` 发送时完全相同。启动和 `shunt check` 在以下情况失败:没有此表却设置了 `exchange = true`(消息指出该条目)、此表存在但没有条目选择加入、`signing_secret` 列表为空、secret 不足 32 字节(消息指出其索引)、`max_ttl_seconds = 0`、secret 与 `[server.gateway]` 会话签名 secret 相同(两类 token 不得共用 secret)、条目的 `issuer` 为 `urn:shunt:workload-exchange`(保留)。
 

@@ -119,7 +119,7 @@ exchange = true
 | 키 | 기본값 | 의미 |
 | :-- | :-- | :-- |
 | `signing_secret` | 필수 | 32바이트 이상의 HS256 서명 secret. 문자열 하나 또는 로테이션용 배열이며, 첫 항목이 서명하고 모든 항목이 검증합니다. `Secret` 타입 필드로 [`[server.gateway.session] jwt_secret`](#servergatewaysession-선택)과 문법이 같습니다 |
-| `max_ttl_seconds` | `3600` | 발급 토큰의 수명이자 엔드포인트가 보고하는 `expires_in`. 0보다 커야 합니다. assertion 자체의 수명과 무관합니다. 짧게 유지하세요 — 토큰이 그 뒤의 신원보다 오래 살아남는 기간의 상한입니다 |
+| `max_ttl_seconds` | `3600` | 발급 토큰의 수명이자 엔드포인트가 보고하는 `expires_in`. 0보다 커야 합니다. assertion 자체의 수명과 무관합니다. 짧게 유지하세요 — 토큰이 그 뒤의 신원보다 오래 살아남는 기간의 상한입니다. 다만 gh-aw에서는 300초보다 넉넉히 크게 두세요. 그 이하면 AWF sidecar가 토큰을 받자마자 다시 교환합니다 |
 
 엔드포인트는 `exchange = true`인 `[[server.auth.jwt]]` 항목만 시도하며, assertion은 그 항목에서 같은 JWT를 `Authorization: Bearer`로 보냈을 때와 똑같이 검증됩니다. 시작과 `shunt check`는 다음의 경우 실패합니다: 이 테이블 없이 `exchange = true`(메시지가 항목을 지목), 옵트인한 항목이 없는 이 테이블, 빈 `signing_secret` 목록, 32바이트 미만 secret(메시지가 인덱스를 지목), `max_ttl_seconds = 0`, `[server.gateway]` 세션 서명 secret과 같은 secret(두 토큰 계열은 secret을 공유하면 안 됩니다), `issuer`가 `urn:shunt:workload-exchange`인 항목(예약됨).
 

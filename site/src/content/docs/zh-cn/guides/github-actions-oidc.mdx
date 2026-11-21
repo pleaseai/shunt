@@ -147,6 +147,7 @@ engine:
 - **federation id 只是占位符。** sidecar 构造请求时需要它们,shunt 接受并忽略。
 - **签发的 token 是 shunt 自己的 token。** 它带有与直接使用 JWT 相同的身份(此处为 `org/repo`),在接受 `[[server.auth.jwt]]` JWT 的路由上认证 `Authorization: Bearer`,并按该身份归属用量、受 spend 限制。其有效期为 `max_ttl_seconds`,与 assertion 的 5 分钟无关,sidecar 会在过期前重新交换。
 - **修改规则会使正在运行的 workflow 中断。** token 绑定到条目的规则(`issuer`、`audience`、`algorithms`、`authorized_parties`、邮箱规则、`require`、`subject_prefix`、`identity_claim`)。移除该条目、清除 `exchange = true`、修改其中任何一项,或去掉所有能验证它的签名 secret,都会让已签发的 token 在下一次热重载时被拒绝。已经在运行的 workflow 会一直持有旧 token,直到 sidecar 下一次定时刷新,在此之前它的请求会以 `401` 失败。请在没有 workflow 正在运行时修改规则。
+- **用于 gh-aw 时,请让 `max_ttl_seconds` 明显大于 300。** sidecar 把下一次交换安排在 `expires_in` 的 75% 处与过期前 300 秒两者中较早的时刻,若结果小于零则立即执行。因此在 300 秒或更短时,它每拿到一个 token 就会立即重新交换。默认值 3600 会在 45 分钟后刷新。
 - **通过在前面追加来轮换签名 secret。** 使用列表 `["new", "old"]`:第一项签名,所有项都验证。`max_ttl_seconds` 过后再去掉 `"old"`。
 - sidecar 在交换请求上发送 `anthropic-beta: oauth-2025-04-20,oidc-federation-2026-04-01`,在 API 请求上发送 `anthropic-beta: oauth-2025-04-20`,shunt 像对待其他请求一样路由它们。
 - 本版本没有对交换端点限流([#914](https://github.com/pleaseai/shunt/issues/914))。

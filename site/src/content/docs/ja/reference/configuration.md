@@ -119,7 +119,7 @@ exchange = true
 | キー | 既定値 | 意味 |
 | :-- | :-- | :-- |
 | `signing_secret` | 必須 | 32 バイト以上の HS256 署名 secret。文字列 1 つ、またはローテーション用の配列で、先頭が署名し、すべての要素が検証します。`Secret` 型のフィールドで、[`[server.gateway.session] jwt_secret`](#servergatewaysessionオプション) と構文が同じです |
-| `max_ttl_seconds` | `3600` | 発行トークンの有効期間で、エンドポイントが返す `expires_in`。0 より大きくする必要があります。assertion 自身の有効期間とは無関係です。短く保ってください — トークンがその背後の ID より長く生き残る期間の上限になります |
+| `max_ttl_seconds` | `3600` | 発行トークンの有効期間で、エンドポイントが返す `expires_in`。0 より大きくする必要があります。assertion 自身の有効期間とは無関係です。短く保ってください — トークンがその背後の ID より長く生き残る期間の上限になります。ただし gh-aw では 300 秒より十分大きくしてください。それ以下では AWF sidecar がトークンを受け取るたびにすぐ交換し直します |
 
 エンドポイントが試すのは `exchange = true` の `[[server.auth.jwt]]` エントリだけで、assertion は同じ JWT を `Authorization: Bearer` で送った場合とまったく同じようにそのエントリで検証されます。起動と `shunt check` は次の場合に失敗します: このテーブルなしの `exchange = true`（メッセージがエントリを示す）、オプトインしたエントリがないこのテーブル、空の `signing_secret` リスト、32 バイト未満の secret（メッセージがインデックスを示す）、`max_ttl_seconds = 0`、`[server.gateway]` のセッション署名 secret と同じ secret（2 つのトークン系列は secret を共有してはいけません）、`issuer` が `urn:shunt:workload-exchange` のエントリ（予約済み）。
 

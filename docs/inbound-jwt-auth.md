@@ -420,7 +420,7 @@ exchange = true                                   # default false
 | Key | Required | Default | Meaning |
 | :-- | :-- | :-- | :-- |
 | `[server.auth.exchange] signing_secret` | yes | — | One secret, or a list for rotation: the first signs, every entry verifies. Same secret syntax as `[server.gateway.session] jwt_secret`. Each must be at least 32 bytes |
-| `[server.auth.exchange] max_ttl_seconds` | — | `3600` | Lifetime of an issued token, and the `expires_in` the endpoint reports. Must be greater than zero. Independent of the assertion's own lifetime. Keep it short: a long lifetime delays revocation (see "Revocation") |
+| `[server.auth.exchange] max_ttl_seconds` | — | `3600` | Lifetime of an issued token, and the `expires_in` the endpoint reports. Must be greater than zero. Independent of the assertion's own lifetime. Keep it short: a long lifetime delays revocation (see "Revocation"). For gh-aw, keep it well above 300 (see the example's notes) |
 | `[[server.auth.jwt]] exchange` | — | `false` | Opt this entry into the exchange. Only opted-in entries are tried on the endpoint |
 
 Load-time and `shunt check` errors:
@@ -586,6 +586,10 @@ Notes:
   other request.
 - A rule edit cuts a running workflow until the sidecar's next scheduled refresh (see
   "Revocation").
+- Keep `max_ttl_seconds` well above 300 seconds. The sidecar schedules its next exchange at
+  `min(0.75 × expires_in, expires_in − 300)` seconds, clamped at zero, and it does not refresh on
+  a `401` (AWF `containers/api-proxy/oidc-token-provider-base.js`). At 300 seconds or less it
+  re-exchanges as soon as it receives a token. The default 3600 refreshes after 45 minutes.
 
 ### Accepted tradeoffs and not in this release
 
