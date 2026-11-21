@@ -87,7 +87,10 @@ fn exchanged() -> Outcome {
 
 #[tokio::test]
 async fn an_issued_token_in_the_bearer_slot_authenticates_as_its_identity_on_every_posture() {
-    let auth = auth("SHUNT_TEST_GATE_EXCHANGE_NONE_A", true);
+    let auth = {
+        let _lock = crate::config::test_env_lock();
+        auth("SHUNT_TEST_GATE_EXCHANGE_NONE_A", true)
+    };
     let headers = bearer(&issued(&auth));
     for slots in ALL_SLOTS {
         assert_eq!(gate(&auth, &headers, slots).await, exchanged(), "{slots:?}");
@@ -96,7 +99,10 @@ async fn an_issued_token_in_the_bearer_slot_authenticates_as_its_identity_on_eve
 
 #[tokio::test]
 async fn an_issued_token_outside_the_bearer_slot_does_not_authenticate() {
-    let auth = auth("SHUNT_TEST_GATE_EXCHANGE_NONE_B", true);
+    let auth = {
+        let _lock = crate::config::test_env_lock();
+        auth("SHUNT_TEST_GATE_EXCHANGE_NONE_B", true)
+    };
     let token = issued(&auth);
     let elsewhere = [
         headers(&[("x-api-key", token.clone())]),
@@ -144,7 +150,10 @@ async fn a_static_token_wins_over_an_exchange_token_in_the_same_request() {
 
 #[tokio::test]
 async fn an_expired_or_foreign_exchange_token_is_rejected_not_unavailable() {
-    let auth = auth("SHUNT_TEST_GATE_EXCHANGE_NONE_C", true);
+    let auth = {
+        let _lock = crate::config::test_env_lock();
+        auth("SHUNT_TEST_GATE_EXCHANGE_NONE_C", true)
+    };
     let settings = auth.exchange().unwrap();
     let fp = fingerprint(&auth.jwt()[0]);
     let expired = mint(settings, IDENTITY, &fp, 1_000).token;
@@ -166,6 +175,7 @@ async fn an_expired_or_foreign_exchange_token_is_rejected_not_unavailable() {
 
 #[tokio::test]
 async fn a_token_whose_entry_lost_its_opt_in_is_rejected() {
+    let env_lock = crate::config::test_env_lock();
     let issuing = auth("SHUNT_TEST_GATE_EXCHANGE_NONE_D", true);
     let token = issued(&issuing);
     // Same secret, same entry, `exchange = false`: the snapshot after a reload
@@ -186,6 +196,7 @@ async fn a_token_whose_entry_lost_its_opt_in_is_rejected() {
     }
     .resolve()
     .unwrap();
+    drop(env_lock);
     assert_eq!(
         gate(&reloaded, &bearer(&token), Slots::Client).await,
         Outcome::Rejected
@@ -194,6 +205,7 @@ async fn a_token_whose_entry_lost_its_opt_in_is_rejected() {
 
 #[tokio::test]
 async fn a_deployment_without_the_exchange_table_ignores_exchange_shaped_bearers() {
+    let env_lock = crate::config::test_env_lock();
     let issuing = auth("SHUNT_TEST_GATE_EXCHANGE_NONE_E", true);
     let token = issued(&issuing);
     let plain = InboundAuthConfig {
@@ -204,6 +216,7 @@ async fn a_deployment_without_the_exchange_table_ignores_exchange_shaped_bearers
     }
     .resolve()
     .unwrap();
+    drop(env_lock);
     assert_eq!(
         gate(&plain, &bearer(&token), Slots::Client).await,
         Outcome::Rejected
