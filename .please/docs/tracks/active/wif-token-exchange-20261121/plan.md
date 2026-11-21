@@ -77,7 +77,7 @@ Alternatives rejected: an asymmetric signing key with a JWKS endpoint (more surf
 - [x] T005 Strip exchange tokens at every forward site (file: src/auth/inbound.rs) (depends on T004) [FR-11, AC-021, AC-022]
   Validation: the exchange token is a `credential_kinds()` entry in `src/auth/slots/tests.rs`, and `accepted_by_any_gate` calls `InboundAuth::authenticate_exchange`, and the strip ⊇ accept suites pass with updated `accepted_pairs` counts. A valid, expired, rotated-out, or orphaned (table removed) token in `Authorization` never reaches the upstream mock on a passthrough route or a gated route (AC-021, AC-022), including after `[server.auth]` is removed entirely.
   Method: `cargo test --all-features auth::slots` plus an integration test asserting no credential reaches the upstream mock
-- [ ] T006 Document the exchange across every docs surface (file: docs/inbound-jwt-auth.md) [FR-13]
+- [x] T006 Document the exchange across every docs surface (file: docs/inbound-jwt-auth.md) [FR-13]
   Validation: `docs/inbound-jwt-auth.md` has a gh-aw section with the issue's workflow frontmatter and the matching shunt config, and no longer calls itself verify-only. The site configuration, endpoints, and `guides/github-actions-oidc` pages and their ko/ja/zh-cn copies, README.md and its three translations, and AGENTS.md's error-shape rule describe the feature. The gh-aw example sets `oidc-audience` to a shunt-specific value and the entry's `audience` to the same value. The docs warn that the sidecar's default audience (`https://api.anthropic.com`) must not be used as the entry audience, and that a rule edit cuts a running workflow until the sidecar's next scheduled refresh. Each locale cross-page link resolves in the built site. The "shunt issues nothing" claims in code comments are corrected.
   Method: `cd site && bun run build` with a link check over `site/dist`, plus `grep -rn "issues nothing\|verify-only"` returning only intended hits
 
@@ -143,6 +143,8 @@ Alternatives rejected: an asymmetric signing key with a JWKS endpoint (more surf
 ## Surprises & Discoveries
 
 - 2026-11-21: `tests/responses_chain_stream.rs` fails locally without this track's code. `refused_port_is_deterministically_refused` and `a_body_error_before_message_stop_still_emits_the_terminal_error_event` fail on a pristine control worktree at the base commit 3ed99c0 (separate target dir), and `a_body_error_after_message_stop_ends_the_relay_silently` failed 5 of 6 runs there. They are environmental on this machine, not caused by the exchange.
+- 2026-11-21: T001 added `signing_secret` as a `Secret` field without its path shape in `config::secrets::is_secret_field_path`, so a literal value fell back to the unattributed boot-warning count. Fixed in 6053dfbb with an allowlist unit test and an end-to-end `Config::load` test (both go red with the arm mutated).
+- 2026-11-21: the AWF sidecar (`containers/api-proxy/oidc-token-provider-base.js`) schedules its next exchange at `min(0.75 x expires_in, expires_in - 300)` s clamped at zero, and does not refresh on a `401`. So a rule edit cuts a running workflow until that timer fires (confirms the plan's claim), and `max_ttl_seconds <= 300` makes it re-exchange immediately in a loop. Documented in de5e6ea6; a config-time floor would be a public-semantics change, left for the user.
 
 ## Decision Log
 
