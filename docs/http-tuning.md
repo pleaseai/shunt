@@ -19,6 +19,7 @@ analytics routes retain their endpoint-specific body limits.
 allow_cidrs = ["10.0.0.0/8"]
 deny_cidrs = ["10.20.0.0/16"]
 trust_forwarded_for = false
+allowed_hosts = ["shunt.internal.example"]
 
 [server.limits]
 max_request_bytes = 33554432
@@ -56,6 +57,35 @@ access-control switch resolves client addresses only for CIDR allow/deny rules;
 the gateway switch resolves client addresses for the device-flow rate limiters.
 When both surfaces run behind a trusted reverse proxy, set both switches. Setting
 only one leaves the other surface using the socket peer address.
+
+### Host check
+
+A web page can point its own domain at `127.0.0.1` once it has loaded (DNS
+rebinding). From then on the browser treats shunt's port as the page's own
+origin, so the page can send any header and read every reply, and with no
+`[server.auth]` that means the operator's accounts. The browser still sends the
+name it resolved in `Host`, so shunt refuses a request whose `Host` names a
+host it does not answer for, with `403 permission_error` (OpenAI-shaped on the
+inbound Codex routes), before any other layer runs (`src/host_guard.rs`).
+
+Accepted without configuration: IP literals (no DNS is involved), `localhost`
+and `*.localhost` (RFC 6761; browsers resolve these to loopback themselves), the
+hosts of `[server.gateway] public_url` and `[server.admin.oidc] public_url`, and
+a request with neither a `Host` header nor a URI authority (HTTP/2 carries the
+name in `:authority`, which is checked instead). `/` and `/health` are exempt, as
+they are from the allow list. The `public_url` hosts are read from the running
+gateway and admin login, so a reload that moves the gateway to a new name is
+followed at once, and removing `[server.gateway]` keeps the running gateway's
+host until a restart, as it keeps its routes. Whether the check runs, and
+`allowed_hosts`, are fixed at boot.
+
+The check runs on a loopback bind, where those are the only names a real client
+uses, and is off on any other bind unless `allowed_hosts` is set. A non-empty
+`allowed_hosts` adds names (bare, lowercase, no scheme, port or wildcard;
+matched exactly) and turns the
+check on for any bind; `["*"]` turns it off. A reverse proxy or tunnel that
+forwards the original `Host` to a loopback-bound shunt, or a container reaching
+it as `host.docker.internal`, needs its name listed.
 
 Changing this table requires a restart because its middleware is installed when
 the router is built.

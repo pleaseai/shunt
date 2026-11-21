@@ -25,7 +25,7 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 ## HTTP チューニングテーブル
 
-`[server.access_control]` は `allow_cidrs = []`、`deny_cidrs = []`、`trust_forwarded_for = false` を提供します。deny が先に評価され、`/` と `/health` にも適用されます。allow リストが空でなければデフォルト拒否になりますが、この 2 つのヘルスパスは allow チェックだけを免除されます。転送ヘッダーは、クライアント指定値を上書きする信頼済みプロキシの背後でのみ信頼してください。変更には再起動が必要です。
+`[server.access_control]` は `allow_cidrs = []`、`deny_cidrs = []`、`trust_forwarded_for = false` を提供します。deny が先に評価され、`/` と `/health` にも適用されます。allow リストが空でなければデフォルト拒否になりますが、この 2 つのヘルスパスは allow チェックだけを免除されます。転送ヘッダーは、クライアント指定値を上書きする信頼済みプロキシの背後でのみ信頼してください。`allowed_hosts = []` は `Host` ヘッダーの検査（DNS リバインディング対策）を調整します。ループバック bind では、IP リテラル、`localhost`、`*.localhost`、設定済みの `[server.gateway]`・`[server.admin.oidc]` の `public_url` のホスト以外の名前へのリクエストを `403` で拒否します（`/` と `/health` は対象外）。空でないリストは名前を追加し、どの bind でも検査を適用します。`["*"]` は検査を無効にします。元の `Host` を保つリバースプロキシやトンネル、コンテナからの `host.docker.internal` など、別の名前でループバックの shunt に接続する場合は、その名前を追加してください。変更には再起動が必要です。
 
 この `trust_forwarded_for` 設定は `[server.gateway] trust_forwarded_for` とは独立しています。access-control の設定は CIDR の許可・拒否ルールだけに適用され、gateway の設定はデバイスフローのレート制限だけに適用されます。両方のサーフェスを信頼済みリバースプロキシの背後で運用する場合は、両方の設定を有効にしてください。一方だけを設定すると、もう一方のサーフェスは引き続きソケットのピアアドレスを使用します。
 
