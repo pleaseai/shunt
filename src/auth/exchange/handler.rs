@@ -7,8 +7,6 @@
 //! `error_description` is a fixed string per error code: it never names the
 //! check that failed (NFR-3) and never echoes the assertion (NFR-2).
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::{
     body::Body,
     extract::State,
@@ -18,7 +16,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 
-use super::{fingerprint, mint};
+use super::{fingerprint, mint, unix_now};
 use crate::auth::inbound_jwt::{self, JwtOutcome};
 use crate::server::AppState;
 
@@ -188,10 +186,4 @@ fn no_store(mut response: Response) -> Response {
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }

@@ -9,9 +9,9 @@
 //! who may authenticate therefore revokes every token it issued, without
 //! shunt keeping any revocation state.
 
-// `mint` is called by the exchange endpoint (`handler`). `verify` (inbound
-// gate, T004) and `is_exchange_shaped` (credential strip, T005) have no caller
-// yet, so only the tests reach them. Remove this attribute with the last one.
+// `mint` is called by the exchange endpoint (`handler`) and `verify` by the
+// inbound gate. `is_exchange_shaped` (credential strip, T005) has no caller
+// yet, so only the tests reach it. Remove this attribute when it gains one.
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub(crate) mod handler;
@@ -140,6 +140,13 @@ pub(crate) fn fingerprint(rule: &JwtIssuerRule) -> String {
     ))
     .expect("fingerprint input serializes");
     URL_SAFE_NO_PAD.encode(Sha256::digest(encoded))
+}
+
+/// Seconds since the Unix epoch; `0` if the clock is before it.
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// Mint an exchange token for `identity`, bound to `entry_fingerprint` and

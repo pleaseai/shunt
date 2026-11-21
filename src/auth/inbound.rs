@@ -102,6 +102,16 @@ impl InboundAuth {
         &self.jwt
     }
 
+    /// Resolve a shunt-issued workload exchange token presented in
+    /// `Authorization: Bearer` to the identity it carries. Sync and
+    /// network-free; `None` when exchange is not configured, no bearer is
+    /// presented, or the token does not verify against this snapshot.
+    pub(crate) fn authenticate_exchange(&self, headers: &HeaderMap) -> Option<String> {
+        self.exchange()?;
+        let token = std::str::from_utf8(bearer_token(headers)?).ok()?;
+        crate::auth::exchange::verify(self, token, crate::auth::exchange::unix_now())
+    }
+
     /// Whether `value` is a JWT from one of the configured
     /// `[[server.auth.jwt]]` issuers — the by-value strip predicate for the
     /// JWT half of this gate. See
