@@ -101,7 +101,9 @@ pub fn auth(
             clock_skew_seconds: 0,
             max_token_age_seconds: 3600,
             jwks_url: Some(jwks_url.to_string()),
+            exchange: false,
         }],
+        exchange: None,
     }
 }
 

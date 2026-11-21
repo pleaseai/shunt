@@ -68,6 +68,9 @@ pub struct JwtIssuerRule {
     /// Reject when `exp - iat` exceeds this. shunt keeps no revocation state,
     /// so this is what bounds how long a revoked identity keeps working.
     pub max_token_age_seconds: u64,
+    /// Whether this entry is opted into the workload token exchange
+    /// (`exchange = true`).
+    pub exchange: bool,
 }
 
 /// What a JWT credential resolved to. The three arms are distinct on purpose:

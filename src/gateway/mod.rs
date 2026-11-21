@@ -228,6 +228,11 @@ impl GatewayAuth {
         &self.jwt_secrets[0]
     }
 
+    /// Every signing/verification secret, in config order.
+    pub(crate) fn signing_secrets(&self) -> &[Vec<u8>] {
+        &self.jwt_secrets
+    }
+
     pub fn token_ttl_seconds(&self) -> u64 {
         self.token_ttl_seconds
     }

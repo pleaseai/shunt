@@ -228,6 +228,23 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
             "[server.gateway] was enabled or disabled but requires a restart; the running route and JWT-auth capability remains unchanged"
         );
     }
+    // The exchange route is registered once at boot from the initial config;
+    // secret and lifetime edits hot-apply through `InboundAuth`.
+    if previous
+        .server
+        .auth
+        .as_ref()
+        .is_some_and(|a| a.exchange.is_some())
+        != next
+            .server
+            .auth
+            .as_ref()
+            .is_some_and(|a| a.exchange.is_some())
+    {
+        tracing::warn!(
+            "[server.auth.exchange] was added or removed but requires a restart to register or drop its route"
+        );
+    }
     let previous_spend = previous.server.spend.as_ref();
     let next_spend = next.server.spend.as_ref();
     if previous_spend.is_some() != next_spend.is_some() {

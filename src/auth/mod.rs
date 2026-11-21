@@ -15,6 +15,7 @@ pub mod chatgpt_plan;
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod exchange;
 pub mod gate;
 pub mod gateway;
 pub mod google;

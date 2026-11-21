@@ -18,7 +18,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue};
 
 use crate::{config::AdminKeyring, gateway::GatewayAuth};
 
-use crate::auth::{inbound_jwt::JwtIssuerRule, jwt_slots::JwtSlots};
+use crate::auth::{exchange::ExchangeSettings, inbound_jwt::JwtIssuerRule, jwt_slots::JwtSlots};
 
 /// Resolved inbound-auth state: the header to inspect, the accepted
 /// `name → token` pairs, and the verify-only JWT issuers. Built once at startup
@@ -35,6 +35,7 @@ pub struct InboundAuth {
     tokens: Vec<(String, String)>,
     jwt: Vec<JwtIssuerRule>,
     jwt_slots: JwtSlots,
+    exchange: Option<ExchangeSettings>,
 }
 
 impl InboundAuth {
@@ -44,7 +45,20 @@ impl InboundAuth {
             tokens,
             jwt: Vec::new(),
             jwt_slots: JwtSlots::default(),
+            exchange: None,
         }
+    }
+
+    /// Attach the resolved `[server.auth.exchange]` settings. Absent by
+    /// default, so an unconfigured deployment behaves exactly as before.
+    pub(crate) fn with_exchange(mut self, exchange: ExchangeSettings) -> Self {
+        self.exchange = Some(exchange);
+        self
+    }
+
+    /// The resolved workload-exchange settings, if configured.
+    pub fn exchange(&self) -> Option<&ExchangeSettings> {
+        self.exchange.as_ref()
     }
 
     /// Attach verify-only JWT issuers. A builder rather than a `new` parameter
