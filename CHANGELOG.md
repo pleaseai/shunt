@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.65.0](https://github.com/pleaseai/shunt/compare/v0.64.1...v0.65.0) (2026-11-21)
+
+
+### Features
+
+* **codex:** native tool search for gpt-6.2-sol and gpt-6.2-astra ([#905](https://github.com/pleaseai/shunt/issues/905)) ([f87cfa8](https://github.com/pleaseai/shunt/commit/f87cfa80bab6cf51eb356850e37f1ba517be748b))
+
+
+### Bug Fixes
+
+* **codex:** sanitize regex patterns in inbound Chat Completions tool schemas ([#902](https://github.com/pleaseai/shunt/issues/902)) ([050722e](https://github.com/pleaseai/shunt/commit/050722e4ed4e6eadde0d2de0c63b84702432fdef))
+
 ## [0.64.1](https://github.com/pleaseai/shunt/compare/v0.64.0...v0.64.1) (2026-11-20)
 
 
