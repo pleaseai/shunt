@@ -171,7 +171,7 @@ spend-limit 路由仅在启动时配置了 [`[server.spend]`](/zh-cn/reference/c
 | `400` | `invalid_request` | 请求体不是 JSON 或不是对象、`Content-Type` 不是 JSON、字段类型错误,或 `assertion` 缺失或为空 |
 | `400` | `unsupported_grant_type` | `grant_type` 缺失或不是 jwt-bearer URN |
 | `401` | `invalid_grant` | 没有任何选择加入的条目能验证该 assertion。无论原因如何,响应都相同 |
-| `503` | `temporarily_unavailable` | 无法拉取匹配 issuer 的 key set |
+| `503` | `temporarily_unavailable` | 无法拉取匹配 issuer 的 key set,或网关已达到入站并发上限(此时带 `Retry-After: 1`) |
 
 ## 网关协议
 

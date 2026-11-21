@@ -152,7 +152,7 @@ engine:
 - sidecar 在交换请求上发送 `anthropic-beta: oauth-2025-04-20,oidc-federation-2026-04-01`,在 API 请求上发送 `anthropic-beta: oauth-2025-04-20`,shunt 像对待其他请求一样路由它们。
 - 本版本没有对交换端点限流([#914](https://github.com/pleaseai/shunt/issues/914))。
 
-交换失败时,sidecar 会记录 OAuth 错误:`invalid_grant`(`401`)表示 assertion 未通过验证(使用故障排查中的表格;响应不会说明哪项检查失败),`unsupported_grant_type` 或 `invalid_request`(`400`)表示请求不是端点期望的 jwt-bearer JSON,`temporarily_unavailable`(`503`)表示 shunt 无法拉取 GitHub 的 key set。`404` 表示 shunt 启动时没有 `[server.auth.exchange]`。
+交换失败时,sidecar 会记录 OAuth 错误:`invalid_grant`(`401`)表示 assertion 未通过验证(使用故障排查中的表格;响应不会说明哪项检查失败),`unsupported_grant_type` 或 `invalid_request`(`400`)表示请求不是端点期望的 jwt-bearer JSON,`temporarily_unavailable`(`503`)表示 shunt 无法拉取 GitHub 的 key set;如果带有 `Retry-After: 1`,则表示网关已达到入站并发上限。`404` 表示 shunt 启动时没有 `[server.auth.exchange]`。
 
 ## Token 有效期
 

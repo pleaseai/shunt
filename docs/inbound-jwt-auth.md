@@ -476,7 +476,7 @@ them as OAuth errors (an exception recorded in `AGENTS.md`):
 | `400` | `invalid_request` | `Content-Type` is not JSON, the body is not a JSON object, a field has the wrong JSON type, or `assertion` is missing or blank |
 | `400` | `unsupported_grant_type` | `grant_type` is missing or is not the jwt-bearer URN |
 | `401` | `invalid_grant` | No opted-in entry verifies the assertion. One identical response for every cause: wrong audience, expired, too old, missing required claim, bad signature, unknown `kid`, an entry that has not opted in, or a credential that is not an IdP JWT (a static token, a gateway session token, an earlier exchange token) |
-| `503` | `temporarily_unavailable` | A matching issuer's key set cannot be fetched |
+| `503` | `temporarily_unavailable` | A matching issuer's key set cannot be fetched, or the gateway is at its inbound concurrency limit (then with `Retry-After: 1`) |
 
 The `error_description` is a fixed string per code. It never names the failed check and never
 echoes the assertion.

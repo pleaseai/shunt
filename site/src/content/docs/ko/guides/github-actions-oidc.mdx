@@ -152,7 +152,7 @@ engine:
 - sidecar는 교환 요청에 `anthropic-beta: oauth-2025-04-20,oidc-federation-2026-04-01`을, API 요청에 `anthropic-beta: oauth-2025-04-20`을 보내며, shunt는 이를 다른 요청과 똑같이 라우팅합니다.
 - 이 릴리스에서는 교환 엔드포인트에 속도 제한이 없습니다([#914](https://github.com/pleaseai/shunt/issues/914)).
 
-교환이 실패하면 sidecar가 OAuth 오류를 로그에 남깁니다. `invalid_grant`(`401`)는 assertion이 검증되지 않았다는 뜻이고(문제 해결의 표를 사용하세요. 응답은 어떤 검사가 실패했는지 알려 주지 않습니다), `unsupported_grant_type` 또는 `invalid_request`(`400`)는 요청이 엔드포인트가 기대하는 jwt-bearer JSON이 아니라는 뜻이며, `temporarily_unavailable`(`503`)은 shunt가 GitHub의 key set을 가져오지 못했다는 뜻입니다. `404`는 shunt가 부팅될 때 `[server.auth.exchange]`가 없었다는 뜻입니다.
+교환이 실패하면 sidecar가 OAuth 오류를 로그에 남깁니다. `invalid_grant`(`401`)는 assertion이 검증되지 않았다는 뜻이고(문제 해결의 표를 사용하세요. 응답은 어떤 검사가 실패했는지 알려 주지 않습니다), `unsupported_grant_type` 또는 `invalid_request`(`400`)는 요청이 엔드포인트가 기대하는 jwt-bearer JSON이 아니라는 뜻이며, `temporarily_unavailable`(`503`)은 shunt가 GitHub의 key set을 가져오지 못했다는 뜻이며, `Retry-After: 1`이 붙어 있으면 게이트웨이가 인바운드 동시 요청 한도에 도달했다는 뜻입니다. `404`는 shunt가 부팅될 때 `[server.auth.exchange]`가 없었다는 뜻입니다.
 
 ## 토큰 수명
 

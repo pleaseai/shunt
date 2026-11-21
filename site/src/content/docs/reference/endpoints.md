@@ -264,7 +264,7 @@ Errors use the OAuth shape `{"error", "error_description"}` rather than the Anth
 | `400` | `invalid_request` | The body is not JSON or not an object, `Content-Type` is not JSON, a field has the wrong type, or `assertion` is missing or blank |
 | `400` | `unsupported_grant_type` | `grant_type` is missing or is not the jwt-bearer URN |
 | `401` | `invalid_grant` | No opted-in entry verifies the assertion. The response is identical for every cause |
-| `503` | `temporarily_unavailable` | A matching issuer's key set cannot be fetched |
+| `503` | `temporarily_unavailable` | A matching issuer's key set cannot be fetched, or the gateway is at its inbound concurrency limit (then with `Retry-After: 1`) |
 
 ## Gateway protocol
 

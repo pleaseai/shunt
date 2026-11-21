@@ -152,7 +152,7 @@ engine:
 - sidecar は交換リクエストに `anthropic-beta: oauth-2025-04-20,oidc-federation-2026-04-01` を、API リクエストに `anthropic-beta: oauth-2025-04-20` を送り、shunt はそれらを他のリクエストと同じようにルーティングします。
 - このリリースでは、交換エンドポイントにレート制限がありません（[#914](https://github.com/pleaseai/shunt/issues/914)）。
 
-交換に失敗すると、sidecar が OAuth エラーをログに出します。`invalid_grant`（`401`）は assertion が検証できなかったことを示します（トラブルシューティングの表を使ってください。応答はどのチェックが失敗したかを教えません）。`unsupported_grant_type` または `invalid_request`（`400`）は、リクエストがエンドポイントの期待する jwt-bearer の JSON ではないことを示します。`temporarily_unavailable`（`503`）は shunt が GitHub の key set を取得できなかったことを示します。`404` は、shunt の起動時に `[server.auth.exchange]` がなかったことを示します。
+交換に失敗すると、sidecar が OAuth エラーをログに出します。`invalid_grant`（`401`）は assertion が検証できなかったことを示します（トラブルシューティングの表を使ってください。応答はどのチェックが失敗したかを教えません）。`unsupported_grant_type` または `invalid_request`（`400`）は、リクエストがエンドポイントの期待する jwt-bearer の JSON ではないことを示します。`temporarily_unavailable`（`503`）は shunt が GitHub の key set を取得できなかったことを示し、`Retry-After: 1` が付いている場合はゲートウェイがインバウンドの同時リクエスト上限に達していることを示します。`404` は、shunt の起動時に `[server.auth.exchange]` がなかったことを示します。
 
 ## トークンの有効期間
 

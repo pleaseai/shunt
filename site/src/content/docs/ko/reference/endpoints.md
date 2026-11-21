@@ -176,7 +176,7 @@ policy가 없으면 로그인한 모든 사용자가 대상이고, policy가 있
 | `400` | `invalid_request` | 본문이 JSON이 아니거나 객체가 아님, `Content-Type`이 JSON이 아님, 필드 타입이 틀림, 또는 `assertion`이 없거나 비어 있음 |
 | `400` | `unsupported_grant_type` | `grant_type`이 없거나 jwt-bearer URN이 아님 |
 | `401` | `invalid_grant` | 옵트인한 어떤 항목도 assertion을 검증하지 못함. 원인과 관계없이 응답이 같음 |
-| `503` | `temporarily_unavailable` | 일치하는 issuer의 key set을 가져올 수 없음 |
+| `503` | `temporarily_unavailable` | 일치하는 issuer의 key set을 가져올 수 없거나, 게이트웨이가 인바운드 동시 요청 한도에 도달함(이때는 `Retry-After: 1` 포함) |
 
 ## 게이트웨이 프로토콜
 

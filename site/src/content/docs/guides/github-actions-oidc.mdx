@@ -152,7 +152,7 @@ How it works and what to watch:
 - The sidecar sends `anthropic-beta: oauth-2025-04-20,oidc-federation-2026-04-01` on the exchange and `anthropic-beta: oauth-2025-04-20` on API requests; shunt routes them like any other request.
 - The exchange endpoint is not rate limited in this release ([#914](https://github.com/pleaseai/shunt/issues/914)).
 
-If the exchange fails, the sidecar logs the OAuth error: `invalid_grant` (`401`) means the assertion did not verify (use the table under Troubleshooting; the response never says which check failed), `unsupported_grant_type` or `invalid_request` (`400`) means the request is not the jwt-bearer JSON the endpoint expects, and `temporarily_unavailable` (`503`) means shunt could not fetch GitHub's key set. A `404` means `[server.auth.exchange]` was not present when shunt booted.
+If the exchange fails, the sidecar logs the OAuth error: `invalid_grant` (`401`) means the assertion did not verify (use the table under Troubleshooting; the response never says which check failed), `unsupported_grant_type` or `invalid_request` (`400`) means the request is not the jwt-bearer JSON the endpoint expects, and `temporarily_unavailable` (`503`) means shunt could not fetch GitHub's key set or, when it carries `Retry-After: 1`, that the gateway is at its inbound concurrency limit. A `404` means `[server.auth.exchange]` was not present when shunt booted.
 
 ## Token lifetime
 

@@ -178,7 +178,7 @@ Inbound Codex Responses、Web 検索、モデルカタログ、analytics のル�
 | `400` | `invalid_request` | 本文が JSON でない、またはオブジェクトでない、`Content-Type` が JSON でない、フィールドの型が違う、または `assertion` がないか空 |
 | `400` | `unsupported_grant_type` | `grant_type` がないか、jwt-bearer URN ではない |
 | `401` | `invalid_grant` | オプトインしたどのエントリも assertion を検証できない。原因にかかわらず応答は同一 |
-| `503` | `temporarily_unavailable` | 一致する issuer の key set を取得できない |
+| `503` | `temporarily_unavailable` | 一致する issuer の key set を取得できない、またはゲートウェイがインバウンドの同時リクエスト上限に達している（このときは `Retry-After: 1` 付き） |
 
 ## ゲートウェイプロトコル
 
