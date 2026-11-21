@@ -573,8 +573,7 @@ async fn a_reload_that_removes_the_table_makes_the_route_a_404() {
         .shared
         .store(Arc::new(RuntimeState::from_config(reloaded).unwrap()));
 
-    assert_eq!(
-        server.exchange(&assertion).await.status(),
-        StatusCode::NOT_FOUND
-    );
+    let response = server.exchange(&assertion).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.headers()["cache-control"], "no-store");
 }

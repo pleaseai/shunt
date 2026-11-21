@@ -34,10 +34,10 @@ pub(crate) async fn post(
     // since: answer exactly as an unregistered route would.
     let state = state.refreshed();
     let Some(auth) = state.inbound_auth.as_deref() else {
-        return StatusCode::NOT_FOUND.into_response();
+        return no_store(StatusCode::NOT_FOUND.into_response());
     };
     let Some(settings) = auth.exchange() else {
-        return StatusCode::NOT_FOUND.into_response();
+        return no_store(StatusCode::NOT_FOUND.into_response());
     };
 
     if !is_json(&headers) {
