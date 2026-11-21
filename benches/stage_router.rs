@@ -400,13 +400,13 @@ mod bench {
     /// chain, this resolves the entry's own plus one per target and judge, and
     /// the gap is what moving admission off the decided chain costs.
     ///
-    /// Parameterized on turn count like its neighbours even though the envelope
-    /// never reads the body — a flat curve is the point: admission does not
-    /// grow with the transcript.
-    #[divan::bench(args = TURN_COUNTS)]
-    fn dependency_envelope_driven(bencher: divan::Bencher, turns: usize) {
+    /// Not parameterized on turn count: the envelope takes no request body, so
+    /// admission cannot grow with the transcript. The four `TURN_COUNTS` arms
+    /// it once had ran identical code, and only the first, `[10]`, swung by
+    /// about ±35% between CodSpeed runs (#910).
+    #[divan::bench]
+    fn dependency_envelope_driven(bencher: divan::Bencher) {
         let config = driven_config();
-        let _ = turns;
         bencher.bench(|| {
             divan::black_box(bench_support::dependency_envelope(
                 &config,
