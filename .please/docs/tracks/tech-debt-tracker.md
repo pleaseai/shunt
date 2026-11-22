@@ -33,6 +33,10 @@
 | TD-030 | codex-discovery-jwt-slots-20261030 | `src/discovery.rs` is 918 lines, over the 500-line guideline | Low | 2026-11-02 |
 | TD-031 | session-account-binding-20261031 | The soft-near debounce stamp is not reset by a quota observation between selections, and providers sharing one account share `soft_near_since` (#893) | Low | 2026-11-05 |
 | TD-032 | session-account-binding-20261031 | `a_relayed_client_error_commits_nothing` does not pin the streaming turn's account; assert every received request's `authorization` equals `pool.bearer(0)` | Low | 2026-11-05 |
+| TD-033 | wif-token-exchange-20261121 | Exchange fingerprints are hashed per request and derived from `Algorithm`'s `Debug` output; the middleware OAuth shape is not gated on the route being registered; 403 code and docs error tables (403/414/431/405) undecided; reload warning wording misleads on removal (#916) | Low | 2026-11-22 |
+| TD-034 | wif-token-exchange-20261121 | Exchange endpoint has no rate limiting (#914) | Low | 2026-11-22 |
+| TD-035 | wif-token-exchange-20261121 | NFR-2 partial: no test captures the exchange's log lines | Low | 2026-11-22 |
+| TD-036 | wif-token-exchange-20261121 | `tests/inbound/inbound_exchange_endpoint.rs` (548) and `src/auth/exchange/tests.rs` (540) exceed the 500-line guideline | Low | 2026-11-22 |
 
 ## Resolved
 

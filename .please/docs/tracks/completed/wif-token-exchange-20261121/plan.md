@@ -139,6 +139,8 @@ Alternatives rejected: an asymmetric signing key with a JWKS endpoint (more surf
   Deferred: `--all-features` run (prefill-router needs Python); `--features bench` used locally.
 - [x] (2026-11-21 KST) T006 document the exchange across every docs surface
   Evidence: `cd site && bun run build` -> exit 0, 225 pages; link check over the 16 changed site pages (4 pages x 4 locales, 2810 links) -> all file and fragment targets resolve and no literal `**` in the rendered pages we changed (2 ko pages carry pre-existing `**…**` bold markers followed by a particle, in untouched paragraphs; the 4 `/guides/` and `/reference/` index links are pre-existing breadcrumbs); `grep -rn "issues nothing\|verify-only"` -> 4 intended hits (`README.md` and `docs/inbound-jwt-auth.md` now say "by default", `shared-gateway.mdx` and `connect-codex-cli.mdx` describe the IdP path); `cargo +1.98.1 fmt --all --check` clean, `cargo +1.98.1 build --features bench` ok, `cargo doc --no-deps --features bench` exit 0 with no warning on a touched line.
+- [x] (2026-11-22 KST) Review-stage commits (SHA: `77da4c3a`, `538e642a`, `4f8c4b7a`, `e2bdd7aa`, `ac42ae4c`, `fd770165`, `36770a5d`, `b05763b1`, `8ab4172e`, `ee3180c7`)
+- [x] (2026-11-22 KST) Finalize: `cargo run -- check` on the guide's gh-aw sample config -> `config ok` (40-byte secret); a short secret exits 1 with `signing_secret[0] must be at least 32 bytes`.
 
 ## Surprises & Discoveries
 
@@ -171,3 +173,35 @@ Recorded at the end of `/please:review` (2026-11-22). Every review engine that c
   - an oversized body answers 400, not 413.
 - NFR-2 is still PARTIAL: no test captures the exchange's log lines.
 - The live run against a real IdP (GitHub OIDC from a gh-aw workflow) has not been done yet. It belongs before merge.
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+
+- `POST /v1/oauth/token`: a jwt-bearer exchange in the shape the AWF api-proxy sidecar sends. It is enabled by `[server.auth.exchange]` (`signing_secret`, `max_ttl_seconds`) and an `exchange = true` opt-in on a `[[server.auth.jwt]]` entry.
+- An HS256 exchange token bound to a fingerprint of the verifying entry. A reload that edits or removes that entry or its rules, or rotates the secret out, revokes every token it issued.
+- Gate acceptance on `Authorization: Bearer` as the entry's identity. Static tokens still win. Spend and usage are attributed to the identity.
+- The token is stripped at every forward site, even when it is expired, rotated out, or orphaned by a reload.
+- Errors use the OAuth shape with `Cache-Control: no-store` on the route, including middleware rejections such as the concurrency shed (503 `temporarily_unavailable`).
+- Load-time validation of the new config.
+- Docs: `docs/inbound-jwt-auth.md`, the site guide and the endpoint and config references in four locales, README, and `shunt.toml.example`.
+
+### What Went Well
+
+- Reading the sidecar's source pinned the exact request and the refresh timer before any code was written. The timer explains why a TTL of 300 s or less makes the sidecar re-exchange in a loop.
+- Mutation checks (forcing the gate branch to `None`, removing the strip arm) proved that the gate and strip tests are not vacuous.
+- The review ensemble (gpt, ocr, cubic) caught a regression that the targeted tests had missed: the `PATH` constant broke `router_surface`.
+
+### What Could Improve
+
+- After review fixes, run the full suite with `--no-fail-fast`, not only the targeted tests. `cargo test` stops at the first failing binary, which hid other failures. The `router_surface` break reached a later iteration because only targeted tests ran.
+- greptile could not run (a broken node `libada` dylib). Fix the local toolchain before the next review so the ensemble is complete.
+- Two new test files are over the 500-line guideline (`inbound_exchange_endpoint.rs` 548, `src/auth/exchange/tests.rs` 540).
+
+### Tech Debt Created
+
+- #916: precompute fingerprints; stop deriving from `Algorithm`'s `Debug`; gate the OAuth error shape on route registration; decide on the 403 `access_denied` code; add 403/414/431/405 to the docs error tables; reword the reload warning.
+- #914: rate limiting for the exchange endpoint.
+- NFR-2 is PARTIAL: no test captures the exchange's log lines.
+- Optional config-time floor for `max_ttl_seconds` (> 300 s): a public-semantics change awaiting a user decision.
+- Live real-IdP run pending before merge.
