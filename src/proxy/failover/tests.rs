@@ -1048,6 +1048,7 @@ fn an_inbound_jwt_is_stripped_before_a_same_origin_passthrough_attempt() {
             identity_claim: "email".to_string(),
             clock_skew_seconds: 0,
             max_token_age_seconds: 3600,
+            exchange: false,
         },
     ])));
     let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"iss":"{issuer}"}}"#));

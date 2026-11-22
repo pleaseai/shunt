@@ -99,6 +99,61 @@ jobs:
 
 `audience`는 shunt 항목의 `audience`와 같아야 합니다. `::add-mask::`는 토큰을 저장하기 전에 secret으로 등록하므로 로그에 나와도 가려집니다. 그래도 `echo`하거나 `set -x`로 실행하지 마세요. 포크에서 온 pull request는 토큰에 쓰기 권한을 받지 못하므로(GitHub이 읽기로 낮춥니다) 포크 pull request로 트리거된 잡은 대개 OIDC 토큰을 요청할 수 없습니다. `pull_request` 워크플로에서는 이 점을 염두에 두세요.
 
+## GitHub Agentic Workflows (gh-aw)
+
+[GitHub Agentic Workflows](https://github.github.com/gh-aw/)는 AWF 방화벽 샌드박스 안에서 Claude Code를 실행하며, 자격 증명은 에이전트가 아니라 AWF api-proxy sidecar가 들고 있습니다. 위의 직접 방식은 맞지 않습니다. OIDC 토큰은 약 5분 동안만 유효하고, 에이전트는 새 토큰을 발급할 수 없으며, sidecar의 정적 키 경로는 shunt가 JWT를 읽지 않는 `x-api-key`로 보냅니다.
+
+gh-aw가 Claude에 제공하는 키 없는 방식은 `token-url`을 설정할 수 있는 Anthropic Workload Identity Federation(`engine.auth.type: github-oidc`, `provider: anthropic`)입니다. sidecar가 GitHub OIDC 토큰을 발급하고, 그 URL에서 액세스 토큰으로 교환하고, 액세스 토큰을 캐시하며, 만료 전에 갱신합니다. shunt는 [워크로드 토큰 교환](/ko/reference/configuration/#serverauthexchange-선택)으로 그 URL이 될 수 있습니다. 정적 secret 없이 어떤 길이의 실행도 가능합니다.
+
+위 shunt 설정의 항목에 교환을 추가합니다.
+
+```toml
+[server.auth.exchange]
+signing_secret = "${SHUNT_EXCHANGE_SECRET}"   # at least 32 bytes, kept separate from any [server.gateway] secret
+max_ttl_seconds = 3600
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]     # same value as oidc-audience below
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
+exchange = true
+```
+
+워크플로 frontmatter:
+
+```yaml
+permissions:
+  id-token: write
+engine:
+  id: claude
+  env:
+    ANTHROPIC_BASE_URL: https://shunt.example.com
+  auth:
+    type: github-oidc
+    provider: anthropic
+    oidc-audience: https://shunt.example.com
+    token-url: https://shunt.example.com/v1/oauth/token
+    federation-rule-id: fdrl_shunt        # placeholders; shunt ignores these
+    organization-id: org_shunt
+    service-account-id: svac_shunt
+    workspace-id: ws_shunt
+```
+
+동작 방식과 주의할 점:
+
+- **`oidc-audience`와 항목의 `audience`를 같은 shunt 전용 값으로 설정하세요.** 인가하는 것은 위와 마찬가지로 여전히 `require`입니다.
+- **`https://api.anthropic.com`을 항목의 `audience`로 쓰지 마세요.** 이 필드를 생략하면 sidecar의 기본 `oidc-audience`가 바로 이 값이므로, 이를 받는 항목은 Anthropic용으로 발급된 토큰도 받게 됩니다. `oidc-audience`는 항상 명시하세요.
+- **federation ID는 자리표시자입니다.** sidecar가 요청을 만들 때 필요하고, shunt는 받아들이되 무시합니다.
+- **발급된 토큰은 shunt 자체 토큰입니다.** JWT를 직접 쓸 때와 같은 신원(여기서는 `org/repo`)을 갖고, `[[server.auth.jwt]]` JWT를 받는 라우트에서 `Authorization: Bearer`를 인증하며, 그 신원으로 귀속되고 spend 제한을 받습니다. 수명은 assertion의 5분과 무관하게 `max_ttl_seconds`이고, sidecar는 만료 전에 다시 교환합니다.
+- **규칙을 수정하면 실행 중인 워크플로가 끊깁니다.** 토큰은 항목의 규칙(`issuer`, `audience`, `algorithms`, `authorized_parties`, 이메일 규칙, `require`, `subject_prefix`, `identity_claim`)에 묶여 있습니다. 항목을 제거하거나, `exchange = true`를 지우거나, 이 중 하나를 수정하거나, 토큰을 검증하는 서명 secret을 전부 빼면 이미 발급된 토큰은 다음 핫 리로드부터 거부됩니다. 옵트인한 항목이 그것 하나뿐이면 같은 수정에서 `[server.auth.exchange]`도 지우세요. 옵트인한 항목이 없는 테이블은 검증에 실패하고, 리로드는 이전 설정을 유지합니다. 이미 실행 중인 워크플로는 sidecar의 다음 예약 갱신까지 이전 토큰을 들고 있으므로 그때까지 요청이 `401`로 실패합니다. 실행 중인 워크플로가 없을 때 규칙을 수정하세요.
+- **gh-aw에서는 `max_ttl_seconds`를 300보다 넉넉히 크게 두세요.** sidecar는 다음 교환을 `expires_in`의 75% 시점과 만료 300초 전 중 더 이른 때로 잡고, 그 값이 0보다 작으면 즉시 실행합니다. 따라서 300초 이하에서는 토큰을 받자마자 다시 교환합니다. 기본값 3600이면 45분 뒤에 갱신합니다.
+- **서명 secret은 앞에 추가하는 방식으로 로테이션하세요.** `["new", "old"]` 목록을 쓰면 첫 항목이 서명하고 모든 항목이 검증합니다. `max_ttl_seconds`가 지난 뒤 `"old"`를 빼세요.
+- sidecar는 교환 요청에 `anthropic-beta: oauth-2025-04-20,oidc-federation-2026-04-01`을, API 요청에 `anthropic-beta: oauth-2025-04-20`을 보내며, shunt는 이를 다른 요청과 똑같이 라우팅합니다.
+- 이 릴리스에서는 교환 엔드포인트에 속도 제한이 없습니다([#914](https://github.com/pleaseai/shunt/issues/914)).
+
+교환이 실패하면 sidecar가 OAuth 오류를 로그에 남깁니다. `invalid_grant`(`401`)는 assertion이 검증되지 않았다는 뜻이고(문제 해결의 표를 사용하세요. 응답은 어떤 검사가 실패했는지 알려 주지 않습니다), `unsupported_grant_type` 또는 `invalid_request`(`400`)는 요청이 엔드포인트가 기대하는 jwt-bearer JSON이 아니라는 뜻이며, `temporarily_unavailable`(`503`)은 shunt가 GitHub의 key set을 가져오지 못했다는 뜻이며, `Retry-After: 1`이 붙어 있으면 게이트웨이가 인바운드 동시 요청 한도에 도달했다는 뜻입니다. `404`는 shunt가 부팅될 때 `[server.auth.exchange]`가 없었거나, 그 뒤 리로드로 제거되었다는 뜻입니다.
+
 ## 토큰 수명
 
 OIDC 토큰은 bearer입니다. 만료될 때까지 사용할 수 있고 shunt는 폐기 상태를 보관하지 않습니다. GitHub 문서는 `exp`와 `iat`를 클레임으로 나열하지만 수명을 명시하지는 않습니다. GitHub 자체 엔터프라이즈 예시의 토큰은 `exp - iat`가 300초입니다. shunt는 `exp - iat`가 `max_token_age_seconds`(기본 `3600`)를 *초과*할 때만 거부하므로 기본값으로 받아들입니다. 긴 잡은 하나의 토큰을 잡 전체에서 들고 있지 말고, shunt를 호출하는 단계 전에 위와 같은 단계로 새 토큰을 요청하세요. Claude Code 세션 하나처럼 단일 프로세스는 시작할 때 받은 토큰을 계속 사용하며, 그 토큰이 만료되면 `401`을 받습니다. 토큰보다 오래 실행되는 세션에는 같은 방식으로 새 토큰을 요청하는 스크립트를 Claude Code의 `apiKeyHelper`로 설정하세요(요청 변수는 `id-token: write`가 있는 잡의 모든 단계에 설정됩니다). 이때 Claude Code는 `ANTHROPIC_AUTH_TOKEN` 없이 실행하세요. `ANTHROPIC_AUTH_TOKEN`이 설정되어 있으면 `apiKeyHelper`보다 우선하므로 세션이 만료된 토큰을 계속 씁니다.

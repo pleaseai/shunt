@@ -12,6 +12,7 @@ description: shunt가 Claude Code LLM 게이트웨이로서 제공하는 엔드�
 | `GET` | `/routes` | shunt 네이티브 라우트 디스커버리 — 구성된 `[[routes]]` 테이블을 그대로 반환(model → provider/upstream_model/effort 매핑, claude 프리픽스 디스커버리 별칭 포함); 더 좁은 Anthropic 프로토콜 디스커버리 응답(`id`, `display_name`, 업스트림 모델 메타데이터)을 제공하는 `/v1/models`와 구별됨. `[models.router]` 테이블을 설정한 `[[models]]` 엔트리가 하나라도 있으면 `routers` 배열이 추가되어, 각 라우터의 model id와 `algorithm`(설정된 `type`), 라우팅 가능한 모든 `targets` id를 알려줌. 판정 모델을 설정한 라우터는 물어보기만 하고 제공하지는 않는 id를 `judges`로도 알려줌(없으면 생략). [스테이지 라우터](/ko/guides/stage-router/)와 `auto` 항목은 여기에 더해 두 티어 타깃과, 신호가 아무것도 결정하지 못했을 때 picker가 돌아가는 티어까지 알려줌 |
 | `POST` | `/v1/messages` | 추론 — 요청의 `model` id에 따라 라우팅 |
 | `POST` | `/v1/messages/count_tokens` | [토큰 카운팅](/ko/guides/effort-and-context/#토큰-카운팅-count_tokens) |
+| `POST` | `/v1/oauth/token` | [워크로드 토큰 교환](#워크로드-토큰-교환) — 검증된 GitHub Actions OIDC JWT를 shunt가 발급하는 수명이 짧은 bearer 토큰으로 교환. 부팅 시 `[server.auth.exchange]`가 구성된 경우에만 |
 | `GET` | `/managed/settings` | 게이트웨이 JWT별 Claude Code managed settings; `ETag`, `If-None-Match`, `304 Not Modified` 지원 |
 | `GET` | `/user/bootstrap` | 게이트웨이 JWT용 Claude Desktop bootstrap 구성; `ETag`, `If-None-Match`, `304 Not Modified` 지원 |
 | `GET` | `/v1/organizations/spend_limits` | 저장된 지출 제한을 방향성 커서 페이지네이션으로 조회 |
@@ -149,8 +150,34 @@ policy가 없으면 로그인한 모든 사용자가 대상이고, policy가 있
 
 풀 상태 `capped`는 사용 가능한 계정이 없고 활성화된(`disabled`가 아닌) 계정 중 일시 정지되지 않은 계정 하나 이상이 `max_utilization*` 하드 캡으로 제외되었음을 뜻하며([`[server.pool]`](/ko/reference/configuration/#serverpool-선택) 참고), `exhausted`와는 구분됩니다.
 
-`GET /`와 `GET /health`는 [`[server.auth]`](/ko/guides/shared-gateway/)가 활성화되어 있어도 열린 채로 유지되며(헬스체크 도구는 보통 토큰을 첨부할 수 없음) 민감한 것을 노출하지 않습니다 — 오직 상태, 버전, 그리고 이미 공개된 엔드포인트 목록만입니다. [`[[server.auth.jwt]]`](/ko/reference/configuration/) 항목을 구성하면 `Authorization: Bearer`의 검증된 외부 JWT가 클라이언트 토큰과 같은 게이팅 라우트를 인증합니다. 어떤 항목으로도 검증되지 않은 토큰은 `401`이고, 검증된 항목이 없으면서 토큰의 issuer와 일치하는 항목 중 캐시된 key set이 없는데 가져오기도 실패한 것이 있으면 `503`입니다.
+`GET /`와 `GET /health`는 [`[server.auth]`](/ko/guides/shared-gateway/)가 활성화되어 있어도 열린 채로 유지되며(헬스체크 도구는 보통 토큰을 첨부할 수 없음) 민감한 것을 노출하지 않습니다 — 오직 상태, 버전, 그리고 이미 공개된 엔드포인트 목록만입니다. [`[[server.auth.jwt]]`](/ko/reference/configuration/) 항목을 구성하면 `Authorization: Bearer`의 검증된 외부 JWT, 또는 [워크로드 토큰 교환](#워크로드-토큰-교환)이 발급한 토큰이 클라이언트 토큰과 같은 게이팅 라우트를 인증합니다. 어떤 항목으로도 검증되지 않은 토큰은 `401`이고, 검증된 항목이 없으면서 토큰의 issuer와 일치하는 항목 중 캐시된 key set이 없는데 가져오기도 실패한 것이 있으면 `503`입니다.
+
+## 워크로드 토큰 교환
+
+`POST /v1/oauth/token`은 부팅 시 [`[server.auth.exchange]`](/ko/reference/configuration/#serverauthexchange-선택)가 구성된 경우에만 존재하며, 그렇지 않으면 `404`로 응답합니다. 테이블을 추가하려면 재시작이 필요하고, reload로 테이블을 제거하면 라우트가 `404`가 됩니다. 인증이 없는 라우트이며, 자격 증명은 본문의 JWT `assertion`입니다. 요청은 JSON(`Content-Type: application/json`)입니다:
+
+```json
+{
+  "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+  "assertion": "<JWT>",
+  "federation_rule_id": "fdrl_shunt",
+  "organization_id": "org_shunt",
+  "service_account_id": "svac_shunt",
+  "workspace_id": "ws_shunt"
+}
+```
+
+네 가지 federation ID는 있든 없든 받아들이고 무시합니다. `exchange = true`인 `[[server.auth.jwt]]` 항목만 시도하며, assertion은 직접 보낸 Bearer JWT와 똑같이 검증됩니다. 성공하면 `200`과 `{"access_token": "...", "token_type": "Bearer", "expires_in": N}`을 반환하며, `N`은 assertion 자체의 수명과 관계없이 `max_ttl_seconds`입니다. 토큰은 `[[server.auth.jwt]]` JWT를 받는 라우트에 `Authorization: Bearer`로 보냅니다. [GitHub Actions 가이드](/ko/guides/github-actions-oidc/#github-agentic-workflows-gh-aw)를 참고하세요.
+
+오류는 Anthropic 형태가 아니라 OAuth 형태 `{"error", "error_description"}`를 씁니다. AWF sidecar가 이를 OAuth 오류로 파싱하기 때문입니다. 모든 응답에 `Cache-Control: no-store`가 붙습니다.
+
+| 상태 | `error` | 조건 |
+| :-- | :-- | :-- |
+| `400` | `invalid_request` | 본문이 JSON이 아니거나 객체가 아님, `Content-Type`이 JSON이 아님, 필드 타입이 틀림, 또는 `assertion`이 없거나 비어 있음 |
+| `400` | `unsupported_grant_type` | `grant_type`이 없거나 jwt-bearer URN이 아님 |
+| `401` | `invalid_grant` | 옵트인한 어떤 항목도 assertion을 검증하지 못함. 원인과 관계없이 응답이 같음 |
+| `503` | `temporarily_unavailable` | 일치하는 issuer의 key set을 가져올 수 없거나, 게이트웨이가 인바운드 동시 요청 한도에 도달함(이때는 `Retry-After: 1` 포함) |
 
 ## 게이트웨이 프로토콜
 
-shunt는 공식 [Claude Code LLM 게이트웨이 프로토콜](https://code.claude.com/docs/en/llm-gateway-protocol)을 구현합니다: 올바른 헤더 및 바디 필드 전달, 기능 패스스루, 시스템 프롬프트 어트리뷰션 처리. 게이트웨이 소유 오류는 Anthropic 오류 형태로 반환되고, 업스트림 컨텍스트 오버플로 오류는 Anthropic의 `prompt is too long` 표현으로 다시 쓰여 Claude Code의 [압축-재시도](/ko/guides/effort-and-context/#컨텍스트-오버플로-복구)가 발동하며, 스트리밍 응답은 버퍼링 없이 릴레이됩니다(선택적 [keepalive ping](/ko/guides/shared-gateway/#sse-keepalive-ping) 포함).
+shunt는 공식 [Claude Code LLM 게이트웨이 프로토콜](https://code.claude.com/docs/en/llm-gateway-protocol)을 구현합니다: 올바른 헤더 및 바디 필드 전달, 기능 패스스루, 시스템 프롬프트 어트리뷰션 처리. 게이트웨이 소유 오류는 Anthropic 오류 형태로 반환되고(OAuth 형태 오류로 응답하는 `POST /v1/oauth/token`과 OpenAI 형태를 쓰는 인바운드 Codex 엔드포인트는 예외), 업스트림 컨텍스트 오버플로 오류는 Anthropic의 `prompt is too long` 표현으로 다시 쓰여 Claude Code의 [압축-재시도](/ko/guides/effort-and-context/#컨텍스트-오버플로-복구)가 발동하며, 스트리밍 응답은 버퍼링 없이 릴레이됩니다(선택적 [keepalive ping](/ko/guides/shared-gateway/#sse-keepalive-ping) 포함).

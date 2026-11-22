@@ -37,7 +37,8 @@ use axum::{
 use shunt::{
     config::{
         AccountConfig, AdminConfig, AuthMode, CodexEndpointConfig, Config, GatewayConfig,
-        InboundAuthConfig, OauthUsageConfig, SpendConfig, UsageEndpointConfig,
+        InboundAuthConfig, InboundJwtConfig, OauthUsageConfig, SpendConfig, StringList,
+        UsageEndpointConfig,
     },
     server,
 };
@@ -207,6 +208,9 @@ const CODEX_ENDPOINT_PATHS: [(&str, &str); 10] = [
 
 const USAGE_PATHS: [(&str, &str); 2] = [("/usage", "GET,HEAD"), ("/api/oauth/usage", "GET,HEAD")];
 
+/// `[server.auth.exchange]`: the workload token-exchange endpoint.
+const EXCHANGE_PATHS: [(&str, &str); 1] = [("/v1/oauth/token", "POST")];
+
 /// Substitute a concrete segment for each path placeholder, so a template from
 /// the inventory can be sent as a real request.
 fn probe_path(template: &str) -> String {
@@ -226,7 +230,8 @@ fn all_registered_entries() -> Vec<(&'static str, &'static str)> {
         .chain(GATEWAY_PATHS.iter())
         .chain(SPEND_PATHS.iter())
         .chain(CODEX_ENDPOINT_PATHS.iter())
-        .chain(USAGE_PATHS.iter());
+        .chain(USAGE_PATHS.iter())
+        .chain(EXCHANGE_PATHS.iter());
     #[cfg(feature = "ui")]
     let entries = entries.chain(UI_PROBE_PATHS.iter());
     entries.copied().collect()
@@ -290,8 +295,34 @@ async fn all_surfaces_config(label: &str) -> (Config, common::EnvVars) {
     let mut config = Config::default();
 
     // `[server.auth]` is not itself a route, but `[server.usage]` requires it.
+    // It also carries the exchange: one opted-in workload entry plus the table.
+    // Its signing secret must differ from the gateway's (FR-12).
     config.server.auth = Some(InboundAuthConfig {
-        jwt: Vec::new(),
+        jwt: vec![InboundJwtConfig {
+            issuer: "https://token.actions.example".to_string(),
+            audience: StringList::One("shunt-surface".to_string()),
+            email_domains: Vec::new(),
+            allowed_emails: Vec::new(),
+            require: [(
+                "repository_owner".to_string(),
+                StringList::One("pleaseai".to_string()),
+            )]
+            .into(),
+            subject_prefix: StringList::default(),
+            identity_claim: Some("repository".to_string()),
+            algorithms: vec!["RS256".to_string()],
+            authorized_parties: Vec::new(),
+            clock_skew_seconds: 0,
+            max_token_age_seconds: 3600,
+            jwks_url: Some("https://token.actions.example/.well-known/jwks".to_string()),
+            exchange: true,
+        }],
+        exchange: Some(
+            serde_json::from_value(serde_json::json!({
+                "signing_secret": "fedcba9876543210fedcba9876543210-exchange"
+            }))
+            .expect("exchange table"),
+        ),
         header: "x-shunt-token".to_string(),
         tokens_env: client_env,
         ..Default::default()
@@ -491,6 +522,31 @@ async fn no_undocumented_path_is_registered() {
         assert!(
             !path_is_registered(&router, path).await,
             "{path} answers but is not in the documented inventory"
+        );
+    }
+}
+
+/// The exchange endpoint is opt-in: without `[server.auth.exchange]` its path is
+/// not registered at all. The `405` oracle tells this apart from the handler's
+/// own `404`, which a `POST` probe cannot.
+#[tokio::test]
+async fn the_exchange_path_is_not_registered_without_the_table() {
+    let (mut config, _env) = all_surfaces_config("no_exchange").await;
+    config
+        .server
+        .auth
+        .as_mut()
+        .expect("all-surfaces config sets [server.auth]")
+        .exchange = None;
+    for entry in &mut config.server.auth.as_mut().unwrap().jwt {
+        entry.exchange = false;
+    }
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
+
+    for (path, _) in EXCHANGE_PATHS {
+        assert!(
+            !path_is_registered(&router, path).await,
+            "{path} is registered although [server.auth.exchange] is absent"
         );
     }
 }
@@ -705,7 +761,9 @@ fn the_source_scan_finds_every_literal_registration() {
         .iter()
         .map(|(_, source)| registered_literal_paths(source).len())
         .sum();
-    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`), 25 admin
+    // 9 in `server.rs` (7 base + `/usage` + `/api/oauth/usage`; `/v1/oauth/token`
+    // is registered through `auth::exchange::PATH`, an indirect site read via
+    // `INDIRECT_PATH_SOURCES`), 25 admin
     // (`/admin/api/pool` merges its `PATCH` onto the existing `.route(` call,
     // so only the new `/admin/api/pool/{provider}/accounts/{account_ref}` literal
     // adds one) plus the 5 UI routes, 8 gateway (its 3 OTLP paths come from
@@ -725,7 +783,7 @@ fn the_source_scan_finds_every_literal_registration() {
 /// passes a loop variable or a method call, not a literal — so an **addition**
 /// to one of them would otherwise register a live route while every other test
 /// in this file stayed green.
-const INDIRECT_PATH_SOURCES: [(&str, &str, &str, &str); 5] = [
+const INDIRECT_PATH_SOURCES: [(&str, &str, &str, &str); 6] = [
     (
         "src/discovery.rs",
         include_str!("../src/discovery.rs"),
@@ -755,6 +813,12 @@ const INDIRECT_PATH_SOURCES: [(&str, &str, &str, &str); 5] = [
         include_str!("../src/gateway/telemetry_ingest.rs"),
         "const fn path(self) -> &'static str {",
         "\n    }",
+    ),
+    (
+        "src/auth/exchange.rs",
+        include_str!("../src/auth/exchange.rs"),
+        "const PATH: &str = ",
+        ";",
     ),
 ];
 
@@ -814,10 +878,10 @@ fn the_indirect_scan_finds_every_definition() {
         .sum();
     // 2 `discovery::CODEX_PATHS` + 3 `codex_endpoint::PATHS` + 3
     // `codex_endpoint::search::PATHS` + 2 `codex_analytics::PATHS` + 3 OTLP
-    // signals.
+    // signals + 1 `auth::exchange::PATH`.
     assert_eq!(
-        found, 13,
-        "the indirect-path scan found {found} definitions, not 13; either a path was added or \
+        found, 14,
+        "the indirect-path scan found {found} definitions, not 14; either a path was added or \
          removed, or one of these sets is no longer spelled the way the scan expects"
     );
 }
@@ -893,7 +957,7 @@ fn no_router_tree_is_composed_in_from_an_unscanned_module() {
 /// Counting the skips closes that. Together with the two count assertions above
 /// and the composition guard, the invariant across the scanned files is that no
 /// registration is silently dropped: every `.route(` either resolves to a literal
-/// path that must appear in the inventory, or is one of these seven indirect sites
+/// path that must appear in the inventory, or is one of these eight indirect sites
 /// whose definitions [`INDIRECT_PATH_SOURCES`] reads, and the four remaining ways
 /// axum can register a path — `.route_service(`, `.nest(`, `.nest_service(`, and
 /// composing another tree in with `.merge(` — are each counted.
@@ -916,13 +980,13 @@ fn every_nonliteral_route_call_is_one_this_test_already_tracks() {
         .sum();
 
     // The `discovery::CODEX_PATHS`, `codex_endpoint::PATHS`,
-    // `codex_endpoint::search::PATHS` and `codex_analytics::PATHS` loops in
-    // `build_router`, and the three `Signal::path()` calls in `gateway_router`.
+    // `codex_endpoint::search::PATHS` and `codex_analytics::PATHS` loops and
+    // the `auth::exchange::PATH` registration in `build_router`, and the three `Signal::path()` calls in `gateway_router`.
     assert_eq!(
         calls - literals,
-        7,
+        8,
         "the scanned sources make {calls} `.route(` calls of which {literals} pass a string \
-         literal, so {} are registered indirectly — not the 7 this test tracks through \
+         literal, so {} are registered indirectly — not the 8 this test tracks through \
          INDIRECT_PATH_SOURCES. A new indirect registration must be added there, or its paths go \
          unscanned.",
         calls - literals

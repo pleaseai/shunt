@@ -52,7 +52,7 @@ If you also enable the opt-in [admin web surface](/guides/admin-remote-provision
 
 ## Verifying JWTs from your own identity provider
 
-If your organization already runs an identity provider, `[[server.auth.jwt]]` lets shunt accept its tokens instead of a shared secret — per-user identity without shunt becoming an auth server. It **verifies only**: no login flow, no session store, no signing secret. Compared with [gateway login](/guides/gateway-login/), the client is still configured with just a base URL and a bearer, so it does not enter Claude Code's gateway provider mode or lose the features that mode disables.
+If your organization already runs an identity provider, `[[server.auth.jwt]]` lets shunt accept its tokens instead of a shared secret — per-user identity without shunt becoming an auth server. It **verifies** the token against the issuer's keys and issues nothing by default: no login flow, no session store, no signing secret. (A workload that cannot hold a fresh token for a long run can opt into the [workload token exchange](/guides/github-actions-oidc/#github-agentic-workflows-gh-aw).) Compared with [gateway login](/guides/gateway-login/), the client is still configured with just a base URL and a bearer, so it does not enter Claude Code's gateway provider mode or lose the features that mode disables.
 
 ```toml
 [server.auth]

@@ -52,7 +52,7 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 ## 验证自有 identity provider 签发的 JWT
 
-如果你的组织已经在运行 identity provider,`[[server.auth.jwt]]` 可以让 shunt 接受它签发的 token,而不必分发共享 secret —— 在不让 shunt 变成认证服务器的前提下获得按用户区分的身份。shunt **只做验证**:没有登录流程、没有会话存储、没有签名 secret。与 [gateway 登录](/zh-cn/guides/gateway-login/)不同,客户端仍然只需要配置 base URL 和 bearer,因此不会进入 Claude Code 的 gateway provider 模式,也不会失去该模式禁用的功能。
+如果你的组织已经在运行 identity provider,`[[server.auth.jwt]]` 可以让 shunt 接受它签发的 token,而不必分发共享 secret —— 在不让 shunt 变成认证服务器的前提下获得按用户区分的身份。shunt 用发行方的密钥**验证** token,默认不签发任何内容:没有登录流程、没有会话存储、没有签名 secret(无法在长时间运行期间持有新 token 的工作负载可以选择加入[工作负载 token 交换](/zh-cn/guides/github-actions-oidc/#github-agentic-workflows-gh-aw))。与 [gateway 登录](/zh-cn/guides/gateway-login/)不同,客户端仍然只需要配置 base URL 和 bearer,因此不会进入 Claude Code 的 gateway provider 模式,也不会失去该模式禁用的功能。
 
 ```toml
 [server.auth]

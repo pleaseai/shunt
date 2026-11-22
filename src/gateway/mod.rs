@@ -6,7 +6,7 @@ mod idp;
 pub(crate) mod idp_client;
 pub mod jwt;
 pub mod managed;
-mod oauth;
+pub(crate) mod oauth;
 pub mod persist;
 pub mod refresh;
 pub mod spend;
@@ -66,7 +66,7 @@ impl ResolvedIdp {
 /// `example.com` admit `attacker@notexample.com`. Both lists are expected
 /// pre-lowercased by config resolution; the address is lowercased here.
 ///
-/// Shared by the gateway/admin OIDC sign-in path and by verify-only inbound JWT
+/// Shared by the gateway/admin OIDC sign-in path and by inbound JWT
 /// entries (`[[server.auth.jwt]]`), so the two cannot drift apart on the one
 /// rule that decides who gets in.
 pub fn email_allowed(email: &str, allowed_emails: &[String], allowed_domains: &[String]) -> bool {
@@ -226,6 +226,11 @@ impl GatewayAuth {
     /// with.
     pub fn jwt_secret(&self) -> &[u8] {
         &self.jwt_secrets[0]
+    }
+
+    /// Every signing/verification secret, in config order.
+    pub(crate) fn signing_secrets(&self) -> &[Vec<u8>] {
+        &self.jwt_secrets
     }
 
     pub fn token_ttl_seconds(&self) -> u64 {

@@ -9,9 +9,9 @@ use axum::{
 };
 
 use crate::{
-    concurrency::is_codex_request,
+    concurrency::{is_codex_request, is_exchange_path},
     config::{AccessControlConfig, LimitsConfig},
-    error::{into_openai_error_shape, ShuntError, UpstreamError},
+    error::{into_openai_error_shape, shape_gateway_error, ShuntError, UpstreamError},
     gateway::device::client_ip,
 };
 
@@ -43,6 +43,7 @@ pub(crate) async fn enforce_http_tuning(
 ) -> Response {
     let path = request.uri().path();
     let codex_shape = is_codex_request(request.uri(), tuning.codex_endpoint_enabled);
+    let oauth_shape = is_exchange_path(path);
     let allow_exempt = matches!(path, "/" | "/health");
     if tuning.access_control.enabled() {
         let peer = request
@@ -64,6 +65,7 @@ pub(crate) async fn enforce_http_tuning(
                 "permission_error",
                 "client address is not allowed",
                 codex_shape,
+                oauth_shape,
             )
             .await;
         }
@@ -79,6 +81,7 @@ pub(crate) async fn enforce_http_tuning(
                 "request_too_large",
                 "request URL exceeds the configured limit",
                 codex_shape,
+                oauth_shape,
             )
             .await;
         }
@@ -95,6 +98,7 @@ pub(crate) async fn enforce_http_tuning(
                 "request_too_large",
                 "request headers exceed the configured limit",
                 codex_shape,
+                oauth_shape,
             )
             .await;
         }
@@ -147,6 +151,7 @@ pub(crate) async fn request_too_large(codex_shape: bool) -> Response {
         "request_too_large",
         "request body exceeds the configured limit",
         codex_shape,
+        false,
     )
     .await
 }
@@ -156,13 +161,10 @@ async fn owned_error(
     error_type: &'static str,
     message: &'static str,
     codex_shape: bool,
+    oauth_shape: bool,
 ) -> Response {
     let response = ShuntError::new(status, error_type, message).into_response();
-    if codex_shape {
-        into_openai_error_shape(response).await
-    } else {
-        response
-    }
+    shape_gateway_error(response, codex_shape, oauth_shape).await
 }
 
 #[cfg(test)]
@@ -347,6 +349,60 @@ mod tests {
             assert!(body.get("type").is_none(), "{path}: {body}");
             assert_eq!(body["error"]["type"], "permission_error", "{path}: {body}");
         }
+    }
+
+    #[tokio::test]
+    async fn exchange_path_rejections_use_oauth_shape_but_other_paths_do_not() {
+        let exchange = crate::auth::exchange::PATH;
+        let denied = access(&["10.0.0.0/8"], &[]);
+        let peer = Some("192.0.2.1".parse().unwrap());
+        let url_limited = LimitsConfig {
+            max_url_length: Some(8),
+            ..LimitsConfig::default()
+        };
+        let header_limited = LimitsConfig {
+            max_request_header_bytes: Some(1),
+            ..LimitsConfig::default()
+        };
+        let cases = [
+            (
+                denied.clone(),
+                LimitsConfig::default(),
+                exchange,
+                "access_denied",
+            ),
+            (
+                AccessControlConfig::default(),
+                url_limited,
+                exchange,
+                "invalid_request",
+            ),
+            (
+                AccessControlConfig::default(),
+                header_limited,
+                exchange,
+                "invalid_request",
+            ),
+        ];
+        for (configured, limits, path, code) in cases {
+            let mut req = request(path, peer);
+            req.headers_mut().insert("x-a", "12345".parse().unwrap());
+            let response = app(configured, limits).oneshot(req).await.unwrap();
+            assert_eq!(response.headers()["cache-control"], "no-store", "{code}");
+            let body = body(response).await;
+            assert!(body.get("type").is_none(), "{body}");
+            assert_eq!(body["error"], code, "{body}");
+            assert!(body["error_description"].is_string(), "{body}");
+        }
+
+        let response = app(denied, LimitsConfig::default())
+            .oneshot(request("/v1/messages", peer))
+            .await
+            .unwrap();
+        assert!(response.headers().get("cache-control").is_none());
+        let body = body(response).await;
+        assert_eq!(body["type"], "error");
+        assert_eq!(body["error"]["type"], "permission_error");
     }
 
     #[tokio::test]

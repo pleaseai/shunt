@@ -1,11 +1,14 @@
 //! The one inbound-credential gate every gated route calls.
 //!
-//! `[server.auth]` can now accept two kinds of credential — a static
-//! `name:token` and a JWT minted by an external issuer (`[[server.auth.jwt]]`,
-//! issue #344) — and a deployment may configure either or both. Resolving that
+//! `[server.auth]` can now accept three kinds of credential — a static
+//! `name:token`, a JWT minted by an external issuer (`[[server.auth.jwt]]`,
+//! issue #344), and a shunt-issued workload exchange token
+//! (`[server.auth.exchange]`, issue #913) — and a deployment may configure any
+//! combination of them. Resolving that
 //! in each handler would mean repeating the precedence rules six times, so it
 //! lives here: static token first (a constant-time compare, no network), then
-//! JWT entries by `iss`.
+//! a shunt-issued workload exchange token (`Authorization: Bearer` only, see
+//! [`crate::auth::exchange`]), then JWT entries by `iss`.
 //!
 //! The gateway session token (`[server.gateway]`) is checked separately by the
 //! handlers that accept it, because it resolves to gateway claims rather than a
@@ -87,6 +90,14 @@ pub async fn authenticate(
         return Outcome::Authenticated {
             client: client.to_string(),
             static_token: true,
+        };
+    }
+    // A shunt-issued exchange token rides `Authorization: Bearer` only, and is
+    // checked before the JWT path: it is sync and never touches a key set.
+    if let Some(client) = auth.authenticate_exchange(headers) {
+        return Outcome::Authenticated {
+            client,
+            static_token: false,
         };
     }
     if auth.jwt().is_empty() {
@@ -172,3 +183,6 @@ pub fn unavailable_error() -> ShuntError {
 pub fn unavailable_response() -> Response {
     unavailable_error().into_response()
 }
+
+#[cfg(test)]
+mod tests;

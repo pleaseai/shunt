@@ -52,7 +52,7 @@ export SHUNT_CLIENT_TOKENS="minsu:$(openssl rand -hex 32),alice:$(openssl rand -
 
 ## 자체 identity provider의 JWT 검증
 
-조직에서 이미 identity provider를 운영한다면, `[[server.auth.jwt]]`로 공유 secret 대신 그 토큰을 받을 수 있습니다 — shunt가 인증 서버가 되지 않으면서 사용자별 신원을 얻는 방법입니다. shunt는 **검증만** 합니다: 로그인 플로우도, 세션 저장소도, 서명 secret도 없습니다. [gateway 로그인](/ko/guides/gateway-login/)과 달리 클라이언트는 여전히 base URL과 bearer만으로 구성되므로, Claude Code의 gateway provider 모드로 들어가지 않고 그 모드가 비활성화하는 기능도 잃지 않습니다.
+조직에서 이미 identity provider를 운영한다면, `[[server.auth.jwt]]`로 공유 secret 대신 그 토큰을 받을 수 있습니다 — shunt가 인증 서버가 되지 않으면서 사용자별 신원을 얻는 방법입니다. shunt는 발급자의 키로 토큰을 **검증**하며 기본적으로 아무것도 발급하지 않습니다: 로그인 플로우도, 세션 저장소도, 서명 secret도 없습니다(긴 실행 동안 새 토큰을 들고 있을 수 없는 워크로드는 [워크로드 토큰 교환](/ko/guides/github-actions-oidc/#github-agentic-workflows-gh-aw)을 옵트인할 수 있습니다). [gateway 로그인](/ko/guides/gateway-login/)과 달리 클라이언트는 여전히 base URL과 bearer만으로 구성되므로, Claude Code의 gateway provider 모드로 들어가지 않고 그 모드가 비활성화하는 기능도 잃지 않습니다.
 
 ```toml
 [server.auth]

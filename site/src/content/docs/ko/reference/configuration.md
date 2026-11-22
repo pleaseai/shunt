@@ -9,7 +9,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 설정 파일의 문자열 값은 리터럴 대신 `${VAR}` 또는 `${file:/절대/경로}`로 쓸 수 있습니다. `${VAR}`는 환경 변수 `VAR`의 값으로 치환되며 `"Bearer ${TOKEN}"`처럼 더 긴 문자열 안에 포함될 수 있습니다(변수가 없으면 로드 실패). `${file:/절대/경로}`는 해당 파일의 내용(trim)으로 치환되며, 반드시 절대 경로여야 하고 필드의 값 전체여야 합니다 — 다른 문자열에 포함될 수 없습니다(파일을 읽을 수 없거나, 상대 경로이거나, 다른 문자열에 포함되어 있으면 로드 실패). `$${`는 리터럴 `${`로 이스케이프됩니다. 치환은 재귀적이지 않습니다 — 치환된 값은 다시 스캔되지 않습니다. 이 치환은 설정 파일에만 적용되며 `SHUNT_*` 환경 변수 오버라이드는 그대로 사용됩니다. 부팅, `shunt check`, [핫 리로드](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP과 파일 감시)를 포함해 매 설정 로드마다 다시 실행되므로, `${file:}`로 참조한 시크릿은 파일을 다시 쓰고 리로드를 트리거하는 것만으로 재시작 없이 교체할 수 있습니다. 다만 교체한 값이 실제로 적용되는지는 해당 필드 자신의 리로드 동작을 따릅니다. `[sentry]`와 `[otel]`은 시작 시 한 번만 초기화되므로, 이 두 섹션의 시크릿을 교체하면 설정은 갱신되지만 적용하려면 재시작이 필요합니다.
 
-`[sentry] dsn`, `[otel.headers]` 값, `[server.gateway.telemetry] forward_to[].headers` 값, `[server.gateway.session] jwt_secret`, 그리고 `[[server.admin.write_keys]]`·`[[server.admin.read_keys]]` 각 항목의 `key` — 이 여섯 경로는 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다. 앞의 네 필드는 리터럴 값을 적어도 이전과 완전히 동일하게 동작하며, 리터럴을 담고 있으면 shunt는 부팅 시 해당 필드 경로만(값은 절대 포함하지 않음) 알리는 권고성 경고를 한 번 기록합니다. 관리자 key 배열 두 개는 예외로, 리터럴을 적으면 경고가 아니라 **설정 로드 자체가 실패**합니다.
+`[sentry] dsn`, `[otel.headers]` 값, `[server.gateway.telemetry] forward_to[].headers` 값, `[server.gateway.session] jwt_secret`, `[server.auth.exchange] signing_secret`, 그리고 `[[server.admin.write_keys]]`·`[[server.admin.read_keys]]` 각 항목의 `key` — 이 일곱 경로는 redacting secret 타입으로 진단 출력에서 `[redacted]`로 표시됩니다. 앞의 다섯 필드는 리터럴 값을 적어도 이전과 완전히 동일하게 동작하며, 리터럴을 담고 있으면 shunt는 설정을 읽을 때마다(부팅 시와 핫 리로드 때마다) 해당 필드 경로만(값은 절대 포함하지 않음) 알리는 권고성 경고를 한 번 기록합니다. 관리자 key 배열 두 개는 예외로, 리터럴을 적으면 경고가 아니라 **설정 로드 자체가 실패**합니다.
 
 기존 `tokens_env`, `jwt_secret_env`, `client_secret_env`, `api_key_env`, `users_env`, `token_env`, `tokens_file` 필드는 이 변경의 영향을 받지 않으며 그대로 환경 변수(또는 `tokens_file`의 경우 파일 경로)를 가리킵니다(`jwt_secret_env`는 별도로 [`session.jwt_secret`](#servergatewaysession-선택)로 대체되어 deprecated됨).
 
@@ -54,7 +54,7 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 ### `[[server.auth.jwt]]` (선택)
 
-인바운드 자격 증명의 두 번째 종류를 추가하는 테이블 배열입니다. 외부 identity provider가 발급한 JWT를 shunt가 **검증만 하고 발급은 전혀 하지 않습니다** — 로그인 플로우도, 세션 저장소도, 서명 secret도 없습니다. 클라이언트는 정적 토큰과 똑같이(base URL + bearer) 구성하므로, `[server.gateway]` 로그인과 달리 Claude Code를 gateway provider 모드로 넣지 않고 그 모드가 비활성화하는 클라이언트 기능도 잃지 않습니다. [동작 명세](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)를 참고하세요.
+인바운드 자격 증명의 두 번째 종류를 추가하는 테이블 배열입니다. 외부 identity provider가 발급한 JWT를 shunt가 발급자의 key set으로 **검증합니다**. 이 경로에서 shunt는 자체 토큰을 발급하지 않습니다 — 로그인 플로우도, 세션 저장소도, 서명 secret도 없습니다. 다만 항목을 [워크로드 토큰 교환](#serverauthexchange-선택)에 옵트인하면 예외입니다. 클라이언트는 정적 토큰과 똑같이(base URL + bearer) 구성하므로, `[server.gateway]` 로그인과 달리 Claude Code를 gateway provider 모드로 넣지 않고 그 모드가 비활성화하는 클라이언트 기능도 잃지 않습니다. [동작 명세](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)를 참고하세요.
 
 ```toml
 [server.auth]
@@ -87,6 +87,7 @@ identity_claim = "repository"
 | `clock_skew_seconds` | `0` | `exp`와 `nbf`에 적용되는 허용 오차 |
 | `max_token_age_seconds` | `3600` | `exp - iat`가 이 값을 넘으면 거부 |
 | `jwks_url` | discovery | discovery 문서를 제공하지 않는 issuer용 명시적 JWKS 엔드포인트 |
+| `exchange` | `false` | 이 항목을 [워크로드 토큰 교환](#serverauthexchange-선택)에 옵트인. `[server.auth.exchange]`가 필요 |
 
 각 항목에는 `issuer`, `audience`, 그리고 인가 규칙이 최소 하나 필요합니다: `email_domains`/`allowed_emails` 값, `aud`·`iss` 외의 클레임을 지정한 `require` 테이블(이 둘은 shunt가 이미 하는 검사를 반복할 뿐입니다), 또는 `subject_prefix`. `audience`만으로는 인가 규칙이 되지 않습니다 — issuer에 따라서는 호출자가 audience를 스스로 정하기 때문입니다(어떤 GitHub 저장소든 임의의 `aud`로 토큰을 발급할 수 있습니다). 이메일 규칙이 없는 항목은 `identity_claim`도 설정해야 합니다. 구성된 모든 그룹(이메일 규칙, `require`, `subject_prefix`)을 통과해야 합니다. `email_verified = true`는 항목에 이메일 규칙이 있거나, 신원 클레임이 `email`이거나, `require`가 `email`을 지정할 때 강제되며, 그 밖의 항목은 `email`을 읽지 않습니다. `algorithms`에 대칭 알고리즘이나 알 수 없는 값이 있어도, `issuer`가 `[server.gateway]`의 `public_url`과 같아도 시작은 닫힌 채로 실패합니다. 두 검증기가 같은 bearer 슬롯을 읽으므로, issuer가 겹치면 토큰의 소유권이 평가 순서에 좌우됩니다.
 
@@ -97,6 +98,36 @@ JWT는 `Authorization: Bearer`로 받습니다 — Claude Code가 이미 `ANTHRO
 key set은 issuer별로 최초 사용 시점에 lazy하게 가져오므로 IdP에 접근할 수 없어도 시작을 막지 않습니다. 캐시된 key set은 최대 5분 동안만 신뢰하고, 그 뒤에는 다음 요청이 재조회를 시도합니다(60초 재조회 하한 적용). 재조회에 성공하면 key set을 통째로 교체하므로 issuer가 철회한 키는 약 5분 안에 검증에서 빠집니다. 재조회에 실패하면 IdP 장애가 전면 장애로 번지지 않도록 만료된 key set을 계속 쓰고, discovery 자체가 실패하면 마지막으로 발견한 `jwks_uri`를 대신 시도합니다. config reload는 항목의 `issuer`와 `jwks_url`이 모두 그대로일 때만 캐시된 키를 유지합니다. 알 수 없는 `kid`는 key set당 60초 창에서 최대 한 번만 재조회를 유발합니다. 어떤 항목으로도 검증되지 않은 토큰은 `401`이고, 검증된 항목이 없으면서 토큰의 issuer와 일치하는 항목 중 캐시된 key set이 없는데 가져오기도 실패한 것이 있으면 **`503`**입니다 — IdP 장애가 잘못된 자격 증명으로 보고되지 않습니다.
 
 shunt는 취소(revocation) 상태를 보관하지 않으므로 유효한 토큰은 만료될 때까지 동작합니다. 그 범위를 제한하는 것이 `max_token_age_seconds`이며, issuer는 분 단위 수명의 토큰을 발급해야 합니다. 허용 목록에서 도메인이나 주소를 제거하면 다음 요청부터 적용됩니다.
+
+### `[server.auth.exchange]` (선택)
+
+워크로드가 검증된 JWT를 shunt가 직접 서명한 수명이 짧은 토큰으로 바꾸게 합니다. 실행 내내 새 IdP 토큰을 들고 있을 수 없는 클라이언트(예: AWF sidecar 뒤의 GitHub Agentic Workflows)가 게이트웨이를 계속 호출할 수 있습니다. `POST /v1/oauth/token`을 추가하며, shunt가 이미 신뢰하는 신원의 수명만 늘릴 뿐 같은 JWT를 직접 쓸 때 인가되지 않을 호출자를 인가하지는 않습니다. 기본값은 없음이며, 없으면 이 라우트는 `404`로 응답합니다. [동작 명세](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)와 [GitHub Actions 가이드](/ko/guides/github-actions-oidc/#github-agentic-workflows-gh-aw)를 참고하세요.
+
+```toml
+[server.auth.exchange]
+signing_secret = "${SHUNT_EXCHANGE_SECRET}"
+max_ttl_seconds = 3600
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567" }
+identity_claim = "repository"
+exchange = true
+```
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `signing_secret` | 필수 | 32바이트 이상의 HS256 서명 secret. 문자열 하나 또는 로테이션용 배열이며, 첫 항목이 서명하고 모든 항목이 검증합니다. `Secret` 타입 필드로 [`[server.gateway.session] jwt_secret`](#servergatewaysession-선택)과 문법이 같습니다 |
+| `max_ttl_seconds` | `3600` | 발급 토큰의 수명이자 엔드포인트가 보고하는 `expires_in`. 0보다 커야 합니다. assertion 자체의 수명과 무관합니다. 짧게 유지하세요 — 토큰이 그 뒤의 신원보다 오래 살아남는 기간의 상한입니다. 다만 gh-aw에서는 300초보다 넉넉히 크게 두세요. 그 이하면 AWF sidecar가 토큰을 받자마자 다시 교환합니다 |
+
+엔드포인트는 `exchange = true`인 `[[server.auth.jwt]]` 항목만 시도하며, assertion은 그 항목에서 같은 JWT를 `Authorization: Bearer`로 보냈을 때와 똑같이 검증됩니다. 시작과 `shunt check`는 다음의 경우 실패합니다: 이 테이블 없이 `exchange = true`(메시지가 항목을 지목), 옵트인한 항목이 없는 이 테이블, 빈 `signing_secret` 목록, 32바이트 미만 secret(메시지가 인덱스를 지목), `max_ttl_seconds = 0`, `[server.gateway]` 세션 서명 secret과 같은 secret(두 토큰 계열은 secret을 공유하면 안 됩니다), `issuer`가 `urn:shunt:workload-exchange`인 항목(예약됨).
+
+라우트는 부팅 시 이 테이블이 있을 때만 등록되므로 추가하려면 재시작이 필요하고, reload로 테이블을 제거하면 라우트가 `404`가 됩니다. 나머지는 모두 핫 리로드됩니다.
+
+발급된 토큰은 `[[server.auth.jwt]]` JWT를 받는 모든 라우트(`/v1/messages`, `count_tokens`, 모델 탐색, `GET /usage`, `GET /api/oauth/usage`, 인바운드 Codex 엔드포인트)에서 `Authorization: Bearer`로만 받으며, JWT를 직접 쓸 때와 같은 신원, 사용량, spend 주체로 처리됩니다. `x-api-key`, `[server.auth]`의 `header`, `jwt_header`, `jwt_cookie`에서는 읽지 않고, 관리자 화면, spend Admin API, 텔레메트리 수집은 인증하지 않습니다. 둘 다 있으면 정적 토큰이 우선합니다. shunt는 발급된 토큰을 상태와 관계없이 업스트림으로 전달하지 않습니다.
+
+발급된 토큰은 assertion을 검증한 항목에 묶입니다. 그 항목의 `issuer`, `audience`, `algorithms`, `authorized_parties`, `email_domains`, `allowed_emails`, `require`, `subject_prefix`, `identity_claim`의 지문을 담습니다(`jwks_url`, `clock_skew_seconds`, `max_token_age_seconds`는 제외). 항목을 제거하거나, `exchange = true`를 지우거나, 이 규칙을 하나라도 바꾸거나, 토큰을 검증하는 서명 secret을 전부 빼면 이미 발급된 토큰은 다음 핫 리로드부터 거부됩니다. 옵트인한 항목이 그것 하나뿐이면 같은 수정에서 `[server.auth.exchange]`도 지우세요. 옵트인한 항목이 없는 테이블은 검증에 실패하고, 리로드는 이전 설정을 유지합니다. 따라서 규칙을 수정하면 실행 중인 GitHub Agentic Workflows 실행은 AWF sidecar의 다음 예약 갱신까지 끊깁니다. 토큰 단위 취소는 없고, 이 릴리스에서는 엔드포인트에 속도 제한이 없습니다([#914](https://github.com/pleaseai/shunt/issues/914)).
 
 ### Codex gateway OAuth: `jwt_header`와 `jwt_cookie`
 

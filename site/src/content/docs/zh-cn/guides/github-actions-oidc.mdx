@@ -99,6 +99,61 @@ jobs:
 
 `audience` 必须与 shunt 条目中的 `audience` 相同。`::add-mask::` 会在保存 token 之前把它注册为 secret,因此即使进入日志也会被遮盖;但仍然不要 `echo` 它,也不要用 `set -x` 运行。来自 fork 的 pull request 的 token 不会获得写权限(GitHub 会把它降为只读),所以由 fork 的 pull request 触发的 job 通常无法请求 OIDC token。编写 `pull_request` workflow 时请记住这一点。
 
+## GitHub Agentic Workflows (gh-aw)
+
+[GitHub Agentic Workflows](https://github.github.com/gh-aw/) 在 AWF 防火墙沙箱内运行 Claude Code,凭据由 AWF api-proxy sidecar 持有,而不是 agent。上面的直接方式不适用:OIDC token 约 5 分钟后过期,agent 无法签发新的 token,而 sidecar 的静态密钥路径发送的是 `x-api-key`,shunt 从不从它读取 JWT。
+
+gh-aw 为 Claude 提供的免密钥方案是可配置 `token-url` 的 Anthropic Workload Identity Federation(`engine.auth.type: github-oidc`,`provider: anthropic`)。sidecar 签发 GitHub OIDC token,在该 URL 上把它换成访问 token,缓存访问 token,并在过期前刷新。shunt 可以通过[工作负载 token 交换](/zh-cn/reference/configuration/#serverauthexchange可选)充当这个 URL:无需静态 secret,运行多久都可以。
+
+在上面 shunt 配置里的条目中加入交换:
+
+```toml
+[server.auth.exchange]
+signing_secret = "${SHUNT_EXCHANGE_SECRET}"   # at least 32 bytes, kept separate from any [server.gateway] secret
+max_ttl_seconds = 3600
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]     # same value as oidc-audience below
+require = { repository_owner_id = "1234567", repository_id = ["7654321"] }
+identity_claim = "repository"
+exchange = true
+```
+
+Workflow frontmatter:
+
+```yaml
+permissions:
+  id-token: write
+engine:
+  id: claude
+  env:
+    ANTHROPIC_BASE_URL: https://shunt.example.com
+  auth:
+    type: github-oidc
+    provider: anthropic
+    oidc-audience: https://shunt.example.com
+    token-url: https://shunt.example.com/v1/oauth/token
+    federation-rule-id: fdrl_shunt        # placeholders; shunt ignores these
+    organization-id: org_shunt
+    service-account-id: svac_shunt
+    workspace-id: ws_shunt
+```
+
+工作方式与注意事项:
+
+- **把 `oidc-audience` 和条目的 `audience` 设为同一个 shunt 专用的值。** 起授权作用的仍然是 `require`,与上文一致。
+- **切勿把 `https://api.anthropic.com` 用作条目的 `audience`。** 省略该字段时它就是 sidecar 默认的 `oidc-audience`,接受它的条目会接受为 Anthropic 签发的 token。务必显式设置 `oidc-audience`。
+- **federation id 只是占位符。** sidecar 构造请求时需要它们,shunt 接受并忽略。
+- **签发的 token 是 shunt 自己的 token。** 它带有与直接使用 JWT 相同的身份(此处为 `org/repo`),在接受 `[[server.auth.jwt]]` JWT 的路由上认证 `Authorization: Bearer`,并按该身份归属用量、受 spend 限制。其有效期为 `max_ttl_seconds`,与 assertion 的 5 分钟无关,sidecar 会在过期前重新交换。
+- **修改规则会使正在运行的 workflow 中断。** token 绑定到条目的规则(`issuer`、`audience`、`algorithms`、`authorized_parties`、邮箱规则、`require`、`subject_prefix`、`identity_claim`)。移除该条目、清除 `exchange = true`、修改其中任何一项,或去掉所有能验证它的签名 secret,都会让已签发的 token 在下一次热重载时被拒绝。如果它是唯一选择加入的条目,请在同一次修改中同时移除 `[server.auth.exchange]`:没有条目选择加入的表无法通过验证,重载会保留之前的配置。已经在运行的 workflow 会一直持有旧 token,直到 sidecar 下一次定时刷新,在此之前它的请求会以 `401` 失败。请在没有 workflow 正在运行时修改规则。
+- **用于 gh-aw 时,请让 `max_ttl_seconds` 明显大于 300。** sidecar 把下一次交换安排在 `expires_in` 的 75% 处与过期前 300 秒两者中较早的时刻,若结果小于零则立即执行。因此在 300 秒或更短时,它每拿到一个 token 就会立即重新交换。默认值 3600 会在 45 分钟后刷新。
+- **通过在前面追加来轮换签名 secret。** 使用列表 `["new", "old"]`:第一项签名,所有项都验证。`max_ttl_seconds` 过后再去掉 `"old"`。
+- sidecar 在交换请求上发送 `anthropic-beta: oauth-2025-04-20,oidc-federation-2026-04-01`,在 API 请求上发送 `anthropic-beta: oauth-2025-04-20`,shunt 像对待其他请求一样路由它们。
+- 本版本没有对交换端点限流([#914](https://github.com/pleaseai/shunt/issues/914))。
+
+交换失败时,sidecar 会记录 OAuth 错误:`invalid_grant`(`401`)表示 assertion 未通过验证(使用故障排查中的表格;响应不会说明哪项检查失败),`unsupported_grant_type` 或 `invalid_request`(`400`)表示请求不是端点期望的 jwt-bearer JSON,`temporarily_unavailable`(`503`)表示 shunt 无法拉取 GitHub 的 key set;如果带有 `Retry-After: 1`,则表示网关已达到入站并发上限。`404` 表示 shunt 启动时没有 `[server.auth.exchange]`,或之后的重载已将其移除。
+
 ## Token 有效期
 
 OIDC token 是 bearer:到期之前一直有效,而 shunt 不保存吊销状态。GitHub 文档把 `exp` 和 `iat` 列为 claim,但没有说明有效期;GitHub 自己的企业示例中的 token,其 `exp - iat` 为 300 秒。shunt 只在 `exp - iat` *超过* `max_token_age_seconds`(默认 `3600`)时才拒绝,所以默认值可以接受它。较长的 job 应在每个调用 shunt 的阶段之前,用与上面相同的步骤重新请求新 token,而不是在整个 job 中持有同一个。单个进程(例如一个 Claude Code 会话)会一直使用启动时拿到的 token,token 过期后会收到 `401`。对于运行时间超过 token 有效期的会话,请把一个用同样方式请求新 token 的脚本配置为 Claude Code 的 `apiKeyHelper`(请求所需的变量在带有 `id-token: write` 的 job 的每个步骤中都会设置),并且启动 Claude Code 时不要设置 `ANTHROPIC_AUTH_TOKEN`:已设置的 `ANTHROPIC_AUTH_TOKEN` 优先于 `apiKeyHelper`,会话会一直使用过期的 token。

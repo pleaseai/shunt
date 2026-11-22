@@ -9,7 +9,7 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 設定ファイルの文字列値は、リテラルの代わりに `${VAR}` または `${file:/絶対/パス}` として書けます。`${VAR}` は環境変数 `VAR` の値に置き換わり、`"Bearer ${TOKEN}"` のようにより長い文字列に埋め込むこともできます(変数が未定義だと設定の読み込みは失敗します)。`${file:/絶対/パス}` は指定したファイルの内容(トリム済み)に置き換わり、パスは絶対パスでなければならず、フィールドの値全体でなければなりません — 他の文字列に埋め込むことはできません(ファイルが読み取れない、パスが相対パスである、または他の文字列に埋め込まれている場合、設定の読み込みは失敗します)。`$${` はリテラルの `${` にエスケープされます。解決は再帰的ではありません — 解決済みの値は再スキャンされません。この置換は設定ファイルにのみ適用され、`SHUNT_*` 環境変数オーバーライドはそのまま使われます。起動時、`shunt check`、[ホットリロード](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP とファイル監視)を含む設定の読み込みのたびに再実行されるため、`${file:}` で参照したシークレットはファイルを書き換えてリロードをトリガーするだけで、再起動なしにローテーションできます。ただし、ローテーションした値が実際に反映されるかどうかは、そのフィールド自身のリロード動作に従います。`[sentry]` と `[otel]` は起動時に一度だけ初期化されるため、この 2 つのセクションのシークレットをローテーションしても設定が更新されるだけで、反映するには再起動が必要です。
 
-`[sentry] dsn`、`[otel.headers]` の値、`[server.gateway.telemetry] forward_to[].headers` の値、`[server.gateway.session] jwt_secret`、そして `[[server.admin.write_keys]]`・`[[server.admin.read_keys]]` 各エントリーの `key` — この 6 つのフィールドパスは redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます。前の 4 つはリテラル値を書いても以前とまったく同じように動作し、リテラルを保持している場合、shunt は起動時に該当するフィールドパスのみを(値は決して含めずに)知らせる勧告的な警告を 1 回記録します。管理キー配列の 2 つは例外で、リテラルを書くと警告ではなく**設定の読み込み自体が失敗**します。
+`[sentry] dsn`、`[otel.headers]` の値、`[server.gateway.telemetry] forward_to[].headers` の値、`[server.gateway.session] jwt_secret`、`[server.auth.exchange] signing_secret`、そして `[[server.admin.write_keys]]`・`[[server.admin.read_keys]]` 各エントリーの `key` — この 7 つのフィールドパスは redacting secret 型として扱われ、診断出力では `[redacted]` と表示されます。前の 5 つはリテラル値を書いても以前とまったく同じように動作し、リテラルを保持している場合、shunt は設定を読み込むたびに(起動時とホットリロードのたびに)該当するフィールドパスのみを(値は決して含めずに)知らせる勧告的な警告を 1 回記録します。管理キー配列の 2 つは例外で、リテラルを書くと警告ではなく**設定の読み込み自体が失敗**します。
 
 既存の `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` フィールドはこの変更の影響を受けず、引き続き環境変数(`tokens_file` の場合はファイルパス)を指します(`jwt_secret_env` は別途 [`session.jwt_secret`](#servergatewaysessionオプション) に置き換えられ deprecated です)。
 
@@ -54,7 +54,7 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 ### `[[server.auth.jwt]]`（オプション）
 
-インバウンド認証情報の 2 つ目の種類を追加するテーブル配列です。外部 identity provider が発行した JWT を shunt は**検証するだけで、発行は一切しません** — ログインフローもセッションストアも署名 secret もありません。クライアントの設定は静的トークンと同じ（base URL と bearer）なので、`[server.gateway]` ログインと違って Claude Code を gateway provider モードに入れず、そのモードで無効化されるクライアント機能も失いません。[動作仕様](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)を参照してください。
+インバウンド認証情報の 2 つ目の種類を追加するテーブル配列です。外部 identity provider が発行した JWT を、shunt は発行元の鍵セットで**検証します**。この経路で shunt は独自のトークンを発行しません — ログインフローもセッションストアも署名 secret もありません。ただし、エントリを[ワークロードトークン交換](#serverauthexchangeオプション)にオプトインした場合は例外です。クライアントの設定は静的トークンと同じ（base URL と bearer）なので、`[server.gateway]` ログインと違って Claude Code を gateway provider モードに入れず、そのモードで無効化されるクライアント機能も失いません。[動作仕様](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)を参照してください。
 
 ```toml
 [server.auth]
@@ -87,6 +87,7 @@ identity_claim = "repository"
 | `clock_skew_seconds` | `0` | `exp` と `nbf` に適用する許容誤差 |
 | `max_token_age_seconds` | `3600` | `exp - iat` がこれを超えたら拒否 |
 | `jwks_url` | discovery | discovery ドキュメントを提供しない issuer 向けの明示的な JWKS エンドポイント |
+| `exchange` | `false` | このエントリを[ワークロードトークン交換](#serverauthexchangeオプション)にオプトインする。`[server.auth.exchange]` が必要 |
 
 各エントリには `issuer`、`audience`、そして認可ルールが最低 1 つ必要です: `email_domains`/`allowed_emails` の値、`aud`・`iss` 以外のクレームを指定した `require` テーブル（この 2 つは shunt がすでに行う検査の繰り返しにすぎません）、または `subject_prefix`。`audience` だけでは認可ルールになりません — issuer によっては呼び出し側が自分で audience を選べるからです（任意の GitHub リポジトリが任意の `aud` でトークンを発行できます）。メールルールのないエントリは `identity_claim` も設定する必要があります。設定されたすべてのグループ（メールルール、`require`、`subject_prefix`）を通過する必要があります。`email_verified = true` は、エントリにメールルールがある場合、identity クレームが `email` の場合、または `require` が `email` を指定している場合に強制され、それ以外のエントリは `email` を読みません。`algorithms` に対称アルゴリズムや未知の値がある場合、また `issuer` が `[server.gateway]` の `public_url` と同じ場合も、起動は fail closed します。両方の検証器が同じ bearer スロットを読むため、issuer が重なるとトークンの所有権が評価順に左右されます。
 
@@ -97,6 +98,36 @@ JWT は `Authorization: Bearer` で受け付けます。これは Claude Code �
 key set は issuer ごとに初回使用時に遅延取得されるため、IdP に到達できなくても起動を妨げません。キャッシュした key set を信頼するのは最大 5 分で、その後は次のリクエストが再取得を試みます（60 秒の再取得下限が適用されます）。再取得に成功すると key set を丸ごと置き換えるため、issuer が取り下げた鍵は約 5 分以内に検証に使われなくなります。再取得に失敗した場合は、IdP の障害が全面停止に広がらないよう期限切れの key set を使い続け、discovery 自体が失敗したときは最後に発見した `jwks_uri` を代わりに試します。config reload は、エントリの `issuer` と `jwks_url` がどちらも変わらない場合に限りキャッシュ済みの鍵を保持します。未知の `kid` は key set あたり 60 秒のウィンドウで最大 1 回しか再取得を起こしません。どのエントリでも検証できなかったトークンは `401`、検証できたエントリがなく、トークンの issuer に一致するエントリのうちキャッシュ済みの key set がなく取得にも失敗したものがある場合は **`503`** です — IdP の障害が不正な認証情報として報告されることはありません。
 
 shunt は失効状態を保持しないため、有効なトークンは期限まで使えます。その範囲を制限するのが `max_token_age_seconds` で、issuer は分単位の寿命のトークンを発行すべきです。許可リストからドメインやアドレスを削除した場合は次のリクエストから反映されます。
+
+### `[server.auth.exchange]`（オプション）
+
+ワークロードが、検証済みの JWT を shunt 自身が署名する有効期間の短いトークンに交換できるようにします。実行の間ずっと新しい IdP トークンを持てないクライアント（たとえば AWF sidecar の背後の GitHub Agentic Workflows）が、ゲートウェイを呼び続けられます。`POST /v1/oauth/token` を追加します。shunt がすでに信頼している ID の有効期間を延ばすだけで、同じ JWT を直接使った場合に認可されない呼び出し元を認可することはありません。既定では未設定で、その場合このルートは `404` を返します。[動作仕様](https://github.com/pleaseai/shunt/blob/main/docs/inbound-jwt-auth.md)と [GitHub Actions ガイド](/ja/guides/github-actions-oidc/#github-agentic-workflows-gh-aw)を参照してください。
+
+```toml
+[server.auth.exchange]
+signing_secret = "${SHUNT_EXCHANGE_SECRET}"
+max_ttl_seconds = 3600
+
+[[server.auth.jwt]]
+issuer = "https://token.actions.githubusercontent.com"
+audience = ["https://shunt.example.com"]
+require = { repository_owner_id = "1234567" }
+identity_claim = "repository"
+exchange = true
+```
+
+| キー | 既定値 | 意味 |
+| :-- | :-- | :-- |
+| `signing_secret` | 必須 | 32 バイト以上の HS256 署名 secret。文字列 1 つ、またはローテーション用の配列で、先頭が署名し、すべての要素が検証します。`Secret` 型のフィールドで、[`[server.gateway.session] jwt_secret`](#servergatewaysessionオプション) と構文が同じです |
+| `max_ttl_seconds` | `3600` | 発行トークンの有効期間で、エンドポイントが返す `expires_in`。0 より大きくする必要があります。assertion 自身の有効期間とは無関係です。短く保ってください — トークンがその背後の ID より長く生き残る期間の上限になります。ただし gh-aw では 300 秒より十分大きくしてください。それ以下では AWF sidecar がトークンを受け取るたびにすぐ交換し直します |
+
+エンドポイントが試すのは `exchange = true` の `[[server.auth.jwt]]` エントリだけで、assertion は同じ JWT を `Authorization: Bearer` で送った場合とまったく同じようにそのエントリで検証されます。起動と `shunt check` は次の場合に失敗します: このテーブルなしの `exchange = true`（メッセージがエントリを示す）、オプトインしたエントリがないこのテーブル、空の `signing_secret` リスト、32 バイト未満の secret（メッセージがインデックスを示す）、`max_ttl_seconds = 0`、`[server.gateway]` のセッション署名 secret と同じ secret（2 つのトークン系列は secret を共有してはいけません）、`issuer` が `urn:shunt:workload-exchange` のエントリ（予約済み）。
+
+ルートは起動時にこのテーブルがあるときだけ登録されるため、追加には再起動が必要で、リロードでテーブルを削除するとルートは `404` になります。それ以外はすべてホットリロードされます。
+
+発行されたトークンは、`[[server.auth.jwt]]` の JWT を受け付けるすべてのルート（`/v1/messages`、`count_tokens`、モデル検出、`GET /usage`、`GET /api/oauth/usage`、インバウンド Codex エンドポイント）で `Authorization: Bearer` としてのみ受け付けられ、JWT を直接使った場合と同じ ID、使用量、spend の主体として扱われます。`x-api-key`、`[server.auth]` の `header`、`jwt_header`、`jwt_cookie` からは読まれず、管理画面、spend Admin API、テレメトリ取り込みは認証しません。両方ある場合は静的トークンが優先されます。shunt は発行されたトークンを、状態にかかわらず上流へ転送しません。
+
+発行されたトークンは、assertion を検証したエントリに紐づきます。そのエントリの `issuer`、`audience`、`algorithms`、`authorized_parties`、`email_domains`、`allowed_emails`、`require`、`subject_prefix`、`identity_claim` のフィンガープリントを持ちます（`jwks_url`、`clock_skew_seconds`、`max_token_age_seconds` は対象外）。エントリの削除、`exchange = true` の解除、これらのルールの変更、そのトークンを検証できる署名 secret をすべて外すことのいずれでも、すでに発行されたトークンは次のホットリロードで拒否されます。オプトインしたエントリがそれ 1 つだけなら、同じ編集で `[server.auth.exchange]` も削除してください。オプトインしたエントリがないテーブルは検証に失敗し、リロードは以前の設定を保ちます。そのためルールを編集すると、実行中の GitHub Agentic Workflows の実行は、AWF sidecar の次の定期更新まで切断されます。トークン単位の失効はなく、このリリースではエンドポイントにレート制限がありません（[#914](https://github.com/pleaseai/shunt/issues/914)）。
 
 ### Codex gateway OAuth: `jwt_header` と `jwt_cookie`
 

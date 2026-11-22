@@ -1,5 +1,5 @@
 use axum::{
-    body::to_bytes,
+    body::{to_bytes, Bytes},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -235,6 +235,43 @@ struct OpenAiErrorDetail {
     code: Option<String>,
 }
 
+/// Split a gateway-owned error [`Response`] into the parts both re-shapers need:
+/// its status, the `Retry-After` header (the one header carried onto the rebuilt
+/// response; the rest are framing for the old body), and its body bytes.
+///
+/// Gateway-owned error bodies are tiny JSON envelopes; the read is capped at
+/// 64 KiB as defense-in-depth. The bound is never hit in practice, and an
+/// oversized body degrades to `None` (each caller's fallback) rather than an OOM.
+async fn take_gateway_error_parts(
+    response: Response,
+) -> (StatusCode, Option<axum::http::HeaderValue>, Option<Bytes>) {
+    let status = response.status();
+    let retry_after = response
+        .headers()
+        .get(axum::http::header::RETRY_AFTER)
+        .cloned();
+    let body = to_bytes(response.into_body(), 64 * 1024).await.ok();
+    (status, retry_after, body)
+}
+
+/// Apply the gateway-owned error shape for the request path: the OpenAI
+/// Responses envelope on the inbound Codex endpoint, the OAuth envelope on the
+/// token-exchange route, otherwise the response unchanged. Codex wins if both
+/// flags are set.
+pub(crate) async fn shape_gateway_error(
+    response: Response,
+    codex_shape: bool,
+    oauth_shape: bool,
+) -> Response {
+    if codex_shape {
+        into_openai_error_shape(response).await
+    } else if oauth_shape {
+        into_oauth_error_shape(response).await
+    } else {
+        response
+    }
+}
+
 /// Re-shape a gateway-owned, Anthropic-shaped error [`Response`] into the OpenAI
 /// Responses error envelope, preserving the HTTP status.
 ///
@@ -247,17 +284,7 @@ struct OpenAiErrorDetail {
 /// failures are re-shaped here. The status code (and thus the client's retry
 /// behavior) is unchanged.
 pub async fn into_openai_error_shape(response: Response) -> Response {
-    let status = response.status();
-    // The body is rebuilt, so carry the one header that tells the client when to
-    // retry (the cap-exhaustion 429 sets it); the rest are framing for the old body.
-    let retry_after = response
-        .headers()
-        .get(axum::http::header::RETRY_AFTER)
-        .cloned();
-    // Gateway-owned error bodies are tiny JSON envelopes; cap the read at 64 KiB
-    // as defense-in-depth. The bound is never hit in practice, and an oversized
-    // body degrades to the empty-message fallback below rather than an OOM.
-    let body = to_bytes(response.into_body(), 64 * 1024).await.ok();
+    let (status, retry_after, body) = take_gateway_error_parts(response).await;
     let (kind, message) = body
         .as_deref()
         .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
@@ -295,6 +322,47 @@ pub async fn into_openai_error_shape(response: Response) -> Response {
         }),
     )
         .into_response();
+    if let Some(retry_after) = retry_after {
+        shaped
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, retry_after);
+    }
+    shaped
+}
+
+/// Re-shape a gateway-owned, Anthropic-shaped error [`Response`] into the
+/// OAuth error envelope (`{"error", "error_description"}`) with
+/// `Cache-Control: no-store`, preserving the HTTP status and `Retry-After`.
+///
+/// `POST /v1/oauth/token` answers OAuth-shaped errors because its client (the
+/// AWF sidecar) parses them as OAuth errors; middleware rejections that wrap
+/// that route (concurrency shed, access control, size limits) use this so the
+/// wire matches the handler's own errors. The `error_description` is fixed per
+/// code: the wrapped message would name the middleware check that rejected the
+/// request, which the exchange contract never discloses.
+pub async fn into_oauth_error_shape(response: Response) -> Response {
+    let (status, retry_after, _body) = take_gateway_error_parts(response).await;
+    let (code, description) = match status {
+        StatusCode::SERVICE_UNAVAILABLE => (
+            "temporarily_unavailable",
+            "The service is temporarily unavailable.",
+        ),
+        StatusCode::FORBIDDEN => ("access_denied", "The request was denied."),
+        status if status.is_client_error() => ("invalid_request", "The request was rejected."),
+        _ => ("server_error", "The request could not be processed."),
+    };
+    let mut shaped = (
+        status,
+        Json(serde_json::json!({
+            "error": code,
+            "error_description": description,
+        })),
+    )
+        .into_response();
+    shaped.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
     if let Some(retry_after) = retry_after {
         shaped
             .headers_mut()

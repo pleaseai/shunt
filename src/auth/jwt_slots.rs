@@ -1,5 +1,5 @@
 //! Resolution and validation of the optional `[server.auth] jwt_header` and
-//! `jwt_cookie` slots: the extra places a verify-only JWT (see
+//! `jwt_cookie` slots: the extra places an externally issued JWT (see
 //! [`crate::auth::inbound_jwt`]) may be presented. They exist for the Codex
 //! CLI's native `gateway_oauth`, which delivers the identity-provider token in a
 //! named header or cookie because Codex reserves `Authorization`. This module
