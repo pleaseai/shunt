@@ -151,3 +151,22 @@ Alternatives rejected: an asymmetric signing key with a JWKS endpoint (more surf
 - 2026-11-21: T003 precedence when a request is wrong in several ways: non-object body or wrongly typed `grant_type`/`assertion` is `invalid_request`; then absent/other `grant_type` is `unsupported_grant_type`; then missing/blank `assertion` is `invalid_request`. The 400 body size cap is 64 KiB.
 - 2026-11-21: separate signing key, table plus per-entry opt-in, and no rate limiting in this track (user decisions on the issue's open questions). A rule change revokes outstanding tokens (spec review D1).
 - 2026-11-21: added `[FR/NFR/AC]` traceability tags to the task lines so the coverage gate maps them (no requirement change). Reused the issue-linked worktree branch as `code_branch` instead of creating one with `gh issue develop`.
+
+## Known Issues
+
+Recorded at the end of `/please:review` (2026-11-22). Every review engine that could run found no Critical or Important finding on HEAD 36770a5d.
+
+- greptile did not run in this review. The local CLI aborts at load because node cannot find `libada.3.dylib` (Homebrew `ada-url`). The other engines, gpt, ocr and cubic, ran every iteration.
+- Validated Minor findings left for a follow-up, tracked in #916:
+  - precompute entry fingerprints instead of hashing on every request;
+  - stop deriving the fingerprint from `Algorithm`'s `Debug` output;
+  - gate the middleware's OAuth error shape on the route being registered;
+  - decide on the 403 `access_denied` code;
+  - list the middleware 403/414/431 answers and axum's 405 in the endpoint error tables.
+- Rejected as by design and recorded in `.please/docs/review/rejected-findings.jsonl`:
+  - no upper bound on `max_ttl_seconds`;
+  - lowering `max_ttl_seconds` leaves tokens already issued valid until their `exp` (spec FR-8);
+  - `jwks_url` is excluded from the fingerprint;
+  - an oversized body answers 400, not 413.
+- NFR-2 is still PARTIAL: no test captures the exchange's log lines.
+- The live run against a real IdP (GitHub OIDC from a gh-aw workflow) has not been done yet. It belongs before merge.
