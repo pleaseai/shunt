@@ -154,7 +154,7 @@ Alternatives rejected: an asymmetric signing key with a JWKS endpoint (more surf
 
 ## Known Issues
 
-Recorded at the end of `/please:review` (2026-11-22). Every review engine that could run found no Critical or Important finding on HEAD 36770a5d.
+Recorded at the end of `/please:review` (2026-11-22). Every review engine that could run found no Critical or Important finding on HEAD 36770a5d, or on the simplify commit 8ab4172e that followed.
 
 - greptile did not run in this review. The local CLI aborts at load because node cannot find `libada.3.dylib` (Homebrew `ada-url`). The other engines, gpt, ocr and cubic, ran every iteration.
 - Validated Minor findings left for a follow-up, tracked in #916:
@@ -163,6 +163,7 @@ Recorded at the end of `/please:review` (2026-11-22). Every review engine that c
   - gate the middleware's OAuth error shape on the route being registered;
   - decide on the 403 `access_denied` code;
   - list the middleware 403/414/431 answers and axum's 405 in the endpoint error tables.
+  - reword the reload warning: removing `[server.auth.exchange]` takes effect on reload without a restart (raised in the review of the simplify commit 8ab4172e).
 - Rejected as by design and recorded in `.please/docs/review/rejected-findings.jsonl`:
   - no upper bound on `max_ttl_seconds`;
   - lowering `max_ttl_seconds` leaves tokens already issued valid until their `exp` (spec FR-8);
