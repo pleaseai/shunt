@@ -54,8 +54,10 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # --- Optional: workload token exchange (POST /v1/oauth/token, jwt-bearer grant)
 # for the gh-aw AWF api-proxy sidecar (engine.auth.type: github-oidc, token-url
 # pointed at shunt). A JWT that an entry with `exchange = true` accepts is traded
-# for a short-lived shunt-signed Bearer token. Changing that entry's rules,
-# removing the opt-in, or rotating the secret out revokes issued tokens. Keep
+# for a short-lived shunt-signed Bearer token. Changing a token-bound rule
+# (any of the entry's fields except jwks_url, clock_skew_seconds and
+# max_token_age_seconds), removing the entry or its opt-in, or rotating the
+# secret out revokes issued tokens on a reload that validates. Keep
 # max_ttl_seconds well above 300: the sidecar refreshes at
 # min(0.75 * expires_in, expires_in - 300) (docs/inbound-jwt-auth.md §7).
 # [server.auth.exchange]

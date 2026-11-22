@@ -1,8 +1,10 @@
 //! The one inbound-credential gate every gated route calls.
 //!
-//! `[server.auth]` can now accept two kinds of credential — a static
-//! `name:token` and a JWT minted by an external issuer (`[[server.auth.jwt]]`,
-//! issue #344) — and a deployment may configure either or both. Resolving that
+//! `[server.auth]` can now accept three kinds of credential — a static
+//! `name:token`, a JWT minted by an external issuer (`[[server.auth.jwt]]`,
+//! issue #344), and a shunt-issued workload exchange token
+//! (`[server.auth.exchange]`, issue #913) — and a deployment may configure any
+//! combination of them. Resolving that
 //! in each handler would mean repeating the precedence rules six times, so it
 //! lives here: static token first (a constant-time compare, no network), then
 //! a shunt-issued workload exchange token (`Authorization: Bearer` only, see

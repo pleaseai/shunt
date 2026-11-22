@@ -526,6 +526,31 @@ async fn no_undocumented_path_is_registered() {
     }
 }
 
+/// The exchange endpoint is opt-in: without `[server.auth.exchange]` its path is
+/// not registered at all. The `405` oracle tells this apart from the handler's
+/// own `404`, which a `POST` probe cannot.
+#[tokio::test]
+async fn the_exchange_path_is_not_registered_without_the_table() {
+    let (mut config, _env) = all_surfaces_config("no_exchange").await;
+    config
+        .server
+        .auth
+        .as_mut()
+        .expect("all-surfaces config sets [server.auth]")
+        .exchange = None;
+    for entry in &mut config.server.auth.as_mut().unwrap().jwt {
+        entry.exchange = false;
+    }
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
+
+    for (path, _) in EXCHANGE_PATHS {
+        assert!(
+            !path_is_registered(&router, path).await,
+            "{path} is registered although [server.auth.exchange] is absent"
+        );
+    }
+}
+
 /// The 13 paths that moved to `/admin/api/*`, spelled as they were **before**
 /// the move. Resolution 6 of `docs/admin-ui-delivery.md` removes them rather
 /// than aliasing them — an alias and an SPA deep link cannot share a path — so

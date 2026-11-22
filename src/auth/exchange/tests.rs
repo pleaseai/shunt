@@ -161,8 +161,9 @@ fn mint_reports_the_configured_lifetime() {
 
 #[test]
 fn unchanged_reload_with_reordered_rules_still_verifies() {
+    let env = format!("SHUNT_TEST_EXCHANGE_REORDER_{}", std::process::id());
     let toml_a = r#"
-        tokens_env = "SHUNT_TEST_EXCHANGE_REORDER_A"
+        tokens_env = "__ENV__"
         [[jwt]]
         issuer = "https://idp.example"
         audience = ["a1", "a2"]
@@ -174,7 +175,7 @@ fn unchanged_reload_with_reordered_rules_still_verifies() {
         ref = ["refs/heads/main", "refs/heads/dev"]
     "#;
     let toml_b = r#"
-        tokens_env = "SHUNT_TEST_EXCHANGE_REORDER_A"
+        tokens_env = "__ENV__"
         [[jwt]]
         issuer = "https://idp.example"
         audience = ["a2", "a1"]
@@ -187,7 +188,8 @@ fn unchanged_reload_with_reordered_rules_still_verifies() {
     "#;
     let table = || Some(exchange_table(&[SECRET_A]));
     let parse = |text: &str| {
-        let mut parsed: InboundAuthConfig = toml::from_str(text).expect("toml parses");
+        let mut parsed: InboundAuthConfig =
+            toml::from_str(&text.replace("__ENV__", &env)).expect("toml parses");
         parsed.exchange = table();
         parsed
     };
@@ -197,6 +199,7 @@ fn unchanged_reload_with_reordered_rules_still_verifies() {
         config
     };
     let _lock = crate::config::test_env_lock();
+    std::env::remove_var(&env);
     let a = reorder(toml_a).server.auth.unwrap().resolve().unwrap();
     let b = reorder(toml_b).server.auth.unwrap().resolve().unwrap();
     let token = mint(

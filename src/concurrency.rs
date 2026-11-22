@@ -347,9 +347,14 @@ mod tests {
         let body = json_body(response).await;
         assert!(body.get("type").is_none(), "{body}");
         assert_eq!(body["error"], "temporarily_unavailable");
-        assert!(body["error_description"]
-            .as_str()
-            .is_some_and(|text| !text.is_empty()));
+        assert_eq!(
+            body["error_description"],
+            "The service is temporarily unavailable."
+        );
+        assert!(
+            !body.to_string().contains(super::OVERLOADED_MESSAGE),
+            "{body}"
+        );
 
         let response = limited_router_with_calls("/v1/messages", 0, calls.clone())
             .oneshot(Request::post("/v1/messages").body(Body::empty()).unwrap())

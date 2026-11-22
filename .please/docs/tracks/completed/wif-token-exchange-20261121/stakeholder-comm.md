@@ -28,7 +28,7 @@ Hello. The request you made is now implemented and waiting for review.
 
 **What was missing**: shunt could not accept the token exchange that gh-aw uses for keyless sign-in. A gh-aw run therefore needed a stored secret, or failed once its short-lived GitHub Actions token expired mid-run.
 
-**What we changed**: shunt now accepts the same token exchange gh-aw already sends for Anthropic Workload Identity Federation. An operator turns it on and opts a workload identity rule into it. gh-aw then trades its GitHub Actions token for a shunt token and refreshes that token on its own, so a run of any length works with no stored secret. Changing or removing the rule cancels the tokens it issued.
+**What we changed**: shunt now accepts the same token exchange gh-aw already sends for Anthropic Workload Identity Federation. An operator turns it on and opts a workload identity rule into it. gh-aw then trades its GitHub Actions token for a shunt token and refreshes that token on its own, so a run of any length works with no stored secret. Removing the rule, or changing which identities it accepts, cancels the tokens it issued, as does retiring the signing secret. Settings that only control how the sign-in is checked at exchange time (where the provider's keys come from, allowed clock drift, and maximum sign-in age) do not cancel them.
 
 **How to check it**: Follow the GitHub Actions OIDC guide in the shunt documentation. It has a ready-to-copy shunt configuration and gh-aw workflow settings. Run the workflow and confirm it reaches the model through shunt with no static token configured. Usage is attributed to the repository identity, the same as direct OIDC use.
 

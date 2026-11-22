@@ -518,6 +518,12 @@ rejects tokens already issued, with no revocation list:
 - dropping every signing secret that verifies the token. Rotation that keeps the old secret as
   a non-first entry keeps old tokens valid until they expire.
 
+These take effect only on a reload that validates. When the entry is the only one with
+`exchange = true`, removing it or clearing the flag leaves `[server.auth.exchange]` with no
+opted-in entry, which fails validation, so the reload keeps the previous config and the tokens
+stay valid. Remove `[server.auth.exchange]` in the same edit: with the table gone, every issued
+token is rejected and the route answers `404`.
+
 A rule edit cuts a running gh-aw workflow. The sidecar holds the old token until its next
 scheduled refresh, so requests fail with `401` until then. Plan rule edits for a time when no
 workflow is mid-run, or accept the cut.

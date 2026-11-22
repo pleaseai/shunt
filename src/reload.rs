@@ -229,7 +229,9 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
         );
     }
     // The exchange route is registered once at boot from the initial config;
-    // secret and lifetime edits hot-apply through `InboundAuth`.
+    // secret and lifetime edits hot-apply through `InboundAuth`. A route
+    // registered at boot answers 404 while the table is absent and serves again
+    // once it is re-added, so only a route absent at boot needs the restart.
     let had_exchange = previous
         .server
         .auth
@@ -242,7 +244,7 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
         .is_some_and(|a| a.exchange.is_some());
     if had_exchange != has_exchange {
         tracing::warn!(
-            "[server.auth.exchange] was added or removed but requires a restart to register or drop its route"
+            "[server.auth.exchange] was added or removed; if the route was registered at boot it answers 404 while the table is absent and serves again once re-added, otherwise registering it requires a restart"
         );
     }
     let previous_spend = previous.server.spend.as_ref();

@@ -9,7 +9,7 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 配置文件中的字符串值可以写成 `${VAR}` 或 `${file:/绝对/路径}` 而不是字面量。`${VAR}` 会替换为环境变量 `VAR` 的值,可以嵌入更长的字符串中,例如 `"Bearer ${TOKEN}"`(若变量未定义,配置加载会失败)。`${file:/绝对/路径}` 会替换为该文件的内容(已 trim),路径必须是绝对路径,且引用必须是该字段的整个值 —— 不能嵌入更长的字符串中(若文件不可读、路径是相对路径,或引用嵌入在更长的字符串中,配置加载会失败)。`$${` 会转义为字面量 `${`。解析不是递归的 —— 解析出的值不会被再次扫描。此替换仅适用于配置文件,`SHUNT_*` 环境变量覆盖会按原样使用。它会在每次配置加载时重新执行,包括启动、`shunt check` 以及[热重载](https://github.com/pleaseai/shunt/blob/main/docs/config-reload.md)(SIGHUP 与文件监视),因此以 `${file:}` 引用的 secret 可以通过重写所引用的文件并触发一次重载来轮换,无需重启 shunt。但轮换后的值是否生效取决于该字段自身的重载行为:`[sentry]` 和 `[otel]` 只在启动时初始化一次,因此轮换这两个部分中的 secret 只会更新配置,需要重启才能生效。
 
-`[sentry] dsn`、`[otel.headers]` 的值、`[server.gateway.telemetry] forward_to[].headers` 的值、`[server.gateway.session] jwt_secret`,以及 `[[server.admin.write_keys]]`、`[[server.admin.read_keys]]` 每一项的 `key` —— 这六个字段路径被标记为 redacting secret 类型,在诊断输出中显示为 `[redacted]`。前四个字段中写入字面量值的行为与之前完全相同;若其持有字面量值,shunt 会在启动时记录一次仅列出相关字段路径(绝不包含值)的建议性警告,提示改用 `${VAR}` / `${file:...}`。两个管理员 key 数组是例外:在其中写入字面量会导致**配置加载失败**,而不是仅发出警告。
+`[sentry] dsn`、`[otel.headers]` 的值、`[server.gateway.telemetry] forward_to[].headers` 的值、`[server.gateway.session] jwt_secret`、`[server.auth.exchange] signing_secret`,以及 `[[server.admin.write_keys]]`、`[[server.admin.read_keys]]` 每一项的 `key` —— 这七个字段路径被标记为 redacting secret 类型,在诊断输出中显示为 `[redacted]`。前五个字段中写入字面量值的行为与之前完全相同;若其持有字面量值,shunt 会在启动时记录一次仅列出相关字段路径(绝不包含值)的建议性警告,提示改用 `${VAR}` / `${file:...}`。两个管理员 key 数组是例外:在其中写入字面量会导致**配置加载失败**,而不是仅发出警告。
 
 现有的 `tokens_env`、`jwt_secret_env`、`client_secret_env`、`api_key_env`、`users_env`、`token_env`、`tokens_file` 字段不受此变更影响,仍然指向一个环境变量(对 `tokens_file` 而言是文件路径)(`jwt_secret_env` 已单独被 [`session.jwt_secret`](#servergatewaysession可选) 取代,已弃用)。
 
@@ -127,7 +127,7 @@ exchange = true
 
 签发的 token 只在 `Authorization: Bearer` 中被接受,适用于每个接受 `[[server.auth.jwt]]` JWT 的路由(`/v1/messages`、`count_tokens`、模型发现、`GET /usage`、`GET /api/oauth/usage` 以及入站 Codex 端点),并作为与直接使用 JWT 相同的身份、用量和 spend 主体处理。它不会从 `x-api-key`、`[server.auth]` 的 `header`、`jwt_header` 或 `jwt_cookie` 读取,也不能认证管理界面、spend Admin API 或遥测接收。两者同时出现时静态 token 优先。shunt 无论签发的 token 处于什么状态,都不会把它转发到上游。
 
-签发的 token 绑定到验证 assertion 的那个条目:它携带该条目 `issuer`、`audience`、`algorithms`、`authorized_parties`、`email_domains`、`allowed_emails`、`require`、`subject_prefix` 和 `identity_claim` 的指纹(不含 `jwks_url`、`clock_skew_seconds`、`max_token_age_seconds`)。移除该条目、清除 `exchange = true`、修改其中任何一条规则,或去掉所有能验证它的签名 secret,都会让已签发的 token 在下一次热重载时被拒绝。因此修改规则会使正在运行的 GitHub Agentic Workflows 中断,直到 AWF sidecar 下一次定时刷新。没有按 token 的撤销,本版本也没有对该端点限流([#914](https://github.com/pleaseai/shunt/issues/914))。
+签发的 token 绑定到验证 assertion 的那个条目:它携带该条目 `issuer`、`audience`、`algorithms`、`authorized_parties`、`email_domains`、`allowed_emails`、`require`、`subject_prefix` 和 `identity_claim` 的指纹(不含 `jwks_url`、`clock_skew_seconds`、`max_token_age_seconds`)。移除该条目、清除 `exchange = true`、修改其中任何一条规则,或去掉所有能验证它的签名 secret,都会让已签发的 token 在下一次热重载时被拒绝。如果它是唯一选择加入的条目,请在同一次修改中同时移除 `[server.auth.exchange]`:没有条目选择加入的表无法通过验证,重载会保留之前的配置。因此修改规则会使正在运行的 GitHub Agentic Workflows 中断,直到 AWF sidecar 下一次定时刷新。没有按 token 的撤销,本版本也没有对该端点限流([#914](https://github.com/pleaseai/shunt/issues/914))。
 
 ### Codex gateway OAuth:`jwt_header` 与 `jwt_cookie`
 

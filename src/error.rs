@@ -337,26 +337,19 @@ pub async fn into_openai_error_shape(response: Response) -> Response {
 /// `POST /v1/oauth/token` answers OAuth-shaped errors because its client (the
 /// AWF sidecar) parses them as OAuth errors; middleware rejections that wrap
 /// that route (concurrency shed, access control, size limits) use this so the
-/// wire matches the handler's own errors. The `error_description` is the
-/// gateway's fixed message, never request data.
+/// wire matches the handler's own errors. The `error_description` is fixed per
+/// code: the wrapped message would name the middleware check that rejected the
+/// request, which the exchange contract never discloses.
 pub async fn into_oauth_error_shape(response: Response) -> Response {
-    let (status, retry_after, body) = take_gateway_error_parts(response).await;
-    let description = body
-        .as_deref()
-        .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
-        .and_then(|value| {
-            value
-                .get("error")?
-                .get("message")?
-                .as_str()
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| "The request was rejected.".to_string());
-    let code = match status {
-        StatusCode::SERVICE_UNAVAILABLE => "temporarily_unavailable",
-        StatusCode::FORBIDDEN => "access_denied",
-        status if status.is_client_error() => "invalid_request",
-        _ => "server_error",
+    let (status, retry_after, _body) = take_gateway_error_parts(response).await;
+    let (code, description) = match status {
+        StatusCode::SERVICE_UNAVAILABLE => (
+            "temporarily_unavailable",
+            "The service is temporarily unavailable.",
+        ),
+        StatusCode::FORBIDDEN => ("access_denied", "The request was denied."),
+        status if status.is_client_error() => ("invalid_request", "The request was rejected."),
+        _ => ("server_error", "The request could not be processed."),
     };
     let mut shaped = (
         status,
