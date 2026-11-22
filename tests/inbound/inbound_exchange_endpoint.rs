@@ -15,18 +15,16 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use shunt::{
     config::{Config, ExchangeConfig, InboundAuthConfig, InboundJwtConfig, StringList},
-    reload::{RuntimeState, SharedState},
-    server,
+    reload::RuntimeState,
 };
-use tokio::task::JoinHandle;
 use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
 };
 
 use crate::common::{self, jwt};
+use crate::exchange_support::{start, Server, GRANT};
 
-const GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 const BETA: &str = "oauth-2025-04-20,oidc-federation-2026-04-01";
 /// Differs from the gateway secret used elsewhere in the suite (FR-12).
 const SECRET: &str = "exchange-signing-secret-0123456789abcdef";
@@ -38,18 +36,6 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
-}
-
-struct Server {
-    base_url: String,
-    shared: SharedState,
-    task: JoinHandle<()>,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
 }
 
 impl Server {
@@ -135,23 +121,6 @@ fn config_with(entries: Vec<InboundJwtConfig>, exchange: Option<ExchangeConfig>)
         ..Default::default()
     });
     config
-}
-
-async fn start(mut config: Config) -> Server {
-    config.server.bind = "127.0.0.1:0".to_string();
-    let listener = tokio::net::TcpListener::bind(config.server.bind_addr().unwrap())
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let (app, shared, _state) = server::build_router(config).unwrap();
-    let task = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-    Server {
-        base_url: format!("http://{addr}"),
-        shared,
-        task,
-    }
 }
 
 /// One opted-in entry on a live issuer.

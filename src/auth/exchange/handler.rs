@@ -10,7 +10,7 @@
 use axum::{
     body::Body,
     extract::State,
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 
 use super::{fingerprint, mint, unix_now};
 use crate::auth::inbound_jwt::{self, JwtOutcome};
+use crate::gateway::oauth::no_store;
 use crate::server::AppState;
 
 const JWT_BEARER_GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
@@ -33,10 +34,11 @@ pub(crate) async fn post(
     // The route exists from boot, but a reload may have removed the table
     // since: answer exactly as an unregistered route would.
     let state = state.refreshed();
-    let Some(auth) = state.inbound_auth.as_deref() else {
-        return no_store(StatusCode::NOT_FOUND.into_response());
-    };
-    let Some(settings) = auth.exchange() else {
+    let Some((auth, settings)) = state
+        .inbound_auth
+        .as_deref()
+        .and_then(|auth| auth.exchange().map(|settings| (auth, settings)))
+    else {
         return no_store(StatusCode::NOT_FOUND.into_response());
     };
 
@@ -94,12 +96,15 @@ fn is_json(headers: &HeaderMap) -> bool {
         return false;
     };
     let essence = value
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    essence == "application/json" || essence.ends_with("+json")
+        .split_once(';')
+        .map_or(value, |(essence, _)| essence)
+        .trim();
+    essence.eq_ignore_ascii_case("application/json")
+        || essence
+            .len()
+            .checked_sub("+json".len())
+            .and_then(|start| essence.get(start..))
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case("+json"))
 }
 
 /// Extract the assertion from a request body. The federation ids and any other
@@ -179,11 +184,4 @@ fn oauth_error(code: ErrorCode) -> Response {
         )
             .into_response(),
     )
-}
-
-fn no_store(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
 }

@@ -248,7 +248,7 @@ fn oauth_error(status: StatusCode, error: &'static str) -> Response {
     (status, Json(json!({ "error": error }))).into_response()
 }
 
-fn no_store(mut response: Response) -> Response {
+pub(crate) fn no_store(mut response: Response) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

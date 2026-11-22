@@ -107,7 +107,6 @@ impl InboundAuth {
     /// network-free; `None` when exchange is not configured, no bearer is
     /// presented, or the token does not verify against this snapshot.
     pub(crate) fn authenticate_exchange(&self, headers: &HeaderMap) -> Option<String> {
-        self.exchange()?;
         let token = std::str::from_utf8(bearer_token(headers)?).ok()?;
         crate::auth::exchange::verify(self, token, crate::auth::exchange::unix_now())
     }

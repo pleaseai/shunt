@@ -1,5 +1,5 @@
 use axum::{
-    body::to_bytes,
+    body::{to_bytes, Bytes},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -235,6 +235,43 @@ struct OpenAiErrorDetail {
     code: Option<String>,
 }
 
+/// Split a gateway-owned error [`Response`] into the parts both re-shapers need:
+/// its status, the `Retry-After` header (the one header carried onto the rebuilt
+/// response; the rest are framing for the old body), and its body bytes.
+///
+/// Gateway-owned error bodies are tiny JSON envelopes; the read is capped at
+/// 64 KiB as defense-in-depth. The bound is never hit in practice, and an
+/// oversized body degrades to `None` (each caller's fallback) rather than an OOM.
+async fn take_gateway_error_parts(
+    response: Response,
+) -> (StatusCode, Option<axum::http::HeaderValue>, Option<Bytes>) {
+    let status = response.status();
+    let retry_after = response
+        .headers()
+        .get(axum::http::header::RETRY_AFTER)
+        .cloned();
+    let body = to_bytes(response.into_body(), 64 * 1024).await.ok();
+    (status, retry_after, body)
+}
+
+/// Apply the gateway-owned error shape for the request path: the OpenAI
+/// Responses envelope on the inbound Codex endpoint, the OAuth envelope on the
+/// token-exchange route, otherwise the response unchanged. Codex wins if both
+/// flags are set.
+pub(crate) async fn shape_gateway_error(
+    response: Response,
+    codex_shape: bool,
+    oauth_shape: bool,
+) -> Response {
+    if codex_shape {
+        into_openai_error_shape(response).await
+    } else if oauth_shape {
+        into_oauth_error_shape(response).await
+    } else {
+        response
+    }
+}
+
 /// Re-shape a gateway-owned, Anthropic-shaped error [`Response`] into the OpenAI
 /// Responses error envelope, preserving the HTTP status.
 ///
@@ -247,17 +284,7 @@ struct OpenAiErrorDetail {
 /// failures are re-shaped here. The status code (and thus the client's retry
 /// behavior) is unchanged.
 pub async fn into_openai_error_shape(response: Response) -> Response {
-    let status = response.status();
-    // The body is rebuilt, so carry the one header that tells the client when to
-    // retry (the cap-exhaustion 429 sets it); the rest are framing for the old body.
-    let retry_after = response
-        .headers()
-        .get(axum::http::header::RETRY_AFTER)
-        .cloned();
-    // Gateway-owned error bodies are tiny JSON envelopes; cap the read at 64 KiB
-    // as defense-in-depth. The bound is never hit in practice, and an oversized
-    // body degrades to the empty-message fallback below rather than an OOM.
-    let body = to_bytes(response.into_body(), 64 * 1024).await.ok();
+    let (status, retry_after, body) = take_gateway_error_parts(response).await;
     let (kind, message) = body
         .as_deref()
         .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
@@ -313,12 +340,7 @@ pub async fn into_openai_error_shape(response: Response) -> Response {
 /// wire matches the handler's own errors. The `error_description` is the
 /// gateway's fixed message, never request data.
 pub async fn into_oauth_error_shape(response: Response) -> Response {
-    let status = response.status();
-    let retry_after = response
-        .headers()
-        .get(axum::http::header::RETRY_AFTER)
-        .cloned();
-    let body = to_bytes(response.into_body(), 64 * 1024).await.ok();
+    let (status, retry_after, body) = take_gateway_error_parts(response).await;
     let description = body
         .as_deref()
         .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())

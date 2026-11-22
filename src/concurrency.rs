@@ -13,7 +13,7 @@ use axum::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::error::{into_oauth_error_shape, into_openai_error_shape, ShuntError};
+use crate::error::{shape_gateway_error, ShuntError};
 
 const OVERLOADED_MESSAGE: &str = "too many requests are already in flight";
 
@@ -117,13 +117,7 @@ async fn overloaded_response(codex_shape: bool, oauth_shape: bool) -> Response {
         OVERLOADED_MESSAGE,
     )
     .into_response();
-    let mut response = if codex_shape {
-        into_openai_error_shape(response).await
-    } else if oauth_shape {
-        into_oauth_error_shape(response).await
-    } else {
-        response
-    };
+    let mut response = shape_gateway_error(response, codex_shape, oauth_shape).await;
     response
         .headers_mut()
         .insert(RETRY_AFTER, HeaderValue::from_static("1"));

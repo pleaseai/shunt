@@ -228,6 +228,13 @@ pub(crate) fn format_literal_path(path: &str) -> String {
     }
 }
 
+/// Secret fields that are a bare string or a list of strings, as their first
+/// four path segments.
+const SECRET_LIST_FIELDS: &[[&str; 4]] = &[
+    ["server", "gateway", "session", "jwt_secret"],
+    ["server", "auth", "exchange", "signing_secret"],
+];
+
 /// Closed-form allowlist of the dotted field paths that are actually
 /// `Secret` fields in the config schema: `sentry.dsn`, `store.url`,
 /// `otel.headers.<key>`,
@@ -269,23 +276,11 @@ fn is_secret_field_path(path: &str) -> bool {
     {
         return true;
     }
-    // `server.gateway.session.jwt_secret` (bare-string form) or
-    // `server.gateway.session.jwt_secret.<index>` (array element).
+    // A bare-string form (`<path>`) or an array element (`<path>.<index>`).
     if (segments.len() == 4 || segments.len() == 5)
-        && segments[0] == "server"
-        && segments[1] == "gateway"
-        && segments[2] == "session"
-        && segments[3] == "jwt_secret"
-    {
-        return true;
-    }
-    // `server.auth.exchange.signing_secret` (bare-string form) or
-    // `server.auth.exchange.signing_secret.<index>` (array element).
-    if (segments.len() == 4 || segments.len() == 5)
-        && segments[0] == "server"
-        && segments[1] == "auth"
-        && segments[2] == "exchange"
-        && segments[3] == "signing_secret"
+        && SECRET_LIST_FIELDS
+            .iter()
+            .any(|field| segments[..4] == field[..])
     {
         return true;
     }

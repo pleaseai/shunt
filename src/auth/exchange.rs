@@ -9,17 +9,17 @@
 //! who may authenticate therefore revokes every token it issued, without
 //! shunt keeping any revocation state.
 
-pub(crate) mod handler;
-
-/// Path the exchange route is registered at. The router and the error-shape
-/// middleware both read it, so they cannot drift apart.
-pub(crate) const PATH: &str = "/v1/oauth/token";
-
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{hs256, inbound::InboundAuth, inbound_jwt::JwtIssuerRule};
+
+pub(crate) mod handler;
+
+/// Path the exchange route is registered at. The router and the error-shape
+/// middleware both read it, so they cannot drift apart.
+pub(crate) const PATH: &str = "/v1/oauth/token";
 
 /// The `iss` of every exchange token. A `[[server.auth.jwt]]` entry may not
 /// claim it (config validation), so the exchange verifier and an external

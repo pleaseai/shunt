@@ -1,6 +1,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod exchange_support;
 mod inbound_auth;
 mod inbound_codex_endpoint;
 mod inbound_codex_jwt_discovery;

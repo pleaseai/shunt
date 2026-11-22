@@ -11,7 +11,7 @@ use axum::{
 use crate::{
     concurrency::{is_codex_request, is_exchange_path},
     config::{AccessControlConfig, LimitsConfig},
-    error::{into_oauth_error_shape, into_openai_error_shape, ShuntError, UpstreamError},
+    error::{into_openai_error_shape, shape_gateway_error, ShuntError, UpstreamError},
     gateway::device::client_ip,
 };
 
@@ -164,13 +164,7 @@ async fn owned_error(
     oauth_shape: bool,
 ) -> Response {
     let response = ShuntError::new(status, error_type, message).into_response();
-    if codex_shape {
-        into_openai_error_shape(response).await
-    } else if oauth_shape {
-        into_oauth_error_shape(response).await
-    } else {
-        response
-    }
+    shape_gateway_error(response, codex_shape, oauth_shape).await
 }
 
 #[cfg(test)]

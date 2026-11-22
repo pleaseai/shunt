@@ -31,8 +31,8 @@ use crate::common::{
     codex_jwt::{self, Gateway, JWT_COOKIE, JWT_HEADER},
     jwt,
 };
+use crate::exchange_support::GRANT;
 
-const GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 const BETA: &str = "oauth-2025-04-20";
 const IDENTITY: &str = "alice";
 const KEY_ENV: &str = "SHUNT_TEST_EXCHANGE_GATE_KEY";

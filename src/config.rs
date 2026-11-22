@@ -598,19 +598,16 @@ impl InboundAuthConfig {
             &header,
         )
         .map_err(|(key, message)| ConfigError::InvalidInboundJwtSlot { key, message })?;
-        let exchange = match &self.exchange {
-            Some(exchange) => {
-                if !self.jwt.iter().any(|entry| entry.exchange) {
-                    return Err(ConfigError::ExchangeWithoutOptedInEntry);
-                }
-                Some(exchange.resolve()?)
+        let exchange = match (
+            &self.exchange,
+            self.jwt.iter().position(|entry| entry.exchange),
+        ) {
+            (Some(exchange), Some(_)) => Some(exchange.resolve()?),
+            (Some(_), None) => return Err(ConfigError::ExchangeWithoutOptedInEntry),
+            (None, Some(index)) => {
+                return Err(ConfigError::InboundJwtExchangeWithoutTable { index })
             }
-            None => {
-                if let Some(index) = self.jwt.iter().position(|entry| entry.exchange) {
-                    return Err(ConfigError::InboundJwtExchangeWithoutTable { index });
-                }
-                None
-            }
+            (None, None) => None,
         };
         let raw = std::env::var(&self.tokens_env).unwrap_or_default();
         let tokens = if raw.trim().is_empty() {

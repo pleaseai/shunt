@@ -230,17 +230,17 @@ fn warn_on_restart_only_changes(previous: &Config, next: &Config) {
     }
     // The exchange route is registered once at boot from the initial config;
     // secret and lifetime edits hot-apply through `InboundAuth`.
-    if previous
+    let had_exchange = previous
         .server
         .auth
         .as_ref()
-        .is_some_and(|a| a.exchange.is_some())
-        != next
-            .server
-            .auth
-            .as_ref()
-            .is_some_and(|a| a.exchange.is_some())
-    {
+        .is_some_and(|a| a.exchange.is_some());
+    let has_exchange = next
+        .server
+        .auth
+        .as_ref()
+        .is_some_and(|a| a.exchange.is_some());
+    if had_exchange != has_exchange {
         tracing::warn!(
             "[server.auth.exchange] was added or removed but requires a restart to register or drop its route"
         );
