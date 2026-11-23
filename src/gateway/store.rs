@@ -554,6 +554,7 @@ mod tests {
                     max: 2,
                     window_seconds: 600,
                 },
+                ..Default::default()
             },
             None,
         );

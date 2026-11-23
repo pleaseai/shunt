@@ -130,12 +130,16 @@ pub struct RateLimitConfig {
 pub struct RateLimitsConfig {
     pub device_authorization: RateLimitConfig,
     pub device_verify: RateLimitConfig,
+    pub exchange: RateLimitConfig,
+    pub exchange_failure: RateLimitConfig,
 }
 
 #[derive(Default, Deserialize)]
 struct PartialRateLimitsConfig {
     device_authorization: Option<PartialRateLimitConfig>,
     device_verify: Option<PartialRateLimitConfig>,
+    exchange: Option<PartialRateLimitConfig>,
+    exchange_failure: Option<PartialRateLimitConfig>,
 }
 
 #[derive(Deserialize)]
@@ -161,17 +165,21 @@ impl<'de> Deserialize<'de> for RateLimitsConfig {
         let partial = PartialRateLimitsConfig::deserialize(deserializer)?;
         let defaults = Self::default();
         Ok(Self {
-            device_authorization: partial
-                .device_authorization
-                .map_or(defaults.device_authorization.clone(), |config| {
-                    config.resolve(defaults.device_authorization)
-                }),
-            device_verify: partial
-                .device_verify
-                .map_or(defaults.device_verify.clone(), |config| {
-                    config.resolve(defaults.device_verify)
-                }),
+            device_authorization: merge(
+                partial.device_authorization,
+                defaults.device_authorization,
+            ),
+            device_verify: merge(partial.device_verify, defaults.device_verify),
+            exchange: merge(partial.exchange, defaults.exchange),
+            exchange_failure: merge(partial.exchange_failure, defaults.exchange_failure),
         })
+    }
+}
+
+fn merge(partial: Option<PartialRateLimitConfig>, default: RateLimitConfig) -> RateLimitConfig {
+    match partial {
+        Some(config) => config.resolve(default),
+        None => default,
     }
 }
 
@@ -189,11 +197,27 @@ fn default_device_verify_rate_limit() -> RateLimitConfig {
     }
 }
 
+fn default_exchange_rate_limit() -> RateLimitConfig {
+    RateLimitConfig {
+        max: 60,
+        window_seconds: 600,
+    }
+}
+
+fn default_exchange_failure_rate_limit() -> RateLimitConfig {
+    RateLimitConfig {
+        max: 10,
+        window_seconds: 600,
+    }
+}
+
 impl Default for RateLimitsConfig {
     fn default() -> Self {
         Self {
             device_authorization: default_device_authorization_rate_limit(),
             device_verify: default_device_verify_rate_limit(),
+            exchange: default_exchange_rate_limit(),
+            exchange_failure: default_exchange_failure_rate_limit(),
         }
     }
 }
@@ -230,6 +254,42 @@ mod tests {
         assert_eq!(parsed.rate_limits.device_authorization.window_seconds, 600);
         assert_eq!(parsed.rate_limits.device_verify.max, 10);
         assert_eq!(parsed.rate_limits.device_verify.window_seconds, 600);
+        assert_eq!(parsed.rate_limits.exchange.max, 60);
+        assert_eq!(parsed.rate_limits.exchange.window_seconds, 600);
+        assert_eq!(parsed.rate_limits.exchange_failure.max, 10);
+        assert_eq!(parsed.rate_limits.exchange_failure.window_seconds, 600);
+    }
+
+    #[test]
+    fn partial_exchange_tables_keep_the_default_for_the_unset_field() {
+        let parsed: HttpTuning = toml::from_str(
+            r#"
+                [rate_limits.exchange]
+                max = 5
+                [rate_limits.exchange_failure]
+                window_seconds = 45
+            "#,
+        )
+        .unwrap();
+        assert_eq!(parsed.rate_limits.exchange.max, 5);
+        assert_eq!(parsed.rate_limits.exchange.window_seconds, 600);
+        assert_eq!(parsed.rate_limits.exchange_failure.max, 10);
+        assert_eq!(parsed.rate_limits.exchange_failure.window_seconds, 45);
+        // The other tables stay at their defaults.
+        assert_eq!(parsed.rate_limits.device_verify.max, 10);
+    }
+
+    #[test]
+    fn changing_an_exchange_table_makes_the_whole_struct_differ() {
+        // `reload::warn_on_restart_only_changes` compares `rate_limits` as a
+        // whole, so a differing exchange table is what triggers its warning.
+        let base = RateLimitsConfig::default();
+        let mut changed = base.clone();
+        changed.exchange.max += 1;
+        assert_ne!(base, changed);
+        let mut changed = base.clone();
+        changed.exchange_failure.window_seconds += 1;
+        assert_ne!(base, changed);
     }
 
     #[test]

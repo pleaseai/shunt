@@ -195,7 +195,8 @@ pub struct ServerConfig {
     /// Upstream response-header timeout.
     #[serde(default)]
     pub timeouts: TimeoutsConfig,
-    /// Per-IP limits for unauthenticated device-flow endpoints.
+    /// Per-IP limits for unauthenticated device-flow endpoints and the
+    /// workload token exchange endpoint.
     #[serde(default)]
     pub rate_limits: RateLimitsConfig,
 }
@@ -4565,6 +4566,11 @@ impl Config {
                 &self.server.rate_limits.device_authorization,
             ),
             ("device_verify", &self.server.rate_limits.device_verify),
+            ("exchange", &self.server.rate_limits.exchange),
+            (
+                "exchange_failure",
+                &self.server.rate_limits.exchange_failure,
+            ),
         ] {
             if configured.max == 0 {
                 return Err(ConfigError::InvalidRateLimitMax { limit });
@@ -6384,6 +6390,34 @@ mod tests {
                         error,
                         ConfigError::InvalidRateLimitWindow {
                             limit: "device_verify"
+                        }
+                    )
+                },
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.rate_limits.exchange.max = 0;
+                    config
+                },
+                |error| {
+                    matches!(
+                        error,
+                        ConfigError::InvalidRateLimitMax { limit: "exchange" }
+                    )
+                },
+            ),
+            (
+                {
+                    let mut config = Config::default();
+                    config.server.rate_limits.exchange_failure.window_seconds = 0;
+                    config
+                },
+                |error| {
+                    matches!(
+                        error,
+                        ConfigError::InvalidRateLimitWindow {
+                            limit: "exchange_failure"
                         }
                     )
                 },

@@ -114,7 +114,7 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 
 ## Tasks
 
-- [ ] T001 Move `PerIpRateLimiter` and its tests out of the gateway store into their own module, unchanged (file: src/gateway/rate_limit.rs)
+- [x] T001 Move `PerIpRateLimiter` and its tests out of the gateway store into their own module, unchanged (file: src/gateway/rate_limit.rs)
   Validation: the device limiters behave exactly as before. `store.rs` drops below 600 lines, and every moved test passes unmodified.
   Method: `cargo test --all-features gateway::` plus `cargo clippy --all-targets --all-features -- -D warnings`
 - [ ] T002 Accept `[server.rate_limits] exchange` and `exchange_failure` with defaults and validation (file: src/config/http_tuning.rs) [FR-4, AC-009]
@@ -156,7 +156,7 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 - Over either limit, the caller gets `429 slow_down` with `Retry-After` and `no-store`.
 - A blocked address costs no assertion verification.
 
-### Checks
+### Automated Tests
 
 - `cargo fmt --all --check`
 - `PYO3_PYTHON=/usr/local/bin/python3 cargo clippy --all-targets --all-features -- -D warnings`
@@ -175,6 +175,8 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 
 - [x] (2026-11-23 KST) T001 Move `PerIpRateLimiter` and its tests out of the gateway store into their own module, unchanged
   Evidence: `cargo test --all-features gateway::` -> 357 passed, 0 failed (3 moved rate_limit tests ok); clippy --all-targets --all-features -D warnings exit 0; store.rs 566 lines
+- [x] (2026-11-23 KST) T002 Accept `[server.rate_limits] exchange` and `exchange_failure` with defaults and validation
+  Evidence: `cargo test --all-features http_tuning` -> 18 passed (defaults 60/600 and 10/600, partial-table, struct-differs tests); `config::tests` -> 343 passed incl. http_tuning_validation_rejects_each_invalid_value (zero exchange max, zero exchange_failure window); clippy --all-targets --all-features -D warnings exit 0
 
 ## Decision Log
 
