@@ -24,7 +24,7 @@ use super::{fingerprint, mint, unix_now, ExchangeSettings};
 use crate::auth::inbound::InboundAuth;
 use crate::auth::inbound_jwt::{self, JwtOutcome};
 use crate::gateway::oauth::no_store;
-use crate::gateway::rate_limit::{PerIpRateLimiter, RetryAfter};
+use crate::gateway::rate_limit::{Charge, RetryAfter};
 use crate::server::AppState;
 
 const JWT_BEARER_GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
@@ -50,28 +50,45 @@ pub(crate) async fn post(
     };
 
     let peer = connection.map(|Extension(ConnectInfo(address))| address);
-    let key = bounded_key(crate::gateway::device::client_ip(
+    let key = bounded_key(normalized_address(crate::gateway::device::client_ip(
         &headers,
         peer,
         state.config.server.access_control.trust_forwarded_for,
-    ));
+    )));
     let failures = &state.gateway_stores.exchange_failure_rate;
-    // An address over its failure limit is refused before the body is read or
-    // any key set is fetched, so a blocked caller costs no verification work.
-    if let Err(retry_after) = failures.peek(&key) {
-        return slow_down(retry_after);
-    }
+    // The attempt is charged to the address before the body is read, in one
+    // step with the limit check, so concurrent requests from a blocked address
+    // cannot all slip through to verification. It is refunded below unless the
+    // request turns out to be a failure.
+    let charge = match failures.charge(&key) {
+        Ok(charge) => charge,
+        Err(retry_after) => return slow_down(retry_after),
+    };
 
     let assertion = match read_assertion(&headers, body).await {
         Ok(assertion) => assertion,
-        Err(code) => return count_failure(failures, &key, code),
+        Err(code) => return failed(&charge, code),
     };
     match exchange(&state, auth, settings, &assertion).await {
-        Ok(response) => response,
+        // A success, or an identity-limit `slow_down`, is not a failed assertion.
+        Ok(response) => {
+            failures.refund(charge);
+            response
+        }
         // An unreachable key set says nothing about the caller: not counted.
-        Err(ErrorCode::TemporarilyUnavailable) => oauth_error(ErrorCode::TemporarilyUnavailable),
-        Err(code) => count_failure(failures, &key, code),
+        Err(ErrorCode::TemporarilyUnavailable) => {
+            failures.refund(charge);
+            oauth_error(ErrorCode::TemporarilyUnavailable)
+        }
+        Err(code) => failed(&charge, code),
     }
+}
+
+/// Render a trusted forwarded value as a bare IP so `ip` and `ip:port` forms of
+/// one address share a key; an unparsable value is kept as sent. `/device`
+/// keys its limiter on the raw value and is unchanged.
+fn normalized_address(address: String) -> String {
+    crate::gateway::device::parse_client_ip(&address).map_or(address, |ip| ip.to_string())
 }
 
 /// Longest address kept verbatim as a limiter key. A trusted forwarded header is
@@ -86,12 +103,12 @@ fn bounded_key(address: String) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(address.as_bytes()))
 }
 
-/// Record one failed exchange for `key` and answer `code`, or answer
-/// `slow_down` when the limiter refuses to track the address.
-fn count_failure(failures: &PerIpRateLimiter, key: &str, code: ErrorCode) -> Response {
-    match failures.record_failure(key) {
-        Ok(()) => oauth_error(code),
-        Err(retry_after) => slow_down(retry_after),
+/// Answer `code` for a failed request whose charge stays counted, or
+/// `slow_down` when the limiter could not track the address at all.
+fn failed(charge: &Charge, code: ErrorCode) -> Response {
+    match charge.untracked() {
+        None => oauth_error(code),
+        Some(retry_after) => slow_down(retry_after),
     }
 }
 

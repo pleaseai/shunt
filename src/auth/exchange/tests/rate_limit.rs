@@ -550,3 +550,76 @@ async fn an_oversized_forwarded_value_is_stored_as_a_bounded_key() {
         keys.iter().map(String::len).collect::<Vec<_>>()
     );
 }
+
+#[tokio::test]
+async fn concurrent_failures_from_one_address_cannot_outrun_the_limit() {
+    const MAX: u32 = 3;
+    const EXTRA: usize = 4;
+    let h = serving("CONCURRENT", MAX).await;
+    let mut wrong_aud = claims(&h.issuer.uri());
+    wrong_aud["aud"] = json!("someone-else");
+    let unverifiable = exchange_body(&token(&wrong_aud));
+
+    let replies = futures_util::future::join_all(
+        (0..MAX as usize + EXTRA).map(|_| post_json(&h.state, "10.5.0.1", unverifiable.clone())),
+    )
+    .await;
+
+    // Each admitted request is charged before it verifies, so exactly `MAX`
+    // reach verification and the rest are refused before the body is read.
+    let unauthorized = replies
+        .iter()
+        .filter(|reply| reply.status == StatusCode::UNAUTHORIZED)
+        .count();
+    assert_eq!(unauthorized, MAX as usize);
+    let refused: Vec<&Reply> = replies
+        .iter()
+        .filter(|reply| reply.status == StatusCode::TOO_MANY_REQUESTS)
+        .collect();
+    assert_eq!(refused.len(), EXTRA);
+    refused.into_iter().for_each(assert_slow_down);
+}
+
+#[tokio::test]
+async fn a_forwarded_address_with_a_port_counts_against_the_bare_address() {
+    let h = live_with(
+        "XFF_PORT",
+        issuer_serving(jwks()).await,
+        trusting_forwarded_for(true),
+    )
+    .await;
+    assert_eq!(
+        fail_as(&h.state, "10.9.3.1", "203.0.113.7:1111")
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    // A new source port, the bare form and another relaying peer are one address.
+    assert_slow_down(&fail_as(&h.state, "10.9.3.1", "203.0.113.7:2222").await);
+    assert_slow_down(&fail_as(&h.state, "10.9.3.2", "203.0.113.7").await);
+    // A different address with the same port is not blocked.
+    assert_eq!(
+        fail_as(&h.state, "10.9.3.1", "203.0.113.8:1111")
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn a_bracketed_ipv6_forwarded_address_counts_against_the_bare_address() {
+    let h = live_with(
+        "XFF_V6",
+        issuer_serving(jwks()).await,
+        trusting_forwarded_for(true),
+    )
+    .await;
+    assert_eq!(
+        fail_as(&h.state, "10.9.4.1", "[2001:db8::1]:443")
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_slow_down(&fail_as(&h.state, "10.9.4.1", "2001:db8::1").await);
+    assert_slow_down(&fail_as(&h.state, "10.9.4.2", "[2001:db8::1]:8443").await);
+}
