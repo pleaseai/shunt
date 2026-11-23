@@ -55,6 +55,11 @@ macro_rules! upstream_blueprint {
 
 const BLUEPRINTS: &[Blueprint] = &[
     upstream_blueprint!(
+        "api-route",
+        &["apiroute"],
+        "API Route Messages gateway via API_ROUTE_API_KEY"
+    ),
+    upstream_blueprint!(
         "anthropic",
         &["claude"],
         "Anthropic API — passthrough or pooled Claude OAuth accounts"
@@ -282,6 +287,7 @@ mod tests {
     fn unknown_name_lists_available_slugs_and_url_form() {
         let error = resolve(AddKind::Upstream, "nope").unwrap_err().to_string();
         for slug in [
+            "api-route",
             "anthropic",
             "codex",
             "openai",

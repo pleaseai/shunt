@@ -122,6 +122,14 @@ pub(super) const PRESETS: &[ProviderPreset] = &[
         api_key_header: None,
     },
     ProviderPreset {
+        name: "api-route",
+        kind: ProviderKind::Anthropic,
+        base_url: "https://global.api-route.com",
+        auth: AuthMode::ApiKey,
+        api_key_env: Some("API_ROUTE_API_KEY"),
+        api_key_header: None,
+    },
+    ProviderPreset {
         name: "chatgpt-plan",
         kind: ProviderKind::Responses,
         base_url: "https://api.openai.com/v1",
@@ -173,12 +181,13 @@ mod tests {
                 "minimax-cn",
                 "opencode",
                 "cheaperinference",
+                "api-route",
                 "chatgpt-plan"
             ]
         );
         assert_eq!(
             available_names(),
-            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn, opencode, cheaperinference, chatgpt-plan"
+            "anthropic, codex, openai, xai, grok, kimi, cursor, kimi-code, zhipu, minimax-cn, opencode, cheaperinference, api-route, chatgpt-plan"
         );
     }
 
@@ -253,6 +262,34 @@ mod tests {
         for preset in PRESETS.iter().filter(|preset| preset.name != "opencode") {
             assert_eq!(preset.api_key_header, None);
         }
+    }
+
+    #[test]
+    fn api_route_preset_normalizes_auth_and_preserves_explicit_overrides() {
+        use crate::config::{upstreams::normalize, ApiKeyHeader, UpstreamConfig};
+
+        let upstream: UpstreamConfig =
+            toml::from_str("name = \"route\"\nprovider = \"api-route\"").unwrap();
+        let (providers, order) = normalize(&[upstream]).unwrap();
+        assert_eq!(order, ["route"]);
+        let provider = &providers["route"];
+        assert_eq!(provider.kind, ProviderKind::Anthropic);
+        assert_eq!(provider.base_url, "https://global.api-route.com");
+        assert_eq!(provider.auth, AuthMode::ApiKey);
+        assert_eq!(provider.api_key_env.as_deref(), Some("API_ROUTE_API_KEY"));
+        assert_eq!(provider.api_key_header, ApiKeyHeader::Bearer);
+
+        let overridden: UpstreamConfig = toml::from_str(
+            "name = \"route\"\nprovider = \"api-route\"\nbase_url = \"https://example.com\"\nauth = { mode = \"api_key\", env = \"CUSTOM_KEY\", header = \"x_api_key\" }",
+        )
+        .unwrap();
+        let (providers, _) = normalize(&[overridden]).unwrap();
+        assert_eq!(providers["route"].base_url, "https://example.com");
+        assert_eq!(
+            providers["route"].api_key_env.as_deref(),
+            Some("CUSTOM_KEY")
+        );
+        assert_eq!(providers["route"].api_key_header, ApiKeyHeader::XApiKey);
     }
 
     #[test]

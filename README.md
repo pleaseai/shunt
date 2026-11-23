@@ -138,7 +138,7 @@ These providers are seeded by default, so `provider = "<name>"` routes to them w
 | `antigravity` | `antigravity` | Antigravity OAuth | `daily-cloudcode-pa.googleapis.com` — Google Antigravity backend over HTTP; uses `~/.shunt/antigravity-auth.json` (`shunt login antigravity`), or named accounts under `~/.shunt/accounts/antigravity` (`shunt login antigravity --name`, selected via `accounts = [...]`) |
 | `antigravity-cli` | `antigravity_cli` | None (local CLI) | **Deprecated.** Local `agy` binary — same backend via subprocess; superseded by `antigravity` above |
 
-Ordered `[[upstreams]]` entries additionally accept the presets `kimi`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode`, `cheaperinference`, and `chatgpt-plan`, which fill in `kind`, `base_url`, and the default auth for those backends.
+Ordered `[[upstreams]]` entries additionally accept the presets `kimi`, `kimi-code`, `zhipu`, `minimax-cn`, `opencode`, `cheaperinference`, `api-route`, and `chatgpt-plan`, which fill in `kind`, `base_url`, and the default auth for those backends.
 
 **ChatGPT plan (Sign in with ChatGPT).** The `chatgpt-plan` preset spends a ChatGPT plan through OpenAI's "Sign in with ChatGPT" token-sharing preview on `api.openai.com/v1/responses`, separate from the `codex` provider above. Sign in with `shunt login chatgpt-plan --name <account>` (a browser callback on `127.0.0.1:1455`, or paste the callback URL on a remote host), add an ordered `[[upstreams]]` entry with `provider = "chatgpt-plan"` (the preset fills in `kind`, `base_url`, and `auth = "chatgpt_plan_oauth"`) and map a model to it, as below. Several named accounts form a pool that rotates when one hits its plan usage limit, and `shunt logout chatgpt-plan --name <account>` revokes and clears one. The preview rejects some request parameters and a usage limit hit after output starts ends the stream instead of rotating; see the [ChatGPT plan guide](https://shunt.sh/guides/chatgpt-plan/).
 
@@ -177,6 +177,7 @@ One table, no code changes:
 | MiniMax China | `https://api.minimax.cn/anthropic` | `MiniMax-M3` |
 | OpenCode Zen | `https://opencode.ai/zen` | `claude-fable-5-1`, `gpt-6-astra` — curated cross-vendor catalog; reads `x-api-key` |
 | Cheaper Inference | `https://api.cheaperinference.com` | `gpt-5.4`, `deepseek-v4-flash`, `glm-5.3` — OpenAI-compatible gateway with a Messages endpoint |
+| API Route | `https://global.api-route.com` | `gpt-6.1-sol` — OpenAI-compatible gateway with a Messages endpoint |
 | OpenRouter | `https://openrouter.ai/api` | `anthropic/claude-opus-4.8` |
 | Vercel AI Gateway | `https://ai-gateway.vercel.sh` | `anthropic/claude-opus-4.8` |
 
