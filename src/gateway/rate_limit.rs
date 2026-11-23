@@ -55,17 +55,25 @@ impl PerIpRateLimiter {
 
     /// Shared core of every counting entry point: sweep idle entries, refuse
     /// an untracked key when the table is full, reset an elapsed window, then
-    /// count one attempt.
+    /// count one attempt. The key is copied only when it is new, so a tracked
+    /// key costs no allocation under the lock.
     fn count_at(&self, key: &str, now: Instant) -> Counted {
         let mut limits = self.lock_and_sweep(now);
-        if !limits.contains_key(key) && limits.len() >= MAX_RATE_LIMIT_IDENTITIES {
+        if let Some(entry) = limits.get_mut(key) {
+            return self.bump(entry, now);
+        }
+        if limits.len() >= MAX_RATE_LIMIT_IDENTITIES {
             return Counted::TableFull;
         }
-        let entry = limits.entry(key.to_string()).or_insert(RateLimitEntry {
+        let entry = limits.entry(key.to_owned()).or_insert(RateLimitEntry {
             window_start: now,
             count: 0,
             last_seen: now,
         });
+        self.bump(entry, now)
+    }
+
+    fn bump(&self, entry: &mut RateLimitEntry, now: Instant) -> Counted {
         if now.saturating_duration_since(entry.window_start) >= self.window {
             entry.window_start = now;
             entry.count = 0;

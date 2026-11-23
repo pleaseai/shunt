@@ -41,10 +41,14 @@ operator:
 
 A caller over either limit is told to wait, with a standard "retry after" hint giving the number of
 seconds. Once an address is over the failed-attempt limit, shunt turns its requests away before
-spending any effort checking them. Deployments behind a trusted proxy can use their existing proxy
-setting, so each caller is counted by its own address.
+spending any effort checking them. Callers are counted by the address shunt sees. Behind a proxy,
+that is the proxy's address unless the operator turns on the existing setting that trusts the
+proxy's forwarded address; with it on, each caller is counted by its own address.
 
-**What to expect**: A workflow that stays within the limits sees no change. To adjust the limits,
+**What to expect**: A workflow that stays within the limits sees no change, with one exception:
+workflows that share an address share its failed-attempt count, so a valid workflow can be told
+to wait when another caller at the same address has failed too often. An IPv6 client that can
+use many addresses can also spread its failed attempts across them. To adjust the limits,
 operators set them in the shunt configuration and restart shunt.
 
 **Release status**: The change is in pull request #917, now under review. It will ship in a release

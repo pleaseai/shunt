@@ -296,7 +296,9 @@ pub struct GatewayStores {
     pub device_verify_rate: PerIpRateLimiter,
     /// Failed `POST /v1/oauth/token` exchanges per address.
     pub exchange_failure_rate: PerIpRateLimiter,
-    /// Exchange attempts per workload identity, for `POST /v1/oauth/token`.
+    /// Caps successful exchanges per verified workload identity, for
+    /// `POST /v1/oauth/token`. Every verified attempt is counted, including
+    /// ones it refuses; failed attempts go to `exchange_failure_rate`.
     pub exchange_identity_rate: PerIpRateLimiter,
     pub oidc_states: OidcStateStore,
     pub oidc_discovery: Mutex<HashMap<String, DiscoveredEndpoints>>,

@@ -430,6 +430,8 @@ Load-time and `shunt check` errors:
 - An empty `signing_secret` list.
 - A `signing_secret` entry under 32 bytes. The message names its index.
 - `max_ttl_seconds = 0`.
+- `max = 0` or `window_seconds = 0` in `[server.rate_limits.exchange]` or
+  `[server.rate_limits.exchange_failure]`. The limits cannot be switched off.
 - A `signing_secret` that is also a `[server.gateway]` session signing secret. The two token
   families must not share a secret.
 - A `[[server.auth.jwt]]` `issuer` equal to `urn:shunt:workload-exchange`, which is reserved for
@@ -475,7 +477,7 @@ them as OAuth errors (an exception recorded in `AGENTS.md`):
 | `400` | `invalid_request` | `Content-Type` is not JSON, the body is not a JSON object, a field has the wrong JSON type, or `assertion` is missing or blank |
 | `400` | `unsupported_grant_type` | `grant_type` is missing or is not the jwt-bearer URN |
 | `401` | `invalid_grant` | No opted-in entry verifies the assertion. One identical response for every cause: wrong audience, expired, too old, missing required claim, bad signature, unknown `kid`, an entry that has not opted in, or a credential that is not an IdP JWT (a static token, a gateway session token, an earlier exchange token) |
-| `429` | `slow_down` | The verified identity is over `[server.rate_limits] exchange`, or the client address is over `exchange_failure`. The body is identical for both; `Retry-After` is the whole seconds until that key's window resets |
+| `429` | `slow_down` | The verified identity is over `[server.rate_limits] exchange`, the client address is over `exchange_failure`, or the limiter is at capacity. The body is identical for every cause; `Retry-After` is the whole seconds until that key's window resets, or the full window when the limiter is at capacity |
 | `503` | `temporarily_unavailable` | A matching issuer's key set cannot be fetched, or the gateway is at its inbound concurrency limit (then with `Retry-After: 1`) |
 
 The `error_description` is a fixed string per code. It never names the failed check and never

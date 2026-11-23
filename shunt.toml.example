@@ -77,9 +77,11 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # [server.rate_limits.exchange]                # successful exchanges per verified identity
 # max = 60
 # window_seconds = 600
+# The client address is the TCP peer, or X-Forwarded-For (then X-Real-IP) when
+# [server.access_control] trust_forwarded_for = true.
 # [server.rate_limits.exchange_failure]        # failed attempts per client address
-# max = 10                                      # address = peer, or X-Forwarded-For when
-# window_seconds = 600                          # [server.access_control] trust_forwarded_for
+# max = 10
+# window_seconds = 600
 
 # --- Optional: admin web surface for browser account provisioning and pool health.
 # Separate from client auth: admin credentials never live here as literals.

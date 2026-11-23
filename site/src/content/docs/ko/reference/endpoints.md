@@ -176,10 +176,10 @@ policy가 없으면 로그인한 모든 사용자가 대상이고, policy가 있
 | `400` | `invalid_request` | 본문이 JSON이 아니거나 객체가 아님, `Content-Type`이 JSON이 아님, 필드 타입이 틀림, 또는 `assertion`이 없거나 비어 있음 |
 | `400` | `unsupported_grant_type` | `grant_type`이 없거나 jwt-bearer URN이 아님 |
 | `401` | `invalid_grant` | 옵트인한 어떤 항목도 assertion을 검증하지 못함. 원인과 관계없이 응답이 같음 |
-| `429` | `slow_down` | 검증된 ID가 `[server.rate_limits] exchange`를 넘었거나 클라이언트 주소가 `exchange_failure`를 넘음. 항상 `Retry-After`를 포함 |
+| `429` | `slow_down` | 검증된 ID가 `[server.rate_limits] exchange`를 넘었거나 클라이언트 주소가 `exchange_failure`를 넘었거나, 제한기가 용량에 도달함. 항상 `Retry-After`를 포함 |
 | `503` | `temporarily_unavailable` | 일치하는 issuer의 key set을 가져올 수 없거나, 게이트웨이가 인바운드 동시 요청 한도에 도달함(이때는 `Retry-After: 1` 포함) |
 
-두 가지 제한이 적용되며 둘 다 [`[server.rate_limits]`](/ko/reference/configuration/)에서 설정합니다. 검증된 ID별 성공한 교환(기본 600초당 60회)과 클라이언트 주소별 실패한 시도(기본 600초당 10회)입니다. 둘 다 같은 `429` 본문으로 응답하고, `Retry-After`는 해당 키의 윈도가 초기화될 때까지의 정수 초이며, 실패 제한을 넘은 주소는 assertion이 유효해도 읽거나 검증하기 전에 거부됩니다.
+두 가지 제한이 적용되며 둘 다 [`[server.rate_limits]`](/ko/reference/configuration/)에서 설정합니다. 일치한 `[[server.auth.jwt]]` 항목마다 따로 세는 검증된 ID별 성공한 교환(기본 600초당 60회)과 클라이언트 주소별 실패한 시도(기본 600초당 10회)입니다. 둘 다 같은 `429` 본문으로 응답하고, `Retry-After`는 해당 키의 윈도가 초기화될 때까지의 정수 초이며, 실패 제한을 넘은 주소는 assertion이 유효해도 읽거나 검증하기 전에 거부됩니다. 각 제한기는 키를 최대 4,096개까지 추적합니다. 용량에 도달하면 새 ID는 거부되고, 새 주소의 실패한 시도는 추적되지 않은 채 `429`로 응답합니다. 이렇게 용량 때문에 거부할 때는 `Retry-After`가 윈도 전체 길이입니다.
 
 ## 게이트웨이 프로토콜
 

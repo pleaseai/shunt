@@ -38,7 +38,12 @@ Requested in #914, which was split out of #913 when rate limiting was deferred.
   attempts from one client address within a `window_seconds` window, configured by
   `[server.rate_limits] exchange_failure`. The default is 10 per 600 seconds. Once an address
   is over the limit, refuse its requests before verifying any assertion, so a blocked caller
-  costs no signing-key lookups or signature checks.
+  costs no signing-key lookups or signature checks. A failure is counted when it is answered, so
+  requests from one address already in flight when it reaches the limit still complete and can
+  take it past `max`; how many can be in flight is bounded only by `max_concurrent_requests`,
+  and not at all when that is `0`. An
+  atomic charge-and-refund was tried and reverted because it counted cancelled requests (AC-014)
+  and refused concurrent valid exchanges (AC-006); see the plan's Decision Log.
 - [ ] FR-3: Answer an over-limit request with HTTP `429`, carrying:
   - the endpoint's OAuth error shape (`{error, error_description}`) with a fixed error code and
     description;
@@ -72,6 +77,8 @@ Requested in #914, which was split out of #913 when rate limiting was deferred.
   Counters stay in memory only and are not persisted.
 - [ ] NFR-2: Keep every existing exchange response unchanged for callers under both limits:
   success body, `400`/`401`/`503` OAuth errors, and the `404` once a reload removes the table.
+  The one exception is the capacity case in AC-013: when the failure limiter's table is full, an
+  untracked address's failed attempts are answered `429` instead.
 
 ## Acceptance Criteria
 
