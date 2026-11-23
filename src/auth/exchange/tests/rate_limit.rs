@@ -552,32 +552,29 @@ async fn an_oversized_forwarded_value_is_stored_as_a_bounded_key() {
 }
 
 #[tokio::test]
-async fn concurrent_failures_from_one_address_cannot_outrun_the_limit() {
+async fn failures_in_flight_together_are_all_answered_then_the_address_is_blocked() {
     const MAX: u32 = 3;
-    const EXTRA: usize = 4;
     let h = serving("CONCURRENT", MAX).await;
     let mut wrong_aud = claims(&h.issuer.uri());
     wrong_aud["aud"] = json!("someone-else");
     let unverifiable = exchange_body(&token(&wrong_aud));
 
     let replies = futures_util::future::join_all(
-        (0..MAX as usize + EXTRA).map(|_| post_json(&h.state, "10.5.0.1", unverifiable.clone())),
+        (0..MAX as usize + 4).map(|_| post_json(&h.state, "10.5.0.1", unverifiable.clone())),
     )
     .await;
 
-    // Each admitted request is charged before it verifies, so exactly `MAX`
-    // reach verification and the rest are refused before the body is read.
-    let unauthorized = replies
-        .iter()
-        .filter(|reply| reply.status == StatusCode::UNAUTHORIZED)
-        .count();
-    assert_eq!(unauthorized, MAX as usize);
-    let refused: Vec<&Reply> = replies
-        .iter()
-        .filter(|reply| reply.status == StatusCode::TOO_MANY_REQUESTS)
-        .collect();
-    assert_eq!(refused.len(), EXTRA);
-    refused.into_iter().for_each(assert_slow_down);
+    // `peek` does not count, so every request in flight together is answered
+    // normally; the failures are recorded as each one finishes.
+    assert!(
+        replies
+            .iter()
+            .all(|reply| reply.status == StatusCode::UNAUTHORIZED),
+        "{:?}",
+        replies.iter().map(|reply| reply.status).collect::<Vec<_>>()
+    );
+    let blocked = post_json(&h.state, "10.5.0.1", unverifiable).await;
+    assert_slow_down(&blocked);
 }
 
 #[tokio::test]

@@ -606,7 +606,9 @@ Notes:
   client address (wrong content type, unreadable, oversized or malformed body, an unsupported
   grant type, or an assertion no opted-in entry verifies); a successful exchange, a `503` and an
   identity-limit `429` are not counted. An address over its failure limit is refused before the
-  body is read or any assertion is verified, even a valid one. Neither limit stops an assertion
+  body is read or any assertion is verified, even a valid one. A failure is counted when it is
+  answered, so requests from one address that are already in flight when it reaches the limit
+  still complete; later requests are refused before verification. Neither limit stops an assertion
   from being replayed inside its life, and a matrix workflow sharing one identity shares one
   quota.
 - **At capacity.** Each limiter tracks at most 4,096 keys and sweeps idle ones; counters are
@@ -614,7 +616,7 @@ Notes:
   a valid assertion, but its failures are answered `429` without being tracked.
 - **Client address.** The TCP peer, or the first `X-Forwarded-For` value and then `X-Real-IP` when
   `[server.access_control] trust_forwarded_for` is `true`. `[server.gateway] trust_forwarded_for`
-  does not affect the exchange. Enable it only behind a trusted proxy that overwrites
+  does not affect the exchange. A forwarded `ip:port` or `[v6]:port` is keyed by its IP. Enable it only behind a trusted proxy that overwrites
   client-supplied forwarding headers, or a caller can pick its own address.
 - **Assertion replay within its life is accepted**, as for any bearer JWT (§4). An assertion
   lives about five minutes.

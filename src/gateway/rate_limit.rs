@@ -3,10 +3,13 @@
 //!
 //! The key is caller-chosen: a client address for the device-flow endpoints
 //! ([`PerIpRateLimiter::check`]) and for exchange failures
-//! ([`PerIpRateLimiter::charge`] before any work, then
-//! [`PerIpRateLimiter::refund`] when the exchange did not fail), and
+//! ([`PerIpRateLimiter::peek`] then [`PerIpRateLimiter::record_failure`]), and
 //! a digest of rule fingerprint plus verified identity for successful
 //! exchanges ([`PerIpRateLimiter::admit`]).
+//!
+//! [`PerIpRateLimiter::peek`] does not count, so requests already in flight
+//! when an address reaches its limit are not refused: the limit applies once
+//! their failures are recorded.
 //!
 //! Counters are deliberately memory-only: windows are short, so a restart only
 //! resets them. Idle entries are swept on every check and the table is capped
@@ -126,31 +129,6 @@ enum Counted {
     TableFull,
 }
 
-/// One attempt counted by [`PerIpRateLimiter::charge`], to hand back to
-/// [`PerIpRateLimiter::refund`] when the attempt turns out not to count.
-#[derive(Debug)]
-pub struct Charge(Slot);
-
-#[derive(Debug)]
-enum Slot {
-    /// Counted against `key` in the window that started at `window_start`.
-    Tracked { key: String, window_start: Instant },
-    /// The table was full, so nothing was recorded; carries the wait to
-    /// answer if the attempt fails.
-    Untracked(RetryAfter),
-}
-
-impl Charge {
-    /// For a charge the full table could not record, the wait to answer if
-    /// the attempt fails; `None` when the attempt was counted.
-    pub fn untracked(&self) -> Option<RetryAfter> {
-        match self.0 {
-            Slot::Tracked { .. } => None,
-            Slot::Untracked(retry_after) => Some(retry_after),
-        }
-    }
-}
-
 /// Whole seconds a caller should wait before retrying, for a `Retry-After`
 /// header. Always at least 1 and never more than the limiter's window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,65 +141,36 @@ impl RetryAfter {
 }
 
 impl PerIpRateLimiter {
-    /// Charge one attempt to `key` up front, in one step with the check, so
-    /// concurrent attempts cannot all pass before any of them is counted.
-    ///
-    /// Refused when `key` is tracked, its window is live and its count is
-    /// already at the limit. An elapsed window is reset as [`Self::admit`]
-    /// does. An untracked key is never refused, even when the table is full:
-    /// it is then left untracked and the returned [`Charge`] says so.
-    pub fn charge(&self, key: &str) -> Result<Charge, RetryAfter> {
-        self.charge_at(key, Instant::now())
+    /// Non-counting: is `key` already over its limit within the current window?
+    /// An untracked key is never blocked, even when the table is full.
+    pub fn peek(&self, key: &str) -> Result<(), RetryAfter> {
+        self.peek_at(key, Instant::now())
     }
 
-    fn charge_at(&self, key: &str, now: Instant) -> Result<Charge, RetryAfter> {
-        let mut limits = self.lock_and_sweep(now);
-        if let Some(entry) = limits.get_mut(key) {
-            if now.saturating_duration_since(entry.window_start) >= self.window {
-                entry.window_start = now;
-                entry.count = 0;
-            } else if entry.count >= self.max {
-                return Err(self.retry_after(self.remaining(entry, now)));
+    fn peek_at(&self, key: &str, now: Instant) -> Result<(), RetryAfter> {
+        let limits = self.lock_and_sweep(now);
+        match limits.get(key) {
+            Some(entry)
+                if entry.count >= self.max
+                    && now.saturating_duration_since(entry.window_start) < self.window =>
+            {
+                Err(self.retry_after(self.remaining(entry, now)))
             }
-            entry.last_seen = now;
-            entry.count += 1;
-            return Ok(Charge(Slot::Tracked {
-                key: key.to_string(),
-                window_start: entry.window_start,
-            }));
+            _ => Ok(()),
         }
-        if limits.len() >= MAX_RATE_LIMIT_IDENTITIES {
-            return Ok(Charge(Slot::Untracked(self.retry_after(self.window))));
-        }
-        limits.insert(
-            key.to_string(),
-            RateLimitEntry {
-                window_start: now,
-                count: 1,
-                last_seen: now,
-            },
-        );
-        Ok(Charge(Slot::Tracked {
-            key: key.to_string(),
-            window_start: now,
-        }))
     }
 
-    /// Undo exactly the attempt `charge` counted. Nothing happens when the
-    /// charge was untracked, or when its window has since rolled over or been
-    /// swept, so a late refund never lowers a newer window's count.
-    pub fn refund(&self, charge: Charge) {
-        let Slot::Tracked { key, window_start } = charge.0 else {
-            return;
-        };
-        let mut limits = self
-            .limits
-            .lock()
-            .expect("gateway rate-limit lock poisoned");
-        if let Some(entry) = limits.get_mut(&key) {
-            if entry.window_start == window_start {
-                entry.count = entry.count.saturating_sub(1);
-            }
+    /// Counting: record one failed attempt for `key`.
+    pub fn record_failure(&self, key: &str) -> Result<(), RetryAfter> {
+        self.record_failure_at(key, Instant::now())
+    }
+
+    fn record_failure_at(&self, key: &str, now: Instant) -> Result<(), RetryAfter> {
+        // Only a refused (untracked, table-full) key is an error here: the
+        // failure itself is recorded, and the next request is blocked by `peek`.
+        match self.count_at(key, now) {
+            Counted::TableFull => self.refusal(Counted::TableFull),
+            _ => Ok(()),
         }
     }
 
@@ -298,83 +247,42 @@ mod tests {
             .is_ok());
     }
 
-    fn charged(result: Result<Charge, RetryAfter>) -> Option<u64> {
-        result.err().map(RetryAfter::seconds)
-    }
-
     #[test]
-    fn charge_admits_up_to_max_then_refuses_without_counting() {
+    fn peek_does_not_count_and_blocks_only_after_max_failures() {
         let limiter = PerIpRateLimiter::new(Duration::from_secs(60), 2);
         let now = Instant::now();
-        assert!(limiter.charge_at("ip", now).is_ok());
-        assert!(limiter.charge_at("ip", now).is_ok());
         for _ in 0..10 {
-            assert_eq!(charged(limiter.charge_at("ip", now)), Some(60));
+            assert!(limiter.peek_at("ip", now).is_ok());
         }
-        assert_eq!(limiter.limits.lock().unwrap()["ip"].count, 2);
+        assert!(limiter.record_failure_at("ip", now).is_ok());
+        assert!(limiter.peek_at("ip", now).is_ok());
+        assert!(limiter.record_failure_at("ip", now).is_ok());
+        assert_eq!(secs(limiter.peek_at("ip", now)), Some(60));
         assert_eq!(
-            charged(limiter.charge_at("ip", now + Duration::from_secs(30))),
+            secs(limiter.peek_at("ip", now + Duration::from_secs(30))),
             Some(30)
         );
-        assert!(limiter
-            .charge_at("ip", now + Duration::from_secs(60))
-            .is_ok());
-    }
-
-    #[test]
-    fn refund_restores_exactly_one_slot() {
-        let limiter = PerIpRateLimiter::new(Duration::from_secs(60), 2);
-        let now = Instant::now();
-        let first = limiter.charge_at("ip", now).unwrap();
-        assert!(limiter.charge_at("ip", now).is_ok());
-        assert!(limiter.charge_at("ip", now).is_err());
-        limiter.refund(first);
-        assert_eq!(limiter.limits.lock().unwrap()["ip"].count, 1);
-        assert!(limiter.charge_at("ip", now).is_ok());
-        assert!(limiter.charge_at("ip", now).is_err());
-    }
-
-    #[test]
-    fn refund_after_the_window_rolled_over_leaves_the_new_window_alone() {
-        let limiter = PerIpRateLimiter::new(Duration::from_secs(60), 2);
-        let now = Instant::now();
-        let old = limiter.charge_at("ip", now).unwrap();
-        let later = now + Duration::from_secs(61);
-        assert!(limiter.charge_at("ip", later).is_ok());
-        limiter.refund(old);
-        assert_eq!(limiter.limits.lock().unwrap()["ip"].count, 1);
-    }
-
-    #[test]
-    fn refund_of_a_swept_key_is_a_no_op() {
-        let limiter = PerIpRateLimiter::new(Duration::from_secs(60), 2);
-        let now = Instant::now();
-        let old = limiter.charge_at("ip", now).unwrap();
-        assert!(limiter
-            .charge_at("other", now + Duration::from_secs(120))
-            .is_ok());
-        limiter.refund(old);
-        assert!(!limiter.limits.lock().unwrap().contains_key("ip"));
+        assert!(limiter.peek_at("ip", now + Duration::from_secs(60)).is_ok());
     }
 
     #[test]
     fn retry_after_rounds_a_sub_second_remainder_up_to_one() {
         let limiter = PerIpRateLimiter::new(Duration::from_secs(60), 1);
         let now = Instant::now();
-        assert!(limiter.charge_at("ip", now).is_ok());
+        assert!(limiter.record_failure_at("ip", now).is_ok());
         let late = now + Duration::from_millis(59_999);
-        assert_eq!(charged(limiter.charge_at("ip", late)), Some(1));
+        assert_eq!(secs(limiter.peek_at("ip", late)), Some(1));
         let rounded = now + Duration::from_millis(58_500);
-        assert_eq!(charged(limiter.charge_at("ip", rounded)), Some(2));
+        assert_eq!(secs(limiter.peek_at("ip", rounded)), Some(2));
     }
 
     #[test]
     fn retry_after_stays_within_one_and_the_window() {
         let limiter = PerIpRateLimiter::new(Duration::from_millis(1500), 1);
         let now = Instant::now();
-        assert!(limiter.charge_at("ip", now).is_ok());
+        assert!(limiter.record_failure_at("ip", now).is_ok());
         for offset in [0u64, 1, 500, 1000, 1499] {
-            let seconds = charged(limiter.charge_at("ip", now + Duration::from_millis(offset)))
+            let seconds = secs(limiter.peek_at("ip", now + Duration::from_millis(offset)))
                 .expect("blocked inside the window");
             assert!((1..=2).contains(&seconds), "{offset}ms -> {seconds}");
         }
@@ -394,28 +302,19 @@ mod tests {
         let limiter = PerIpRateLimiter::new(Duration::from_secs(60), 5);
         let now = Instant::now();
         fill(&limiter, now);
-        for _ in 0..10 {
-            let charge = limiter.charge_at("untracked", now).expect("never refused");
-            assert_eq!(charge.untracked().map(RetryAfter::seconds), Some(60));
-            limiter.refund(charge);
-        }
+        assert!(limiter.peek_at("untracked", now).is_ok());
+        assert_eq!(secs(limiter.record_failure_at("untracked", now)), Some(60));
         assert!(!limiter.limits.lock().unwrap().contains_key("untracked"));
-        assert_eq!(
-            limiter.limits.lock().unwrap().len(),
-            MAX_RATE_LIMIT_IDENTITIES
-        );
-        let tracked = limiter.charge_at("client-0", now).unwrap();
-        assert!(tracked.untracked().is_none());
+        assert!(limiter.peek_at("untracked", now).is_ok());
     }
 
     #[test]
-    fn charging_leaves_check_behaviour_unchanged() {
+    fn peek_leaves_check_behaviour_unchanged() {
         let limiter = PerIpRateLimiter::new(Duration::from_secs(60), 1);
         let now = Instant::now();
+        assert!(limiter.peek_at("ip", now).is_ok());
         assert!(limiter.check_at("ip", now));
         assert!(!limiter.check_at("ip", now));
-        assert!(limiter.check_at("other", now));
-        assert!(!limiter.check_at("other", now));
-        assert_eq!(charged(limiter.charge_at("ip", now)), Some(60));
+        assert_eq!(secs(limiter.peek_at("ip", now)), Some(60));
     }
 }
