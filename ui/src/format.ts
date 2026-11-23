@@ -18,6 +18,24 @@ export function titleCase(value: string | null | undefined): string {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : '';
 }
 
+/**
+ * Mirrors the Rust `normalize_chatgpt_plan` (`src/auth/observation.rs`) for
+ * `chatgpt_oauth` accounts, so a managed row and its observed identity show the
+ * same plan name; keep the two tables in sync.
+ */
+export function planLabel(auth: string | null | undefined, value: string | null | undefined): string {
+  if (auth === 'chatgpt_oauth') {
+    const plan = value?.toLowerCase();
+    switch (plan) {
+      case 'prolite': return 'Pro';
+      case 'team': return 'Business Standard';
+      case 'self_serve_business_profile': return 'Business Premium';
+    }
+    return titleCase(plan);
+  }
+  return titleCase(value);
+}
+
 /** A coarse "time until" for a reset instant given in whole seconds. */
 export function untilShort(resetSecs: number): string {
   const target = resetSecs * 1000;
