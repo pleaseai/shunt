@@ -1,8 +1,15 @@
-//! Per-IP fixed-window rate limiter used by the device-flow endpoints.
+//! Keyed fixed-window rate limiter used by the device-flow endpoints and the
+//! token exchange (`POST /v1/oauth/token`).
+//!
+//! The key is caller-chosen: a client address for the device-flow endpoints
+//! ([`PerIpRateLimiter::check`]) and for exchange failures
+//! ([`PerIpRateLimiter::peek`] then [`PerIpRateLimiter::record_failure`]), and
+//! a digest of rule fingerprint plus verified identity for successful
+//! exchanges ([`PerIpRateLimiter::admit`]).
 //!
 //! Counters are deliberately memory-only: windows are short, so a restart only
 //! resets them. Idle entries are swept on every check and the table is capped
-//! at [`MAX_RATE_LIMIT_IDENTITIES`] so an address sweep cannot grow it without
+//! at [`MAX_RATE_LIMIT_IDENTITIES`] so a key sweep cannot grow it without
 //! bound.
 
 use std::{
