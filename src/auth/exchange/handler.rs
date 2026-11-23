@@ -7,18 +7,22 @@
 //! `error_description` is a fixed string per error code: it never names the
 //! check that failed (NFR-3) and never echoes the assertion (NFR-2).
 
+use std::net::SocketAddr;
+
 use axum::{
     body::Body,
-    extract::State,
-    http::{header, HeaderMap, StatusCode},
+    extract::{ConnectInfo, State},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
 use serde_json::{json, Value};
 
-use super::{fingerprint, mint, unix_now};
+use super::{fingerprint, mint, unix_now, ExchangeSettings};
+use crate::auth::inbound::InboundAuth;
 use crate::auth::inbound_jwt::{self, JwtOutcome};
 use crate::gateway::oauth::no_store;
+use crate::gateway::rate_limit::{PerIpRateLimiter, RetryAfter};
 use crate::server::AppState;
 
 const JWT_BEARER_GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
@@ -28,11 +32,12 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 
 pub(crate) async fn post(
     State(state): State<AppState>,
+    connection: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
     // The route exists from boot, but a reload may have removed the table
-    // since: answer exactly as an unregistered route would.
+    // since: answer exactly as an unregistered route would. Nothing is counted.
     let state = state.refreshed();
     let Some((auth, settings)) = state
         .inbound_auth
@@ -42,37 +47,79 @@ pub(crate) async fn post(
         return no_store(StatusCode::NOT_FOUND.into_response());
     };
 
-    if !is_json(&headers) {
-        return oauth_error(ErrorCode::InvalidRequest);
+    let peer = connection.map(|Extension(ConnectInfo(address))| address);
+    let key = crate::gateway::device::client_ip(
+        &headers,
+        peer,
+        state.config.server.access_control.trust_forwarded_for,
+    );
+    let failures = &state.gateway_stores.exchange_failure_rate;
+    // An address over its failure limit is refused before the body is read or
+    // any key set is fetched, so a blocked caller costs no verification work.
+    if let Err(retry_after) = failures.peek(&key) {
+        return slow_down(retry_after);
     }
-    let Ok(bytes) = axum::body::to_bytes(body, MAX_BODY_BYTES).await else {
-        return oauth_error(ErrorCode::InvalidRequest);
-    };
-    let assertion = match parse_request(&bytes) {
-        Ok(assertion) => assertion,
-        Err(code) => return oauth_error(code),
-    };
 
-    // One `verify` call per opted-in rule: `Verified` names only the issuer,
-    // which cannot tell two entries on one issuer apart, and the minted token
-    // is bound to the exact entry that accepted the assertion. Only opted-in
-    // rules are tried, so static tokens, gateway sessions and earlier exchange
-    // tokens fall out as ordinary rejections.
+    let assertion = match read_assertion(&headers, body).await {
+        Ok(assertion) => assertion,
+        Err(code) => return count_failure(failures, &key, code),
+    };
+    match exchange(&state, auth, settings, &assertion).await {
+        Ok(response) => response,
+        // An unreachable key set says nothing about the caller: not counted.
+        Err(ErrorCode::TemporarilyUnavailable) => oauth_error(ErrorCode::TemporarilyUnavailable),
+        Err(code) => count_failure(failures, &key, code),
+    }
+}
+
+/// Record one failed exchange for `key` and answer `code`, or answer
+/// `slow_down` when the limiter refuses to track the address.
+fn count_failure(failures: &PerIpRateLimiter, key: &str, code: ErrorCode) -> Response {
+    match failures.record_failure(key) {
+        Ok(()) => oauth_error(code),
+        Err(retry_after) => slow_down(retry_after),
+    }
+}
+
+/// Check the content type, read the bounded body and parse the assertion.
+async fn read_assertion(headers: &HeaderMap, body: Body) -> Result<String, ErrorCode> {
+    if !is_json(headers) {
+        return Err(ErrorCode::InvalidRequest);
+    }
+    let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+        .await
+        .map_err(|_| ErrorCode::InvalidRequest)?;
+    parse_request(&bytes)
+}
+
+/// Verify `assertion` against the opted-in rules and mint the token response.
+///
+/// One `verify` call per opted-in rule: `Verified` names only the issuer,
+/// which cannot tell two entries on one issuer apart, and the minted token is
+/// bound to the exact entry that accepted the assertion. Only opted-in rules
+/// are tried, so static tokens, gateway sessions and earlier exchange tokens
+/// fall out as ordinary rejections.
+async fn exchange(
+    state: &AppState,
+    auth: &InboundAuth,
+    settings: &ExchangeSettings,
+    assertion: &str,
+) -> Result<Response, ErrorCode> {
     let mut unavailable = false;
     for rule in auth.jwt().iter().filter(|rule| rule.exchange) {
-        match inbound_jwt::verify(std::slice::from_ref(rule), &state.inbound_jwks, &assertion).await
+        match inbound_jwt::verify(std::slice::from_ref(rule), &state.inbound_jwks, assertion).await
         {
             JwtOutcome::Verified { identity, .. } => {
                 let minted = mint(settings, &identity, &fingerprint(rule), unix_now());
                 tracing::info!(outcome = "issued", identity = %identity, "workload exchange");
-                return no_store(
+                return Ok(no_store(
                     Json(json!({
                         "access_token": minted.token,
                         "token_type": "Bearer",
                         "expires_in": minted.expires_in,
                     }))
                     .into_response(),
-                );
+                ));
             }
             JwtOutcome::Unavailable => unavailable = true,
             JwtOutcome::Rejected => {}
@@ -84,7 +131,7 @@ pub(crate) async fn post(
         ErrorCode::InvalidGrant
     };
     tracing::info!(outcome = code.as_str(), "workload exchange");
-    oauth_error(code)
+    Err(code)
 }
 
 /// Whether `Content-Type` is `application/json` or a `+json` type.
@@ -141,6 +188,7 @@ enum ErrorCode {
     UnsupportedGrantType,
     InvalidGrant,
     TemporarilyUnavailable,
+    SlowDown,
 }
 
 impl ErrorCode {
@@ -150,6 +198,7 @@ impl ErrorCode {
             Self::UnsupportedGrantType => "unsupported_grant_type",
             Self::InvalidGrant => "invalid_grant",
             Self::TemporarilyUnavailable => "temporarily_unavailable",
+            Self::SlowDown => "slow_down",
         }
     }
 
@@ -158,6 +207,7 @@ impl ErrorCode {
             Self::InvalidRequest | Self::UnsupportedGrantType => StatusCode::BAD_REQUEST,
             Self::InvalidGrant => StatusCode::UNAUTHORIZED,
             Self::TemporarilyUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::SlowDown => StatusCode::TOO_MANY_REQUESTS,
         }
     }
 
@@ -169,6 +219,7 @@ impl ErrorCode {
             Self::UnsupportedGrantType => "Only the jwt-bearer grant type is supported.",
             Self::InvalidGrant => "The assertion is not valid.",
             Self::TemporarilyUnavailable => "The assertion cannot be verified right now.",
+            Self::SlowDown => "Too many failed attempts. Wait before retrying.",
         }
     }
 }
@@ -184,4 +235,14 @@ fn oauth_error(code: ErrorCode) -> Response {
         )
             .into_response(),
     )
+}
+
+/// The `slow_down` answer with the address's remaining wait as `Retry-After`.
+fn slow_down(retry_after: RetryAfter) -> Response {
+    let mut response = oauth_error(ErrorCode::SlowDown);
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from(retry_after.seconds()),
+    );
+    response
 }

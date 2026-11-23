@@ -294,6 +294,10 @@ pub struct GatewayStores {
     pub spend: SpendStore,
     pub device_authorization_rate: PerIpRateLimiter,
     pub device_verify_rate: PerIpRateLimiter,
+    /// Failed `POST /v1/oauth/token` exchanges per address.
+    pub exchange_failure_rate: PerIpRateLimiter,
+    /// Exchange attempts per workload identity, for `POST /v1/oauth/token`.
+    pub exchange_identity_rate: PerIpRateLimiter,
     pub oidc_states: OidcStateStore,
     pub oidc_discovery: Mutex<HashMap<String, DiscoveredEndpoints>>,
     pub oidc_client: reqwest::Client,
@@ -337,6 +341,14 @@ impl GatewayStores {
             device_verify_rate: PerIpRateLimiter::new(
                 Duration::from_secs(rate_limits.device_verify.window_seconds),
                 rate_limits.device_verify.max,
+            ),
+            exchange_failure_rate: PerIpRateLimiter::new(
+                Duration::from_secs(rate_limits.exchange_failure.window_seconds),
+                rate_limits.exchange_failure.max,
+            ),
+            exchange_identity_rate: PerIpRateLimiter::new(
+                Duration::from_secs(rate_limits.exchange.window_seconds),
+                rate_limits.exchange.max,
             ),
             oidc_states: OidcStateStore::new(),
             oidc_discovery: Mutex::new(HashMap::new()),

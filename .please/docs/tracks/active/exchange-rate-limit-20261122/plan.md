@@ -120,7 +120,7 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 - [x] T002 Accept `[server.rate_limits] exchange` and `exchange_failure` with defaults and validation (file: src/config/http_tuning.rs) [FR-4, AC-009]
   Validation: an omitted table gives 60/600 and 10/600. A table that sets only `max` keeps the default window (AC-009). A zero `max` or `window_seconds` fails config load, naming the table. Changing either table on reload logs the existing restart warning.
   Method: unit tests in `src/config/http_tuning.rs` and `src/config.rs`
-- [ ] T003 [TDD] Add the peek, record-failure and admit entry points with Retry-After to the limiter (file: src/gateway/rate_limit.rs) (depends on T001) [NFR-1, AC-002, AC-007, AC-012, AC-013]
+- [x] T003 [TDD] Add the peek, record-failure and admit entry points with Retry-After to the limiter (file: src/gateway/rate_limit.rs) (depends on T001) [NFR-1, AC-002, AC-007, AC-012, AC-013]
   Validation: at fixed instants, a key over `max` is blocked until its window elapses and then admitted (AC-002); Retry-After is always within `[1, window]` (AC-007); at 4096 keys a new identity is refused (AC-012) while an untracked address is not blocked and its failure is refused without being tracked (AC-013); `check` keeps its old behaviour.
   Method: `cargo test --all-features gateway::rate_limit` with injected `Instant`s
 - [ ] T004 Refuse over-limit addresses before verification and count failed exchanges (file: src/auth/exchange/handler.rs) (depends on T002, T003) [FR-2, FR-3, NFR-2, AC-004, AC-005, AC-006, AC-007, AC-014]
@@ -179,6 +179,9 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
   Evidence: `cargo test --all-features http_tuning` -> 18 passed (defaults 60/600 and 10/600, partial-table, struct-differs tests); `config::tests` -> 343 passed incl. http_tuning_validation_rejects_each_invalid_value (zero exchange max, zero exchange_failure window); clippy --all-targets --all-features -D warnings exit 0
 - [x] (2026-11-23 KST) T003 [TDD] Add the peek, record-failure and admit entry points with Retry-After to the limiter
   Evidence: RED `cargo test --all-features gateway::rate_limit` -> 7 failed, 3 passed (todo! stubs); GREEN -> 10 passed, 0 failed; `cargo test --all-features gateway::` -> 364 passed; clippy --all-targets --all-features -D warnings exit 0
+- [x] (2026-11-23 KST) T004 Refuse over-limit addresses before verification and count failed exchanges
+  Evidence: `cargo test --all-features --lib auth::exchange` -> 20 passed (6 new `rate_limit::*` handler tests: blocked valid assertion -> 429 with 0 JWKS fetches, each failure kind counts, success and 503 never count, 404 wins for a removed table, full table -> 429); `cargo test --all-features --test router_surface` -> 15 passed incl. the_exchange_path_answers_429_after_repeated_failures; clippy exit 0
+  Also changed: src/auth/inbound_jwt.rs + inbound_jwt/tests.rs (test fixtures `pub(crate)` for reuse), tests/inbound/inbound_exchange_endpoint.rs (raise exchange_failure.max: its tests send >10 deliberate failures from one loopback address)
 
 ## Decision Log
 

@@ -120,6 +120,9 @@ fn config_with(entries: Vec<InboundJwtConfig>, exchange: Option<ExchangeConfig>)
         exchange,
         ..Default::default()
     });
+    // These tests send many deliberately failing requests from one loopback
+    // address to pin each error response; the failure limit has its own tests.
+    config.server.rate_limits.exchange_failure.max = 10_000;
     config
 }
 

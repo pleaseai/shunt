@@ -551,6 +551,61 @@ async fn the_exchange_path_is_not_registered_without_the_table() {
     }
 }
 
+/// Driving the real router: after `exchange_failure.max` failed exchanges from
+/// one address, the next request is refused with the OAuth-shaped `slow_down`
+/// answer, `Retry-After` and `no-store`, while another address is unaffected.
+#[tokio::test]
+async fn the_exchange_path_answers_429_after_repeated_failures() {
+    let (mut config, _env) = all_surfaces_config("exchange_429").await;
+    config.server.rate_limits.exchange_failure.max = 2;
+    let (router, _shared, _state) = server::build_router(config).expect("router builds");
+
+    let post = |peer: &str, content_type: &str| {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/oauth/token")
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from("{}"))
+            .expect("exchange request builds");
+        request.extensions_mut().insert(axum::extract::ConnectInfo(
+            format!("{peer}:4000")
+                .parse::<std::net::SocketAddr>()
+                .expect("peer parses"),
+        ));
+        router.clone().oneshot(request)
+    };
+
+    for _ in 0..2 {
+        let reply = post("192.0.2.1", "text/plain")
+            .await
+            .expect("router answers");
+        assert_eq!(reply.status(), StatusCode::BAD_REQUEST);
+    }
+    let blocked = post("192.0.2.1", "application/json")
+        .await
+        .expect("router answers");
+    assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(blocked.headers()[header::CACHE_CONTROL], "no-store");
+    let retry_after: u64 = blocked.headers()[header::RETRY_AFTER]
+        .to_str()
+        .expect("Retry-After is text")
+        .parse()
+        .expect("Retry-After is whole seconds");
+    assert!((1..=600).contains(&retry_after));
+    let body = axum::body::to_bytes(blocked.into_body(), 64 * 1024)
+        .await
+        .expect("body reads");
+    let body: serde_json::Value = serde_json::from_slice(&body).expect("OAuth JSON body");
+    assert_eq!(body["error"], "slow_down");
+    assert!(body["error_description"].is_string());
+
+    // A different address has its own budget.
+    let other = post("192.0.2.2", "text/plain")
+        .await
+        .expect("router answers");
+    assert_eq!(other.status(), StatusCode::BAD_REQUEST);
+}
+
 /// The 13 paths that moved to `/admin/api/*`, spelled as they were **before**
 /// the move. Resolution 6 of `docs/admin-ui-delivery.md` removes them rather
 /// than aliasing them — an alias and an SPA deep link cannot share a path — so

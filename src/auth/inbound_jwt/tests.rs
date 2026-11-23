@@ -90,12 +90,12 @@ const KEY_TWO_DER: &str = concat!(
 
 /// Far enough in the future that the suite does not expire, and stable so a
 /// failure never depends on when it ran.
-const FUTURE_EXP: u64 = 4_000_000_000;
+pub(crate) const FUTURE_EXP: u64 = 4_000_000_000;
 
 /// Claims builder. Every test starts from a token that *should* pass, then
 /// breaks exactly one thing, so a passing rejection test cannot be passing for
 /// an unrelated reason.
-fn claims(issuer: &str) -> serde_json::Value {
+pub(crate) fn claims(issuer: &str) -> serde_json::Value {
     json!({
         "iss": issuer,
         "aud": "shunt-clients",
@@ -114,11 +114,11 @@ fn sign(claims: &serde_json::Value, der_b64: &str, kid: &str, algorithm: Algorit
     encode(&header, claims, &EncodingKey::from_rsa_der(&der)).expect("test token signs")
 }
 
-fn token(claims: &serde_json::Value) -> String {
+pub(crate) fn token(claims: &serde_json::Value) -> String {
     sign(claims, KEY_ONE_DER, KID_ONE, Algorithm::RS256)
 }
 
-fn jwks() -> serde_json::Value {
+pub(crate) fn jwks() -> serde_json::Value {
     json!({
         "keys": [{
             "kty": "RSA",
@@ -132,7 +132,7 @@ fn jwks() -> serde_json::Value {
 }
 
 /// A loopback issuer serving a JWKS at `/jwks`.
-async fn issuer_serving(document: serde_json::Value) -> MockServer {
+pub(crate) async fn issuer_serving(document: serde_json::Value) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/jwks"))

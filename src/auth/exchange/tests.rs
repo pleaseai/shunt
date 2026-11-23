@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 //! Exchange token behaviour. Revocation is exercised through the real reload
 //! path (`shared.store` + `AppState::refreshed`), because the property under
 //! test is "a config change reaches tokens already issued".
@@ -540,4 +541,327 @@ fn the_two_token_families_reject_each_other_under_one_secret() {
         None,
         "exchange verify must reject a gateway session token"
     );
+}
+
+// --- `POST /v1/oauth/token`: failure rate limit ----------------------------
+
+mod rate_limit {
+    use std::net::SocketAddr;
+
+    use axum::{
+        body::Body,
+        extract::{ConnectInfo, State},
+        http::{header, HeaderMap, HeaderValue, StatusCode},
+        Extension,
+    };
+    use serde_json::{json, Value};
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    use super::*;
+    use crate::auth::exchange::handler;
+    use crate::auth::inbound_jwt::tests::{claims, issuer_serving, jwks, token};
+
+    const GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
+
+    /// A running gateway state whose only opted-in rule trusts a loopback issuer.
+    struct Live {
+        shared: crate::reload::SharedState,
+        state: crate::server::AppState,
+        issuer: MockServer,
+        env: String,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    fn config_for(issuer: &str, env: &str, max_failures: u32, exchange: bool) -> Config {
+        let mut rule = entry(issuer, exchange);
+        rule.audience = StringList::One("shunt-clients".to_string());
+        rule.require = [(
+            "repository_owner".to_string(),
+            StringList::One("pleaseai".into()),
+        )]
+        .into();
+        rule.jwks_url = Some(format!("{issuer}/jwks"));
+        let mut config = config_with(env, vec![rule], &[SECRET_A]);
+        if !exchange {
+            config.server.auth.as_mut().unwrap().exchange = None;
+        }
+        config.server.rate_limits.exchange_failure.max = max_failures;
+        config
+    }
+
+    async fn live(tag: &str, max_failures: u32, issuer: MockServer) -> Live {
+        let lock = crate::config::test_env_lock();
+        let env = format!("SHUNT_TEST_EXCHANGE_RL_{tag}_{}", std::process::id());
+        std::env::remove_var(&env);
+        let config = config_for(&issuer.uri(), &env, max_failures, true);
+        let stores = crate::gateway::GatewayStores::new(&config.server.rate_limits, None);
+        let shared: crate::reload::SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(
+            crate::reload::RuntimeState::from_config(config).unwrap(),
+        ));
+        let state = crate::server::AppState::from_shared(
+            shared.clone(),
+            reqwest::Client::new(),
+            Arc::new(crate::accounts::AccountPool::new()),
+            Arc::new(crate::upstream_status::StatusStore::new()),
+            Arc::new(crate::admin::AdminStores::new()),
+            Arc::new(stores),
+            Arc::new(crate::routing::stage::StageRouterStore::new()),
+            Arc::new(JwksCache::new()),
+            true,
+        );
+        Live {
+            shared,
+            state,
+            issuer,
+            env,
+            _lock: lock,
+        }
+    }
+
+    async fn serving(tag: &str, max_failures: u32) -> Live {
+        live(tag, max_failures, issuer_serving(jwks()).await).await
+    }
+
+    fn assertion(issuer: &str) -> String {
+        let mut claims = claims(issuer);
+        claims["repository"] = json!("pleaseai/shunt");
+        claims["repository_owner"] = json!("pleaseai");
+        token(&claims)
+    }
+
+    fn exchange_body(assertion: &str) -> Vec<u8> {
+        json!({ "grant_type": GRANT, "assertion": assertion })
+            .to_string()
+            .into_bytes()
+    }
+
+    struct Reply {
+        status: StatusCode,
+        headers: HeaderMap,
+        body: Value,
+    }
+
+    impl Reply {
+        fn error(&self) -> &str {
+            self.body["error"].as_str().unwrap_or_default()
+        }
+    }
+
+    async fn call(
+        state: &crate::server::AppState,
+        peer: &str,
+        content_type: Option<&str>,
+        body: Vec<u8>,
+    ) -> Reply {
+        let mut headers = HeaderMap::new();
+        if let Some(content_type) = content_type {
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_str(content_type).unwrap(),
+            );
+        }
+        let peer: SocketAddr = format!("{peer}:4000").parse().unwrap();
+        let response = handler::post(
+            State(state.clone()),
+            Some(Extension(ConnectInfo(peer))),
+            headers,
+            Body::from(body),
+        )
+        .await;
+        let (parts, body) = response.into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        Reply {
+            status: parts.status,
+            headers: parts.headers,
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        }
+    }
+
+    async fn post_json(state: &crate::server::AppState, peer: &str, body: Vec<u8>) -> Reply {
+        call(state, peer, Some("application/json"), body).await
+    }
+
+    async fn jwks_fetches(issuer: &MockServer) -> usize {
+        issuer.received_requests().await.unwrap_or_default().len()
+    }
+
+    fn assert_slow_down(reply: &Reply) {
+        assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(reply.error(), "slow_down");
+        assert_eq!(reply.headers[header::CACHE_CONTROL], "no-store");
+        let seconds: u64 = reply.headers[header::RETRY_AFTER]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            (1..=600).contains(&seconds),
+            "Retry-After {seconds} outside the window"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blocked_address_is_refused_before_any_verification() {
+        let h = serving("BLOCK", 2).await;
+        let valid = assertion(&h.issuer.uri());
+        let bad_grant = json!({ "grant_type": "password", "assertion": valid }).to_string();
+
+        for _ in 0..2 {
+            let reply = post_json(&h.state, "10.0.0.1", bad_grant.clone().into_bytes()).await;
+            assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(
+            jwks_fetches(&h.issuer).await,
+            0,
+            "failures before the block never verified"
+        );
+
+        // The very next request carries a valid assertion and is still refused,
+        // and no key set is fetched for it.
+        let blocked = post_json(&h.state, "10.0.0.1", exchange_body(&valid)).await;
+        assert_slow_down(&blocked);
+        assert_eq!(
+            jwks_fetches(&h.issuer).await,
+            0,
+            "a blocked request must not verify"
+        );
+
+        // The same assertion from another address succeeds, so the refusal above
+        // was the limiter and not a bad assertion.
+        let other = post_json(&h.state, "10.0.0.2", exchange_body(&valid)).await;
+        assert_eq!(other.status, StatusCode::OK);
+        assert_eq!(jwks_fetches(&h.issuer).await, 1);
+    }
+
+    #[tokio::test]
+    async fn every_kind_of_failed_request_counts_against_the_address() {
+        let h = serving("KINDS", 1).await;
+        let valid = assertion(&h.issuer.uri());
+        let mut wrong_aud = claims(&h.issuer.uri());
+        wrong_aud["aud"] = json!("someone-else");
+        let unverifiable = token(&wrong_aud);
+
+        let kinds: Vec<(&str, Option<&str>, Vec<u8>, StatusCode)> = vec![
+            (
+                "wrong content type",
+                Some("text/plain"),
+                exchange_body(&valid),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "missing content type",
+                None,
+                exchange_body(&valid),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "malformed body",
+                Some("application/json"),
+                b"{not json".to_vec(),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "oversized body",
+                Some("application/json"),
+                vec![b'a'; 64 * 1024 + 1],
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "unsupported grant type",
+                Some("application/json"),
+                json!({ "grant_type": "password", "assertion": valid })
+                    .to_string()
+                    .into_bytes(),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "unverifiable assertion",
+                Some("application/json"),
+                exchange_body(&unverifiable),
+                StatusCode::UNAUTHORIZED,
+            ),
+        ];
+        for (index, (name, content_type, body, expected)) in kinds.into_iter().enumerate() {
+            let peer = format!("10.1.0.{}", index + 1);
+            let first = call(&h.state, &peer, content_type, body).await;
+            assert_eq!(
+                first.status, expected,
+                "{name}: the original response is kept"
+            );
+            let second = post_json(&h.state, &peer, exchange_body(&valid)).await;
+            assert_slow_down(&second);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_success_is_never_counted() {
+        let h = serving("SUCCESS", 1).await;
+        let valid = assertion(&h.issuer.uri());
+        for _ in 0..4 {
+            let reply = post_json(&h.state, "10.2.0.1", exchange_body(&valid)).await;
+            assert_eq!(reply.status, StatusCode::OK);
+        }
+        // Had the successes counted, this first failure would already be a 429.
+        let failed = post_json(&h.state, "10.2.0.1", b"{}".to_vec()).await;
+        assert_eq!(failed.status, StatusCode::BAD_REQUEST);
+        let blocked = post_json(&h.state, "10.2.0.1", exchange_body(&valid)).await;
+        assert_slow_down(&blocked);
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_key_set_is_never_counted() {
+        let issuer = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&issuer)
+            .await;
+        let h = live("DOWN", 1, issuer).await;
+        let valid = assertion(&h.issuer.uri());
+        for _ in 0..4 {
+            let reply = post_json(&h.state, "10.3.0.1", exchange_body(&valid)).await;
+            assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(reply.error(), "temporarily_unavailable");
+        }
+        // Had the 503s counted, this first real failure would already be a 429.
+        let failed = post_json(&h.state, "10.3.0.1", b"{}".to_vec()).await;
+        assert_eq!(failed.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn a_removed_table_answers_404_even_for_a_blocked_address() {
+        let h = serving("REMOVED", 1).await;
+        let valid = assertion(&h.issuer.uri());
+        post_json(&h.state, "10.4.0.1", b"{}".to_vec()).await;
+        assert_slow_down(&post_json(&h.state, "10.4.0.1", exchange_body(&valid)).await);
+
+        let config = config_for(&h.issuer.uri(), &h.env, 1, false);
+        h.shared.store(Arc::new(
+            crate::reload::RuntimeState::from_config(config).unwrap(),
+        ));
+        let gone = post_json(&h.state, "10.4.0.1", exchange_body(&valid)).await;
+        assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_full_table_refuses_a_new_failing_address_with_slow_down() {
+        let h = serving("FULL", 10).await;
+        for index in 0..4096u32 {
+            let peer = std::net::Ipv4Addr::from(0x0a10_0000 + index).to_string();
+            let reply = call(&h.state, &peer, Some("text/plain"), Vec::new()).await;
+            assert_eq!(
+                reply.status,
+                StatusCode::BAD_REQUEST,
+                "address {index} fits"
+            );
+        }
+        let overflow = call(&h.state, "10.99.0.1", Some("text/plain"), Vec::new()).await;
+        assert_slow_down(&overflow);
+        // An address already tracked still gets the ordinary answer.
+        let tracked = call(&h.state, "10.16.0.0", Some("text/plain"), Vec::new()).await;
+        assert_eq!(tracked.status, StatusCode::BAD_REQUEST);
+    }
 }
