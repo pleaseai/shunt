@@ -132,7 +132,7 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 - [x] T006 Derive the limiter's client address from `[server.access_control] trust_forwarded_for` (file: src/auth/exchange/handler.rs) (depends on T004) [FR-5, AC-010, AC-011]
   Validation: with the flag on, failures from one peer with different `X-Forwarded-For` values are counted per forwarded address (AC-010); with the flag off, the header is ignored and the peer address is counted (AC-011); an oversized forwarded value is stored as a bounded key.
   Method: `cargo test --all-features auth::exchange` with the `ConnectInfo` extension inserted, as `src/http_tuning.rs` tests do
-- [ ] T007 Document the exchange limits on every surface (file: site/src/content/docs/reference/configuration.md) (depends on T005) [FR-6]
+- [x] T007 Document the exchange limits on every surface (file: site/src/content/docs/reference/configuration.md) (depends on T005) [FR-6]
   Validation: the configuration reference and the GitHub Actions OIDC guide (each en/ko/ja/zh-cn), `shunt.toml.example` and `docs/inbound-jwt-auth.md` describe the two tables, their defaults, the `429 slow_down` response with `Retry-After`, the use of `[server.access_control] trust_forwarded_for`, and that limit changes need a restart (FR-6); locale pages link only anchors that exist in that locale.
   Method: `grep -l exchange_failure` over the surfaces lists all ten files; `site` build succeeds and the built locale pages resolve their fragment links
 
