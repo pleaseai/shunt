@@ -59,10 +59,11 @@ pub(crate) async fn post(
     // An address over its failure limit is refused before the body is read or
     // any key set is fetched, so a blocked caller costs no verification work.
     // `peek` does not count: requests already in flight when the address
-    // reaches its limit (bounded by inbound concurrency) still complete, and
-    // the limit applies once their failures are recorded.
+    // reaches its limit still complete, and the limit applies once their
+    // failures are recorded. How many can be in flight is bounded only by
+    // `max_concurrent_requests`, and not at all when that is `0`.
     if let Err(retry_after) = failures.peek(&key) {
-        return slow_down(retry_after);
+        return failure_limited(&key, retry_after);
     }
 
     let assertion = match read_assertion(&headers, body).await {
@@ -101,8 +102,15 @@ fn bounded_key(address: String) -> String {
 fn count_failure(failures: &PerIpRateLimiter, key: &str, code: ErrorCode) -> Response {
     match failures.record_failure(key) {
         Ok(()) => oauth_error(code),
-        Err(retry_after) => slow_down(retry_after),
+        Err(retry_after) => failure_limited(key, retry_after),
     }
+}
+
+/// Answer `slow_down` for an address over its failure limit, logged like the
+/// exchange's other outcomes.
+fn failure_limited(key: &str, retry_after: RetryAfter) -> Response {
+    tracing::info!(outcome = "slow_down", address = %key, "workload exchange");
+    slow_down(retry_after)
 }
 
 /// Limiter key for one identity under one rule: a digest, so the stored key has
