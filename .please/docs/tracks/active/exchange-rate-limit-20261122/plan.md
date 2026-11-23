@@ -201,3 +201,18 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 - 2026-11-23 (review, next round): The `charge`/`refund` change was reverted because it counted cancelled requests (a dropped handler future never refunds, so a JWKS outage counted client timeouts as failures, AC-014) and refused concurrent valid exchanges from one address (AC-006). `peek` + `record_failure` is kept and the one-burst bound (requests in flight when the address reaches its limit still complete, bounded by inbound concurrency) is documented. The forwarded-address normalization stays.
 
 ## Surprises & Discoveries
+
+## Known Issues
+
+Left open at the end of the review (2026-11-23), by the user's decision:
+
+- **IPv6 address rotation.** The failure limit keys on the full IPv6 address, so a client that
+  controls a `/64` can rotate addresses for a fresh failure budget, and can fill the 4,096-key
+  table. Keying IPv6 by its `/64` prefix changes the address key and was left out of this track.
+- **Identity window test holds the env lock.** `an_identity_is_exchanged_again_once_its_window_elapses`
+  sleeps 3.2 seconds of real time while holding `test_env_lock()`, so other env-lock tests wait for
+  it. The handler reads real `Instant`s, so the reset cannot be observed without the wait; the
+  window was widened from 1 second to keep the in-window refusal stable under CI load, and the reset
+  itself is also covered at limiter level with injected `Instant`s.
+- **greptile did not run.** The local greptile CLI failed to start (broken Node install), so it is
+  missing from every review iteration; gpt, ocr and cubic ran.
