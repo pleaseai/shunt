@@ -66,6 +66,7 @@ export const NAVIGATION: NavigationEntry[] = [
       },
       { label: "OpenCode Zen", slug: "providers/opencode" },
       { label: "Cheaper Inference", slug: "providers/cheaperinference" },
+      { label: "Standard Compute", slug: "providers/standardcompute" },
       { label: "Mimo (Xiaomi)", slug: "providers/mimo" },
       { label: "OpenRouter", slug: "providers/openrouter" },
       { label: "Vercel AI Gateway", slug: "providers/vercel-ai-gateway" },
