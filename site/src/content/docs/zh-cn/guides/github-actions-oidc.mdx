@@ -150,7 +150,7 @@ engine:
 - **用于 gh-aw 时,请让 `max_ttl_seconds` 明显大于 300。** sidecar 把下一次交换安排在 `expires_in` 的 75% 处与过期前 300 秒两者中较早的时刻,若结果小于零则立即执行。因此在 300 秒或更短时,它每拿到一个 token 就会立即重新交换。默认值 3600 会在 45 分钟后刷新。
 - **通过在前面追加来轮换签名 secret。** 使用列表 `["new", "old"]`:第一项签名,所有项都验证。`max_ttl_seconds` 过后再去掉 `"old"`。
 - sidecar 在交换请求上发送 `anthropic-beta: oauth-2025-04-20,oidc-federation-2026-04-01`,在 API 请求上发送 `anthropic-beta: oauth-2025-04-20`,shunt 像对待其他请求一样路由它们。
-- 本版本没有对交换端点限流([#914](https://github.com/pleaseai/shunt/issues/914))。
+- **交换端点有限流。** 每个已验证身份(这里是 `org/repo`)每 600 秒最多交换 60 次,每个客户端地址每 600 秒最多失败 10 次;超过任一限制时,端点返回 `429`、`slow_down` 和 `Retry-After`。所有 job 共用一个身份的 matrix 工作流共享同一份配额,而每个 sidecar 约在 `max_ttl_seconds` 的 75% 时再次交换,因此并发 job 很多时可能在 10 分钟内达到 60 次。可通过 `[server.rate_limits.exchange]`(`max`、`window_seconds`)调高;见[配置参考](/zh-cn/reference/configuration/)。
 
 交换失败时,sidecar 会记录 OAuth 错误:`invalid_grant`(`401`)表示 assertion 未通过验证(使用故障排查中的表格;响应不会说明哪项检查失败),`unsupported_grant_type` 或 `invalid_request`(`400`)表示请求不是端点期望的 jwt-bearer JSON,`temporarily_unavailable`(`503`)表示 shunt 无法拉取 GitHub 的 key set;如果带有 `Retry-After: 1`,则表示网关已达到入站并发上限。`404` 表示 shunt 启动时没有 `[server.auth.exchange]`,或之后的重载已将其移除。
 

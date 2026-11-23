@@ -27,13 +27,17 @@ description: 모든 shunt.toml 키 — server, providers, routes, models.
 
 `[server.access_control]`은 `allow_cidrs = []`, `deny_cidrs = []`, `trust_forwarded_for = false`를 제공합니다. deny 규칙이 우선하며 `/`와 `/health`에도 적용됩니다. allow 목록이 비어 있지 않으면 기본 거부가 되지만 두 상태 경로는 allow 검사만 면제됩니다. 전달 헤더 신뢰는 클라이언트가 보낸 값을 덮어쓰는 신뢰할 수 있는 프록시 뒤에서만 활성화하세요. 변경 후 재시작해야 합니다.
 
-이 `trust_forwarded_for` 설정은 `[server.gateway] trust_forwarded_for`와 독립적입니다. access-control 설정은 CIDR 허용/거부 규칙에만 적용되고 gateway 설정은 디바이스 플로 속도 제한에만 적용됩니다. 두 표면 모두 신뢰할 수 있는 리버스 프록시 뒤에서 실행한다면 두 설정을 모두 활성화해야 합니다. 하나만 설정하면 다른 표면은 소켓 피어 주소를 계속 사용합니다.
+이 `trust_forwarded_for` 설정은 `[server.gateway] trust_forwarded_for`와 독립적입니다. access-control 설정은 CIDR 허용/거부 규칙과 토큰 교환 실패 제한(`[server.rate_limits.exchange_failure]`)의 클라이언트 주소를 결정하고, gateway 설정은 디바이스 플로 속도 제한에만 적용되며 토큰 교환에는 영향을 주지 않습니다. 두 표면 모두 신뢰할 수 있는 리버스 프록시 뒤에서 실행한다면 두 설정을 모두 활성화해야 합니다. 하나만 설정하면 다른 표면은 소켓 피어 주소를 계속 사용합니다.
 
 `[server.limits]`의 `max_request_bytes`는 Anthropic Messages 및 인바운드 Codex Responses 요청 본문에 적용되며 기본값은 `33554432`(32 MiB)입니다. 초과 시 `413`을 반환합니다. 그 외 게이트웨이, 관리, 텔레메트리 및 분석 경로는 각 엔드포인트별 본문 제한을 유지합니다. `max_request_header_bytes`와 `max_url_length`는 기본적으로 설정되지 않으며 각각 `431`과 `414`를 반환합니다. 헤더 크기는 파싱된 모든 헤더의 이름 길이와 값 길이의 합입니다. 본문 제한은 핫 리로드되지만 헤더/URL 제한은 재시작해야 합니다.
 
 `[server.timeouts] upstream_ttfb_ms` 기본값은 `120000`이며 `0`으로 비활성화합니다. 추론 업스트림 HTTP 응답 헤더를 기다리는 시간만 제한하므로 응답 본문과 긴 SSE 스트림에는 전체 시간 제한이 없습니다. SSE 응답을 아직 커밋하지 않은 요청은 `504 timeout_error`를 반환하고, 커밋된 스트리밍 요청은 동일한 엔벨로프를 담은 하나의 터미널 SSE `error` 이벤트로 타임아웃을 표시합니다 — 타임아웃이 체인을 진행시키는 일은 없습니다. Anthropic Messages, OpenAI Responses HTTP(웹소켓 폴백 포함), Gemini HTTP, 인바운드 Codex Responses 패스스루를 포함하며 Codex 웹소켓, Cursor, Antigravity와 보조 HTTP 호출은 포함하지 않습니다.
 
 `[server.rate_limits.device_authorization]` 기본값은 `max = 30`, `window_seconds = 600`이고 `[server.rate_limits.device_verify]`는 `max = 10`, `window_seconds = 600`입니다. 두 per-IP 제한은 서로 독립적이며 `[server.gateway]`가 없으면 비활성 상태입니다. 변경 후 재시작해야 합니다.
+
+`POST /v1/oauth/token`에는 선택 테이블 두 개가 있으며 각각 기본값과 필드 단위로 병합됩니다(`max`만 설정하면 기본 윈도가 유지됨). `max`와 `window_seconds`는 0보다 커야 하므로 제한을 끌 수 없습니다. `[server.rate_limits.exchange]`(기본 `max = 60`, `window_seconds = 600`)는 검증된 ID별 성공한 교환 횟수를 제한합니다. ID는 일치하는 `[[server.auth.jwt]]` 항목이 추출한 값(identity claim)이며 항목별로 집계됩니다. 한 issuer의 두 항목은 별도로 집계되고, 한 주소의 서로 다른 두 ID도 별도로 집계됩니다. `[server.rate_limits.exchange_failure]`(기본 `max = 10`, `window_seconds = 600`)는 클라이언트 주소별 실패한 시도를 제한합니다. 잘못된 `Content-Type`, 읽을 수 없거나 너무 크거나 형식이 잘못된 본문, 잘못된 필드 타입 또는 누락된 `assertion`, 지원하지 않는 `grant_type`, 옵트인한 어떤 항목도 검증하지 못한 assertion(`400`과 `401`)이 실패로 집계됩니다. 성공한 교환, 키 세트를 가져오지 못해 발생한 `503`, ID 제한 `429`는 집계되지 않습니다. 주소가 제한을 넘으면 본문을 읽거나 assertion을 검증하기 전에 요청이 거부되며, 유효한 assertion도 마찬가지입니다. 두 테이블은 `[server.gateway]` 유무와 관계없이 `[server.auth.exchange]`가 구성되면 적용됩니다.
+
+어느 쪽이든 제한을 넘으면 `429`와 `{"error":"slow_down","error_description":"Too many requests. Wait before retrying."}` 본문을 반환하고, `Retry-After`에 해당 키의 윈도가 초기화될 때까지의 정수 초를, `Cache-Control: no-store`를 담습니다. 두 제한의 본문은 같으며 `Retry-After`만 다를 수 있습니다. 클라이언트 주소는 TCP 피어이며, `[server.access_control] trust_forwarded_for`가 `true`이면 첫 `X-Forwarded-For` 값, 그다음 `X-Real-IP`입니다(`[server.gateway] trust_forwarded_for`는 영향을 주지 않습니다). 카운터는 메모리에만 있어 재시작하면 사라지고, 제한기마다 최대 4,096개 키를 추적하며 유휴 키를 정리합니다. 용량이 가득 차면 새 ID는 `429`로 거부되고, 새 주소는 유효한 assertion을 계속 교환할 수 있지만 그 실패는 추적 없이 `429`로 응답됩니다. 제한기는 부팅 시 만들어지므로 값을 바꾸면 재시작해야 합니다. 오류 표는 [엔드포인트 문서](/ko/reference/endpoints/)를 참고하세요.
 
 ## `[server.auth]` (선택)
 
@@ -127,7 +131,7 @@ exchange = true
 
 발급된 토큰은 `[[server.auth.jwt]]` JWT를 받는 모든 라우트(`/v1/messages`, `count_tokens`, 모델 탐색, `GET /usage`, `GET /api/oauth/usage`, 인바운드 Codex 엔드포인트)에서 `Authorization: Bearer`로만 받으며, JWT를 직접 쓸 때와 같은 신원, 사용량, spend 주체로 처리됩니다. `x-api-key`, `[server.auth]`의 `header`, `jwt_header`, `jwt_cookie`에서는 읽지 않고, 관리자 화면, spend Admin API, 텔레메트리 수집은 인증하지 않습니다. 둘 다 있으면 정적 토큰이 우선합니다. shunt는 발급된 토큰을 상태와 관계없이 업스트림으로 전달하지 않습니다.
 
-발급된 토큰은 assertion을 검증한 항목에 묶입니다. 그 항목의 `issuer`, `audience`, `algorithms`, `authorized_parties`, `email_domains`, `allowed_emails`, `require`, `subject_prefix`, `identity_claim`의 지문을 담습니다(`jwks_url`, `clock_skew_seconds`, `max_token_age_seconds`는 제외). 항목을 제거하거나, `exchange = true`를 지우거나, 이 규칙을 하나라도 바꾸거나, 토큰을 검증하는 서명 secret을 전부 빼면 이미 발급된 토큰은 다음 핫 리로드부터 거부됩니다. 옵트인한 항목이 그것 하나뿐이면 같은 수정에서 `[server.auth.exchange]`도 지우세요. 옵트인한 항목이 없는 테이블은 검증에 실패하고, 리로드는 이전 설정을 유지합니다. 따라서 규칙을 수정하면 실행 중인 GitHub Agentic Workflows 실행은 AWF sidecar의 다음 예약 갱신까지 끊깁니다. 토큰 단위 취소는 없고, 이 릴리스에서는 엔드포인트에 속도 제한이 없습니다([#914](https://github.com/pleaseai/shunt/issues/914)).
+발급된 토큰은 assertion을 검증한 항목에 묶입니다. 그 항목의 `issuer`, `audience`, `algorithms`, `authorized_parties`, `email_domains`, `allowed_emails`, `require`, `subject_prefix`, `identity_claim`의 지문을 담습니다(`jwks_url`, `clock_skew_seconds`, `max_token_age_seconds`는 제외). 항목을 제거하거나, `exchange = true`를 지우거나, 이 규칙을 하나라도 바꾸거나, 토큰을 검증하는 서명 secret을 전부 빼면 이미 발급된 토큰은 다음 핫 리로드부터 거부됩니다. 옵트인한 항목이 그것 하나뿐이면 같은 수정에서 `[server.auth.exchange]`도 지우세요. 옵트인한 항목이 없는 테이블은 검증에 실패하고, 리로드는 이전 설정을 유지합니다. 따라서 규칙을 수정하면 실행 중인 GitHub Agentic Workflows 실행은 AWF sidecar의 다음 예약 갱신까지 끊깁니다. 토큰 단위 취소는 없습니다. 엔드포인트는 검증된 ID별, 실패한 클라이언트 주소별로 속도 제한됩니다(위의 HTTP 튜닝 테이블 참고).
 
 ### Codex gateway OAuth: `jwt_header`와 `jwt_cookie`
 

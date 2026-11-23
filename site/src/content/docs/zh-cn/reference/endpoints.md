@@ -171,7 +171,10 @@ spend-limit 路由仅在启动时配置了 [`[server.spend]`](/zh-cn/reference/c
 | `400` | `invalid_request` | 请求体不是 JSON 或不是对象、`Content-Type` 不是 JSON、字段类型错误,或 `assertion` 缺失或为空 |
 | `400` | `unsupported_grant_type` | `grant_type` 缺失或不是 jwt-bearer URN |
 | `401` | `invalid_grant` | 没有任何选择加入的条目能验证该 assertion。无论原因如何,响应都相同 |
+| `429` | `slow_down` | 已验证身份超过 `[server.rate_limits] exchange`,或客户端地址超过 `exchange_failure`。始终带有 `Retry-After` |
 | `503` | `temporarily_unavailable` | 无法拉取匹配 issuer 的 key set,或网关已达到入站并发上限(此时带 `Retry-After: 1`) |
+
+有两个限制,都在 [`[server.rate_limits]`](/zh-cn/reference/configuration/) 中配置:每个已验证身份的成功交换次数(默认每 600 秒 60 次)和每个客户端地址的失败尝试次数(默认每 600 秒 10 次)。两者返回相同的 `429` 响应体,`Retry-After` 是该键的窗口重置前的整数秒数,超过失败限制的地址即使 assertion 有效,也会在读取或验证之前被拒绝。
 
 ## 网关协议
 

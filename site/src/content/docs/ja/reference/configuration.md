@@ -27,13 +27,17 @@ description: すべての shunt.toml キー — server、providers、routes、mo
 
 `[server.access_control]` は `allow_cidrs = []`、`deny_cidrs = []`、`trust_forwarded_for = false` を提供します。deny が先に評価され、`/` と `/health` にも適用されます。allow リストが空でなければデフォルト拒否になりますが、この 2 つのヘルスパスは allow チェックだけを免除されます。転送ヘッダーは、クライアント指定値を上書きする信頼済みプロキシの背後でのみ信頼してください。変更には再起動が必要です。
 
-この `trust_forwarded_for` 設定は `[server.gateway] trust_forwarded_for` とは独立しています。access-control の設定は CIDR の許可・拒否ルールだけに適用され、gateway の設定はデバイスフローのレート制限だけに適用されます。両方のサーフェスを信頼済みリバースプロキシの背後で運用する場合は、両方の設定を有効にしてください。一方だけを設定すると、もう一方のサーフェスは引き続きソケットのピアアドレスを使用します。
+この `trust_forwarded_for` 設定は `[server.gateway] trust_forwarded_for` とは独立しています。access-control の設定は CIDR の許可・拒否ルールとトークン交換の失敗制限（`[server.rate_limits.exchange_failure]`）のクライアントアドレスを決め、gateway の設定はデバイスフローのレート制限だけに適用され、トークン交換には影響しません。両方のサーフェスを信頼済みリバースプロキシの背後で運用する場合は、両方の設定を有効にしてください。一方だけを設定すると、もう一方のサーフェスは引き続きソケットのピアアドレスを使用します。
 
 `[server.limits]` の `max_request_bytes` は Anthropic Messages とインバウンド Codex Responses のリクエストボディに適用され、デフォルトは `33554432`（32 MiB）です。超過時は `413` を返します。その他のゲートウェイ、管理、テレメトリ、分析ルートでは、エンドポイント固有のボディ制限が維持されます。`max_request_header_bytes` と `max_url_length` はデフォルト未設定で、それぞれ `431` と `414` を返します。ヘッダーサイズは、解析済みの全ヘッダーについて名前と値の長さを合計した値です。ボディ制限はホットリロードされますが、ヘッダーと URL の制限には再起動が必要です。
 
 `[server.timeouts] upstream_ttfb_ms` はデフォルト `120000` で、`0` で無効化します。推論アップストリームの HTTP レスポンスヘッダー待ちだけを制限するため、レスポンスボディと長時間の SSE ストリームには全体時間制限を設定しません。SSE レスポンスをまだコミットしていないリクエストは `504 timeout_error` を返し、コミット済みストリーミングリクエストは同じエンベロープを持つ 1 つのターミナル SSE `error` イベントとしてタイムアウトを通知します — タイムアウトがチェーンを進めることは決してありません。Anthropic Messages、OpenAI Responses HTTP（WebSocket フォールバックを含む）、Gemini HTTP、インバウンド Codex Responses パススルーを対象とし、Codex WebSocket、Cursor、Antigravity、補助 HTTP 呼び出しは対象外です。
 
 `[server.rate_limits.device_authorization]` のデフォルトは `max = 30`、`window_seconds = 600`、`[server.rate_limits.device_verify]` は `max = 10`、`window_seconds = 600` です。2 つの per-IP 制限は独立し、`[server.gateway]` がなければ無効です。変更には再起動が必要です。
+
+`POST /v1/oauth/token` にはオプションのテーブルが 2 つあり、それぞれデフォルトとフィールド単位でマージされます（`max` だけ設定するとデフォルトのウィンドウが保たれます）。`max` と `window_seconds` は 0 より大きくなければならないため、制限を無効にはできません。`[server.rate_limits.exchange]`（デフォルト `max = 60`、`window_seconds = 600`）は、検証済み ID ごとの成功した交換回数を制限します。ID は一致する `[[server.auth.jwt]]` エントリが抽出した値（identity claim）で、エントリごとに数えます。同じ issuer の 2 つのエントリは別々に、同じアドレスの 2 つの ID も別々に数えます。`[server.rate_limits.exchange_failure]`（デフォルト `max = 10`、`window_seconds = 600`）は、クライアントアドレスごとの失敗した試行を制限します。誤った `Content-Type`、読み取れない・大きすぎる・不正な形式のボディ、誤ったフィールド型や `assertion` の欠落、未対応の `grant_type`、オプトインしたどのエントリも検証できない assertion（`400` と `401`）が失敗として数えられます。成功した交換、key set を取得できなかったことによる `503`、ID 制限の `429` は数えません。アドレスが制限を超えると、ボディの読み取りや assertion の検証より前にリクエストが拒否され、有効な assertion でも同じです。2 つのテーブルは、`[server.gateway]` の有無にかかわらず `[server.auth.exchange]` が設定されていれば適用されます。
+
+どちらの制限を超えても `429` と本文 `{"error":"slow_down","error_description":"Too many requests. Wait before retrying."}` を返し、`Retry-After` にそのキーのウィンドウがリセットされるまでの整数秒、`Cache-Control: no-store` を付けます。2 つの制限の本文は同一で、違いうるのは `Retry-After` だけです。クライアントアドレスは TCP ピアで、`[server.access_control] trust_forwarded_for` が `true` のときは最初の `X-Forwarded-For` の値、次に `X-Real-IP` です（`[server.gateway] trust_forwarded_for` は影響しません）。カウンターはメモリ上のみで再起動すると失われ、各リミッターは最大 4,096 個のキーを追跡してアイドルなキーを掃除します。容量がいっぱいのとき、新しい ID は `429` で拒否され、新しいアドレスは有効な assertion の交換を続けられますが、その失敗は追跡されずに `429` で応答されます。リミッターは起動時に作られるため、値を変更するには再起動が必要です。エラー表は[エンドポイント](/ja/reference/endpoints/)を参照してください。
 
 ## `[server.auth]`（オプション）
 
@@ -127,7 +131,7 @@ exchange = true
 
 発行されたトークンは、`[[server.auth.jwt]]` の JWT を受け付けるすべてのルート（`/v1/messages`、`count_tokens`、モデル検出、`GET /usage`、`GET /api/oauth/usage`、インバウンド Codex エンドポイント）で `Authorization: Bearer` としてのみ受け付けられ、JWT を直接使った場合と同じ ID、使用量、spend の主体として扱われます。`x-api-key`、`[server.auth]` の `header`、`jwt_header`、`jwt_cookie` からは読まれず、管理画面、spend Admin API、テレメトリ取り込みは認証しません。両方ある場合は静的トークンが優先されます。shunt は発行されたトークンを、状態にかかわらず上流へ転送しません。
 
-発行されたトークンは、assertion を検証したエントリに紐づきます。そのエントリの `issuer`、`audience`、`algorithms`、`authorized_parties`、`email_domains`、`allowed_emails`、`require`、`subject_prefix`、`identity_claim` のフィンガープリントを持ちます（`jwks_url`、`clock_skew_seconds`、`max_token_age_seconds` は対象外）。エントリの削除、`exchange = true` の解除、これらのルールの変更、そのトークンを検証できる署名 secret をすべて外すことのいずれでも、すでに発行されたトークンは次のホットリロードで拒否されます。オプトインしたエントリがそれ 1 つだけなら、同じ編集で `[server.auth.exchange]` も削除してください。オプトインしたエントリがないテーブルは検証に失敗し、リロードは以前の設定を保ちます。そのためルールを編集すると、実行中の GitHub Agentic Workflows の実行は、AWF sidecar の次の定期更新まで切断されます。トークン単位の失効はなく、このリリースではエンドポイントにレート制限がありません（[#914](https://github.com/pleaseai/shunt/issues/914)）。
+発行されたトークンは、assertion を検証したエントリに紐づきます。そのエントリの `issuer`、`audience`、`algorithms`、`authorized_parties`、`email_domains`、`allowed_emails`、`require`、`subject_prefix`、`identity_claim` のフィンガープリントを持ちます（`jwks_url`、`clock_skew_seconds`、`max_token_age_seconds` は対象外）。エントリの削除、`exchange = true` の解除、これらのルールの変更、そのトークンを検証できる署名 secret をすべて外すことのいずれでも、すでに発行されたトークンは次のホットリロードで拒否されます。オプトインしたエントリがそれ 1 つだけなら、同じ編集で `[server.auth.exchange]` も削除してください。オプトインしたエントリがないテーブルは検証に失敗し、リロードは以前の設定を保ちます。そのためルールを編集すると、実行中の GitHub Agentic Workflows の実行は、AWF sidecar の次の定期更新まで切断されます。トークン単位の失効はありません。エンドポイントは、検証済み ID ごと、失敗したクライアントアドレスごとにレート制限されます（上の HTTP チューニングテーブルを参照）。
 
 ### Codex gateway OAuth: `jwt_header` と `jwt_cookie`
 

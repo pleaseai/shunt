@@ -129,7 +129,7 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 - [x] T005 Cap successful exchanges per verified identity (file: src/auth/exchange/handler.rs) (depends on T004) [FR-1, AC-001, AC-002, AC-003, AC-008]
   Validation: once one identity reaches the configured maximum, its next valid assertion gets `429` and no token is minted (AC-001), and it is exchanged normally again after the window (AC-002); two identities from one address, or one identity under two rules, are counted separately (AC-003); an identity-limit `429` does not count as an address failure; its body and headers match the failure-limit `429` except for the `Retry-After` value (AC-008).
   Method: `cargo test --all-features auth::exchange`
-- [ ] T006 Derive the limiter's client address from `[server.access_control] trust_forwarded_for` (file: src/auth/exchange/handler.rs) (depends on T004) [FR-5, AC-010, AC-011]
+- [x] T006 Derive the limiter's client address from `[server.access_control] trust_forwarded_for` (file: src/auth/exchange/handler.rs) (depends on T004) [FR-5, AC-010, AC-011]
   Validation: with the flag on, failures from one peer with different `X-Forwarded-For` values are counted per forwarded address (AC-010); with the flag off, the header is ignored and the peer address is counted (AC-011); an oversized forwarded value is stored as a bounded key.
   Method: `cargo test --all-features auth::exchange` with the `ConnectInfo` extension inserted, as `src/http_tuning.rs` tests do
 - [ ] T007 Document the exchange limits on every surface (file: site/src/content/docs/reference/configuration.md) (depends on T005) [FR-6]
@@ -186,6 +186,8 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
   Evidence: `cargo test --all-features --lib auth::exchange` -> 24 passed (4 new: identity max -> 429 with no token and no address failure; window reset after a real 1.2s wait at handler level; separate quotas per identity and per rule on one address; both 429s equal except Retry-After)
 - [x] (2026-11-23 KST) T006 Derive the limiter's client address from `[server.access_control] trust_forwarded_for`
   Evidence: `cargo test --all-features --lib auth::exchange` -> 27 passed (3 new: trusted forwarded addresses counted per address and across peers; flag off ignores the header and counts the peer; 8 KiB forwarded value stored as a key of at most 64 bytes, distinct long values stay distinct)
+- [x] (2026-11-23 KST) T007 Document the exchange limits on every surface
+  Evidence: `cd site && bun run build` -> `225 page(s) built`, `bun run lint:docs` -> `134 file(s) lint clean`; ids serverrate_limits, serverauthjwt-optional, serverauthexchange-optional, workload-token-exchange present in site/dist; `grep -rn '#914\|not rate limited' docs site/src/content/docs shunt.toml.example README*.md` -> no matches
 
 ## Decision Log
 
