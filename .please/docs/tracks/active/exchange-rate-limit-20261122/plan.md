@@ -173,6 +173,9 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 
 ## Progress
 
+- [x] (2026-11-23 KST) T001 Move `PerIpRateLimiter` and its tests out of the gateway store into their own module, unchanged
+  Evidence: `cargo test --all-features gateway::` -> 357 passed, 0 failed (3 moved rate_limit tests ok); clippy --all-targets --all-features -D warnings exit 0; store.rs 566 lines
+
 ## Decision Log
 
 - 2026-11-23: Client address comes from `[server.access_control] trust_forwarded_for`, not a new exchange key. This was the user's decision at spec review: one proxy flag avoids a split where every caller collapses into the proxy's address.
