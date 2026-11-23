@@ -8,6 +8,7 @@ pub mod jwt;
 pub mod managed;
 pub(crate) mod oauth;
 pub mod persist;
+pub mod rate_limit;
 pub mod refresh;
 pub mod spend;
 pub mod store;

@@ -178,7 +178,10 @@ Inbound Codex Responses、Web 検索、モデルカタログ、analytics のル�
 | `400` | `invalid_request` | 本文が JSON でない、またはオブジェクトでない、`Content-Type` が JSON でない、フィールドの型が違う、または `assertion` がないか空 |
 | `400` | `unsupported_grant_type` | `grant_type` がないか、jwt-bearer URN ではない |
 | `401` | `invalid_grant` | オプトインしたどのエントリも assertion を検証できない。原因にかかわらず応答は同一 |
+| `429` | `slow_down` | 検証済み ID が `[server.rate_limits] exchange` を超えた、クライアントアドレスが `exchange_failure` を超えた、またはリミッターが上限に達した。常に `Retry-After` 付き |
 | `503` | `temporarily_unavailable` | 一致する issuer の key set を取得できない、またはゲートウェイがインバウンドの同時リクエスト上限に達している（このときは `Retry-After: 1` 付き） |
+
+2 つの制限が適用され、どちらも [`[server.rate_limits]`](/ja/reference/configuration/) で設定します。一致した `[[server.auth.jwt]]` エントリーごとに別々に数える検証済み ID ごとの成功した交換（デフォルトは 600 秒あたり 60 回）と、クライアントアドレスごとの失敗した試行（デフォルトは 600 秒あたり 10 回）です。どちらも同じ `429` の本文で応答し、`Retry-After` はそのキーのウィンドウがリセットされるまでの整数秒で、失敗制限を超えたアドレスは assertion が有効でも読み取りや検証より前に拒否されます。各リミッターが追跡するキーは最大 4,096 個です。上限に達すると新しい ID は拒否され、新しいアドレスの失敗した試行は追跡されずに `429` で応答されます。この上限による拒否では、`Retry-After` はウィンドウ全体の長さになります。
 
 ## ゲートウェイプロトコル
 

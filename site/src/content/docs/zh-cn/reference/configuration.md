@@ -27,13 +27,17 @@ description: 每一个 shunt.toml 键 —— server、providers、routes、model
 
 `[server.access_control]` 提供 `allow_cidrs = []`、`deny_cidrs = []` 和 `trust_forwarded_for = false`。deny 规则优先，并且也适用于 `/` 和 `/health`。非空 allow 列表会启用默认拒绝，但这两个健康检查路径只免除 allow 检查。仅在可信代理会覆盖客户端提供的转发头时才信任这些头。更改后需要重启。
 
-此 `trust_forwarded_for` 设置与 `[server.gateway] trust_forwarded_for` 相互独立。access-control 设置仅影响 CIDR 允许/拒绝规则，gateway 设置仅影响设备流速率限制器。如果两个表面都在可信反向代理后运行，请同时启用这两个设置。只设置其中一个时，另一个表面仍会使用套接字对端地址。
+此 `trust_forwarded_for` 设置与 `[server.gateway] trust_forwarded_for` 相互独立。access-control 设置决定 CIDR 允许/拒绝规则以及令牌交换失败限制（`[server.rate_limits.exchange_failure]`）所用的客户端地址，gateway 设置仅影响设备流速率限制器，对令牌交换没有影响。如果两个表面都在可信反向代理后运行，请同时启用这两个设置。只设置其中一个时，另一个表面仍会使用套接字对端地址。
 
 `[server.limits]` 的 `max_request_bytes` 适用于 Anthropic Messages 和入站 Codex Responses 请求正文，默认为 `33554432`（32 MiB），超出时返回 `413`。其他网关、管理、遥测和分析路由仍使用各端点自身的正文限制。`max_request_header_bytes` 和 `max_url_length` 默认未设置，分别返回 `431` 和 `414`。头部大小是所有已解析头部名称长度与值长度之和。正文限制可热重载，头部和 URL 限制需要重启。
 
 `[server.timeouts] upstream_ttfb_ms` 默认为 `120000`，设为 `0` 可禁用。它只限制等待推理上游 HTTP 响应头的时间，因此不会对响应正文和长时间 SSE 流施加总时限。尚未提交 SSE 响应的请求返回 `504 timeout_error`；已提交的流式请求会将超时显示为一条终端 SSE `error` 事件，携带相同的信封——超时永远不会推进链路。覆盖 Anthropic Messages、OpenAI Responses HTTP（包括 WebSocket 回退）、Gemini HTTP 和入站 Codex Responses 透传；不覆盖 Codex WebSocket、Cursor、Antigravity 或辅助 HTTP 请求。
 
 `[server.rate_limits.device_authorization]` 默认为 `max = 30`、`window_seconds = 600`，`[server.rate_limits.device_verify]` 默认为 `max = 10`、`window_seconds = 600`。两个 per-IP 限制彼此独立；未配置 `[server.gateway]` 时不生效。更改后需要重启。
+
+`POST /v1/oauth/token` 有两个可选的表，各自按字段与默认值合并（只设置 `max` 会保留默认窗口）。`max` 和 `window_seconds` 必须大于零，因此无法关闭限制。`[server.rate_limits.exchange]`（默认 `max = 60`、`window_seconds = 600`）限制每个已验证身份的成功交换次数。身份是匹配的 `[[server.auth.jwt]]` 条目提取出的值（identity claim），按条目分别计数：同一 issuer 的两个条目分别计数，同一地址的两个身份也分别计数。`[server.rate_limits.exchange_failure]`（默认 `max = 10`、`window_seconds = 600`）限制每个客户端地址的失败尝试：错误的 `Content-Type`、无法读取、过大或格式错误的请求体、字段类型错误或缺少 `assertion`、不支持的 `grant_type`，以及没有任何选择加入的条目能验证的 assertion（`400` 和 `401`）都计为失败。成功的交换、因无法获取 key set 而返回的 `503`、以及身份限制触发的 `429` 不计数。地址超过限制后，其请求会在读取请求体或验证任何 assertion 之前被拒绝，即使 assertion 有效也一样。无论是否配置 `[server.gateway]`，只要配置了 `[server.auth.exchange]`，这两个表就会生效。
+
+超过任一限制时，端点返回 `429` 和 `{"error":"slow_down","error_description":"Too many requests. Wait before retrying."}`，`Retry-After` 为该键的窗口重置前的整数秒数，并带有 `Cache-Control: no-store`。两个限制的响应体相同，只有 `Retry-After` 可能不同。客户端地址是 TCP 对端；当 `[server.access_control] trust_forwarded_for` 为 `true` 时，取第一个 `X-Forwarded-For` 值，其次是 `X-Real-IP`（`[server.gateway] trust_forwarded_for` 不影响它；转发的 `ip:port` 按其 IP 作键）。失败在应答时计数，因此同一地址在达到限制时已在处理中的请求仍会完成，之后的请求被拒绝。计数器只保存在内存中，重启后丢失，每个限制器最多跟踪 4,096 个键并清理空闲键。容量已满时，新身份会被 `429` 拒绝；新地址仍可交换有效的 assertion，但其失败会以 `429` 应答且不被跟踪。被拒绝的键没有自己的窗口，因此因容量而拒绝时，`Retry-After` 为整个窗口长度。限制器在启动时创建，因此更改数值需要重启。错误表见[端点](/zh-cn/reference/endpoints/)。
 
 ## `[server.auth]`(可选)
 
@@ -127,7 +131,7 @@ exchange = true
 
 签发的 token 只在 `Authorization: Bearer` 中被接受,适用于每个接受 `[[server.auth.jwt]]` JWT 的路由(`/v1/messages`、`count_tokens`、模型发现、`GET /usage`、`GET /api/oauth/usage` 以及入站 Codex 端点),并作为与直接使用 JWT 相同的身份、用量和 spend 主体处理。它不会从 `x-api-key`、`[server.auth]` 的 `header`、`jwt_header` 或 `jwt_cookie` 读取,也不能认证管理界面、spend Admin API 或遥测接收。两者同时出现时静态 token 优先。shunt 无论签发的 token 处于什么状态,都不会把它转发到上游。
 
-签发的 token 绑定到验证 assertion 的那个条目:它携带该条目 `issuer`、`audience`、`algorithms`、`authorized_parties`、`email_domains`、`allowed_emails`、`require`、`subject_prefix` 和 `identity_claim` 的指纹(不含 `jwks_url`、`clock_skew_seconds`、`max_token_age_seconds`)。移除该条目、清除 `exchange = true`、修改其中任何一条规则,或去掉所有能验证它的签名 secret,都会让已签发的 token 在下一次热重载时被拒绝。如果它是唯一选择加入的条目,请在同一次修改中同时移除 `[server.auth.exchange]`:没有条目选择加入的表无法通过验证,重载会保留之前的配置。因此修改规则会使正在运行的 GitHub Agentic Workflows 中断,直到 AWF sidecar 下一次定时刷新。没有按 token 的撤销,本版本也没有对该端点限流([#914](https://github.com/pleaseai/shunt/issues/914))。
+签发的 token 绑定到验证 assertion 的那个条目:它携带该条目 `issuer`、`audience`、`algorithms`、`authorized_parties`、`email_domains`、`allowed_emails`、`require`、`subject_prefix` 和 `identity_claim` 的指纹(不含 `jwks_url`、`clock_skew_seconds`、`max_token_age_seconds`)。移除该条目、清除 `exchange = true`、修改其中任何一条规则,或去掉所有能验证它的签名 secret,都会让已签发的 token 在下一次热重载时被拒绝。如果它是唯一选择加入的条目,请在同一次修改中同时移除 `[server.auth.exchange]`:没有条目选择加入的表无法通过验证,重载会保留之前的配置。因此修改规则会使正在运行的 GitHub Agentic Workflows 中断,直到 AWF sidecar 下一次定时刷新。没有按 token 的撤销。该端点按已验证身份和失败的客户端地址限流(见上文 HTTP 调优表)。
 
 ### Codex gateway OAuth:`jwt_header` 与 `jwt_cookie`
 

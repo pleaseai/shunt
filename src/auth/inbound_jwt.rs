@@ -309,4 +309,4 @@ fn unverified_issuer(token: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

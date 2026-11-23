@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 
 use axum::{
     body::{to_bytes, Body, Bytes},
@@ -12,7 +12,7 @@ use crate::{
     concurrency::{is_codex_request, is_exchange_path},
     config::{AccessControlConfig, LimitsConfig},
     error::{into_openai_error_shape, shape_gateway_error, ShuntError, UpstreamError},
-    gateway::device::client_ip,
+    gateway::device::{client_ip, parse_client_ip},
 };
 
 #[derive(Clone, Debug)]
@@ -55,10 +55,7 @@ pub(crate) async fn enforce_http_tuning(
             peer,
             tuning.access_control.trust_forwarded_for,
         );
-        let client = client
-            .parse::<IpAddr>()
-            .or_else(|_| client.parse::<SocketAddr>().map(|address| address.ip()))
-            .ok();
+        let client = parse_client_ip(&client);
         if !tuning.access_control.allows(client, allow_exempt) {
             return owned_error(
                 StatusCode::FORBIDDEN,
@@ -178,6 +175,7 @@ mod tests {
     };
     use futures_util::stream;
     use serde_json::Value;
+    use std::net::IpAddr;
     use tower::ServiceExt;
 
     use super::*;

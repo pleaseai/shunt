@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use axum::{
     extract::{rejection::FormRejection, ConnectInfo, Query, State},
@@ -208,6 +208,14 @@ fn same_url_origin(candidate: &str, public_url: &str) -> bool {
         return false;
     };
     candidate.origin() == public_url.origin()
+}
+
+/// Parse a client address as a bare IP, or as `ip:port` / `[ip]:port`.
+pub(crate) fn parse_client_ip(address: &str) -> Option<IpAddr> {
+    address
+        .parse::<IpAddr>()
+        .or_else(|_| address.parse::<SocketAddr>().map(|address| address.ip()))
+        .ok()
 }
 
 pub(crate) fn client_ip(

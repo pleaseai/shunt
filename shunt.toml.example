@@ -70,6 +70,18 @@ default_provider = "anthropic" # provider for any model with no route -> pass-th
 # require = { repository_owner_id = "1234567" } # what authorizes; see the docs
 # identity_claim = "repository"
 # exchange = true                              # (default false) opt this entry in
+#
+# The endpoint is rate limited; over a limit it answers 429 `slow_down` with
+# Retry-After. Both tables are optional and merge per field with these defaults;
+# max and window_seconds must be > 0. Changing them needs a restart.
+# [server.rate_limits.exchange]                # successful exchanges per verified identity
+# max = 60
+# window_seconds = 600
+# The client address is the TCP peer, or X-Forwarded-For (then X-Real-IP) when
+# [server.access_control] trust_forwarded_for = true.
+# [server.rate_limits.exchange_failure]        # failed attempts per client address
+# max = 10
+# window_seconds = 600
 
 # --- Optional: admin web surface for browser account provisioning and pool health.
 # Separate from client auth: admin credentials never live here as literals.

@@ -1,3 +1,4 @@
+#![allow(clippy::await_holding_lock)] // Intentional cross-module test serialization.
 //! Exchange token behaviour. Revocation is exercised through the real reload
 //! path (`shared.store` + `AppState::refreshed`), because the property under
 //! test is "a config change reaches tokens already issued".
@@ -541,3 +542,7 @@ fn the_two_token_families_reject_each_other_under_one_secret() {
         "exchange verify must reject a gateway session token"
     );
 }
+
+// --- `POST /v1/oauth/token`: failure rate limit ----------------------------
+
+mod rate_limit;

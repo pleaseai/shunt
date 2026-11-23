@@ -368,7 +368,6 @@ the IdP does to the account behind it.
 ## 5. Not implemented
 
 - Groups. See issue #347.
-- Rate limiting of the exchange endpoint (§7). Tracked in issue #914.
 
 ## 6. Not in scope at all
 
@@ -431,6 +430,8 @@ Load-time and `shunt check` errors:
 - An empty `signing_secret` list.
 - A `signing_secret` entry under 32 bytes. The message names its index.
 - `max_ttl_seconds = 0`.
+- `max = 0` or `window_seconds = 0` in `[server.rate_limits.exchange]` or
+  `[server.rate_limits.exchange_failure]`. The limits cannot be switched off.
 - A `signing_secret` that is also a `[server.gateway]` session signing secret. The two token
   families must not share a secret.
 - A `[[server.auth.jwt]]` `issuer` equal to `urn:shunt:workload-exchange`, which is reserved for
@@ -476,6 +477,7 @@ them as OAuth errors (an exception recorded in `AGENTS.md`):
 | `400` | `invalid_request` | `Content-Type` is not JSON, the body is not a JSON object, a field has the wrong JSON type, or `assertion` is missing or blank |
 | `400` | `unsupported_grant_type` | `grant_type` is missing or is not the jwt-bearer URN |
 | `401` | `invalid_grant` | No opted-in entry verifies the assertion. One identical response for every cause: wrong audience, expired, too old, missing required claim, bad signature, unknown `kid`, an entry that has not opted in, or a credential that is not an IdP JWT (a static token, a gateway session token, an earlier exchange token) |
+| `429` | `slow_down` | The verified identity is over `[server.rate_limits] exchange`, the client address is over `exchange_failure`, or the limiter is at capacity. The body is identical for every cause; `Retry-After` is the whole seconds until that key's window resets, or the full window when the limiter is at capacity |
 | `503` | `temporarily_unavailable` | A matching issuer's key set cannot be fetched, or the gateway is at its inbound concurrency limit (then with `Retry-After: 1`) |
 
 The `error_description` is a fixed string per code. It never names the failed check and never
@@ -599,10 +601,26 @@ Notes:
 
 ### Accepted tradeoffs and not in this release
 
-- **No rate limiting on the endpoint.** It does no work before checking the assertion that an
-  unauthenticated caller could not already trigger on `/v1/messages`, but it is not throttled
-  per identity or per address. Tracked in issue
-  [#914](https://github.com/pleaseai/shunt/issues/914).
+- **Rate limits, not replay prevention.** `[server.rate_limits] exchange` (default 60 per 600
+  seconds) caps successful exchanges per verified identity, counted per entry: two entries on
+  one issuer, or two identities from one address, have separate counts.
+  `[server.rate_limits] exchange_failure` (default 10 per 600 seconds) caps failed attempts per
+  client address (wrong content type, unreadable, oversized or malformed body, an unsupported
+  grant type, or an assertion no opted-in entry verifies); a successful exchange, a `503` and an
+  identity-limit `429` are not counted. An address over its failure limit is refused before the
+  body is read or any assertion is verified, even a valid one. A failure is counted when it is
+  answered, so requests from one address that are already in flight when it reaches the limit
+  still complete; later requests are refused before verification. Neither limit stops an assertion
+  from being replayed inside its life, and a matrix workflow sharing one identity shares one
+  quota.
+- **At capacity.** Each limiter tracks at most 4,096 keys and sweeps idle ones; counters are
+  memory-only. A new identity is refused with `429`. A new, untracked address can still exchange
+  a valid assertion, but its failures are answered `429` without being tracked. A refused key has
+  no window of its own, so these capacity refusals set `Retry-After` to the full window.
+- **Client address.** The TCP peer, or the first `X-Forwarded-For` value and then `X-Real-IP` when
+  `[server.access_control] trust_forwarded_for` is `true`. `[server.gateway] trust_forwarded_for`
+  does not affect the exchange. A forwarded `ip:port` or `[v6]:port` is keyed by its IP. Enable it only behind a trusted proxy that overwrites
+  client-supplied forwarding headers, or a caller can pick its own address.
 - **Assertion replay within its life is accepted**, as for any bearer JWT (§4). An assertion
   lives about five minutes.
 - **No pinning to a `federation_rule_id`**, and no refresh tokens, scopes, form-encoded bodies,

@@ -34,9 +34,10 @@
 | TD-031 | session-account-binding-20261031 | The soft-near debounce stamp is not reset by a quota observation between selections, and providers sharing one account share `soft_near_since` (#893) | Low | 2026-11-05 |
 | TD-032 | session-account-binding-20261031 | `a_relayed_client_error_commits_nothing` does not pin the streaming turn's account; assert every received request's `authorization` equals `pool.bearer(0)` | Low | 2026-11-05 |
 | TD-033 | wif-token-exchange-20261121 | Exchange fingerprints are hashed per request and derived from `Algorithm`'s `Debug` output; the middleware OAuth shape is not gated on the route being registered; 403 code and docs error tables (403/414/431/405) undecided; reload warning wording misleads on removal (#916) | Low | 2026-11-22 |
-| TD-034 | wif-token-exchange-20261121 | Exchange endpoint has no rate limiting (#914) | Low | 2026-11-22 |
 | TD-035 | wif-token-exchange-20261121 | NFR-2 partial: no test captures the exchange's log lines | Low | 2026-11-22 |
 | TD-036 | wif-token-exchange-20261121 | `tests/inbound/inbound_exchange_endpoint.rs` (548) and `src/auth/exchange/tests.rs` (540) exceed the 500-line guideline | Low | 2026-11-22 |
+| TD-037 | exchange-rate-limit-20261122 | The exchange failure limit keys on the full IPv6 address, so a client controlling a `/64` can rotate addresses for fresh budgets and fill the 4,096-key table | Low | 2026-11-23 |
+| TD-038 | exchange-rate-limit-20261122 | `an_identity_is_exchanged_again_once_its_window_elapses` holds `test_env_lock()` across a 3.2 s real sleep (the handler reads real `Instant`s) | Low | 2026-11-23 |
 
 ## Resolved
 
@@ -47,3 +48,4 @@
 | TD-014 | codex-spend-caps-20261021 | `response.refusal.delta` is not counted toward the streaming output floor | #814 | 2026-10-21 |
 | TD-021 | anthropic-account-refusal-20261022 | `classify` did not require the top-level `"type": "error"`, so a third-party body without it advanced the chain (#825) | #825 | 2026-10-23 |
 | TD-024 | inbound-jwt-header-cookie-20261030 | `tests/inbound_codex_jwt_slots.rs` was 558 lines, over the 500-line guideline; the shared harness moved to `tests/common/codex_jwt.rs` (158 lines), leaving the test at 445 lines | #883 | 2026-11-02 |
+| TD-034 | wif-token-exchange-20261121 | Exchange endpoint has no rate limiting (#914) | #917 | 2026-11-23 |

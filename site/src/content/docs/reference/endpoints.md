@@ -264,7 +264,10 @@ Errors use the OAuth shape `{"error", "error_description"}` rather than the Anth
 | `400` | `invalid_request` | The body is not JSON or not an object, `Content-Type` is not JSON, a field has the wrong type, or `assertion` is missing or blank |
 | `400` | `unsupported_grant_type` | `grant_type` is missing or is not the jwt-bearer URN |
 | `401` | `invalid_grant` | No opted-in entry verifies the assertion. The response is identical for every cause |
+| `429` | `slow_down` | The verified identity is over `[server.rate_limits] exchange`, or the client address is over `exchange_failure`, or the limiter is at capacity. Always carries `Retry-After` |
 | `503` | `temporarily_unavailable` | A matching issuer's key set cannot be fetched, or the gateway is at its inbound concurrency limit (then with `Retry-After: 1`) |
+
+Two limits apply, both configured under [`[server.rate_limits]`](/reference/configuration/#serverrate_limits): successful exchanges per verified identity, counted separately for each matching `[[server.auth.jwt]]` entry (default 60 per 600 seconds), and failed attempts per client address (default 10 per 600 seconds). Both answer the same `429` body, `Retry-After` is the whole seconds until that key's window resets, and an address over its failure limit is refused before the assertion is read or verified, even when the assertion is valid. Each limiter tracks at most 4,096 keys. At capacity a new identity is refused, and a new address's failed attempts are answered `429` without being tracked; these capacity refusals set `Retry-After` to the full window.
 
 ## Gateway protocol
 
