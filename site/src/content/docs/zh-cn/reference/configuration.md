@@ -608,6 +608,7 @@ codex = "gpt-5.2"
 | `stage_router` | 最近的 tool-result 元数据,逐轮选择 | 读 —— 只读 `tool_use.name` 与 `tool_result.is_error` |
 | `auto` | 同一个路由器,套用上游预设 | 同上 |
 | `random` | 按权重抽取,默认按会话固定 | 不读 |
+| `conditional` | 组合规则匹配 —— 时段、请求头、模型前缀、星期 | 不读 —— 只读请求头与时钟 |
 | `noop` | 不做选择 —— 直接返回空消息 | 不读 |
 | `prefill_router` | 读取最近一轮用户消息的学习型分类器(需要 `prefill-router` 构建) | 读 —— 用户消息的文本 |
 | `llm_classifier` | LLM 裁判的判定,何时询问由 `classify_trigger` 决定;在 `mode = "escalation"` 下,则是裁判对已完成的弱目标回合的裁决 | 读 —— 通过内置提示词或你自己的提示词读取对话记录 |
@@ -1061,6 +1062,82 @@ weights = [9, 1]
 在 `affinity = "session"` 下,这一路是把 `sha256(seed ‖ model ‖ 会话 id)` 映射到权重区间得到
 的;没有发送 `x-claude-code-session-id` 的请求单独做一次按权重的抽取。会话亲和是粘性,不是
 访问控制。没有请求体的接口报告第一个权重为正的目标。见[路由概览](/zh-cn/guides/routing/#random)。
+
+#### `type = "conditional"`
+
+基于条件的路由。该条目带有一组有序规则;第一条所有条件都成立的规则决定目标。
+没有规则匹配时,由 `default_target` 兜底。这是用于**按时段和元数据做成本路由**的
+路由器 —— 例如在另一个服务商加价的峰时窗口内,把流量导向更便宜的服务商。
+
+```toml
+[[models]]
+id = "claude-cost-optimized"
+
+[models.router]
+type = "conditional"
+utc_offset_hours = 0          # 窗口按各服务商公布的 UTC 时刻书写
+default_target = "deepseek-chat"
+
+# DeepSeek 在 01:00-04:00 与 06:00-10:00 UTC(周一至周五)加价。
+# 这两个窗口把流量导向价格不波动的服务商。
+[[models.router.rules]]
+name = "avoid-deepseek-morning"
+priority = 1
+target = "glm-4-flash"
+
+[models.router.rules.when]
+time_between = { start = "01:00", end = "04:00" }
+days = ["mon", "tue", "wed", "thu", "fri"]
+
+[[models.router.rules]]
+name = "avoid-deepseek-late-morning"
+priority = 2
+target = "glm-4-flash"
+
+[models.router.rules.when]
+time_between = { start = "06:00", end = "10:00" }
+days = ["mon", "tue", "wed", "thu", "fri"]
+```
+
+公布的时段会变动,且各套餐不同。复制前请先核对服务商的定价页。例如 GLM Coding
+Plan 在 UTC+8 的 `14:00`-`18:00`(即 UTC `06:00`-`10:00`),周一至周五加价 ——
+与 DeepSeek 上午晚段的窗口是同一时刻,所以针对一家的规则可以同时覆盖两家。
+
+| 键 | 默认值 | 含义 |
+| :-- | :-- | :-- |
+| `type` | ✅ 必填 | `conditional` |
+| `rules` | ✅ 必填 | 一条或多条规则;至少一条 |
+| `default_target` | ✅ 必填 | 没有规则匹配时使用的公共模型 id |
+| `utc_offset_hours` | `0`(UTC)| 在测试时段之前对时钟施加的偏移;接受小数,范围为 `[-12, 14]` |
+
+每条规则带有 `name`、`target` 和可选的 `priority`(数值越小越先检查;相同优先级保持声明顺序 ——
+列表只在加载时排序一次,不会每次请求排序)。`when` 表放条件;**所有出现的条件都必须成立**
+(逻辑与),因此空的 `when` 是兜底规则,会在加载时被拒绝 —— 兜底规则会遮蔽后面所有规则,
+而真正的兜底应该用 `default_target`。析取来自规则列表本身:两条 `target` 相同的规则就是抵达同一目标的两种方式,因此整张表读作"当(A 且 B)时用这个目标,或当(C 且 D)时用那个目标……"。
+
+| `when` 键 | 匹配 | 说明 |
+| :-- | :-- | :-- |
+| `time_between` | 时钟位于 `{ start = "HH:MM", end = "HH:MM" }` 之内 | 起点包含,终点不包含。终点早于起点的窗口跨午夜(`22:00`–`08:00`);终点等于起点的窗口什么也匹配不到,加载时会被拒绝。按 `utc_offset_hours` 求值 |
+| `header` | 某个请求头匹配 | `{ name, value, mode }`;`mode` 为 `equals`(默认)、`contains` 或 `starts_with`。所有比较都不区分 ASCII 大小写,请求头名按 RFC 9110 不区分大小写 |
+| `model_starts_with` | 请求的模型 id 以该前缀开头 | 在剥离客户端的 `[1m]` 上下文窗口提示之后比较 |
+| `days` | 今天是 `["mon", "tue", "wed", "thu", "fri", "sat", "sun"]` 之一 | 省略表示每天;空列表会被拒绝 |
+
+以请求头为条件的规则在没有任何请求的接口上永不匹配 —— `GET /routes`、`/v1/models` 发现、
+`shunt check` 都不带请求头,因此会落到 `default_target`。相比之下,实时的 `count_tokens` 探测确实携带调用方的请求头,因此可以匹配以请求头为条件的规则,与它所度量的那一轮完全一致。
+相比之下,以时段为条件的规则在这些接口上同样会被求值,因为时钟总是可用;
+因此无请求体接口报告的目标,就是当前时段选出的那个。
+
+规划时要注意两点。`utc_offset_hours` 是不处理 DST 的**固定**偏移:按夏令时时区的
+墙上时间书写窗口会随季节漂移一小时,所以请用固定偏移的时钟 —— UTC,或服务商公布的
+时刻 —— 而不是本地墙上时间。另外,`header` 条件读取的是**客户端发来的**请求头:它靠
+客户端配合来分流,并不授予任何权限,匹配 `x-shunt-tier: vip` 的规则只是路由信号,
+绝不能替代鉴权。
+
+由于规则目标是普通的公共模型 id,被选中的目标会保留其故障转移链、账户池、适配器、
+`effort` 与 `service_tier`,与其他路由器的目标完全一致。规则顺序是**配置期决定**:
+规则的集合在启动时校验(`utc_offset_hours` 范围、非空且为合法 HTTP 字段名的请求头名
+与值、非空的模型前缀、非空 `days`、非空规则列表、不允许兜底规则,以及不允许零长度
+窗口),因此拼写错误会让 `shunt check` 失败,而不是让某一轮请求失败。
 
 #### `type = "noop"`
 

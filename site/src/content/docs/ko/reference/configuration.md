@@ -630,6 +630,7 @@ shunt가 보통 쓰는 `kind`나 `mode`가 아니라 `type`을 쓰는 것은 **s
 | `stage_router` | 최근 tool-result 메타데이터로 턴마다 | 읽음 — `tool_use.name`과 `tool_result.is_error`만 |
 | `auto` | 같은 라우터를 업스트림 프리셋으로 | 위와 같음 |
 | `random` | 가중치 추첨, 기본은 세션 고정 | 읽지 않음 |
+| `conditional` | 조합형 규칙 매칭 — 시각, 헤더, 모델 접두사, 요일 | 읽지 않음 — 헤더와 시계만 |
 | `noop` | 고르지 않음 — 빈 메시지로 응답 | 읽지 않음 |
 | `prefill_router` | 가장 최근 사용자 턴을 읽는 학습형 분류기(`prefill-router` 빌드 필요) | 읽음 — 사용자 턴의 텍스트 |
 | `llm_classifier` | LLM 판정 모델의 판정. 언제 물을지는 `classify_trigger`가 정합니다. `mode = "escalation"`에서는 완성된 약한 턴에 대한 판정 모델의 판단 | 읽음 — 패키지 프롬프트나 직접 쓴 프롬프트로 트랜스크립트를 읽습니다 |
@@ -1110,6 +1111,89 @@ weights = [9, 1]
 환산한 값이며, `x-claude-code-session-id`가 없는 요청은 가중치 추첨을 새로 합니다. 세션
 친화도는 접근 제어가 아니라 고정(stickiness)입니다. 요청 본문이 없는 표면은 가중치가 양수인
 첫 번째 타깃을 보고합니다. [라우팅 개요](/ko/guides/routing/#random)를 보세요.
+
+#### `type = "conditional"`
+
+조건 기반 라우팅입니다. 엔트리는 순서가 있는 규칙 목록을 가지며, 모든 조건이 성립하는
+첫 번째 규칙이 대상를 정합니다. 어떤 규칙도 일치하지 않으면 `default_target` 이 응답합니다.
+**시각과 메타데이터에 따른 비용 라우팅**을 위한 라우터입니다 — 예를 들어 다른 제공자가
+할증을 적용하는 피크 시간대에 더 저렴한 제공자로 트래픽을 보내는 용도입니다.
+
+```toml
+[[models]]
+id = "claude-cost-optimized"
+
+[models.router]
+type = "conditional"
+utc_offset_hours = 0          # 창은 각 제공자가 공표한 UTC 시계로 적는다
+default_target = "deepseek-chat"
+
+# DeepSeek 은 01:00-04:00 및 06:00-10:00 UTC(월-금)에 할증을 적용합니다.
+# 그 시간대는 가격이 오르지 않는 제공자로 보냅니다.
+[[models.router.rules]]
+name = "avoid-deepseek-morning"
+priority = 1
+target = "glm-4-flash"
+
+[models.router.rules.when]
+time_between = { start = "01:00", end = "04:00" }
+days = ["mon", "tue", "wed", "thu", "fri"]
+
+[[models.router.rules]]
+name = "avoid-deepseek-late-morning"
+priority = 2
+target = "glm-4-flash"
+
+[models.router.rules.when]
+time_between = { start = "06:00", end = "10:00" }
+days = ["mon", "tue", "wed", "thu", "fri"]
+```
+
+공표된 일정은 이동하고 플랜마다 다릅니다. 복사하기 전에 제공자의 요금 페이지에서
+다시 확인하세요. 예를 들어 GLM Coding Plan은 UTC+8 기준 `14:00`-`18:00`(UTC 로는
+`06:00`-`10:00`), 월-금에 할증을 적용합니다 — DeepSeek 의 늦은 오전 창과 같은 시계라서
+한쪽을 겨냥한 규칙이 양쪽을 모두 커버할 수 있습니다.
+
+| 키 | 기본값 | 의미 |
+| :-- | :-- | :-- |
+| `type` | ✅ 필수 | `conditional` |
+| `rules` | ✅ 필수 | 하나 이상의 규칙; 최소 하나 필요 |
+| `default_target` | ✅ 필수 | 어떤 규칙도 일치하지 않을 때 쓰는 공개 모델 id |
+| `utc_offset_hours` | `0`(UTC)| 시각 창을 판정하기 전에 시계에 적용하는 오프셋; 소수 허용, 범위는 `[-12, 14]` |
+
+각 규칙은 `name`, `target`, 선택적 `priority`(작을수록 먼저 검사; 같은 우선순위는 선언 순서
+유지 — 정렬은 로드 시 한 번만 하며 요청마다 하지 않음)를 가집니다. 조건은 `when` 테이블에
+들어가며, **존재하는 조건은 모두 성립해야 합니다**(논리 AND). 따라서 빈 `when` 은 캐치올이고
+로드 시 거부됩니다 — 캐치올은 뒤따르는 모든 규칙을 가리게 되며, 실제로 원하는 캐치올은
+`default_target` 입니다. 논리합은 규칙 목록 자체에서 나옵니다. 같은 `target` 을 가진 두 규칙은 그 대상에 이르는 두 가지 경로이며, 표 전체는 "(A 그리고 B)이면 이 대상, 또는 (C 그리고 D)이면 저 대상, …"으로 읽힙니다.
+
+| `when` 키 | 일치 조건 | 비고 |
+| :-- | :-- | :-- |
+| `time_between` | 시계가 `{ start = "HH:MM", end = "HH:MM" }` 안에 있음 | 시작 포함, 끝 제외. 끝이 시작보다 앞선 창은 자정을 넘습니다(`22:00`–`08:00`). 끝이 시작과 같은 창은 아무것도 일치시키지 않으며 로드 시 거부됩니다. `utc_offset_hours` 로 평가 |
+| `header` | 요청 헤더가 일치 | `{ name, value, mode }`; `mode` 는 `equals`(기본), `contains`, `starts_with`. 모든 비교는 ASCII 대소문자를 구분하지 않으며, 헤더 이름은 RFC 9110 에 따라 대소문자를 구분하지 않음 |
+| `model_starts_with` | 요청의 모델 id 가 접두사로 시작 | 클라이언트의 `[1m]` 컨텍스트 창 힌트를 제거한 뒤 비교 |
+| `days` | 오늘이 `["mon", "tue", "wed", "thu", "fri", "sat", "sun"]` 중 하나 | 생략 시 매일; 빈 목록은 거부 |
+
+헤더를 조건으로 하는 규칙은 요청 없이 해석되는 표면에서는 결코 일치하지 않습니다 —
+`GET /routes`, `/v1/models` 디스커버리, `shunt check` 는 모두 헤더가 없으므로
+`default_target` 으로 폴스루합니다. 반면 라이브 `count_tokens` 프로브는 호출자의 헤더를
+실제로 실어 보내므로, 그것이 측정하는 턴과 똑같이 헤더 조건 규칙에 일치할 수 있습니다.
+시각을 조건으로 하는 규칙은 시계가 항상 사용 가능하므로 요청 본문이 없는 표면을 포함한
+모든 표면에서 평가됩니다.
+
+계획할 때 유의할 점이 둘 있습니다. `utc_offset_hours` 는 DST 를 다루지 않는 **고정**
+오프셋입니다. DST 가 있는 지역의 벽시계 시각으로 창을 쓰면 계절마다 한 시간씩 밀리므로,
+현지 벽시계 대신 고정 오프셋 시계 — UTC 또는 제공자가 공표한 일정 — 로 쓰세요. 그리고
+`header` 조건은 **클라이언트가 보낸** 헤더를 읽습니다. 클라이언트의 협조로 트래픽을
+보내는 것이지 권한을 부여하는 것이 아닙니다. `x-shunt-tier: vip` 에 일치하는 규칙은
+라우팅 신호일 뿐, 인증의 대체가 결코 아닙니다.
+
+규칙 대상은 일반 공개 모델 id 이므로, 선택된 대상은 다른 라우터의 대상과 마찬가지로
+페일오버 체인, 계정 풀, 어댑터, `effort`, `service_tier` 를 유지합니다. 규칙 순서는
+**설정 시점의 결정**입니다. 규칙 집합은 부팅 시 검증되므로(`utc_offset_hours` 범위, 비어
+있지 않고 올바른 HTTP 필드 이름인 헤더 이름과 값, 비어 있지 않은 모델 접두사, 비어 있지 않은
+`days`, 비어 있지 않은 규칙 목록, 캐치올 금지, 길이 0 창 금지) 오타는 한 턴이 아니라
+`shunt check` 에서 실패합니다.
 
 #### `type = "noop"`
 

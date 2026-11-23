@@ -109,6 +109,10 @@ pub(crate) enum RouteSource {
     /// an upstream error the gated call relayed, or an advisor failure under
     /// `fail_open = false`.
     GatedError,
+    /// A conditional router matched a rule.
+    Conditional,
+    /// No conditional rule matched; the default target (or self) answered.
+    ConditionalDefault,
     /// A `noop` router answered without an upstream call.
     Noop,
     /// A `[models.subagents]` overlay diverted delegated work to its `target`
@@ -143,6 +147,8 @@ impl RouteSource {
             Self::AdvisorExhausted => "advisor_exhausted",
             Self::GatedError => "gated_error",
             Self::Noop => "noop",
+            Self::Conditional => "conditional",
+            Self::ConditionalDefault => "conditional_default",
             Self::Subagent => "subagent",
             Self::SubagentType => "subagent_type",
         }
@@ -178,7 +184,9 @@ impl RouteSource {
             | Self::GatedError
             | Self::Noop
             | Self::Subagent
-            | Self::SubagentType => None,
+            | Self::SubagentType
+            | Self::Conditional
+            | Self::ConditionalDefault => None,
         }
     }
 }
@@ -216,3 +224,6 @@ pub(crate) struct PrefillDecision {
     pub target: String,
     pub source: RouteSource,
 }
+
+#[cfg(test)]
+mod tests;
