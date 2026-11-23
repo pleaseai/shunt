@@ -188,6 +188,9 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
   Evidence: `cargo test --all-features --lib auth::exchange` -> 27 passed (3 new: trusted forwarded addresses counted per address and across peers; flag off ignores the header and counts the peer; 8 KiB forwarded value stored as a key of at most 64 bytes, distinct long values stay distinct)
 - [x] (2026-11-23 KST) T007 Document the exchange limits on every surface
   Evidence: `cd site && bun run build` -> `225 page(s) built`, `bun run lint:docs` -> `134 file(s) lint clean`; ids serverrate_limits, serverauthjwt-optional, serverauthexchange-optional, workload-token-exchange present in site/dist; `grep -rn '#914\|not rate limited' docs site/src/content/docs shunt.toml.example README*.md` -> no matches
+- [x] (2026-11-23 KST) Review-stage commits (SHA: `381268b7`, `fe80aac6`, `68690ffd`, `b39ccb11`, `395344bf`, `2ed77645`, `7fc0c60c`, `68ed7f15`)
+- [x] (2026-11-23 KST) Pin the cancelled-request lesson with `a_cancelled_request_is_never_counted` (SHA: `7a7160df`)
+  Evidence: `cargo test --all-features --lib auth::exchange::tests::rate_limit` -> 17 passed; a mutation that charges the attempt after `peek` with no refund fails it at the follow-up failure (`left: 429, right: 400`); `cargo test --all-features --workspace --no-fail-fast` -> 5003 passed, 2 failed (both in the untouched `tests/responses_chain_stream.rs`, environmental)
 
 ## Decision Log
 
@@ -198,7 +201,7 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 - 2026-11-23: Both limits share one neutral `slow_down` description ("Too many requests. Wait before retrying."), so the identity-limit `429` differs from the failure-limit `429` only in `Retry-After` (AC-008).
 - 2026-11-23: The failure-limiter key is bounded in the exchange handler only: an address longer than 64 bytes is replaced by its base64url SHA-256 (43 chars), so distinct values stay distinct at a fixed size. `client_ip` and `/device` are unchanged. Test-only accessor `PerIpRateLimiter::tracked_keys` added to assert it.
 - 2026-11-23 (review): The non-counting `peek` + later `record_failure` was replaced by `charge` (count the attempt and check the limit under one lock, before the body is read) + `refund` (on success, an identity-limit `429`, or an unavailable key set). With `peek`, concurrent requests from one blocked address could all reach verification. The user chose this at the review gate. The trusted forwarded value is also normalized to a bare IP (`ip:port` and `[v6]:port` share a key) through `gateway::device::parse_client_ip`, which `http_tuning` now reuses.
-- 2026-11-23 (review, next round): The `charge`/`refund` change was reverted because it counted cancelled requests (a dropped handler future never refunds, so a JWKS outage counted client timeouts as failures, AC-014) and refused concurrent valid exchanges from one address (AC-006). `peek` + `record_failure` is kept and the one-burst bound (requests in flight when the address reaches its limit still complete, bounded by inbound concurrency) is documented. The forwarded-address normalization stays.
+- 2026-11-23 (review, next round): The `charge`/`refund` change was reverted because it counted cancelled requests (a dropped handler future never refunds, so a JWKS outage counted client timeouts as failures, AC-014) and refused concurrent valid exchanges from one address (AC-006). `peek` + `record_failure` is kept and the one-burst bound (requests in flight when the address reaches its limit still complete; how many can be in flight is bounded only by `max_concurrent_requests`, and not at all when it is `0`) is documented. The forwarded-address normalization stays.
 
 ## Surprises & Discoveries
 
@@ -216,3 +219,46 @@ Left open at the end of the review (2026-11-23), by the user's decision:
   itself is also covered at limiter level with injected `Instant`s.
 - **greptile did not run.** The local greptile CLI failed to start (broken Node install), so it is
   missing from every review iteration; gpt, ocr and cubic ran.
+
+## Outcomes & Retrospective
+
+### What Was Shipped
+
+`POST /v1/oauth/token` enforces two limits that are on by default. `[server.rate_limits] exchange`
+caps successful exchanges per verified identity, scoped by the rule that accepted the assertion (60
+per 600 seconds by default). `exchange_failure` caps failed attempts per client address (10 per 600
+seconds by default). An address over its failure limit is refused before the body is read or any
+key set is fetched. Both limits answer `429 slow_down` with `Retry-After` and `no-store`. The
+client address follows `[server.access_control] trust_forwarded_for`, and a forwarded `ip:port` is
+keyed by its IP. `PerIpRateLimiter` moved out of the gateway store into `src/gateway/rate_limit.rs`
+and gained the `peek`, `record_failure` and `admit` entry points. The limits are documented on
+every surface.
+
+### What Went Well
+
+- Moving the limiter unchanged first (T001) kept the device-flow behaviour provably identical
+  before the new entry points were added.
+- Injected `Instant`s made the window, capacity and `Retry-After` rules testable at limiter level
+  without waiting.
+- The review loop caught real defects: a forwarded `ip:port` that gave one client a fresh budget
+  per port, a failure that was logged twice, and doc claims that did not match the code.
+
+### What Could Improve
+
+- The review-stage switch from `peek` to `charge`/`refund` was reverted one round later because it
+  broke AC-014 (a cancelled request was never refunded) and AC-006 (concurrent valid exchanges
+  from one address were refused). Check a concurrency fix against every acceptance criterion
+  before adopting it, not only against the race it closes. The cancelled-request case is now pinned
+  by `a_cancelled_request_is_never_counted`.
+- Seven review iterations ran, mostly on Minor findings. The engines kept re-raising IPv6 `/64`
+  keying until the user's out-of-scope decision was written to the rejected-findings ledger.
+  Record a scope decision in the ledger as soon as it is made.
+- The greptile engine never ran because the local Node install was broken.
+
+### Tech Debt Created
+
+- The failure limit keys on the full IPv6 address, so a client that controls a `/64` can rotate
+  addresses (TD-037).
+- `an_identity_is_exchanged_again_once_its_window_elapses` holds `test_env_lock()` across a
+  3.2-second real sleep (TD-038).
+
