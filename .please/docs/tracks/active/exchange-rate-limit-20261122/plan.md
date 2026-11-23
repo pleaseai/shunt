@@ -117,22 +117,22 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 - [ ] T001 Move `PerIpRateLimiter` and its tests out of the gateway store into their own module, unchanged (file: src/gateway/rate_limit.rs)
   Validation: the device limiters behave exactly as before. `store.rs` drops below 600 lines, and every moved test passes unmodified.
   Method: `cargo test --all-features gateway::` plus `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] T002 Accept `[server.rate_limits] exchange` and `exchange_failure` with defaults and validation (file: src/config/http_tuning.rs)
+- [ ] T002 Accept `[server.rate_limits] exchange` and `exchange_failure` with defaults and validation (file: src/config/http_tuning.rs) [FR-4, AC-009]
   Validation: an omitted table gives 60/600 and 10/600. A table that sets only `max` keeps the default window (AC-009). A zero `max` or `window_seconds` fails config load, naming the table. Changing either table on reload logs the existing restart warning.
   Method: unit tests in `src/config/http_tuning.rs` and `src/config.rs`
-- [ ] T003 [TDD] Add the peek, record-failure and admit entry points with Retry-After to the limiter (file: src/gateway/rate_limit.rs) (depends on T001)
+- [ ] T003 [TDD] Add the peek, record-failure and admit entry points with Retry-After to the limiter (file: src/gateway/rate_limit.rs) (depends on T001) [NFR-1, AC-002, AC-007, AC-012, AC-013]
   Validation: at fixed instants, a key over `max` is blocked until its window elapses and then admitted (AC-002); Retry-After is always within `[1, window]` (AC-007); at 4096 keys a new identity is refused (AC-012) while an untracked address is not blocked and its failure is refused without being tracked (AC-013); `check` keeps its old behaviour.
   Method: `cargo test --all-features gateway::rate_limit` with injected `Instant`s
-- [ ] T004 Refuse over-limit addresses before verification and count failed exchanges (file: src/auth/exchange/handler.rs) (depends on T002, T003)
+- [ ] T004 Refuse over-limit addresses before verification and count failed exchanges (file: src/auth/exchange/handler.rs) (depends on T002, T003) [FR-2, FR-3, NFR-2, AC-004, AC-005, AC-006, AC-007, AC-014]
   Validation: after the configured number of failures from one address, its next request, even with a valid assertion, gets `429` with `error: slow_down`, `Retry-After` and `no-store`, and no verification runs (AC-004, AC-007); wrong content type, malformed or oversized body, unsupported grant type and an unverifiable assertion each count (AC-005), a success never counts (AC-006), and a `503` from an unavailable key set never counts (AC-014); a removed table still answers `404` even for a blocked address; requests through the real listener carry a peer address, so callers never share an `"unknown"` bucket.
   Method: `cargo test --all-features auth::exchange` plus a `tests/router_surface.rs` case that drives the real router to a `429` and checks status, headers and the OAuth body
-- [ ] T005 Cap successful exchanges per verified identity (file: src/auth/exchange/handler.rs) (depends on T004)
+- [ ] T005 Cap successful exchanges per verified identity (file: src/auth/exchange/handler.rs) (depends on T004) [FR-1, AC-001, AC-002, AC-003, AC-008]
   Validation: once one identity reaches the configured maximum, its next valid assertion gets `429` and no token is minted (AC-001), and it is exchanged normally again after the window (AC-002); two identities from one address, or one identity under two rules, are counted separately (AC-003); an identity-limit `429` does not count as an address failure; its body and headers match the failure-limit `429` except for the `Retry-After` value (AC-008).
   Method: `cargo test --all-features auth::exchange`
-- [ ] T006 Derive the limiter's client address from `[server.access_control] trust_forwarded_for` (file: src/auth/exchange/handler.rs) (depends on T004)
+- [ ] T006 Derive the limiter's client address from `[server.access_control] trust_forwarded_for` (file: src/auth/exchange/handler.rs) (depends on T004) [FR-5, AC-010, AC-011]
   Validation: with the flag on, failures from one peer with different `X-Forwarded-For` values are counted per forwarded address (AC-010); with the flag off, the header is ignored and the peer address is counted (AC-011); an oversized forwarded value is stored as a bounded key.
   Method: `cargo test --all-features auth::exchange` with the `ConnectInfo` extension inserted, as `src/http_tuning.rs` tests do
-- [ ] T007 Document the exchange limits on every surface (file: site/src/content/docs/reference/configuration.md) (depends on T005)
+- [ ] T007 Document the exchange limits on every surface (file: site/src/content/docs/reference/configuration.md) (depends on T005) [FR-6]
   Validation: the configuration reference and the GitHub Actions OIDC guide (each en/ko/ja/zh-cn), `shunt.toml.example` and `docs/inbound-jwt-auth.md` describe the two tables, their defaults, the `429 slow_down` response with `Retry-After`, the use of `[server.access_control] trust_forwarded_for`, and that limit changes need a restart (FR-6); locale pages link only anchors that exist in that locale.
   Method: `grep -l exchange_failure` over the surfaces lists all ten files; `site` build succeeds and the built locale pages resolve their fragment links
 
