@@ -16,7 +16,9 @@ use axum::{
     response::{IntoResponse, Response},
     Extension, Json,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use super::{fingerprint, mint, unix_now, ExchangeSettings};
 use crate::auth::inbound::InboundAuth;
@@ -81,6 +83,18 @@ fn count_failure(failures: &PerIpRateLimiter, key: &str, code: ErrorCode) -> Res
     }
 }
 
+/// Limiter key for one identity under one rule: a digest, so the stored key has
+/// a fixed size whatever the identity's length. The fingerprint is base64url
+/// of fixed length, so the NUL separator cannot make two pairs collide.
+fn identity_key(fingerprint: &str, identity: &str) -> String {
+    let digest = Sha256::new()
+        .chain_update(fingerprint.as_bytes())
+        .chain_update([0])
+        .chain_update(identity.as_bytes())
+        .finalize();
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
 /// Check the content type, read the bounded body and parse the assertion.
 async fn read_assertion(headers: &HeaderMap, body: Body) -> Result<String, ErrorCode> {
     if !is_json(headers) {
@@ -110,7 +124,19 @@ async fn exchange(
         match inbound_jwt::verify(std::slice::from_ref(rule), &state.inbound_jwks, assertion).await
         {
             JwtOutcome::Verified { identity, .. } => {
-                let minted = mint(settings, &identity, &fingerprint(rule), unix_now());
+                let fingerprint = fingerprint(rule);
+                // Counted before minting, so a refused request issues nothing. It
+                // is a throttle, not a failed assertion, so the address's failure
+                // count is left alone (the `Ok` arm in `post` records nothing).
+                let admitted = state
+                    .gateway_stores
+                    .exchange_identity_rate
+                    .admit(&identity_key(&fingerprint, &identity));
+                if let Err(retry_after) = admitted {
+                    tracing::info!(outcome = "slow_down", identity = %identity, "workload exchange");
+                    return Ok(slow_down(retry_after));
+                }
+                let minted = mint(settings, &identity, &fingerprint, unix_now());
                 tracing::info!(outcome = "issued", identity = %identity, "workload exchange");
                 return Ok(no_store(
                     Json(json!({
@@ -219,7 +245,7 @@ impl ErrorCode {
             Self::UnsupportedGrantType => "Only the jwt-bearer grant type is supported.",
             Self::InvalidGrant => "The assertion is not valid.",
             Self::TemporarilyUnavailable => "The assertion cannot be verified right now.",
-            Self::SlowDown => "Too many failed attempts. Wait before retrying.",
+            Self::SlowDown => "Too many requests. Wait before retrying.",
         }
     }
 }

@@ -593,10 +593,18 @@ mod rate_limit {
     }
 
     async fn live(tag: &str, max_failures: u32, issuer: MockServer) -> Live {
+        live_with(tag, issuer, |config| {
+            config.server.rate_limits.exchange_failure.max = max_failures;
+        })
+        .await
+    }
+
+    async fn live_with(tag: &str, issuer: MockServer, tune: impl FnOnce(&mut Config)) -> Live {
         let lock = crate::config::test_env_lock();
         let env = format!("SHUNT_TEST_EXCHANGE_RL_{tag}_{}", std::process::id());
         std::env::remove_var(&env);
-        let config = config_for(&issuer.uri(), &env, max_failures, true);
+        let mut config = config_for(&issuer.uri(), &env, 10, true);
+        tune(&mut config);
         let stores = crate::gateway::GatewayStores::new(&config.server.rate_limits, None);
         let shared: crate::reload::SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(
             crate::reload::RuntimeState::from_config(config).unwrap(),
@@ -626,8 +634,13 @@ mod rate_limit {
     }
 
     fn assertion(issuer: &str) -> String {
+        assertion_for(issuer, "pleaseai/shunt", "shunt-clients")
+    }
+
+    fn assertion_for(issuer: &str, repository: &str, audience: &str) -> String {
         let mut claims = claims(issuer);
-        claims["repository"] = json!("pleaseai/shunt");
+        claims["aud"] = json!(audience);
+        claims["repository"] = json!(repository);
         claims["repository_owner"] = json!("pleaseai");
         token(&claims)
     }
@@ -863,5 +876,118 @@ mod rate_limit {
         // An address already tracked still gets the ordinary answer.
         let tracked = call(&h.state, "10.16.0.0", Some("text/plain"), Vec::new()).await;
         assert_eq!(tracked.status, StatusCode::BAD_REQUEST);
+    }
+
+    fn limit_identity(max: u32, window_seconds: u64) -> impl FnOnce(&mut Config) {
+        move |config| {
+            config.server.rate_limits.exchange.max = max;
+            config.server.rate_limits.exchange.window_seconds = window_seconds;
+        }
+    }
+
+    #[tokio::test]
+    async fn an_identity_at_its_maximum_gets_429_and_no_token_and_no_address_failure() {
+        let h = live_with("IDMAX", issuer_serving(jwks()).await, |config| {
+            limit_identity(2, 600)(config);
+            config.server.rate_limits.exchange_failure.max = 1;
+        })
+        .await;
+        let valid = assertion(&h.issuer.uri());
+        for _ in 0..2 {
+            let reply = post_json(&h.state, "10.5.0.1", exchange_body(&valid)).await;
+            assert_eq!(reply.status, StatusCode::OK);
+            assert!(reply.body["access_token"].is_string());
+        }
+        let refused = post_json(&h.state, "10.5.0.1", exchange_body(&valid)).await;
+        assert_slow_down(&refused);
+        assert!(
+            refused.body.get("access_token").is_none(),
+            "no token is minted"
+        );
+        // Still refused within the window, from any address: the quota is the identity's.
+        assert_slow_down(&post_json(&h.state, "10.5.0.2", exchange_body(&valid)).await);
+        // The refusals were not address failures: with a failure limit of 1,
+        // the first real failure is an ordinary 400, not a 429.
+        let failed = post_json(&h.state, "10.5.0.1", b"{}".to_vec()).await;
+        assert_eq!(failed.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn an_identity_is_exchanged_again_once_its_window_elapses() {
+        // Chosen: a real 1-second window and a wait just past it. The limiters
+        // use real `Instant`s, and the reset itself is also covered at limiter
+        // level by `admit_blocks_over_max_until_the_window_elapses`.
+        let h = live_with("IDWIN", issuer_serving(jwks()).await, limit_identity(1, 1)).await;
+        let valid = assertion(&h.issuer.uri());
+        assert_eq!(
+            post_json(&h.state, "10.6.0.1", exchange_body(&valid))
+                .await
+                .status,
+            StatusCode::OK
+        );
+        assert_slow_down(&post_json(&h.state, "10.6.0.1", exchange_body(&valid)).await);
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert_eq!(
+            post_json(&h.state, "10.6.0.1", exchange_body(&valid))
+                .await
+                .status,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn identities_and_rules_are_counted_separately() {
+        let h = live_with("IDSEP", issuer_serving(jwks()).await, |config| {
+            limit_identity(1, 600)(config);
+            let auth = config.server.auth.as_mut().unwrap();
+            let mut second = auth.jwt[0].clone();
+            second.audience = StringList::One("other-aud".to_string());
+            auth.jwt.push(second);
+        })
+        .await;
+        let issuer = h.issuer.uri();
+        let first = assertion_for(&issuer, "pleaseai/shunt", "shunt-clients");
+        let other_identity = assertion_for(&issuer, "pleaseai/other", "shunt-clients");
+        let other_rule = assertion_for(&issuer, "pleaseai/shunt", "other-aud");
+
+        // One address, three distinct (rule, identity) pairs: each has its own quota.
+        for assertion in [&first, &other_identity, &other_rule] {
+            let reply = post_json(&h.state, "10.7.0.1", exchange_body(assertion)).await;
+            assert_eq!(reply.status, StatusCode::OK);
+        }
+        for assertion in [&first, &other_identity, &other_rule] {
+            assert_slow_down(&post_json(&h.state, "10.7.0.1", exchange_body(assertion)).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_two_limits_answer_identically_apart_from_retry_after() {
+        let h = live_with("SAME", issuer_serving(jwks()).await, |config| {
+            limit_identity(1, 600)(config);
+            config.server.rate_limits.exchange_failure.max = 1;
+        })
+        .await;
+        let valid = assertion(&h.issuer.uri());
+
+        // Identity limit.
+        post_json(&h.state, "10.8.0.1", exchange_body(&valid)).await;
+        let identity_limited = post_json(&h.state, "10.8.0.1", exchange_body(&valid)).await;
+        // Failure limit, from an address that never exchanged.
+        post_json(&h.state, "10.8.0.2", b"{}".to_vec()).await;
+        let failure_limited = post_json(&h.state, "10.8.0.2", exchange_body(&valid)).await;
+
+        assert_slow_down(&identity_limited);
+        assert_slow_down(&failure_limited);
+        let without_retry_after = |reply: &Reply| {
+            let mut headers = reply.headers.clone();
+            headers.remove(header::RETRY_AFTER);
+            headers
+        };
+        assert_eq!(identity_limited.status, failure_limited.status);
+        assert_eq!(
+            without_retry_after(&identity_limited),
+            without_retry_after(&failure_limited)
+        );
+        assert_eq!(identity_limited.body, failure_limited.body);
     }
 }

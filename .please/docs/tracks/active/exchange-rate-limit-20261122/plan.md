@@ -123,7 +123,7 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 - [x] T003 [TDD] Add the peek, record-failure and admit entry points with Retry-After to the limiter (file: src/gateway/rate_limit.rs) (depends on T001) [NFR-1, AC-002, AC-007, AC-012, AC-013]
   Validation: at fixed instants, a key over `max` is blocked until its window elapses and then admitted (AC-002); Retry-After is always within `[1, window]` (AC-007); at 4096 keys a new identity is refused (AC-012) while an untracked address is not blocked and its failure is refused without being tracked (AC-013); `check` keeps its old behaviour.
   Method: `cargo test --all-features gateway::rate_limit` with injected `Instant`s
-- [ ] T004 Refuse over-limit addresses before verification and count failed exchanges (file: src/auth/exchange/handler.rs) (depends on T002, T003) [FR-2, FR-3, NFR-2, AC-004, AC-005, AC-006, AC-007, AC-014]
+- [x] T004 Refuse over-limit addresses before verification and count failed exchanges (file: src/auth/exchange/handler.rs) (depends on T002, T003) [FR-2, FR-3, NFR-2, AC-004, AC-005, AC-006, AC-007, AC-014]
   Validation: after the configured number of failures from one address, its next request, even with a valid assertion, gets `429` with `error: slow_down`, `Retry-After` and `no-store`, and no verification runs (AC-004, AC-007); wrong content type, malformed or oversized body, unsupported grant type and an unverifiable assertion each count (AC-005), a success never counts (AC-006), and a `503` from an unavailable key set never counts (AC-014); a removed table still answers `404` even for a blocked address; requests through the real listener carry a peer address, so callers never share an `"unknown"` bucket.
   Method: `cargo test --all-features auth::exchange` plus a `tests/router_surface.rs` case that drives the real router to a `429` and checks status, headers and the OAuth body
 - [ ] T005 Cap successful exchanges per verified identity (file: src/auth/exchange/handler.rs) (depends on T004) [FR-1, AC-001, AC-002, AC-003, AC-008]
@@ -182,11 +182,15 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 - [x] (2026-11-23 KST) T004 Refuse over-limit addresses before verification and count failed exchanges
   Evidence: `cargo test --all-features --lib auth::exchange` -> 20 passed (6 new `rate_limit::*` handler tests: blocked valid assertion -> 429 with 0 JWKS fetches, each failure kind counts, success and 503 never count, 404 wins for a removed table, full table -> 429); `cargo test --all-features --test router_surface` -> 15 passed incl. the_exchange_path_answers_429_after_repeated_failures; clippy exit 0
   Also changed: src/auth/inbound_jwt.rs + inbound_jwt/tests.rs (test fixtures `pub(crate)` for reuse), tests/inbound/inbound_exchange_endpoint.rs (raise exchange_failure.max: its tests send >10 deliberate failures from one loopback address)
+- [x] (2026-11-23 KST) T005 Cap successful exchanges per verified identity
+  Evidence: `cargo test --all-features --lib auth::exchange` -> 24 passed (4 new: identity max -> 429 with no token and no address failure; window reset after a real 1.2s wait at handler level; separate quotas per identity and per rule on one address; both 429s equal except Retry-After)
 
 ## Decision Log
 
 - 2026-11-23: Client address comes from `[server.access_control] trust_forwarded_for`, not a new exchange key. This was the user's decision at spec review: one proxy flag avoids a split where every caller collapses into the proxy's address.
 - 2026-11-23: At capacity, the failure table lets untracked addresses' valid exchanges through. The identity table refuses new identities. User's decision.
 - 2026-11-23: The `429` error code is `slow_down`, and the identity key is scoped by rule fingerprint.
+- 2026-11-23: `tests/inbound/inbound_exchange_endpoint.rs` raises `exchange_failure.max` to 10000 in its shared config. Its malformed-body test sends 12 deliberate failures from one loopback address and would otherwise hit the new default limit of 10; its assertions are unchanged and the limit has its own tests.
+- 2026-11-23: Both limits share one neutral `slow_down` description ("Too many requests. Wait before retrying."), so the identity-limit `429` differs from the failure-limit `429` only in `Retry-After` (AC-008).
 
 ## Surprises & Discoveries
