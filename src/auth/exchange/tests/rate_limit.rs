@@ -324,6 +324,48 @@ async fn an_unavailable_key_set_is_never_counted() {
     assert_eq!(failed.status, StatusCode::BAD_REQUEST);
 }
 
+/// A client that disconnects drops the handler future, so nothing after its
+/// pending `.await` runs. A limiter that charged the attempt up front and
+/// refunded it after verification would keep the charge here.
+/// Remove when: the exchange failure limit stops recording failures from the
+/// handler's own path, e.g. it moves to a Drop-guarded charge.
+#[tokio::test]
+async fn a_cancelled_request_is_never_counted() {
+    let issuer = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(jwks())
+                .set_delay(std::time::Duration::from_secs(60)),
+        )
+        .mount(&issuer)
+        .await;
+    let h = live("CANCEL", 1, issuer).await;
+    let valid = assertion(&h.issuer.uri());
+
+    let mut pending = Box::pin(post_json(&h.state, "10.3.1.1", exchange_body(&valid)));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while jwks_fetches(&h.issuer).await == 0 {
+        tokio::select! {
+            reply = &mut pending => panic!("the stalled exchange answered {}", reply.status),
+            () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the exchange never reached the key-set fetch"
+        );
+    }
+    // The request is past the failure check and waiting on the key set: cancel it.
+    drop(pending);
+
+    // With a failure limit of 1, a leaked charge would make this a 429.
+    let failed = post_json(&h.state, "10.3.1.1", b"{}".to_vec()).await;
+    assert_eq!(failed.status, StatusCode::BAD_REQUEST);
+    // The limit itself is live: that failure blocks the address.
+    assert_slow_down(&post_json(&h.state, "10.3.1.1", b"{}".to_vec()).await);
+}
+
 #[tokio::test]
 async fn a_removed_table_answers_404_even_for_a_blocked_address() {
     let h = serving("REMOVED", 1).await;
