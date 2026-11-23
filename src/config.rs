@@ -195,8 +195,9 @@ pub struct ServerConfig {
     /// Upstream response-header timeout.
     #[serde(default)]
     pub timeouts: TimeoutsConfig,
-    /// Per-IP limits for unauthenticated device-flow endpoints and the
-    /// workload token exchange endpoint.
+    /// Limits for the unauthenticated device-flow endpoints (per client
+    /// address) and the workload token exchange endpoint (failures per client
+    /// address, successful exchanges per verified identity).
     #[serde(default)]
     pub rate_limits: RateLimitsConfig,
 }

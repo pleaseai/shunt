@@ -394,10 +394,11 @@ async fn an_identity_at_its_maximum_gets_429_and_no_token_and_no_address_failure
 
 #[tokio::test]
 async fn an_identity_is_exchanged_again_once_its_window_elapses() {
-    // Chosen: a real 1-second window and a wait just past it. The limiters
-    // use real `Instant`s, and the reset itself is also covered at limiter
-    // level by `admit_blocks_over_max_until_the_window_elapses`.
-    let h = live_with("IDWIN", issuer_serving(jwks()).await, limit_identity(1, 1)).await;
+    // Chosen: a real 3-second window and a wait just past it, so the refusal
+    // right after the first exchange stays inside the window under load. The
+    // limiters use real `Instant`s; the reset itself is also covered at
+    // limiter level by `admit_blocks_over_max_until_the_window_elapses`.
+    let h = live_with("IDWIN", issuer_serving(jwks()).await, limit_identity(1, 3)).await;
     let valid = assertion(&h.issuer.uri());
     assert_eq!(
         post_json(&h.state, "10.6.0.1", exchange_body(&valid))
@@ -406,7 +407,7 @@ async fn an_identity_is_exchanged_again_once_its_window_elapses() {
         StatusCode::OK
     );
     assert_slow_down(&post_json(&h.state, "10.6.0.1", exchange_body(&valid)).await);
-    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(3200)).await;
     assert_eq!(
         post_json(&h.state, "10.6.0.1", exchange_body(&valid))
             .await

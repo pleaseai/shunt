@@ -60,9 +60,9 @@ bypass an address rule. CIDRs are parsed during configuration validation, so an
 invalid entry makes `shunt check` fail.
 
 This switch is independent of `[server.gateway] trust_forwarded_for`. The
-access-control switch resolves client addresses only for CIDR allow/deny rules;
-the gateway switch resolves client addresses for the device-flow rate limiters.
-The access-control switch also decides the client address for the token-exchange
+access-control switch resolves client addresses for CIDR allow/deny rules; the
+gateway switch resolves client addresses for the device-flow rate limiters. The
+access-control switch also decides the client address for the token-exchange
 failure limit (see "Token-exchange rate limits"); the gateway switch does not.
 When both surfaces run behind a trusted reverse proxy, set both switches. Setting
 only one leaves the other surface using the socket peer address.
