@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.66.0](https://github.com/pleaseai/shunt/compare/v0.65.0...v0.66.0) (2026-11-23)
+
+
+### Features
+
+* **auth:** add a WIF-compatible token exchange for gh-aw workflows ([#915](https://github.com/pleaseai/shunt/issues/915)) ([4d6b6c0](https://github.com/pleaseai/shunt/commit/4d6b6c01a90d78fc25b677126c8576767d02c351))
+* **auth:** rate-limit the workload token exchange endpoint ([#917](https://github.com/pleaseai/shunt/issues/917)) ([05124f5](https://github.com/pleaseai/shunt/commit/05124f55f3a85d81bb8f691b277370dbb80dcf3b))
+* **proxy:** name the serving pool account on the proxied request log line ([#856](https://github.com/pleaseai/shunt/issues/856)) ([3ed99c0](https://github.com/pleaseai/shunt/commit/3ed99c0dd30599b70768c48e1b77e8e9e93315e0))
+
+
+### Bug Fixes
+
+* **anthropic:** fail over on org-disabled OAuth 403 and log account on 4xx ([#898](https://github.com/pleaseai/shunt/issues/898)) ([57182b3](https://github.com/pleaseai/shunt/commit/57182b328e92d3c70bc9ca5a1fd1ee9104cfbabb))
+
 ## [0.65.0](https://github.com/pleaseai/shunt/compare/v0.64.1...v0.65.0) (2026-11-21)
 
 
