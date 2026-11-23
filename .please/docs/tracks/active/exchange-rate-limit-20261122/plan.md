@@ -126,7 +126,7 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 - [x] T004 Refuse over-limit addresses before verification and count failed exchanges (file: src/auth/exchange/handler.rs) (depends on T002, T003) [FR-2, FR-3, NFR-2, AC-004, AC-005, AC-006, AC-007, AC-014]
   Validation: after the configured number of failures from one address, its next request, even with a valid assertion, gets `429` with `error: slow_down`, `Retry-After` and `no-store`, and no verification runs (AC-004, AC-007); wrong content type, malformed or oversized body, unsupported grant type and an unverifiable assertion each count (AC-005), a success never counts (AC-006), and a `503` from an unavailable key set never counts (AC-014); a removed table still answers `404` even for a blocked address; requests through the real listener carry a peer address, so callers never share an `"unknown"` bucket.
   Method: `cargo test --all-features auth::exchange` plus a `tests/router_surface.rs` case that drives the real router to a `429` and checks status, headers and the OAuth body
-- [ ] T005 Cap successful exchanges per verified identity (file: src/auth/exchange/handler.rs) (depends on T004) [FR-1, AC-001, AC-002, AC-003, AC-008]
+- [x] T005 Cap successful exchanges per verified identity (file: src/auth/exchange/handler.rs) (depends on T004) [FR-1, AC-001, AC-002, AC-003, AC-008]
   Validation: once one identity reaches the configured maximum, its next valid assertion gets `429` and no token is minted (AC-001), and it is exchanged normally again after the window (AC-002); two identities from one address, or one identity under two rules, are counted separately (AC-003); an identity-limit `429` does not count as an address failure; its body and headers match the failure-limit `429` except for the `Retry-After` value (AC-008).
   Method: `cargo test --all-features auth::exchange`
 - [ ] T006 Derive the limiter's client address from `[server.access_control] trust_forwarded_for` (file: src/auth/exchange/handler.rs) (depends on T004) [FR-5, AC-010, AC-011]
@@ -184,6 +184,8 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
   Also changed: src/auth/inbound_jwt.rs + inbound_jwt/tests.rs (test fixtures `pub(crate)` for reuse), tests/inbound/inbound_exchange_endpoint.rs (raise exchange_failure.max: its tests send >10 deliberate failures from one loopback address)
 - [x] (2026-11-23 KST) T005 Cap successful exchanges per verified identity
   Evidence: `cargo test --all-features --lib auth::exchange` -> 24 passed (4 new: identity max -> 429 with no token and no address failure; window reset after a real 1.2s wait at handler level; separate quotas per identity and per rule on one address; both 429s equal except Retry-After)
+- [x] (2026-11-23 KST) T006 Derive the limiter's client address from `[server.access_control] trust_forwarded_for`
+  Evidence: `cargo test --all-features --lib auth::exchange` -> 27 passed (3 new: trusted forwarded addresses counted per address and across peers; flag off ignores the header and counts the peer; 8 KiB forwarded value stored as a key of at most 64 bytes, distinct long values stay distinct)
 
 ## Decision Log
 
@@ -192,5 +194,6 @@ off") and one fixed description. Both limits use it, plus `Retry-After` and the 
 - 2026-11-23: The `429` error code is `slow_down`, and the identity key is scoped by rule fingerprint.
 - 2026-11-23: `tests/inbound/inbound_exchange_endpoint.rs` raises `exchange_failure.max` to 10000 in its shared config. Its malformed-body test sends 12 deliberate failures from one loopback address and would otherwise hit the new default limit of 10; its assertions are unchanged and the limit has its own tests.
 - 2026-11-23: Both limits share one neutral `slow_down` description ("Too many requests. Wait before retrying."), so the identity-limit `429` differs from the failure-limit `429` only in `Retry-After` (AC-008).
+- 2026-11-23: The failure-limiter key is bounded in the exchange handler only: an address longer than 64 bytes is replaced by its base64url SHA-256 (43 chars), so distinct values stay distinct at a fixed size. `client_ip` and `/device` are unchanged. Test-only accessor `PerIpRateLimiter::tracked_keys` added to assert it.
 
 ## Surprises & Discoveries

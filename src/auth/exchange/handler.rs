@@ -50,11 +50,11 @@ pub(crate) async fn post(
     };
 
     let peer = connection.map(|Extension(ConnectInfo(address))| address);
-    let key = crate::gateway::device::client_ip(
+    let key = bounded_key(crate::gateway::device::client_ip(
         &headers,
         peer,
         state.config.server.access_control.trust_forwarded_for,
-    );
+    ));
     let failures = &state.gateway_stores.exchange_failure_rate;
     // An address over its failure limit is refused before the body is read or
     // any key set is fetched, so a blocked caller costs no verification work.
@@ -72,6 +72,18 @@ pub(crate) async fn post(
         Err(ErrorCode::TemporarilyUnavailable) => oauth_error(ErrorCode::TemporarilyUnavailable),
         Err(code) => count_failure(failures, &key, code),
     }
+}
+
+/// Longest address kept verbatim as a limiter key. A trusted forwarded header is
+/// caller-controlled and unbounded, so a longer value is replaced by its digest
+/// (still one key per distinct value, at a fixed size). `/device` is unchanged.
+const MAX_ADDRESS_KEY_BYTES: usize = 64;
+
+fn bounded_key(address: String) -> String {
+    if address.len() <= MAX_ADDRESS_KEY_BYTES {
+        return address;
+    }
+    URL_SAFE_NO_PAD.encode(Sha256::digest(address.as_bytes()))
 }
 
 /// Record one failed exchange for `key` and answer `code`, or answer

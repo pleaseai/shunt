@@ -669,11 +669,27 @@ mod rate_limit {
         content_type: Option<&str>,
         body: Vec<u8>,
     ) -> Reply {
+        call_via(state, peer, None, content_type, body).await
+    }
+
+    async fn call_via(
+        state: &crate::server::AppState,
+        peer: &str,
+        forwarded_for: Option<&str>,
+        content_type: Option<&str>,
+        body: Vec<u8>,
+    ) -> Reply {
         let mut headers = HeaderMap::new();
         if let Some(content_type) = content_type {
             headers.insert(
                 header::CONTENT_TYPE,
                 HeaderValue::from_str(content_type).unwrap(),
+            );
+        }
+        if let Some(forwarded_for) = forwarded_for {
+            headers.insert(
+                "x-forwarded-for",
+                HeaderValue::from_str(forwarded_for).unwrap(),
             );
         }
         let peer: SocketAddr = format!("{peer}:4000").parse().unwrap();
@@ -691,6 +707,18 @@ mod rate_limit {
             headers: parts.headers,
             body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         }
+    }
+
+    /// One failing request (wrong content type) claiming `forwarded_for`.
+    async fn fail_as(state: &crate::server::AppState, peer: &str, forwarded_for: &str) -> Reply {
+        call_via(
+            state,
+            peer,
+            Some(forwarded_for),
+            Some("text/plain"),
+            Vec::new(),
+        )
+        .await
     }
 
     async fn post_json(state: &crate::server::AppState, peer: &str, body: Vec<u8>) -> Reply {
@@ -989,5 +1017,85 @@ mod rate_limit {
             without_retry_after(&failure_limited)
         );
         assert_eq!(identity_limited.body, failure_limited.body);
+    }
+
+    fn trusting_forwarded_for(trust: bool) -> impl FnOnce(&mut Config) {
+        move |config| {
+            config.server.access_control.trust_forwarded_for = trust;
+            config.server.rate_limits.exchange_failure.max = 1;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trusted_forwarded_address_is_counted_on_its_own() {
+        let h = live_with(
+            "XFF_ON",
+            issuer_serving(jwks()).await,
+            trusting_forwarded_for(true),
+        )
+        .await;
+        assert_eq!(
+            fail_as(&h.state, "10.9.0.1", "203.0.113.7").await.status,
+            StatusCode::BAD_REQUEST
+        );
+        // The same forwarded address is now blocked, whichever peer relays it.
+        assert_slow_down(&fail_as(&h.state, "10.9.0.1", "203.0.113.7").await);
+        assert_slow_down(&fail_as(&h.state, "10.9.0.2", "203.0.113.7").await);
+        // Another forwarded address behind the same peer is not blocked.
+        assert_eq!(
+            fail_as(&h.state, "10.9.0.1", "203.0.113.8").await.status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_forwarded_header_is_ignored_and_the_peer_is_counted() {
+        let h = live_with(
+            "XFF_OFF",
+            issuer_serving(jwks()).await,
+            trusting_forwarded_for(false),
+        )
+        .await;
+        assert_eq!(
+            fail_as(&h.state, "10.9.1.1", "203.0.113.7").await.status,
+            StatusCode::BAD_REQUEST
+        );
+        // A different claimed address does not escape the peer's count.
+        assert_slow_down(&fail_as(&h.state, "10.9.1.1", "203.0.113.8").await);
+        // The claimed address was never recorded: another peer sending the first one is fresh.
+        assert_eq!(
+            fail_as(&h.state, "10.9.1.2", "203.0.113.7").await.status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_forwarded_value_is_stored_as_a_bounded_key() {
+        let h = live_with(
+            "XFF_BIG",
+            issuer_serving(jwks()).await,
+            trusting_forwarded_for(true),
+        )
+        .await;
+        let long_a = format!("{}a", "9".repeat(8 * 1024));
+        let long_b = format!("{}b", "9".repeat(8 * 1024));
+        assert_eq!(
+            fail_as(&h.state, "10.9.2.1", &long_a).await.status,
+            StatusCode::BAD_REQUEST
+        );
+        // Distinct long values stay distinct keys; the repeated one is blocked.
+        assert_eq!(
+            fail_as(&h.state, "10.9.2.1", &long_b).await.status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_slow_down(&fail_as(&h.state, "10.9.2.1", &long_a).await);
+
+        let keys = h.state.gateway_stores.exchange_failure_rate.tracked_keys();
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        assert!(
+            keys.iter().all(|key| key.len() <= 64),
+            "stored keys must be bounded, got lengths {:?}",
+            keys.iter().map(String::len).collect::<Vec<_>>()
+        );
     }
 }

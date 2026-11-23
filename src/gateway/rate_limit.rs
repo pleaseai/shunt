@@ -68,6 +68,16 @@ impl PerIpRateLimiter {
         }
     }
 
+    /// Every key currently tracked, for tests that assert on stored key size.
+    #[cfg(test)]
+    pub(crate) fn tracked_keys(&self) -> Vec<String> {
+        let limits = self
+            .limits
+            .lock()
+            .expect("gateway rate-limit lock poisoned");
+        limits.keys().cloned().collect()
+    }
+
     fn lock_and_sweep(&self, now: Instant) -> MutexGuard<'_, HashMap<String, RateLimitEntry>> {
         let mut limits = self
             .limits
