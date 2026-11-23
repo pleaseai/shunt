@@ -145,10 +145,11 @@ The tables apply whenever `[server.auth.exchange]` is configured, with or
 without `[server.gateway]`. Counters are memory-only and lost on restart; each
 limiter tracks at most 4,096 keys and sweeps idle ones. At capacity a new identity
 is refused with `429`; a new address can still exchange a valid assertion, but
-its failures are answered `429` without being tracked. The client address is the
-TCP peer, or the first `X-Forwarded-For` value and then `X-Real-IP` when
-`[server.access_control] trust_forwarded_for` is `true`. A reload that removes
-`[server.auth.exchange]` still answers `404`, even for a blocked address. The
+its failures are answered `429` without being tracked. A refused key has no window
+of its own, so these capacity refusals set `Retry-After` to the full window. The
+client address is the TCP peer, or the first `X-Forwarded-For` value and then
+`X-Real-IP` when `[server.access_control] trust_forwarded_for` is `true`. A
+reload that removes `[server.auth.exchange]` still answers `404`, even for a blocked address. The
 limiter stores are created at boot, so changing these values requires a restart.
 
 Gateway-owned errors use the Anthropic error envelope. On inbound Codex paths,

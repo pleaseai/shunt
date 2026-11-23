@@ -73,7 +73,7 @@ pub(crate) async fn post(
     match exchange(&state, auth, settings, &assertion).await {
         Ok(response) => response,
         // An unreachable key set says nothing about the caller: not counted.
-        Err(ErrorCode::TemporarilyUnavailable) => oauth_error(ErrorCode::TemporarilyUnavailable),
+        Err(ErrorCode::TemporarilyUnavailable) => logged_error(ErrorCode::TemporarilyUnavailable),
         Err(code) => count_failure(failures, &key, code),
     }
 }
@@ -101,9 +101,17 @@ fn bounded_key(address: String) -> String {
 /// `slow_down` when the limiter refuses to track the address.
 fn count_failure(failures: &PerIpRateLimiter, key: &str, code: ErrorCode) -> Response {
     match failures.record_failure(key) {
-        Ok(()) => oauth_error(code),
+        Ok(()) => logged_error(code),
         Err(retry_after) => failure_limited(key, retry_after),
     }
+}
+
+/// Answer `code`, logged once as the request's outcome. Failures are logged
+/// here rather than where they arise, so a failure the limiter then refuses is
+/// logged only as `slow_down`.
+fn logged_error(code: ErrorCode) -> Response {
+    tracing::info!(outcome = code.as_str(), "workload exchange");
+    oauth_error(code)
 }
 
 /// Answer `slow_down` for an address over its failure limit, logged like the
@@ -181,13 +189,11 @@ async fn exchange(
             JwtOutcome::Rejected => {}
         }
     }
-    let code = if unavailable {
+    Err(if unavailable {
         ErrorCode::TemporarilyUnavailable
     } else {
         ErrorCode::InvalidGrant
-    };
-    tracing::info!(outcome = code.as_str(), "workload exchange");
-    Err(code)
+    })
 }
 
 /// Whether `Content-Type` is `application/json` or a `+json` type.

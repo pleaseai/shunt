@@ -613,7 +613,8 @@ Notes:
   quota.
 - **At capacity.** Each limiter tracks at most 4,096 keys and sweeps idle ones; counters are
   memory-only. A new identity is refused with `429`. A new, untracked address can still exchange
-  a valid assertion, but its failures are answered `429` without being tracked.
+  a valid assertion, but its failures are answered `429` without being tracked. A refused key has
+  no window of its own, so these capacity refusals set `Retry-After` to the full window.
 - **Client address.** The TCP peer, or the first `X-Forwarded-For` value and then `X-Real-IP` when
   `[server.access_control] trust_forwarded_for` is `true`. `[server.gateway] trust_forwarded_for`
   does not affect the exchange. A forwarded `ip:port` or `[v6]:port` is keyed by its IP. Enable it only behind a trusted proxy that overwrites
