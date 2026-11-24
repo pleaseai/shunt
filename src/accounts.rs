@@ -230,6 +230,12 @@ pub struct QuotaState {
     pub reset_at_status_7d: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_at_status_7d_oi: Option<u64>,
+    /// Reset boundary captured from `anthropic-ratelimit-unified-reset` when
+    /// the aggregate `status` was observed. The aggregate status expires at
+    /// this boundary or at its observation-time cap, whichever comes first.
+    /// A source without an aggregate reset (Codex) leaves it unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_at_status: Option<u64>,
     /// Unix time the aggregate `status` was last recorded. Stamped
     /// independently of the per-window `observed_at_*` fields: aggregate
     /// `status` is the only signal `assess_quota`'s `has_window_status`
@@ -1868,6 +1874,8 @@ impl AccountPool {
             }
             if wrote_status {
                 quota.observed_at_status = Some(now);
+                quota.reset_at_status =
+                    header_value::<u64>(headers, "anthropic-ratelimit-unified-reset");
             }
 
             // The post-lock dirty mark below covers both this observation and
@@ -1926,6 +1934,7 @@ impl AccountPool {
             {
                 quota.status = Some(status.to_string());
                 quota.observed_at_status = Some(now);
+                quota.reset_at_status = None;
             }
             // The post-lock dirty mark below covers both this observation and
             // any expiry found while recomputing the provider metric.
@@ -4394,8 +4403,9 @@ fn record_pool_utilization(provider: &str, utilization: [Option<f64>; 3]) {
 }
 
 /// Clears each signal once its own reset or timestamp lifetime expires. A
-/// stamped aggregate has its own unconditional cap and is cleared only when
-/// that cap expires. A reset-less signal cannot outlive its window length.
+/// stamped aggregate is cleared at its captured reset or at its own
+/// unconditional cap, whichever comes first. A reset-less signal cannot
+/// outlive its window length.
 fn expire_stale_quota(quota: &mut QuotaState, now: u64) -> bool {
     let mut expired = false;
     let reset_expired = |reset: Option<u64>| reset.is_some_and(|reset| reset <= now);
@@ -4478,11 +4488,15 @@ fn expire_stale_quota(quota: &mut QuotaState, now: u64) -> bool {
     }
     // Legacy aggregate statuses have no independent observation time, so any
     // expired window remains their only expiry signal. Stamped aggregates are
-    // governed solely by the unconditional cap below and survive it.
+    // governed solely by their captured reset and the unconditional cap below,
+    // so they survive an unrelated window expiry here.
     if expired && quota.observed_at_status.is_none() {
-        let had_signal = quota.status.is_some() || quota.observed_at_status.is_some();
+        let had_signal = quota.status.is_some()
+            || quota.observed_at_status.is_some()
+            || quota.reset_at_status.is_some();
         quota.status = None;
         quota.observed_at_status = None;
+        quota.reset_at_status = None;
         expired |= had_signal;
     }
     // Unconditional aggregate cap, independent of the per-window sweep above.
@@ -4494,13 +4508,19 @@ fn expire_stale_quota(quota: &mut QuotaState, now: u64) -> bool {
     // would leave a stale aggregate rejection with no expiry path at all —
     // the poller writes utilization/reset every cycle, so the per-window
     // sweep above never fires, and `status` would never clear on its own.
-    if quota
-        .observed_at_status
-        .is_some_and(|at| at.saturating_add(WINDOW_7D_SECS) <= now)
+    // The reset captured from `anthropic-ratelimit-unified-reset` ends the
+    // status earlier: without it, a reset-less aggregate rejection on an
+    // account that gets no traffic and no usage poll (a Claude setup token)
+    // would keep that account deprioritized for the whole cap.
+    if reset_expired(quota.reset_at_status)
+        || observation_cap_expired(quota.observed_at_status, WINDOW_7D_SECS)
     {
-        let had_signal = quota.status.is_some() || quota.observed_at_status.is_some();
+        let had_signal = quota.status.is_some()
+            || quota.observed_at_status.is_some()
+            || quota.reset_at_status.is_some();
         quota.status = None;
         quota.observed_at_status = None;
+        quota.reset_at_status = None;
         expired |= had_signal;
     }
     expired
@@ -4623,8 +4643,9 @@ fn normalize_signal_metadata(quota: &mut QuotaState) -> bool {
         corrected |= quota.observed_at_status_7d_oi.take().is_some();
         corrected |= quota.reset_at_status_7d_oi.take().is_some();
     }
-    if quota.status.is_none() && quota.observed_at_status.take().is_some() {
-        corrected = true;
+    if quota.status.is_none() {
+        corrected |= quota.observed_at_status.take().is_some();
+        corrected |= quota.reset_at_status.take().is_some();
     }
     corrected
 }
@@ -8062,6 +8083,7 @@ mod tests {
             reset_at_status_5h: Some(now),
             reset_at_status_7d: Some(now + 60),
             reset_at_status_7d_oi: Some(now + 120),
+            reset_at_status: None,
             observed_at_status: None,
         };
         expire_stale_quota(&mut quota, now);
@@ -8215,6 +8237,110 @@ mod tests {
             "the live window signal is untouched"
         );
         assert_eq!(quota.reset_7d, Some(now + WINDOW_7D_SECS));
+    }
+
+    fn anthropic_quota(pool: &AccountPool, account: &AccountConfig) -> QuotaState {
+        pool.entries
+            .lock()
+            .unwrap()
+            .get(&account_key("anthropic", account))
+            .unwrap()
+            .quota
+            .clone()
+    }
+
+    #[test]
+    fn aggregate_rejection_expires_at_the_captured_unified_reset() {
+        // Issue #918: an aggregate rejection that carries
+        // `anthropic-ratelimit-unified-reset` expires at that reset instead of
+        // at the seven-day cap. The next test covers the reset-less case.
+        let pool = AccountPool::new();
+        let account = account("a");
+        let reset = unix_now() + 3_600;
+        pool.note_quota(
+            "anthropic",
+            &account,
+            &quota_headers(&[
+                ("anthropic-ratelimit-unified-status", "rejected".to_string()),
+                ("anthropic-ratelimit-unified-reset", reset.to_string()),
+            ]),
+        );
+        let quota = anthropic_quota(&pool, &account);
+        assert_eq!(quota.status.as_deref(), Some("rejected"));
+        assert_eq!(quota.reset_at_status, Some(reset));
+
+        let mut before_reset = quota.clone();
+        expire_stale_quota(&mut before_reset, reset - 1);
+        assert_eq!(before_reset.status.as_deref(), Some("rejected"));
+        assert!(assess_quota(&before_reset, &account, false, None, reset - 1).near);
+
+        let mut at_reset = quota;
+        assert!(expire_stale_quota(&mut at_reset, reset));
+        assert_eq!(at_reset.status, None);
+        assert_eq!(at_reset.observed_at_status, None);
+        assert_eq!(at_reset.reset_at_status, None);
+        assert!(!assess_quota(&at_reset, &account, false, None, reset).near);
+    }
+
+    #[test]
+    fn aggregate_rejection_without_unified_reset_keeps_the_observation_cap() {
+        let pool = AccountPool::new();
+        let account = account("a");
+        let reset = unix_now() + 3_600;
+        pool.note_quota(
+            "anthropic",
+            &account,
+            &quota_headers(&[
+                ("anthropic-ratelimit-unified-status", "allowed".to_string()),
+                ("anthropic-ratelimit-unified-reset", reset.to_string()),
+            ]),
+        );
+        assert_eq!(
+            anthropic_quota(&pool, &account).reset_at_status,
+            Some(reset)
+        );
+        // A later aggregate observation without the header replaces the
+        // captured reset instead of inheriting it.
+        pool.note_quota(
+            "anthropic",
+            &account,
+            &quota_headers(&[("anthropic-ratelimit-unified-status", "rejected".to_string())]),
+        );
+        let quota = anthropic_quota(&pool, &account);
+        assert_eq!(quota.reset_at_status, None);
+        let observed = quota.observed_at_status.expect("aggregate is stamped");
+
+        let mut after_old_reset = quota.clone();
+        expire_stale_quota(&mut after_old_reset, reset);
+        assert_eq!(after_old_reset.status.as_deref(), Some("rejected"));
+
+        let mut at_cap = quota;
+        expire_stale_quota(&mut at_cap, observed + WINDOW_7D_SECS);
+        assert_eq!(at_cap.status, None);
+    }
+
+    #[test]
+    fn aggregate_reset_metadata_is_normalized_and_round_trips() {
+        let mut orphan = QuotaState {
+            reset_at_status: Some(42),
+            ..Default::default()
+        };
+        assert!(normalize_signal_metadata(&mut orphan));
+        assert_eq!(orphan.reset_at_status, None);
+
+        let quota = QuotaState {
+            status: Some("rejected".to_string()),
+            observed_at_status: Some(1),
+            reset_at_status: Some(2),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&quota).unwrap();
+        let restored: QuotaState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.reset_at_status, Some(2));
+        // A file written before the field existed loads without a reset.
+        let legacy: QuotaState =
+            serde_json::from_str(r#"{"status":"rejected","observed_at_status":1}"#).unwrap();
+        assert_eq!(legacy.reset_at_status, None);
     }
 
     #[test]
@@ -9713,6 +9839,7 @@ mod tests {
             reset_at_status_5h: Some(future),
             reset_at_status_7d: Some(future + 3_600),
             reset_at_status_7d_oi: Some(future + 7_200),
+            reset_at_status: None,
             observed_at_status: Some(now),
         };
         let sibling_quota = QuotaState {
@@ -9873,6 +10000,7 @@ mod tests {
             reset_at_status_5h: Some(future),
             reset_at_status_7d: Some(future + 3_600),
             reset_at_status_7d_oi: Some(future + 7_200),
+            reset_at_status: None,
             observed_at_status: Some(now.saturating_sub(30)),
         };
         let sibling_quota = QuotaState {
