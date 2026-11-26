@@ -1,20 +1,20 @@
 ---
-title: UberLLM
-description: Route mapped models to the UberLLM Messages endpoint with an UBERLLM_API_KEY.
+title: MartLLM
+description: Route mapped models to the MartLLM Messages endpoint with an MARTLLM_API_KEY.
 ---
 
-**UberLLM** is an LLM gateway with OpenAI-compatible and **Anthropic Messages** endpoints. One API
+**MartLLM** is an LLM gateway with OpenAI-compatible and **Anthropic Messages** endpoints. One API
 key gives access to models from many labs, Claude models included. Because it serves
 `/v1/messages`, shunt forwards Claude Code's Messages request as-is and injects the key. The
-built-in `uberllm` preset supplies `kind = "anthropic"`, `base_url = "https://api.uberllm.dev"`,
-and API-key auth from `UBERLLM_API_KEY`.
+built-in `martllm` preset supplies `kind = "anthropic"`, `base_url = "https://api.martllm.com"`,
+and API-key auth from `MARTLLM_API_KEY`.
 
 ## Quick start
 
 Let a coding agent wire it up for you — `shunt add` prints an embedded setup blueprint (offline and read-only; the agent edits the config, the command never does):
 
 ```bash
-shunt add upstream uberllm --print | claude
+shunt add upstream martllm --print | claude
 ```
 
 Or follow the manual steps below.
@@ -27,12 +27,12 @@ name = "anthropic"
 provider = "anthropic"   # keep Anthropic as the default for unrouted models (e.g. claude-*)
 
 [[upstreams]]
-name = "uberllm"
-provider = "uberllm"
+name = "martllm"
+provider = "martllm"
 
 [[routes]]
 model = "deepseek/deepseek-v4.1-flash"
-provider = "uberllm"
+provider = "martllm"
 ```
 
 Ordered `[[upstreams]]` replace shunt's built-in providers, so the config must declare the
@@ -41,18 +41,18 @@ Ordered `[[upstreams]]` replace shunt's built-in providers, so the config must d
 ## Credentials
 
 ```bash
-export UBERLLM_API_KEY='...'
+export MARTLLM_API_KEY='...'
 ```
 
-Create a key at [uberllm.dev](https://uberllm.dev/signup). Never write the key into the config.
+Create a key at [martllm.com](https://martllm.com/signup). Never write the key into the config.
 `shunt check` validates the config's structure but does not read the key's value — if
-`UBERLLM_API_KEY` is unset, the first request routed to `uberllm` returns an authentication
+`MARTLLM_API_KEY` is unset, the first request routed to `martllm` returns an authentication
 error.
 
 ## Models
 
-Model ids use the `vendor/model` form. The public list is at `https://api.uberllm.dev/v1/models`
-(no key needed), with prices at [uberllm.dev/models](https://uberllm.dev/models); some example ids:
+Model ids use the `vendor/model` form. The public list is at `https://api.martllm.com/v1/models`
+(no key needed), with prices at [martllm.com/models](https://martllm.com/models); some example ids:
 
 | Model id | Notes |
 | :-- | :-- |
@@ -77,5 +77,5 @@ curl -sSi http://127.0.0.1:3001/v1/messages \
   -d '{"model":"deepseek/deepseek-v4.1-flash","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
 ```
 
-Confirm the response's `x-gateway-upstream` header names `uberllm`, then
+Confirm the response's `x-gateway-upstream` header names `martllm`, then
 [point Claude Code at shunt](/guides/connect-claude-code/).

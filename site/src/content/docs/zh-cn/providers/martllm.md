@@ -1,19 +1,19 @@
 ---
-title: UberLLM
-description: 用 UBERLLM_API_KEY 将映射的模型路由到 UberLLM 的 Messages 端点。
+title: MartLLM
+description: 用 MARTLLM_API_KEY 将映射的模型路由到 MartLLM 的 Messages 端点。
 ---
 
-**UberLLM** 是一个同时提供 OpenAI 兼容端点和 **Anthropic Messages** 端点的 LLM 网关。一个 API
+**MartLLM** 是一个同时提供 OpenAI 兼容端点和 **Anthropic Messages** 端点的 LLM 网关。一个 API
 密钥即可使用多家实验室的模型,包括 Claude 模型。由于它提供 `/v1/messages`,shunt 原样转发
-Claude Code 的 Messages 请求并注入密钥。内置的 `uberllm` 预设提供 `kind = "anthropic"`、
-`base_url = "https://api.uberllm.dev"`,以及来自 `UBERLLM_API_KEY` 的 API 密钥认证。
+Claude Code 的 Messages 请求并注入密钥。内置的 `martllm` 预设提供 `kind = "anthropic"`、
+`base_url = "https://api.martllm.com"`,以及来自 `MARTLLM_API_KEY` 的 API 密钥认证。
 
 ## 快速开始
 
 让一个编码代理替你接线 —— `shunt add` 打印内嵌的安装蓝图(离线且只读;代理编辑配置,命令本身从不改):
 
 ```bash
-shunt add upstream uberllm --print | claude
+shunt add upstream martllm --print | claude
 ```
 
 或按以下手动步骤操作。
@@ -26,12 +26,12 @@ name = "anthropic"
 provider = "anthropic"   # 让 Anthropic 作为无路由匹配模型(例如 claude-*)的默认项
 
 [[upstreams]]
-name = "uberllm"
-provider = "uberllm"
+name = "martllm"
+provider = "martllm"
 
 [[routes]]
 model = "deepseek/deepseek-v4.1-flash"
-provider = "uberllm"
+provider = "martllm"
 ```
 
 有序的 `[[upstreams]]` 会替换 shunt 的内置提供方，因此该配置必须声明它仍然回退到的
@@ -40,17 +40,17 @@ provider = "uberllm"
 ## 凭据
 
 ```bash
-export UBERLLM_API_KEY='...'
+export MARTLLM_API_KEY='...'
 ```
 
-请在 [uberllm.dev](https://uberllm.dev/signup) 创建密钥。绝不要把密钥写进配置。
-`shunt check` 校验配置的结构，但不会读取密钥的值 —— 如果 `UBERLLM_API_KEY` 未设置，
-第一个被路由到 `uberllm` 的请求会返回认证错误。
+请在 [martllm.com](https://martllm.com/signup) 创建密钥。绝不要把密钥写进配置。
+`shunt check` 校验配置的结构，但不会读取密钥的值 —— 如果 `MARTLLM_API_KEY` 未设置，
+第一个被路由到 `martllm` 的请求会返回认证错误。
 
 ## 模型
 
-模型 ID 采用 `vendor/model` 形式。公开列表位于 `https://api.uberllm.dev/v1/models`(无需密钥),
-价格见 [uberllm.dev/models](https://uberllm.dev/models);部分示例 ID:
+模型 ID 采用 `vendor/model` 形式。公开列表位于 `https://api.martllm.com/v1/models`(无需密钥),
+价格见 [martllm.com/models](https://martllm.com/models);部分示例 ID:
 
 | 模型 ID | 说明 |
 | :-- | :-- |
@@ -75,5 +75,5 @@ curl -sSi http://127.0.0.1:3001/v1/messages \
   -d '{"model":"deepseek/deepseek-v4.1-flash","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
 ```
 
-确认响应的 `x-gateway-upstream` 头写的是 `uberllm`,然后
+确认响应的 `x-gateway-upstream` 头写的是 `martllm`,然后
 [将 Claude Code 指向 shunt](/zh-cn/guides/connect-claude-code/)。

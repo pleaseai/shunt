@@ -1,20 +1,20 @@
 ---
-title: UberLLM
-description: UBERLLM_API_KEY로 매핑된 모델을 UberLLM의 Messages 엔드포인트로 라우팅하기.
+title: MartLLM
+description: MARTLLM_API_KEY로 매핑된 모델을 MartLLM의 Messages 엔드포인트로 라우팅하기.
 ---
 
-**UberLLM**은 OpenAI 호환 엔드포인트와 **Anthropic Messages** 엔드포인트를 제공하는 LLM
+**MartLLM**은 OpenAI 호환 엔드포인트와 **Anthropic Messages** 엔드포인트를 제공하는 LLM
 게이트웨이입니다. API 키 하나로 Claude를 포함한 여러 연구소의 모델을 사용할 수 있습니다.
 `/v1/messages`를 제공하므로, shunt는 Claude Code의 Messages 요청을 그대로 전달하고 키를
-주입합니다. 내장된 `uberllm` preset은 `kind = "anthropic"`,
-`base_url = "https://api.uberllm.dev"` 및 `UBERLLM_API_KEY`의 API 키 인증을 제공합니다.
+주입합니다. 내장된 `martllm` preset은 `kind = "anthropic"`,
+`base_url = "https://api.martllm.com"` 및 `MARTLLM_API_KEY`의 API 키 인증을 제공합니다.
 
 ## 빠른 시작
 
 코딩 에이전트에게 맡기세요 — `shunt add`는 내장된 설정 블루프린트를 출력합니다(오프라인, 읽기 전용. 구성을 편집하는 건 에이전트고 명령은 아무것도 바꾸지 않습니다):
 
 ```bash
-shunt add upstream uberllm --print | claude
+shunt add upstream martllm --print | claude
 ```
 
 또는 아래 수동 단계를 따르세요.
@@ -27,12 +27,12 @@ name = "anthropic"
 provider = "anthropic"   # 라우트가 없는 모델(예: claude-*)의 기본값으로 Anthropic을 유지
 
 [[upstreams]]
-name = "uberllm"
-provider = "uberllm"
+name = "martllm"
+provider = "martllm"
 
 [[routes]]
 model = "deepseek/deepseek-v4.1-flash"
-provider = "uberllm"
+provider = "martllm"
 ```
 
 순서가 있는 `[[upstreams]]`는 shunt의 내장 provider를 대체하므로, 구성이 여전히 폴백하는
@@ -41,17 +41,17 @@ provider = "uberllm"
 ## 자격 증명
 
 ```bash
-export UBERLLM_API_KEY='...'
+export MARTLLM_API_KEY='...'
 ```
 
-[uberllm.dev](https://uberllm.dev/signup)에서 키를 만드세요. 키를 구성 파일에 쓰지 마세요.
-`shunt check`는 구성 구조를 검증할 뿐 키 값을 읽지 않습니다. `UBERLLM_API_KEY`가 설정되지
-않았다면 `uberllm`으로 라우팅된 첫 요청은 인증 오류를 반환합니다.
+[martllm.com](https://martllm.com/signup)에서 키를 만드세요. 키를 구성 파일에 쓰지 마세요.
+`shunt check`는 구성 구조를 검증할 뿐 키 값을 읽지 않습니다. `MARTLLM_API_KEY`가 설정되지
+않았다면 `martllm`으로 라우팅된 첫 요청은 인증 오류를 반환합니다.
 
 ## 모델
 
-모델 ID는 `vendor/model` 형식입니다. 공개 목록은 `https://api.uberllm.dev/v1/models`(키 불필요),
-가격은 [uberllm.dev/models](https://uberllm.dev/models)에 있습니다. 예시 ID:
+모델 ID는 `vendor/model` 형식입니다. 공개 목록은 `https://api.martllm.com/v1/models`(키 불필요),
+가격은 [martllm.com/models](https://martllm.com/models)에 있습니다. 예시 ID:
 
 | 모델 ID | 참고 |
 | :-- | :-- |
@@ -76,5 +76,5 @@ curl -sSi http://127.0.0.1:3001/v1/messages \
   -d '{"model":"deepseek/deepseek-v4.1-flash","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
 ```
 
-응답의 `x-gateway-upstream` 헤더가 `uberllm`을 가리키는지 확인한 뒤
+응답의 `x-gateway-upstream` 헤더가 `martllm`을 가리키는지 확인한 뒤
 [Claude Code를 shunt에 연결](/ko/guides/connect-claude-code/)하세요.

@@ -104,9 +104,9 @@ const BLUEPRINTS: &[Blueprint] = &[
         "Cheaper Inference gateway via CHEAPER_INFERENCE_API_KEY"
     ),
     upstream_blueprint!(
-        "uberllm",
+        "martllm",
         &["uber-llm"],
-        "UberLLM gateway via UBERLLM_API_KEY"
+        "MartLLM gateway via MARTLLM_API_KEY"
     ),
 ];
 
@@ -300,7 +300,7 @@ mod tests {
             "minimax-cn",
             "opencode",
             "cheaperinference",
-            "uberllm",
+            "martllm",
         ] {
             assert!(error.contains(slug), "missing {slug:?} in {error:?}");
         }

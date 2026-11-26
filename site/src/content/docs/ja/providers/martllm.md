@@ -1,20 +1,20 @@
 ---
-title: UberLLM
-description: UBERLLM_API_KEY でマッピングしたモデルを UberLLM の Messages エンドポイントへルーティングする。
+title: MartLLM
+description: MARTLLM_API_KEY でマッピングしたモデルを MartLLM の Messages エンドポイントへルーティングする。
 ---
 
-**UberLLM** は OpenAI 互換エンドポイントと **Anthropic Messages** エンドポイントを持つ LLM
+**MartLLM** は OpenAI 互換エンドポイントと **Anthropic Messages** エンドポイントを持つ LLM
 ゲートウェイです。1 つの API キーで Claude を含む多数のラボのモデルを利用できます。`/v1/messages`
 を提供するため、shunt は Claude Code の Messages リクエストをそのまま転送し、キーを注入します。
-組み込みの `uberllm` preset は `kind = "anthropic"`、`base_url = "https://api.uberllm.dev"`、
-および `UBERLLM_API_KEY` からの API キー認証を提供します。
+組み込みの `martllm` preset は `kind = "anthropic"`、`base_url = "https://api.martllm.com"`、
+および `MARTLLM_API_KEY` からの API キー認証を提供します。
 
 ## クイックスタート
 
 コーディングエージェントに任せる —— `shunt add` は組み込みのセットアップブループリントを表示します(オフライン・読み取り専用。設定を編集するのはエージェントであり、コマンド自体は何も変更しません):
 
 ```bash
-shunt add upstream uberllm --print | claude
+shunt add upstream martllm --print | claude
 ```
 
 または以下の手動手順に従ってください。
@@ -27,12 +27,12 @@ name = "anthropic"
 provider = "anthropic"   # ルート未指定のモデル（例: claude-*）の既定として Anthropic を維持
 
 [[upstreams]]
-name = "uberllm"
-provider = "uberllm"
+name = "martllm"
+provider = "martllm"
 
 [[routes]]
 model = "deepseek/deepseek-v4.1-flash"
-provider = "uberllm"
+provider = "martllm"
 ```
 
 順序付き `[[upstreams]]` は shunt の組み込み provider を置き換えるため、設定はフォールバック先の
@@ -41,18 +41,18 @@ provider = "uberllm"
 ## 認証情報
 
 ```bash
-export UBERLLM_API_KEY='...'
+export MARTLLM_API_KEY='...'
 ```
 
-[uberllm.dev](https://uberllm.dev/signup) でキーを作成してください。キーを設定ファイルに
+[martllm.com](https://martllm.com/signup) でキーを作成してください。キーを設定ファイルに
 書き込まないでください。`shunt check` は設定構造のみを検証し、キーの値は読み取りません。
-`UBERLLM_API_KEY` が未設定の場合、`uberllm` へルーティングされた最初のリクエストは認証エラーを
+`MARTLLM_API_KEY` が未設定の場合、`martllm` へルーティングされた最初のリクエストは認証エラーを
 返します。
 
 ## モデル
 
-モデル ID は `vendor/model` 形式です。公開リストは `https://api.uberllm.dev/v1/models`
-(キー不要)、価格は [uberllm.dev/models](https://uberllm.dev/models) にあります。ID の例:
+モデル ID は `vendor/model` 形式です。公開リストは `https://api.martllm.com/v1/models`
+(キー不要)、価格は [martllm.com/models](https://martllm.com/models) にあります。ID の例:
 
 | モデル ID | 備考 |
 | :-- | :-- |
@@ -78,5 +78,5 @@ curl -sSi http://127.0.0.1:3001/v1/messages \
   -d '{"model":"deepseek/deepseek-v4.1-flash","max_tokens":16,"messages":[{"role":"user","content":"Reply with OK."}]}'
 ```
 
-レスポンスの `x-gateway-upstream` ヘッダーが `uberllm` であることを確認し、
+レスポンスの `x-gateway-upstream` ヘッダーが `martllm` であることを確認し、
 [Claude Code を shunt へ向けてください](/ja/guides/connect-claude-code/)。
