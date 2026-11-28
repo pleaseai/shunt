@@ -105,7 +105,7 @@ const BLUEPRINTS: &[Blueprint] = &[
     ),
     upstream_blueprint!(
         "martllm",
-        &["uber-llm"],
+        &["mart-llm", "uber-llm"],
         "MartLLM gateway via MARTLLM_API_KEY"
     ),
 ];

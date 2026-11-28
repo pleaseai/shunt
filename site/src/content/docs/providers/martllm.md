@@ -1,6 +1,6 @@
 ---
 title: MartLLM
-description: Route mapped models to the MartLLM Messages endpoint with an MARTLLM_API_KEY.
+description: Route mapped models to the MartLLM Messages endpoint with a MARTLLM_API_KEY.
 ---
 
 **MartLLM** is an LLM gateway with OpenAI-compatible and **Anthropic Messages** endpoints. One API
